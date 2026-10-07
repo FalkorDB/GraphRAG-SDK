@@ -41,17 +41,11 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     GraphExtraction,
 )
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
-from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
-    DescriptionMergeResolution,
-)
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
     ExactMatchResolution,
 )
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
-)
-from graphrag_sdk.ingestion.resolution_strategies.semantic_resolution import (
-    SemanticResolution,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,7 +56,9 @@ logger = logging.getLogger(__name__)
 # concrete strategy the builder can instantiate from just an llm/embedder.
 CHUNKERS: tuple[str, ...] = ("sentence", "fixed", "structural", "contextual")
 EXTRACTORS: tuple[str, ...] = ("gliner", "llm")
-RESOLVERS: tuple[str, ...] = ("exact", "description_merge", "semantic", "llm_verified")
+# Matches the resolvers on main: SemanticResolution and DescriptionMergeResolution
+# were removed there (see CHANGELOG), so the planner offers only these two.
+RESOLVERS: tuple[str, ...] = ("exact", "llm_verified")
 
 _CHUNKER_SET = frozenset(CHUNKERS)
 _EXTRACTOR_SET = frozenset(EXTRACTORS)
@@ -105,16 +101,6 @@ PARAM_SPECS: dict[str, dict[str, dict[str, tuple[str, float, float, float]]]] = 
     },
     "resolver": {
         "exact": {},
-        "description_merge": {
-            "force_summary_threshold": ("int", 1, 50, 3),
-            "max_summary_tokens": ("int", 50, 2000, 500),
-        },
-        "semantic": {
-            "similarity_threshold": ("float", 0.5, 0.999, 0.95),
-            "ann_top_k": ("int", 5, 200, 50),
-            "force_summary_threshold": ("int", 1, 50, 3),
-            "max_summary_tokens": ("int", 50, 2000, 500),
-        },
         "llm_verified": {
             "hard_threshold": ("float", 0.5, 0.999, 0.95),
             "soft_threshold": ("float", 0.3, 0.98, 0.80),
@@ -183,9 +169,8 @@ _GUIDE = (
     "  - llm: LLM-based NER. Better on niche/ambiguous entities, costs more.\n"
     "resolver — how duplicate entities are merged:\n"
     "  - exact: merge by exact normalized name. Cheap default.\n"
-    "  - description_merge: also combine/summarize descriptions of merged nodes.\n"
-    "  - semantic: merge by embedding similarity (catches paraphrased names).\n"
-    "  - llm_verified: semantic candidates, then LLM confirms each merge.\n"
+    "  - llm_verified: exact match first, then embedding candidates that an\n"
+    "    LLM confirms (catches paraphrased names). Costs extra LLM calls.\n"
     "\n"
     "You MAY also tune parameters inside each chosen strategy (omit to keep the\n"
     "safe default; out-of-range values are clamped):\n"
@@ -195,11 +180,6 @@ _GUIDE = (
     "  - fixed: chunk_size (100-8000, def 1000), chunk_overlap (0-2000, def 100).\n"
     "  - gliner/llm extractor: threshold (0.1-0.95, def 0.75). Lower = more\n"
     "    recall/noise; higher = more precision.\n"
-    "  - description_merge: force_summary_threshold (1-50, def 3),\n"
-    "    max_summary_tokens (50-2000, def 500).\n"
-    "  - semantic: similarity_threshold (0.5-0.999, def 0.95),\n"
-    "    ann_top_k (5-200, def 50), force_summary_threshold (1-50, def 3),\n"
-    "    max_summary_tokens (50-2000, def 500).\n"
     "  - llm_verified: hard_threshold (0.5-0.999, def 0.95),\n"
     "    soft_threshold (0.3-0.98, def 0.80, must stay below hard),\n"
     "    ann_top_k (5-200, def 50), max_llm_pairs (10-5000, def 500).\n"
@@ -344,7 +324,7 @@ class HeuristicIngestionPlanner:
     """Zero-cost planner: picks strategies from cheap document features.
 
     Useful when you want adaptive ingestion without an extra LLM call. Keeps to
-    the cheap, local options (never selects ``contextual``/``llm``/``semantic``
+    the cheap, local options (never selects ``contextual``/``llm``/``llm_verified``
     that would add cost) — it only upgrades the chunker when the document looks
     structured.
     """
@@ -476,10 +456,6 @@ def build_resolver(
 ) -> ResolutionStrategy:
     """Instantiate the resolver named by an :class:`IngestionPlan`."""
     kw = clamp_params("resolver", name, params)
-    if name == "description_merge":
-        return DescriptionMergeResolution(llm=llm, **kw)
-    if name == "semantic":
-        return SemanticResolution(llm=llm, embedder=embedder, **kw)
     if name == "llm_verified":
         return LLMVerifiedResolution(llm=llm, embedder=embedder, **kw)
     return ExactMatchResolution()

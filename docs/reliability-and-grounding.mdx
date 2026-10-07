@@ -1,0 +1,591 @@
+---
+title: "Reliability and Grounding"
+description: "Grounded retrieval, source provenance, evidence trails, confidence thresholds, abstention and retrieval validation — mapped to the APIs that implement them."
+---
+
+This page is the vocabulary map for evaluating GraphRAG SDK as a **trustworthy,
+citable** RAG system. Each term below is tied to a concrete class, parameter or
+returned field, with the honest answer about what the SDK enforces and what it
+leaves to you.
+
+<Note>
+  Everything here describes shipped behavior. Where a capability is **not**
+  built in — abstention enforcement and declarative metadata filters are the two
+  cases — the page says so and shows the supported workaround.
+</Note>
+
+<Tip>
+  Looking for the narrative version — why RAG systems produce unsupported
+  answers and how to design around it? Start with
+  [Reducing LLM Hallucinations](/reducing-llm-hallucinations). This page is the
+  API-level reference behind it.
+</Tip>
+
+---
+
+## Vocabulary map
+
+| Term | What implements it in the SDK |
+| --- | --- |
+| Grounded retrieval | `GraphRAG.completion()` answers only from the assembled `<context>` block, under a system prompt that forbids outside knowledge |
+| Source provenance | `Document` → `PART_OF` → `Chunk` → `MENTIONED_IN` → `__Entity__` chain, plus the `[Source: <path>]` tag on every retrieved passage |
+| Evidence trail | `RagResult.retriever_result.items` → passages → chunk ids → `Document.path` |
+| Relationship-aware retrieval | `MultiPathRetrieval` — RELATES edge vector search, entity discovery, 1-hop and 2-hop expansion, `MENTIONED_IN` chunk traversal |
+| Metadata filtering | Loader-supplied metadata persisted as `Document` / `Chunk` properties, filtered with Cypher or by graph scoping (no `filter=` parameter) |
+| Confidence thresholds | `filter_facts_by_relevance(min_score=0.25, ...)`, `chunk_top_k`, `rel_top_k`, `top_k` on vector search, `CosineReranker(top_k=...)` |
+| Abstention behavior | Prompt-level only (system prompt rule 6); enforce programmatically with `retrieve()` + a score gate — see [Reducing LLM Hallucinations](/reducing-llm-hallucinations#defining-an-abstention-path) |
+| Unsupported claims | `completion(return_context=True)` gives the exact evidence an answer may be checked against |
+| Retrieval validation | `GraphRAG.retrieve()` / `retrieve_sync()` — context without generation |
+| Factual accuracy | [GraphRAG-Bench results](/benchmark) — ACC, ROUGE-L, Coverage, Faithfulness |
+
+---
+
+## Grounded retrieval
+
+**Grounded retrieval** means the generated answer is produced *only* from
+context retrieved out of the knowledge graph — never from the model's
+parametric memory.
+
+`GraphRAG.completion()` retrieves first, assembles the retrieved items into a
+single context string, wraps it in a `<context>` block and sends it with a
+system prompt that opens with *"Answer questions using ONLY the context
+provided in the user message"*. The numbered rules that follow require the model
+to base the answer strictly on that context, to preserve exact names, dates and
+negations, and — rule 6 — to state that the context is insufficient rather than
+invent details.
+
+```python
+result = await rag.completion("Who founded Acme Corp?")
+
+print(result.answer)
+print(result.metadata["num_context_items"])  # how many context sections were sent
+print(result.metadata["strategy"])           # e.g. "MultiPathRetrieval"
+print(result.metadata["retrieval_query"])    # the query actually used for retrieval
+```
+
+Two grounding safeguards run automatically when you use the default prompt
+template:
+
+- Retrieved document text is scanned for a forged `</context>` closing tag and
+  neutralized, so untrusted source text cannot break out of the context block
+  and issue instructions.
+- The delimited system prompt explicitly tells the model that everything inside
+  `<context>` is data, not instructions.
+
+<Warning>
+  Passing your own `prompt_template=` disables both safeguards — the SDK assumes
+  a custom template owns its escaping rules, and it applies the shorter,
+  non-delimited system prompt. If you supply a template, keep the "answer only
+  from the context" instruction in it.
+</Warning>
+
+---
+
+## Source provenance
+
+Every ingested document produces a mandatory provenance chain in the graph. It
+is not optional and not a post-processing step — the ingestion pipeline builds
+it before extraction results are written.
+
+```
+Document ──PART_OF──▶ Chunk ──NEXT_CHUNK──▶ Chunk
+                        ▲
+                        │ MENTIONED_IN
+                        │
+                   __Entity__ ──RELATES──▶ __Entity__
+```
+
+| Element | Key fields |
+| --- | --- |
+| `Document` | `id` (the `document_id` you passed to `ingest()`, or the normalized source path), `path`, `content_hash`, plus any loader metadata |
+| `Chunk` | `id` (the chunk uid), `text`, `index`, `embedding` |
+| `__Entity__` | `id`, `name`, `description`, `type`, `label`, `embedding` |
+| `RELATES` | `src_name`, `rel_type`, `tgt_name`, `fact`, `description`, `source_chunk_ids`, `embedding` |
+
+Two provenance details are worth calling out:
+
+- **`RELATES.source_chunk_ids`** records which chunks produced each extracted
+  relationship, so a graph fact traces back to the passages that justify it.
+- **Retrieved passages are tagged inline.** `MultiPathRetrieval` batch-resolves
+  each candidate chunk's `Document.path` through `PART_OF` and prefixes the
+  passage with `[Source: <path>]` before it reaches the LLM. The path is stored
+  exactly as it was at ingestion time (typically relative to the ingestion
+  root), because bare filenames are ambiguous across directories.
+
+Pass an explicit `document_id` at ingestion time when you need a stable
+citation key — a content hash, a repo-relative path, or a slug:
+
+```python
+await rag.ingest(text=article_text, document_id="kb/acme-corp-history")
+```
+
+---
+
+## Evidence trail
+
+The **evidence trail** is the chain from an answer back to the source document.
+Ask for the context alongside the answer and walk it:
+
+<CodeGroup>
+
+```python Answer + evidence
+result = await rag.completion(
+    "Where is Acme Corp headquartered?",
+    return_context=True,
+)
+
+print(result.answer)
+
+for item in result.retriever_result.items:
+    print(item.metadata["section"], "->", item.content[:120])
+```
+
+```python Cited passages only
+result = await rag.completion("Where is Acme Corp headquartered?", return_context=True)
+
+passages = [
+    item.content
+    for item in result.retriever_result.items
+    if item.metadata.get("section") == "passages"
+]
+# Each passage inside this section is prefixed with "[Source: <document path>]"
+print("\n---\n".join(passages))
+```
+
+</CodeGroup>
+
+`MultiPathRetrieval` returns one item per context section, and
+`item.metadata["section"]` is one of `hint`, `cypher_results`, `entities`,
+`relationships`, `facts` or `passages`. The `passages` section carries the
+document attribution; `facts` and `relationships` carry the graph-level
+evidence.
+
+A `chunk_id` in `item.metadata` is what lets you close the loop from a
+retrieved item back to its document. Only `LocalRetrieval` populates it —
+`MultiPathRetrieval` sets `metadata` to `{"section": ...}` and rerankers copy
+that metadata through unchanged, so under the default strategy the list below
+is empty and you should use the `[Source: <path>]` prefix on `passages`
+entries instead:
+
+```python
+from graphrag_sdk import ConnectionConfig, FalkorDBConnection, GraphStore, VectorStore
+from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
+
+connection = FalkorDBConnection(ConnectionConfig(host="localhost", graph_name="my_graph"))
+graph = GraphStore(connection)
+
+retrieved = await rag.retrieve(
+    "What did Professor Harmon discover?",
+    strategy=LocalRetrieval(
+        graph_store=graph,
+        vector_store=VectorStore(connection, embedder=embedder, embedding_dimension=256),
+        embedder=embedder,
+        top_k=5,
+    ),
+)
+
+for item in retrieved.items:
+    chunk_id = item.metadata.get("chunk_id")
+    if chunk_id is None:
+        continue
+    evidence = await graph.query_raw(
+        "MATCH (d:Document)-[:PART_OF]->(c:Chunk {id: $chunk_id}) "
+        "RETURN d.id AS document_id, d.path AS path, c.index AS chunk_index",
+        {"chunk_id": chunk_id},
+    )
+    print(evidence.result_set)
+```
+
+And from an entity back to the passages that mention it:
+
+```python
+mentions = await graph.query_raw(
+    "MATCH (e:__Entity__ {name: $name})-[:MENTIONED_IN]->(c:Chunk)"
+    "<-[:PART_OF]-(d:Document) "
+    "RETURN d.path AS source, c.id AS chunk_id, c.text AS text LIMIT 10",
+    {"name": "Acme Corp"},
+)
+```
+
+---
+
+## Relationship-aware retrieval
+
+Top-k vector search over chunks answers "which passages look like this
+question". It cannot answer "what is connected to this entity". The default
+strategy, `MultiPathRetrieval`, runs graph traversal alongside vector search so
+connected evidence is retrieved even when it is not lexically or semantically
+close to the question:
+
+| Path | Mechanism |
+| --- | --- |
+| RELATES vector search | Embedded relationship facts searched directly, returning `src —[type]→ tgt: fact` strings and entry-point entities |
+| Entity discovery | Name `CONTAINS` matching plus fulltext search over entity names and descriptions |
+| Relationship expansion | 1-hop and 2-hop traversal from discovered entities |
+| `MENTIONED_IN` chunks | Entity → the chunks it was extracted from |
+| 2-hop chunks | Entity → related entity → that neighbour's chunks |
+| Text-to-Cypher | Opt-in ontology-guided graph query, results bypass reranking |
+
+```python
+from graphrag_sdk import GraphStore, MultiPathRetrieval, VectorStore
+
+strategy = MultiPathRetrieval(
+    graph_store=GraphStore(connection),
+    vector_store=VectorStore(connection, embedder=embedder, embedding_dimension=256),
+    embedder=embedder,
+    llm=llm,
+    chunk_top_k=15,        # passages kept after reranking
+    max_entities=30,       # entities carried into relationship expansion
+    max_relationships=20,  # cap on expanded RELATES edges
+    rel_top_k=15,          # RELATES edge vector search results
+    enable_cypher=True,    # opt-in graph query path
+    # Required: a strategy you construct yourself never receives the ontology.
+    # GraphRAG only injects it into its own default strategy, so text-to-Cypher
+    # would otherwise generate against an empty schema.
+    ontology=await rag.get_ontology(),
+)
+
+result = await rag.completion("How is Acme Corp connected to Initech?", strategy=strategy)
+```
+
+Measured in isolation, no single path matches the fused pipeline — see the
+per-path numbers in [Retrieval](/retrieval#isolated-path-performance). For the
+simpler alternative (vector search plus optional 1-hop entity context), use
+`LocalRetrieval` from
+`graphrag_sdk.retrieval.strategies.local` — see [Strategies](/strategies).
+
+---
+
+## Metadata filtering
+
+<Warning>
+  `retrieve()` and `completion()` do **not** accept a metadata filter argument.
+  Metadata is persisted on the graph, and filtering is done with Cypher or by
+  scoping the graph. Do not expect declarative `filter=` semantics.
+</Warning>
+
+Loader-supplied document metadata is flattened onto the `Document` node at
+ingestion time, and chunk metadata onto each `Chunk` node. The built-in loaders
+contribute keys such as `loader`, `size_bytes`, `suffix` (text and markdown) and
+`page_count`, `pdf_backend` (PDF). A custom `LoaderStrategy` that returns a
+`DocumentInfo` with your own `metadata` dictionary makes those keys queryable
+properties:
+
+<AccordionGroup>
+  <Accordion title="Attach custom metadata at ingestion">
+
+```python
+from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.models import DocumentInfo, DocumentOutput
+from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+
+class TenantLoader(LoaderStrategy):
+    async def load(self, source: str, ctx: Context) -> DocumentOutput:
+        with open(source, encoding="utf-8") as handle:
+            text = handle.read()
+        return DocumentOutput(
+            text=text,
+            document_info=DocumentInfo(
+                path=source,
+                metadata={"tenant": "acme", "classification": "public"},
+            ),
+        )
+
+await rag.ingest("reports/q4.md", loader=TenantLoader())
+```
+
+  </Accordion>
+  <Accordion title="Filter retrieval by that metadata">
+
+```python
+rows = await graph.query_raw(
+    "MATCH (d:Document)-[:PART_OF]->(c:Chunk) "
+    "WHERE d.tenant = $tenant AND d.classification = 'public' "
+    "RETURN c.id AS chunk_id, c.text AS text LIMIT 20",
+    {"tenant": "acme"},
+)
+```
+
+Feed the resulting passages to your own prompt, or post-filter the output of
+`retrieve()` against the allowed document set.
+
+  </Accordion>
+  <Accordion title="Hard isolation: one graph per scope">
+
+The strongest filter is a separate graph. `ConnectionConfig(graph_name=...)`
+scopes an entire `GraphRAG` instance, so a tenant's retrieval can never reach
+another tenant's chunks. This is the layout used for the
+[benchmark](/benchmark) run, which indexes one graph per corpus document.
+
+```python
+rag = GraphRAG(
+    connection=ConnectionConfig(host="localhost", graph_name="tenant_acme"),
+    llm=llm,
+    embedder=embedder,
+)
+```
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Confidence thresholds
+
+Every similarity score returned by the storage layer is a **similarity, not a
+distance — higher means closer.** Chunk, entity and relationship vector searches
+all return `(1 - score)` from the FalkorDB cosine index and order by that value
+descending.
+
+<Note>
+  This was corrected recently: earlier releases ordered by raw distance, which
+  ranked the *least* similar results first. If you pinned a threshold against
+  the old behavior, invert it.
+</Note>
+
+| Cutoff | Where | Default |
+| --- | --- | --- |
+| `min_score` | `filter_facts_by_relevance()` — RELATES facts below this similarity are dropped | `0.25` |
+| `max_facts` | `filter_facts_by_relevance()` — cap on facts in context | `12` |
+| `min_keep` | `filter_facts_by_relevance()` — top facts always kept, threshold or not | `3` |
+| `chunk_top_k` | `MultiPathRetrieval` — passages after cosine reranking | `15` |
+| `rel_top_k` | `MultiPathRetrieval` — RELATES edge vector hits | `15` |
+| `max_entities` / `max_relationships` | `MultiPathRetrieval` graph expansion caps | `30` / `20` |
+| `top_k` | `VectorStore.search_chunks()` / `search_entities()` | `5` |
+| `top_k` | `VectorStore.search_relationships()` | `15` |
+| `top_k` | `CosineReranker` | `15` |
+
+Facts use a higher threshold than passages on purpose: short structured strings
+(`Alice —[WORKS_AT]→ Acme`) have much higher cosine variance than prose
+paragraphs, so a passage-tuned threshold would let noise through. The `min_keep`
+floor guarantees the pipeline never returns an empty fact section purely because
+of the threshold — which is exactly why a threshold alone is not an abstention
+mechanism.
+
+To obtain explicit per-item scores, apply the reranker — it is the component
+that populates `RetrieverResultItem.score`:
+
+```python
+from graphrag_sdk import CosineReranker
+
+reranker = CosineReranker(embedder=embedder, top_k=10)
+retrieved = await rag.retrieve("Where is Acme Corp headquartered?", reranker=reranker)
+
+for item in retrieved.items:
+    print(round(item.score, 3), item.metadata.get("section"), item.content[:80])
+```
+
+<Warning>
+  Without a reranker, `MultiPathRetrieval` returns section items with
+  `score = None` — scoring happens internally during fact filtering and passage
+  reranking and is not surfaced per section. `LocalRetrieval` items do carry the
+  chunk's vector similarity in `score`.
+
+  Attaching a reranker populates `score`, but note what it scores: a
+  `MultiPathRetrieval` item is a whole concatenated section, so `CosineReranker`
+  embeds that entire block against the question. One highly relevant passage is
+  diluted by everything else in the same section, and the resulting number is
+  systematically lower than a per-chunk similarity. Calibrate section-level
+  thresholds against your own corpus rather than reusing a chunk-level value —
+  a `LocalRetrieval`-derived threshold will over-abstain here.
+</Warning>
+
+---
+
+## Abstention behavior
+
+**Abstention is prompt-level, not enforced.** The SDK ships no confidence score
+on the answer, no "insufficient context" marker on `RagResult`, and no
+threshold that rejects a generation. What exists is rule 6 of the built-in
+system prompt: *"If the context lacks sufficient information, say so briefly
+rather than inventing details."* A model may ignore it.
+
+If you need enforced abstention, gate the call yourself: retrieve first, decide,
+and only then generate. The [runnable pattern and its trade-offs](/reducing-llm-hallucinations#defining-an-abstention-path)
+are covered in the guide; the score-based variant looks like this:
+
+```python
+from graphrag_sdk import CosineReranker
+
+MIN_SCORE = 0.35
+MIN_ITEMS = 2
+
+reranker = CosineReranker(embedder=embedder, top_k=10)
+retrieved = await rag.retrieve(question, reranker=reranker)
+
+strong = [item for item in retrieved.items if (item.score or 0.0) >= MIN_SCORE]
+
+if len(strong) < MIN_ITEMS:
+    answer = "I don't have enough information in the knowledge base to answer that."
+else:
+    result = await rag.completion(question, reranker=reranker, return_context=True)
+    answer = result.answer
+```
+
+Tighten the prompt side as well, with a template that makes abstention the
+required output for weak context:
+
+```python
+ABSTAIN_TEMPLATE = (
+    "<context>\n{context}\n</context>\n\n"
+    "Answer the question using only the context above. "
+    "If the context does not contain the answer, reply exactly with "
+    "INSUFFICIENT_CONTEXT and nothing else.\n\n"
+    "Question: {question}\n\nAnswer:"
+)
+
+result = await rag.completion(question, prompt_template=ABSTAIN_TEMPLATE)
+if result.answer.strip() == "INSUFFICIENT_CONTEXT":
+    ...
+```
+
+<Warning>
+  A custom `prompt_template` must keep both `{context}` and `{question}`
+  placeholders, and it opts out of the `</context>` neutralization and the
+  delimited system prompt described under
+  [Grounded retrieval](#grounded-retrieval).
+</Warning>
+
+The retrieval-side threshold is a partial gate on its own: `min_keep=3` in the
+fact filter means at least some facts always survive, so an empty or weak graph
+still yields a non-empty context. The score check above is what turns that into
+a real refusal.
+
+---
+
+## Unsupported claims
+
+An **unsupported claim** is a statement in the answer that the retrieved
+evidence does not back. The SDK does not detect these for you — it gives you the
+exact evidence the answer was allowed to use, which is what makes detection
+possible.
+
+```python
+result = await rag.completion(question, return_context=True)
+
+evidence = "\n---\n".join(item.content for item in result.retriever_result.items)
+
+verdict = await rag.llm.ainvoke(
+    "Evidence:\n" + evidence
+    + "\n\nAnswer:\n" + result.answer
+    + "\n\nList any statement in the answer that is not supported by the "
+    "evidence. Reply SUPPORTED if every statement is backed."
+)
+print(verdict.content)
+```
+
+Practices that reduce unsupported claims:
+
+- **Keep the default template.** Its system prompt already forbids outside
+  knowledge, preambles and verbatim quoting, and requires negations to be
+  preserved.
+- **Log the evidence with the answer.** `return_context=True` plus
+  `result.metadata["retrieval_query"]` reproduces exactly what the model saw,
+  including after a history rewrite.
+- **Raise the bar for context quality** rather than the amount: a higher
+  `min_score` on fact filtering and a reranker `top_k` that fits your model's
+  attention budget beat sending more marginal passages.
+- **Prefer explicit entity/relationship evidence.** The `facts` and
+  `relationships` sections carry the `fact` text extracted from source chunks,
+  and each `RELATES` edge keeps `source_chunk_ids`.
+
+---
+
+## Retrieval validation
+
+Answer quality problems are usually retrieval problems. `GraphRAG.retrieve()`
+runs the full retrieval and reranking pipeline and returns the context
+**without calling the generation model** — no generation cost, no generation
+variance. It is not free, though: the default `MultiPathRetrieval` still issues
+an LLM keyword-extraction call, plus a text-to-Cypher call when
+`enable_cypher=True`.
+
+<CodeGroup>
+
+```python Async
+retrieved = await rag.retrieve("Who founded Acme Corp?")
+
+print(retrieved.metadata)          # e.g. {'strategy': 'multi_path'}
+print(len(retrieved.items))
+
+for item in retrieved.items:
+    print("--", item.metadata.get("section"), item.score)
+    print(item.content[:200])
+```
+
+```python Sync
+retrieved = rag.retrieve_sync("Who founded Acme Corp?")
+
+for item in retrieved.items:
+    print(item.metadata.get("section"), item.score)
+```
+
+</CodeGroup>
+
+A validation checklist that works well before shipping a graph:
+
+<AccordionGroup>
+  <Accordion title="Is the expected document reachable?">
+    Check that a `passages` item carries the `[Source: <path>]` tag of the
+    document you expect. If not, the chunk never made it through any of the four
+    chunk paths — inspect chunking and the entity extraction for that document.
+  </Accordion>
+  <Accordion title="Are entities being found at all?">
+    An empty `entities` section means keyword extraction and fulltext matching
+    both missed. Verify the document was ingested, and that
+    `GraphRAG.finalize()` ran — without it, entity- and edge-level vector search
+    returns nothing and cross-document duplicates remain.
+  </Accordion>
+  <Accordion title="Are the scores plausible?">
+    Attach a `CosineReranker` and read `item.score`. Values clustered near zero
+    mean the question and corpus are semantically far apart — the threshold gate
+    from [Abstention behavior](#abstention-behavior) belongs in front of
+    generation.
+  </Accordion>
+  <Accordion title="Does the graph contain what you think?">
+    Query it directly with `GraphStore.query_raw()` and compare counts against
+    `GraphRAG.get_statistics()`. See [Graph Schema](/graph-schema) for the node
+    and relationship reference.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Factual accuracy
+
+Grounding claims are only credible if they are measured. GraphRAG SDK is
+evaluated on [GraphRAG-Bench](/benchmark) (Xiang et al., ICLR 2026) across both
+subsets and all four task categories, with the SDK's own defaults preserved
+rather than tuned to the benchmark, and the benchmark's unmodified evaluation
+script as judge.
+
+| Metric | What it measures |
+| --- | --- |
+| **ACC** | Judge-scored accuracy of the answer against the reference — the headline number |
+| **ROUGE-L** | Lexical overlap with the reference answer, on fact-retrieval and reasoning tasks |
+| **Cov** (Coverage) | How much of the reference content a summary captures |
+| **FS** (Faithfulness) | Whether generated content stays consistent with the source material |
+
+Reported averages are 76.87 (Medical) and 66.09 (Novel), the unweighted mean of
+the four ACC values, which is the convention the GraphRAG-Bench leaderboard
+uses. The [Benchmark](/benchmark) page publishes the per-level breakdown, the
+full configuration, the two declared deviations from SDK defaults, and the
+hand-authored ontologies so the run is checkable.
+
+<Note>
+  These numbers measure *answer* accuracy end to end. For per-retrieval-path
+  contribution — including how each path scores in isolation — see
+  [Retrieval](/retrieval#benchmark-results).
+</Note>
+
+---
+
+## Related pages
+
+- [Reducing LLM Hallucinations](/reducing-llm-hallucinations) — the guide this page backs, with the runnable abstention pattern
+- [Retrieval](/retrieval) — the nine-step pipeline in detail
+- [Architecture](/architecture) — how ingestion, storage and retrieval fit together
+- [Configuration](/configuration) — connection, provider and strategy settings
+- [Graph Schema](/graph-schema) — node labels, relationship types and properties
+- [API Reference](/api-reference) — full signatures for every class named here
+- [Benchmark](/benchmark) — methodology and results

@@ -1,0 +1,274 @@
+{
+  "entities": [
+    {
+      "label": "Disease",
+      "description": "A disease, disorder, cancer, or medical condition.",
+      "properties": [
+        {
+          "name": "category",
+          "type": "STRING",
+          "description": "e.g. carcinoma, sarcoma, infection."
+        },
+        {
+          "name": "stage",
+          "type": "STRING",
+          "description": "Stage or grade if given."
+        }
+      ]
+    },
+    {
+      "label": "Symptom",
+      "description": "A sign, symptom, or clinical manifestation.",
+      "properties": []
+    },
+    {
+      "label": "Treatment",
+      "description": "A therapy, procedure, surgery, or intervention (e.g. brachytherapy, radiation, chemotherapy).",
+      "properties": [
+        {
+          "name": "kind",
+          "type": "STRING",
+          "description": "surgery, radiation, therapy, procedure, etc."
+        }
+      ]
+    },
+    {
+      "label": "Drug",
+      "description": "A medication, drug, or pharmacological agent.",
+      "properties": [
+        {
+          "name": "drug_class",
+          "type": "STRING",
+          "description": "Drug class if stated."
+        }
+      ]
+    },
+    {
+      "label": "AnatomicalStructure",
+      "description": "An organ, gland, tissue, or body part (e.g. prostate, urethra, lung).",
+      "properties": [
+        {
+          "name": "kind",
+          "type": "STRING",
+          "description": "organ, gland, tissue, cell, etc."
+        }
+      ]
+    },
+    {
+      "label": "DiagnosticTest",
+      "description": "A diagnostic test, imaging modality, biopsy, or screening method.",
+      "properties": [
+        {
+          "name": "kind",
+          "type": "STRING",
+          "description": "lab test, imaging, biopsy, screening, etc."
+        }
+      ]
+    },
+    {
+      "label": "RiskFactor",
+      "description": "A risk factor or cause associated with a disease (e.g. smoking, age, exposure).",
+      "properties": []
+    },
+    {
+      "label": "Biomarker",
+      "description": "A biomarker, protein, hormone, antigen, or measurable substance (e.g. PSA).",
+      "properties": [
+        {
+          "name": "kind",
+          "type": "STRING",
+          "description": "protein, hormone, antigen, gene, etc."
+        }
+      ]
+    },
+    {
+      "label": "Pathogen",
+      "description": "An infectious agent — virus, bacterium, or other pathogen (e.g. HPV).",
+      "properties": [
+        {
+          "name": "kind",
+          "type": "STRING",
+          "description": "virus, bacterium, etc."
+        }
+      ]
+    },
+    {
+      "label": "BodySystem",
+      "description": "A body system (e.g. reproductive, respiratory, immune).",
+      "properties": []
+    }
+  ],
+  "relations": [
+    {
+      "label": "CAUSES",
+      "description": "A risk factor, pathogen, or disease causes a disease or symptom.",
+      "patterns": [
+        [
+          "RiskFactor",
+          "Disease"
+        ],
+        [
+          "Pathogen",
+          "Disease"
+        ],
+        [
+          "Disease",
+          "Symptom"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "TREATS",
+      "description": "A treatment or drug is used to treat a disease.",
+      "patterns": [
+        [
+          "Treatment",
+          "Disease"
+        ],
+        [
+          "Drug",
+          "Disease"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "SYMPTOM_OF",
+      "description": "A symptom is a manifestation of a disease.",
+      "patterns": [
+        [
+          "Symptom",
+          "Disease"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "DIAGNOSED_BY",
+      "description": "A disease is diagnosed or detected by a test.",
+      "patterns": [
+        [
+          "Disease",
+          "DiagnosticTest"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "AFFECTS",
+      "description": "A disease affects an anatomical structure or body system.",
+      "patterns": [
+        [
+          "Disease",
+          "AnatomicalStructure"
+        ],
+        [
+          "Disease",
+          "BodySystem"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "PART_OF",
+      "description": "An anatomical structure is part of a larger structure or body system.",
+      "patterns": [
+        [
+          "AnatomicalStructure",
+          "AnatomicalStructure"
+        ],
+        [
+          "AnatomicalStructure",
+          "BodySystem"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "RISK_FACTOR_FOR",
+      "description": "A risk factor increases the risk of a disease.",
+      "patterns": [
+        [
+          "RiskFactor",
+          "Disease"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "PREVENTS",
+      "description": "A treatment or drug prevents a disease.",
+      "patterns": [
+        [
+          "Treatment",
+          "Disease"
+        ],
+        [
+          "Drug",
+          "Disease"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "PRODUCES",
+      "description": "An anatomical structure produces a biomarker or substance.",
+      "patterns": [
+        [
+          "AnatomicalStructure",
+          "Biomarker"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "INDICATES",
+      "description": "A biomarker or test result indicates a disease.",
+      "patterns": [
+        [
+          "Biomarker",
+          "Disease"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "HAS_SUBTYPE",
+      "description": "A disease has a subtype or variant.",
+      "patterns": [
+        [
+          "Disease",
+          "Disease"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "SIDE_EFFECT_OF",
+      "description": "A symptom is a side effect of a treatment or drug.",
+      "patterns": [
+        [
+          "Symptom",
+          "Treatment"
+        ],
+        [
+          "Symptom",
+          "Drug"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "ADMINISTERED_TO",
+      "description": "A treatment or drug is administered to an anatomical structure.",
+      "patterns": [
+        [
+          "Treatment",
+          "AnatomicalStructure"
+        ]
+      ],
+      "properties": []
+    }
+  ]
+}

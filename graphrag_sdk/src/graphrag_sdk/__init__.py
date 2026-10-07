@@ -11,7 +11,7 @@
 #   Adaptability — Optimization-ready core, strategies are swappable.
 #   Velocity — Production-grade throughput.
 
-__version__ = "1.2.0"
+__version__ = "1.4.0"
 
 # ── API Surface (Facade) ────────────────────────────────────────
 from graphrag_sdk.api.main import GraphRAG
@@ -25,6 +25,8 @@ from graphrag_sdk.core.exceptions import (
     LatencyBudgetExceededError,
 )
 from graphrag_sdk.core.models import (
+    AgentStep,
+    AgentTrace,
     ApplyChangesResult,
     Attribute,
     BatchEntry,
@@ -46,7 +48,9 @@ from graphrag_sdk.core.models import (
     ResolutionResult,
     RetrieverResult,
     RetrieverResultItem,
+    ScoredPath,
     SearchType,
+    SkillResult,
     TextChunk,
     TextChunks,
     UpdateResult,
@@ -83,16 +87,22 @@ from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
     SentenceTokenCapChunking,
 )
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+from graphrag_sdk.ingestion.extraction_strategies.cached_chunk_extraction import (
+    CachedChunkExtraction,
+)
 from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import (
     CorefResolver,
     FastCorefResolver,
 )
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+    CompositeExtractor,
     EntityExtractor,
     GLiNERExtractor,
     LLMExtractor,
+    SpacyExtractor,
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+    DEFAULT_RELATION_TYPES,
     GraphExtraction,
 )
 from graphrag_sdk.ingestion.ingestion_planner import (
@@ -103,19 +113,31 @@ from graphrag_sdk.ingestion.ingestion_planner import (
     build_ingestion_strategies,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+from graphrag_sdk.ingestion.loaders.record_loader import (
+    CsvRecordLoader,
+    RecordBatch,
+    RecordLoaderStrategy,
+)
+from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+from graphrag_sdk.ingestion.mapping import (
+    Column,
+    Link,
+    MappingError,
+    TableMapping,
+)
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
-from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
-    DescriptionMergeResolution,
-)
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
     ExactMatchResolution,
 )
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
-from graphrag_sdk.ingestion.resolution_strategies.semantic_resolution import (
-    SemanticResolution,
+from graphrag_sdk.retrieval.agentic import AgenticRetrieval, ToolRegistry
+from graphrag_sdk.retrieval.graph_walk import (
+    DynamicGraphWalk,
+    GraphWalkRetrieval,
+    score_path,
 )
 
 # ── Retrieval Strategies ────────────────────────────────────────
@@ -123,6 +145,23 @@ from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.reranking_strategies.cosine import CosineReranker
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+from graphrag_sdk.retrieval.strategies.path_router import (
+    RETRIEVAL_PATHS,
+    HeuristicPathRouter,
+    LLMPathRouter,
+)
+
+# ── Skills ──────────────────────────────────────────────────────
+from graphrag_sdk.skills import (
+    SKILL_REGISTRY,
+    ContradictionDetectionSkill,
+    EntityComparisonSkill,
+    GapAnalysisSkill,
+    ImpactAnalysisSkill,
+    Skill,
+    TimelineReconstructionSkill,
+    build_skill,
+)
 
 # ── Storage ─────────────────────────────────────────────────────
 from graphrag_sdk.storage.graph_store import GraphStore
@@ -134,12 +173,15 @@ from graphrag_sdk.storage.ontology_store import (
 from graphrag_sdk.storage.vector_store import VectorStore
 
 __all__ = [
+    "DEFAULT_RELATION_TYPES",
     # Version
     "__version__",
     # API
     "GraphRAG",
     # Core
     "ApplyChangesResult",
+    "AgentStep",
+    "AgentTrace",
     "BatchEntry",
     "ChatMessage",
     "ConnectionConfig",
@@ -173,7 +215,9 @@ __all__ = [
     "ResolutionResult",
     "RetrieverResult",
     "RetrieverResultItem",
+    "ScoredPath",
     "SearchType",
+    "SkillResult",
     "TextChunk",
     "TextChunks",
     "UpdateResult",
@@ -192,35 +236,61 @@ __all__ = [
     "FixedSizeChunking",
     "SentenceTokenCapChunking",
     "ExtractionStrategy",
+    "CachedChunkExtraction",
     "GraphExtraction",
     "EntityExtractor",
+    "CompositeExtractor",
     "GLiNERExtractor",
     "LLMExtractor",
+    "SpacyExtractor",
     "CorefResolver",
     "FastCorefResolver",
     "IngestionPipeline",
     "LoaderStrategy",
+    "TextLoader",
     "ResolutionStrategy",
-    "DescriptionMergeResolution",
     "ExactMatchResolution",
     "LLMVerifiedResolution",
-    "SemanticResolution",
     "HeuristicIngestionPlanner",
     "IngestionPlan",
     "IngestionPlanner",
     "LLMIngestionPlanner",
     "build_ingestion_strategies",
     # Retrieval
+    "AgenticRetrieval",
     "CosineReranker",
+    "DynamicGraphWalk",
+    "GraphWalkRetrieval",
+    "HeuristicPathRouter",
+    "LLMPathRouter",
     "MultiPathRetrieval",
+    "RETRIEVAL_PATHS",
     "RerankingStrategy",
     "RetrievalStrategy",
+    "ToolRegistry",
+    "score_path",
+    # Skills
+    "Skill",
+    "SKILL_REGISTRY",
+    "build_skill",
+    "ContradictionDetectionSkill",
+    "EntityComparisonSkill",
+    "GapAnalysisSkill",
+    "ImpactAnalysisSkill",
+    "TimelineReconstructionSkill",
     # Storage
     "GraphStore",
     "OntologyContradictionError",
     "OntologyModificationNotAllowedError",
     "OntologyStore",
     "VectorStore",
+    "Column",
+    "TableMapping",
+    "CsvRecordLoader",
+    "MappingError",
+    "RecordBatch",
+    "RecordLoaderStrategy",
+    "Link",
 ]
 
 

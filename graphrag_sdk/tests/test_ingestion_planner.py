@@ -40,17 +40,11 @@ from graphrag_sdk.ingestion.ingestion_planner import (
     default_plan,
     parse_plan,
 )
-from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
-    DescriptionMergeResolution,
-)
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
     ExactMatchResolution,
 )
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
-)
-from graphrag_sdk.ingestion.resolution_strategies.semantic_resolution import (
-    SemanticResolution,
 )
 
 from .conftest import MockEmbedder, MockLLM
@@ -78,12 +72,7 @@ class TestIngestionPlan:
     def test_option_sets_are_expected(self):
         assert set(CHUNKERS) == {"sentence", "fixed", "structural", "contextual"}
         assert set(EXTRACTORS) == {"gliner", "llm"}
-        assert set(RESOLVERS) == {
-            "exact",
-            "description_merge",
-            "semantic",
-            "llm_verified",
-        }
+        assert set(RESOLVERS) == {"exact", "llm_verified"}
 
 
 # -- parse_plan --
@@ -92,9 +81,9 @@ class TestIngestionPlan:
 class TestParsePlan:
     def test_parses_json(self):
         plan = parse_plan(
-            '{"chunker":"structural","extractor":"llm","resolver":"semantic","reason":"markdown"}'
+            '{"chunker":"structural","extractor":"llm","resolver":"llm_verified","reason":"markdown"}'
         )
-        assert plan == IngestionPlan("structural", "llm", "semantic", "markdown")
+        assert plan == IngestionPlan("structural", "llm", "llm_verified", "markdown")
 
     def test_parses_fenced_json(self):
         plan = parse_plan('```json\n{"chunker": "fixed"}\n```')
@@ -154,9 +143,9 @@ class TestHeuristicPlanner:
 
 class TestLLMPlanner:
     async def test_returns_parsed_plan(self):
-        llm = MockLLM(responses=['{"chunker":"fixed","extractor":"llm","resolver":"semantic"}'])
+        llm = MockLLM(responses=['{"chunker":"fixed","extractor":"llm","resolver":"llm_verified"}'])
         plan = await LLMIngestionPlanner(llm).plan("some text", source="x.txt")
-        assert plan == IngestionPlan("fixed", "llm", "semantic")
+        assert plan == IngestionPlan("fixed", "llm", "llm_verified")
 
     async def test_empty_response_falls_back_to_default(self):
         plan = await LLMIngestionPlanner(MockLLM(responses=[""])).plan("t")
@@ -210,22 +199,20 @@ class TestBuilders:
         llm = MockLLM()
         emb = MockEmbedder()
         assert isinstance(build_resolver("exact"), ExactMatchResolution)
-        assert isinstance(build_resolver("description_merge", llm=llm), DescriptionMergeResolution)
-        assert isinstance(build_resolver("semantic", llm=llm, embedder=emb), SemanticResolution)
         assert isinstance(
             build_resolver("llm_verified", llm=llm, embedder=emb), LLMVerifiedResolution
         )
 
     def test_build_ingestion_strategies_triple(self):
         chunker, extractor, resolver = build_ingestion_strategies(
-            IngestionPlan("structural", "llm", "semantic"),
+            IngestionPlan("structural", "llm", "llm_verified"),
             llm=MockLLM(),
             embedder=MockEmbedder(),
             entity_types=["Person"],
         )
         assert isinstance(chunker, StructuralChunking)
         assert isinstance(extractor, GraphExtraction)
-        assert isinstance(resolver, SemanticResolution)
+        assert isinstance(resolver, LLMVerifiedResolution)
 
 
 # -- GraphRAG._plan_ingestion_strategies merge logic --
@@ -265,7 +252,7 @@ class TestPlanIngestionStrategiesMerge:
         assert preloaded_document is None
 
     async def test_explicit_override_wins(self):
-        llm = MockLLM(responses=['{"chunker":"fixed","extractor":"llm","resolver":"semantic"}'])
+        llm = MockLLM(responses=['{"chunker":"fixed","extractor":"llm","resolver":"llm_verified"}'])
         rag = _fake_rag(llm)
         explicit_chunker = SentenceTokenCapChunking()
         chunker, extractor, resolver, _preloaded_document = (
@@ -282,7 +269,7 @@ class TestPlanIngestionStrategiesMerge:
         )
         # Caller's chunker is preserved; only the unset slots come from the plan.
         assert chunker is explicit_chunker
-        assert isinstance(resolver, SemanticResolution)
+        assert isinstance(resolver, LLMVerifiedResolution)
 
     async def test_custom_heuristic_planner_used(self):
         rag = _fake_rag(MockLLM())
@@ -430,11 +417,12 @@ class TestPlanIngestionStrategiesMerge:
 
     def test_build_resolver_applies_params(self):
         r = build_resolver(
-            "semantic",
+            "llm_verified",
             llm=MockLLM(),
             embedder=MockEmbedder(),
-            params={"similarity_threshold": 0.88, "ann_top_k": 25},
+            params={"hard_threshold": 0.9, "ann_top_k": 25, "max_llm_pairs": 100},
         )
-        assert isinstance(r, SemanticResolution)
-        assert r.similarity_threshold == 0.88
+        assert isinstance(r, LLMVerifiedResolution)
+        assert r.hard_threshold == 0.9
         assert r.ann_top_k == 25
+        assert r.max_llm_pairs == 100

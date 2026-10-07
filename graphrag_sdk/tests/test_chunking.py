@@ -1,4 +1,5 @@
 """Tests for ingestion/chunking_strategies/fixed_size.py."""
+
 from __future__ import annotations
 
 import pytest

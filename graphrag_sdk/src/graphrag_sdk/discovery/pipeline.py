@@ -37,6 +37,7 @@ from graphrag_sdk.core.models import (
     _PROPERTY_TYPES,
     _RESERVED_ATTRIBUTE_NAMES,
     _SDK_MANAGED_ATTRIBUTE_NAMES,
+    RESERVED_NODE_LABELS,
     Attribute,
     DocumentOutput,
     Entity,
@@ -165,6 +166,16 @@ def _validate_proposal(
 
     # Entity-level attribute checks.
     for e in proposal.entities:
+        # Returned as an error rather than raised so the retry loop can ask
+        # the LLM for a different label instead of aborting discovery.  Strip
+        # first so "Document " is caught here rather than raised from
+        # ``reject_reserved_labels`` (which strips) past the retry loop.
+        if e.label.strip() in RESERVED_NODE_LABELS:
+            errors.append(
+                f"Entity label '{e.label}' is reserved for the graph store's "
+                f"own bookkeeping nodes ({', '.join(sorted(RESERVED_NODE_LABELS))}) "
+                f"— rename it (e.g. 'Document' -> 'Publication')."
+            )
         for a in e.properties:
             normalized = (a.type or "STRING").strip().upper()
             if normalized not in _PROPERTY_TYPES:
@@ -250,7 +261,10 @@ def _ensure_sdk_managed_attributes(ontology: Ontology) -> Ontology:
     if not changed:
         return ontology
 
-    return Ontology(entities=new_entities, relations=list(ontology.relations))
+    # model_copy so a field added to Ontology later is carried, not silently
+    # dropped: this function takes an existing ontology and returns a modified
+    # one, which is exactly the shape that lost `mentions` from GraphData once.
+    return ontology.model_copy(update={"entities": new_entities})
 
 
 # ── Per-step calls ──────────────────────────────────────────────────

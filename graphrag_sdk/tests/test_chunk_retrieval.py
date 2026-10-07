@@ -1,4 +1,5 @@
 """Tests for retrieval/strategies/chunk_retrieval.py utilities."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -98,9 +99,7 @@ class TestFetchChunkDocuments:
 
     async def test_budget_error_propagates(self):
         graph = MagicMock()
-        graph.query_raw = AsyncMock(
-            side_effect=LatencyBudgetExceededError("budget exhausted")
-        )
+        graph.query_raw = AsyncMock(side_effect=LatencyBudgetExceededError("budget exhausted"))
 
         with pytest.raises(LatencyBudgetExceededError, match="budget exhausted"):
             await fetch_chunk_documents(graph, ["chunk-1"])

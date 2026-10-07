@@ -1,0 +1,972 @@
+---
+title: "GraphRAG SDK API Reference"
+sidebarTitle: "API Reference"
+description: "Complete API reference for every public class and method exported by graphrag_sdk, from the GraphRAG entry point to strategy ABCs."
+---
+
+Complete reference for all public classes and methods exported by `graphrag_sdk`.
+
+## Table of Contents
+
+- [GraphRAG (Facade)](#graphrag-facade)
+- [Connection](#connection)
+- [Providers](#providers)
+- [Data Models](#data-models)
+- [Schema](#schema)
+- [Ingestion Strategies](#ingestion-strategies)
+- [Ingestion Pipeline](#ingestion-pipeline)
+- [Structured Ingestion](#structured-ingestion)
+- [Retrieval Strategies](#retrieval-strategies)
+- [Reranking Strategies](#reranking-strategies)
+- [Storage](#storage)
+- [Context](#context)
+- [Exceptions](#exceptions)
+
+---
+
+## GraphRAG (Facade)
+
+The main entry point. Three primary operations: `ingest()`, `retrieve()`, and `completion()`. Tables go through the same `ingest()`; see [Structured Ingestion](#structured-ingestion).
+
+```python
+from graphrag_sdk import GraphRAG
+```
+
+### Constructor
+
+```python
+GraphRAG(
+    connection: FalkorDBConnection | ConnectionConfig,
+    llm: LLMInterface,
+    embedder: Embedder,
+    ontology: Ontology | None = None,
+    retrieval_strategy: RetrievalStrategy | None = None,
+    embedding_dimension: int = 256,
+    *,
+    enable_cypher: bool = False,
+    schema: Ontology | None = None,  # deprecated alias of ontology=
+)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `connection` | `FalkorDBConnection \| ConnectionConfig` | required | Database connection or config to create one |
+| `llm` | `LLMInterface` | required | LLM provider |
+| `embedder` | `Embedder` | required | Embedding provider |
+| `ontology` | `Ontology \| None` | `None` | Entity and relation types for extraction, and any `tables=` declared on it (empty = unconstrained) |
+| `retrieval_strategy` | `RetrievalStrategy \| None` | `None` | Default retrieval strategy (uses `MultiPathRetrieval` if None) |
+| `embedding_dimension` | `int` | `256` | Dimension of the vectors `embedder` produces |
+| `enable_cypher` | `bool` | `False` | Add text-to-Cypher retrieval, which answers counts and aggregates over declared columns. One extra LLM call per question. |
+| `schema` | `Ontology \| None` | `None` | Deprecated; use `ontology=` |
+
+**Public attributes:** `llm`, `embedder`, `schema`, `graph_store`, `vector_store`
+
+### ingest()
+
+```python
+async def ingest(
+    source: str | list[str] | None = None,
+    *,
+    text: str | None = None,
+    document_id: str | None = None,
+    record_loader: RecordLoaderStrategy | None = None,
+    strict_mapping: bool = False,
+    loader: LoaderStrategy | None = None,
+    chunker: ChunkingStrategy | None = None,
+    extractor: ExtractionStrategy | None = None,
+    resolver: ResolutionStrategy | None = None,
+    max_concurrency: int = 3,
+    ctx: Context | None = None,
+) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult
+```
+
+Build a knowledge graph from one or more sources. Auto-detects loader from file extension. When a list of sources is provided, documents are ingested in parallel with bounded concurrency.
+
+A `.csv`, `.tsv`, `.psv` or `.tab` is read as **records, not prose**: its mapping is looked up in the ontology by filename (see [Structured Ingestion](#structured-ingestion)), no model is called, and a `StructuredIngestionResult` is returned. A table may not appear in a list — each is written on its own — and `chunker`/`extractor`/`resolver` are rejected for one; identity across sources is judged by `finalize(resolver=...)`. Pass `loader=TextLoader()` to read a CSV as prose anyway.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `source` | `str \| list[str] \| None` | `None` | File path (or list of paths) for ingestion. Required unless `text=` is given |
+| `text` | `str \| None` | `None` | Raw text (single source only; skips loader) |
+| `document_id` | `str \| None` | `None` | Stable handle for `update()`/`delete_document()`. Defaults to the normalised path for a document and to the table's name for a table; `ingest("employees_2026Q3.csv", document_id="employees.csv")` re-syncs `employees.csv`. |
+| `record_loader` | `RecordLoaderStrategy \| None` | `None` | How a table is read (`CsvRecordLoader` if None). Tables only. |
+| `strict_mapping` | `bool` | `False` | Fail when a table has a column its mapping never reads. Tables only. |
+| `loader` | `LoaderStrategy \| None` | `None` | Custom loader (auto-detect if None) |
+| `chunker` | `ChunkingStrategy \| None` | `None` | Custom chunker (`SentenceTokenCapChunking()` if None). Rejected for a table. |
+| `extractor` | `ExtractionStrategy \| None` | `None` | Custom extractor (GraphExtraction if None). Rejected for a table. |
+| `resolver` | `ResolutionStrategy \| None` | `None` | Custom resolver (ExactMatchResolution if None; cross-document dedup is `finalize()`'s resolver and judge phases) |
+| `max_concurrency` | `int` | `3` | Max parallel ingestions (list input only) |
+| `ctx` | `Context \| None` | `None` | Execution context |
+
+**Returns:** `IngestionResult` for a single document, `StructuredIngestionResult` for a table, `list[IngestionResult | Exception]` (aligned by index) for multiple sources.
+
+### retrieve()
+
+```python
+async def retrieve(
+    question: str,
+    *,
+    strategy: RetrievalStrategy | None = None,
+    reranker: RerankingStrategy | None = None,
+    ctx: Context | None = None,
+) -> RetrieverResult
+```
+
+Retrieve context from the knowledge graph without generating an answer. Use this to inspect retrieved context or pass it to your own LLM.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `question` | `str` | required | The user's question |
+| `strategy` | `RetrievalStrategy \| None` | `None` | Override retrieval strategy |
+| `reranker` | `RerankingStrategy \| None` | `None` | Optional reranking after retrieval |
+| `ctx` | `Context \| None` | `None` | Execution context |
+
+**Returns:** `RetrieverResult`
+
+### completion()
+
+```python
+async def completion(
+    question: str,
+    *,
+    history: list[ChatMessage | dict[str, str]] | None = None,
+    strategy: RetrievalStrategy | None = None,
+    reranker: RerankingStrategy | None = None,
+    prompt_template: str | None = None,
+    return_context: bool = False,
+    ctx: Context | None = None,
+) -> RagResult
+```
+
+Full RAG pipeline: retrieve context and generate an answer. When `history` is provided, messages are passed natively to the LLM provider's multi-turn chat API.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `question` | `str` | required | The user's question |
+| `history` | `list[ChatMessage \| dict] \| None` | `None` | Conversation history (see below) |
+| `strategy` | `RetrievalStrategy \| None` | `None` | Override retrieval strategy |
+| `reranker` | `RerankingStrategy \| None` | `None` | Optional reranking after retrieval |
+| `prompt_template` | `str \| None` | `None` | Custom prompt for single-turn (must contain `{context}` and `{question}`). Ignored when `history` is provided. |
+| `return_context` | `bool` | `False` | Include retriever results in output |
+| `ctx` | `Context \| None` | `None` | Execution context |
+
+**Returns:** `RagResult`
+
+**Conversation history:**
+
+History accepts a list of `ChatMessage` objects or plain dicts with `role` and `content` keys. Supported roles: `"system"`, `"user"`, `"assistant"`. Invalid roles raise `ValueError`.
+
+```python
+from graphrag_sdk import ChatMessage
+
+# Using ChatMessage objects
+result = await rag.completion(
+    "What happened next?",
+    history=[
+        ChatMessage(role="user", content="Who is Alice?"),
+        ChatMessage(role="assistant", content="Alice is an engineer."),
+    ],
+)
+
+# Using plain dicts
+result = await rag.completion(
+    "Tell me more.",
+    history=[
+        {"role": "user", "content": "What is Acme?"},
+        {"role": "assistant", "content": "A tech company."},
+    ],
+)
+```
+
+When history is provided, `completion()` builds a native messages list: `[system_prompt, *history, user_question]` and calls `LLMInterface.ainvoke_messages()`. Without history, it uses the single-turn `ainvoke()` path.
+
+### query()
+
+```python
+async def query(cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]
+```
+
+Run a Cypher query against your own graph and return its rows, each a list of column values. The way to check what an ingest wrote or to aggregate over declared columns yourself. Runs exactly the Cypher you pass with no rewriting and no read-only enforcement — use `params` (`$name`) for values, never string formatting.
+
+```python
+rows = await rag.query(
+    "MATCH (p:Person)-[r:RELATES]->(o:Organization) "
+    "WHERE r.rel_type = 'WORKS_AT' AND o.name = $company RETURN avg(p.hr__age)",
+    {"company": "Acme Corp"},
+)
+```
+
+### drop_table()
+
+```python
+async def drop_table(source: str) -> Ontology
+```
+
+Take a table out of the graph: its Document and record chunks (and any entity only those rows mentioned), every property it signed on entities that survive, the identity it gave them (`entity_key`, `is_stub` — unless another table still keys the node), and its stored mapping, so the next `ingest()` of that filename is proposed a mapping afresh. The label stays in the ontology; `drop_entity()` removes a label nothing uses. `source` is matched on its basename, like `ingest()`.
+
+**Raises:** `ValueError` when no table of that name is in the ontology.
+
+### deduplicate_entities()
+
+```python
+async def deduplicate_entities(
+    *,
+    fuzzy: bool = False,
+    similarity_threshold: float = 0.95,
+    batch_size: int = 500,
+    resolver: ResolutionStrategy | None = None,
+    judge: bool = False,
+    judge_llm: LLMInterface | None = None,
+    judge_vote: bool = True,
+) -> int
+```
+
+Post-ingestion entity deduplication across all documents. The LLM-judged phase is **opt-in** here (`judge=False`); `finalize()` runs it by default (`judge=True`).
+
+- **Phase 1** (always): Canonical name match — case, accents, punctuation, inner dots (`A.I.` = `AI`), a leading English article, `Surname, Given` inversion, common abbreviations and one trailing legal form (`Ltd`, `Inc`) are normalised; word order is not. An acronym joins its unique same-label long form. Keeps the survivor ranked by declared key, real-over-placeholder, long form over acronym, degree, then description length; merges the duplicate's description (`" | "`-joined, members kept in `descriptions`), `aliases`, `source_chunk_ids` and any property the survivor lacks into it; remaps RELATES and MENTIONED_IN edges; deletes duplicates.
+- **Phase 2** (optional, `fuzzy=True`): Embedding-based -- embeds entity names, finds near-duplicates by cosine similarity.
+- **Phase 3** (optional, `resolver=`): A `ResolutionStrategy` judges the remaining pairs across documents and tables. `finalize()` passes one by default.
+- **Phase 4** (opt-in here with `judge=True`; on by default in `finalize()`): LLM-judged cross-document dedup -- name/description embeddings and name-in-description nominate candidate pairs, dense sets of ≤ 8 (more than half of a set's pairs must be nominated, so a chain A–B–C–D cannot form), the judge partitions each set; with `judge_vote=True` (default) a second shuffled pass must agree, and pairs only one pass grouped become `SAME_AS` edges (`agreement=1`); with `judge_vote=False` the single pass decides and nothing is linked for disagreement — only a pair that reached across two sets is linked rather than merged, stamped with the number of passes that saw it (`agreement=2` with the vote, `1` without). Agreed pairs merge by the same rules as every other phase (the survivor additionally gains every member's label, recorded in `merged_labels`); pairs a resolver remembered as `DISTINCT_FROM`, two keyed rows of a table, and a mention two such rows could own are never asked. Agreements are unioned within one set only, so two sets sharing a member never chain into one merge. Description vectors are computed each run and never written to the graph (any vectors an earlier build left on entity nodes are removed). If the `DISTINCT_FROM` pairs cannot be read, the phase is skipped with a warning and `last_judge_stats` holds `skipped_reason` instead of counts. `judge_llm` defaults to the GraphRAG LLM (gpt-4.1-class recommended); given without `judge=True` it is ignored, with a warning. Without a `resolver` and with `judge` off — the defaults of this method — no model is called. Stats in `_deduplicator.last_judge_stats`.
+
+Call once after all documents are ingested.
+
+**Returns:** Number of duplicate entities merged.
+
+### finalize()
+
+```python
+async def finalize(
+    *,
+    resolver: ResolutionStrategy | None = None,
+    resolve: bool = True,
+    judge: bool = True,
+    judge_llm: LLMInterface | None = None,
+    judge_vote: bool = True,
+) -> FinalizeResult
+```
+
+Run all post-ingestion steps after all documents and tables are ingested. Bundles:
+1. `deduplicate_entities(resolver=..., judge=..., judge_llm=..., judge_vote=...)` -- canonical-name dedup, then the resolver across sources, then the LLM-judged cross-document phase (which embeds and stores the names it reads)
+2. `backfill_entity_embeddings()` -- name embeddings on every entity still missing one, after dedup so a duplicate about to be removed is not embedded first; `entities_embedded` counts this step's vectors plus the judge's
+3. `embed_relationships()` -- fact text embeddings on RELATES edges
+4. `ensure_indices()` -- all indexes
+5. A consistency report over the whole graph
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `resolver` | `ResolutionStrategy \| None` | `None` | Judges whether two entities from different sources are one. Defaults to `LLMVerifiedResolution` over the instance's `llm` and `embedder`, asking the model about pairs from cosine 0.6 — the only place a table's "Priya Raman" and a note's "Ms. Raman" meet. Each pair is asked once; a NO is remembered as a `DISTINCT_FROM` edge. |
+| `resolve` | `bool` | `True` | `False` skips the resolver entirely. |
+| `judge` | `bool` | `True` | Run the LLM-judged cross-document phase after the resolver: similarity nominates candidate sets, the judge model partitions them (twice with `judge_vote`), only agreed pairs merge, disagreements become `SAME_AS` edges. `False` skips it but the resolver still runs over the GraphRAG LLM; `resolve=False, judge=False` calls no model at all. |
+| `judge_llm` | `LLMInterface \| None` | `None` | Judge model; defaults to the instance's `llm`. A gpt-4.1-class model is recommended (9 wrong merges vs 51 for gpt-4o-mini on the benchmark corpus). |
+| `judge_vote` | `bool` | `True` | Require the second shuffled pass to agree before merging. `False` halves judge LLM cost at ~3x the wrong-merge rate. |
+
+**Returns:** `FinalizeResult` — counts `entities_deduplicated`, `entities_linked` (judge `SAME_AS` edges), `judge_llm_calls`, `judge_stats`, `entities_embedded`, `relationships_embedded`, `null_stubs_removed`, `indexes`, and the report: `resolved_duplicates`, `rejected_duplicates`, `probable_duplicates` (spellings the canonical rule declined to merge, with the reason), `unmerged_name_collisions` (one name under two declared labels), `property_conflicts` (a property two tables both supply, with how many entities hold differing values; every value is kept, none resolved for you), `unresolved_references` (placeholders whose owning table has not arrived), `entities_without_a_name`, `proposed_mappings` (tables loaded on a proposed, not declared, mapping), `mapping_changed`, `stale_signed_properties`. Everything non-empty is also logged at WARNING.
+
+### Sync Wrappers
+
+```python
+def retrieve_sync(question: str, **kwargs) -> RetrieverResult
+def completion_sync(question: str, **kwargs) -> RagResult
+def ingest_sync(source: str | list[str], **kwargs) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult
+def finalize_sync(*, resolver=None, resolve=True, judge=True, judge_llm=None, judge_vote=True) -> FinalizeResult
+def query_sync(cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]
+def drop_table_sync(source: str) -> Ontology
+```
+
+Convenience methods that run the async versions in `asyncio.run()`.
+
+---
+
+## Connection
+
+```python
+from graphrag_sdk import ConnectionConfig, FalkorDBConnection
+```
+
+### ConnectionConfig
+
+```python
+@dataclass
+class ConnectionConfig:
+    host: str = "localhost"
+    port: int = 6379
+    username: str | None = None
+    password: str | None = None
+    graph_name: str = "knowledge_graph"
+    max_connections: int = 16
+    retry_count: int = 3
+    retry_delay: float = 1.0
+    query_timeout_ms: int = 10_000
+    pool_timeout: int = 30
+```
+
+### FalkorDBConnection
+
+```python
+FalkorDBConnection(config: ConnectionConfig | None = None)
+```
+
+| Method | Description |
+|--------|-------------|
+| `await conn.query(cypher, params=None, timeout=None)` | Execute a Cypher query |
+| `await conn.close()` | Close the connection pool |
+| `conn.graph` | Lazy property returning the AsyncGraph handle |
+
+---
+
+## Providers
+
+```python
+from graphrag_sdk import LLMInterface, Embedder, LLMBatchItem
+from graphrag_sdk import LiteLLM, LiteLLMEmbedder, OpenRouterLLM, OpenRouterEmbedder
+```
+
+### LLMInterface (ABC)
+
+```python
+LLMInterface(model_name: str, model_params: dict | None = None, max_concurrency: int = 12)
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `invoke` | `(prompt: str, **kwargs) -> LLMResponse` | Sync text generation (abstract) |
+| `ainvoke` | `(prompt: str, *, max_retries=3, **kwargs) -> LLMResponse` | Async with retry + backoff |
+| `ainvoke_messages` | `(messages: list[ChatMessage], *, max_retries=3, **kwargs) -> LLMResponse` | Multi-turn native messages (see below) |
+| `invoke_with_model` | `(prompt: str, response_model: Type[BaseModel], **kwargs) -> BaseModel` | Structured output |
+| `ainvoke_with_model` | `(prompt: str, response_model: Type[BaseModel], *, max_retries=3) -> BaseModel` | Async structured output |
+| `abatch_invoke` | `(prompts: list[str], *, max_concurrency=None, max_retries=3) -> list[LLMBatchItem]` | Concurrent batch |
+
+`ainvoke_messages()` is used by `completion()` when conversation history is provided. The default implementation concatenates messages into a single prompt string and calls `ainvoke()`, so custom providers work without changes. `LiteLLM` and `OpenRouterLLM` override this with native multi-turn implementations.
+
+### Embedder (ABC)
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `model_name` | `@property -> str` | Embedding model identifier (abstract) |
+| `embed_query` | `(text: str, **kwargs) -> list[float]` | Single text embedding (abstract) |
+| `aembed_query` | `(text: str, **kwargs) -> list[float]` | Async single (default: thread pool) |
+| `embed_documents` | `(texts: list[str], **kwargs) -> list[list[float]]` | Batch (default: sequential) |
+| `aembed_documents` | `(texts: list[str], **kwargs) -> list[list[float]]` | Async batch (default: thread pool) |
+
+### LLMBatchItem
+
+```python
+@dataclass
+class LLMBatchItem:
+    index: int
+    response: LLMResponse | None = None
+    error: Exception | None = None
+
+    @property
+    def ok(self) -> bool  # True if response is not None
+```
+
+### LiteLLM
+
+```python
+LiteLLM(model: str, *, api_key=None, api_base=None, api_version=None, temperature=0.0, max_tokens=None, **kwargs)
+```
+
+### LiteLLMEmbedder
+
+```python
+LiteLLMEmbedder(model: str, *, api_key=None, api_base=None, api_version=None, **kwargs)
+```
+
+### OpenRouterLLM
+
+```python
+OpenRouterLLM(model: str, *, api_key=None, temperature=0.0, max_tokens=None, extra_headers=None)
+```
+
+### OpenRouterEmbedder
+
+```python
+OpenRouterEmbedder(model: str, *, api_key=None, extra_headers=None)
+```
+
+---
+
+## Data Models
+
+All models extend `DataModel` (Pydantic `BaseModel` with `extra="allow"`).
+
+```python
+from graphrag_sdk import GraphNode, GraphRelationship, GraphData
+from graphrag_sdk import TextChunk, TextChunks
+from graphrag_sdk import DocumentInfo, DocumentOutput
+from graphrag_sdk import IngestionResult, RagResult
+from graphrag_sdk import RetrieverResult, RetrieverResultItem
+from graphrag_sdk import ResolutionResult, SearchType
+```
+
+### GraphNode
+
+```python
+class GraphNode(DataModel):
+    id: str                                              # Unique identifier
+    label: str                                           # Node label (Person, Place, etc.)
+    properties: dict[str, Any] = {}                      # Key-value properties
+    embedding_properties: dict[str, list[float]] | None = None
+```
+
+### GraphRelationship
+
+```python
+class GraphRelationship(DataModel):
+    start_node_id: str
+    end_node_id: str
+    type: str                                            # Edge type (RELATES for all extracted rels)
+    properties: dict[str, Any] = {}                      # Includes rel_type, fact, keywords, etc.
+    embedding_properties: dict[str, list[float]] | None = None
+```
+
+### GraphData
+
+```python
+class GraphData(DataModel):
+    nodes: list[GraphNode] = []
+    relationships: list[GraphRelationship] = []
+```
+
+### TextChunk
+
+```python
+class TextChunk(DataModel):
+    text: str
+    index: int
+    metadata: dict[str, Any] = {}
+    uid: str                                             # Auto-generated UUID
+```
+
+### TextChunks
+
+```python
+class TextChunks(DataModel):
+    chunks: list[TextChunk] = []
+```
+
+### DocumentInfo
+
+```python
+class DocumentInfo(DataModel):
+    path: str | None = None
+    uid: str                                             # Auto-generated UUID
+    metadata: dict[str, Any] = {}
+```
+
+### DocumentOutput
+
+```python
+class DocumentOutput(DataModel):
+    text: str
+    document_info: DocumentInfo = DocumentInfo()
+```
+
+### IngestionResult
+
+```python
+class IngestionResult(DataModel):
+    document_info: DocumentInfo = DocumentInfo()
+    nodes_created: int = 0
+    relationships_created: int = 0
+    chunks_indexed: int = 0
+    metadata: dict[str, Any] = {}
+```
+
+### RagResult
+
+```python
+class RagResult(DataModel):
+    answer: str
+    retriever_result: RetrieverResult | None = None      # Populated when return_context=True
+    metadata: dict[str, Any] = {}                        # Contains model, num_context_items, strategy
+```
+
+### RetrieverResult
+
+```python
+class RetrieverResult(DataModel):
+    items: list[RetrieverResultItem] = []
+    metadata: dict[str, Any] = {}
+```
+
+### RetrieverResultItem
+
+```python
+class RetrieverResultItem(DataModel):
+    content: str
+    metadata: dict[str, Any] = {}
+    score: float | None = None
+```
+
+### ResolutionResult
+
+```python
+class ResolutionResult(DataModel):
+    nodes: list[GraphNode] = []
+    relationships: list[GraphRelationship] = []
+    merged_count: int = 0
+```
+
+### ChatMessage
+
+```python
+from graphrag_sdk import ChatMessage
+
+class ChatMessage(DataModel):
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+    def to_dict(self) -> dict[str, str]  # {"role": ..., "content": ...}
+```
+
+Validated message type for multi-turn conversations. Used by `completion(history=...)` and `LLMInterface.ainvoke_messages()`. Invalid roles raise a validation error on construction.
+
+`LLMMessage` is a backward-compatible alias for `ChatMessage`.
+
+### LLMResponse
+
+```python
+class LLMResponse(DataModel):
+    content: str
+    tool_calls: list[dict[str, Any]] | None = None
+```
+
+### SearchType
+
+```python
+class SearchType(str, Enum):
+    VECTOR = "vector"
+    FULLTEXT = "fulltext"
+    HYBRID = "hybrid"
+```
+
+### Extraction Models
+
+```python
+class ExtractedEntity(DataModel):
+    name: str
+    type: str
+    description: str = ""
+    source_chunk_ids: list[str] = []
+
+class ExtractedRelation(DataModel):
+    source: str
+    target: str
+    type: str
+    keywords: str = ""
+    description: str = ""
+    weight: float = 1.0
+    source_chunk_ids: list[str] = []
+
+class EntityMention(DataModel):
+    chunk_id: str
+    entity_id: str
+
+class ExtractionOutput(DataModel):
+    entities: list[ExtractedEntity] = []
+    relations: list[ExtractedRelation] = []
+    mentions: list[EntityMention] = []
+```
+
+### compute_entity_id()
+
+```python
+def compute_entity_id(name: str, entity_type: str = "") -> str
+```
+
+Deterministic entity ID from normalized name and optional type. When `entity_type` is provided, appends a `__type` suffix to prevent cross-type collisions (e.g. `paris__person` vs `paris__location`). Without `entity_type`, returns just the normalized name for backwards compatibility.
+
+---
+
+## Schema
+
+```python
+from graphrag_sdk import GraphSchema, EntityType, RelationType
+```
+
+### EntityType
+
+```python
+class EntityType(DataModel):
+    label: str                            # e.g. "Person"
+    description: str | None = None        # Helps LLM understand what to extract
+    properties: list[PropertyType] = []   # Optional property definitions
+```
+
+### RelationType
+
+```python
+class RelationType(DataModel):
+    label: str                            # e.g. "WORKS_AT"
+    description: str | None = None
+    patterns: list[tuple[str, str]] = []  # Allowed (source_label, target_label) pairs
+```
+
+### PropertyType
+
+```python
+class PropertyType(DataModel):
+    name: str
+    type: str = "STRING"                  # STRING, INTEGER, FLOAT, BOOLEAN, DATE, LIST
+    description: str | None = None
+    required: bool = False
+```
+
+### GraphSchema
+
+```python
+class GraphSchema(DataModel):
+    entities: list[EntityType] = []
+    relations: list[RelationType] = []
+```
+
+---
+
+## Ingestion Strategies
+
+### LoaderStrategy (ABC)
+
+```python
+class LoaderStrategy(ABC):
+    @abstractmethod
+    async def load(self, source: str, ctx: Context) -> DocumentOutput: ...
+```
+
+**Built-in:** `TextLoader(encoding="utf-8")`, `PdfLoader()`
+
+### ChunkingStrategy (ABC)
+
+```python
+class ChunkingStrategy(ABC):
+    @abstractmethod
+    async def chunk(self, text: str, ctx: Context) -> TextChunks: ...
+```
+
+**Built-in:** `FixedSizeChunking(chunk_size=1000, chunk_overlap=100)`
+
+### ExtractionStrategy (ABC)
+
+```python
+class ExtractionStrategy(ABC):
+    @abstractmethod
+    async def extract(self, chunks: TextChunks, schema: GraphSchema, ctx: Context) -> GraphData: ...
+```
+
+**Built-in:**
+- `GraphExtraction(llm, *, entity_extractor=None, coref_resolver=None, entity_types=None, relation_types=None, max_concurrency=None)` -- `entity_types=None` selects `DEFAULT_ENTITY_TYPES`; `relation_types=None` selects `DEFAULT_RELATION_TYPES`, a 31-label UPPER_SNAKE_CASE vocabulary (`LOCATED_IN`, `PART_OF`, `EMPLOYED_AT`, `AUTHORED`, ...) the step-2 prompt asks the LLM to *prefer*; off-list labels are still kept. Pass `relation_types=[]` for open-vocabulary labels. Both are overridden by a declared `Ontology`, whose relations *are* enforced.
+
+**Entity Extractors** (step 1 backends for `GraphExtraction`):
+- `GLiNERExtractor(threshold=None, model_name=None, window_tokens=None, window_overlap=48, candidate_threshold=<25 % below threshold>)` -- default, local NER. `model_name=None` selects `urchade/gliner_medium-v2.1`; `threshold=None` selects the measured per-model value (0.75 for that model). Spans scoring between `candidate_threshold` and `threshold` are returned as `"Unknown"`; pass `candidate_threshold=None` to disable. Chunks longer than `window_tokens` (derived from the model's `max_len` when `None`) are processed as overlapping windows.
+- `LLMExtractor(llm, threshold=0.75)` -- LLM-based NER
+- Subclass `EntityExtractor` for custom backends
+
+### ResolutionStrategy (ABC)
+
+```python
+class ResolutionStrategy(ABC):
+    @abstractmethod
+    async def resolve(self, graph_data: GraphData, ctx: Context) -> ResolutionResult: ...
+```
+
+**Built-in:**
+- `ExactMatchResolution(llm=None, resolve_property="name", cross_label_merge=True)` — `ingest()`'s default is `ExactMatchResolution(llm=None, cross_label_merge=False)`
+- `LLMVerifiedResolution(llm=None, embedder=None, *, hard_threshold=0.95, soft_threshold=0.65, max_llm_pairs=500, max_llm_concurrency=None, force_summary_threshold=3, max_summary_tokens=500, ann_top_k=50, batch_verification=True, verification_token_budget=4000, verification_max_pairs_per_call=5, cross_label_merge=True, cross_label_vector_door=0.60, cross_label_rank_floor=0.55, cross_label_max_pairs=200, cross_label_min_descriptions=3, unified_stage=True, unified_threshold=0.65, label_family_gate=True, cross_label_vote=True)` — opt-in at `ingest()`; `finalize()`'s default cross-source resolver
+
+---
+
+## Ingestion Pipeline
+
+```python
+from graphrag_sdk import IngestionPipeline
+```
+
+```python
+IngestionPipeline(
+    loader: LoaderStrategy,
+    chunker: ChunkingStrategy,
+    extractor: ExtractionStrategy,
+    resolver: ResolutionStrategy,
+    graph_store: GraphStore,
+    vector_store: VectorStore,
+    schema: GraphSchema | None = None,
+    embedder: Embedder | None = None,
+)
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `run` | `(source, ctx=None, *, text=None, document_info=None) -> IngestionResult` | Execute the full 9-step pipeline |
+
+---
+
+## Structured Ingestion
+
+```python
+from graphrag_sdk import (
+    Ontology, TableMapping, Column, Link, MappingError,
+    CsvRecordLoader, RecordLoaderStrategy, RecordBatch, TextLoader,
+)
+```
+
+A table is declared on the ontology, next to the entity types, and then ingested through the ordinary `ingest()`. No model is involved in writing it: identity comes from a declared key, every property type is declared, and the same file always produces the same graph. A row and a prose mention of the same thing share one node from the first write. The full guide is [Structured Ingestion](/structured-ingestion); the runnable version is `examples/11_structured_ingestion.py`.
+
+```python
+ontology = Ontology(
+    entities=[Entity(label="Person"), Entity(label="Organization")],
+    tables=[
+        TableMapping(
+            source="employees.csv",
+            label="Person",
+            key="employee_id",
+            name="full_name",
+            properties={"age": Column("age", "INTEGER"), "title": "title"},
+            links=[Link("WORKS_AT", to="Organization", by="org_id")],
+        ),
+    ],
+)
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology, enable_cypher=True)
+
+result = await rag.ingest("data/employees.csv")     # StructuredIngestionResult
+await rag.ingest("data/quarterly_report.pdf")       # prose, as before
+report = await rag.finalize()                        # joins the two halves
+```
+
+### TableMapping
+
+```python
+@dataclass
+class TableMapping:
+    source: str                                  # file name; also the property signature
+    label: str                                   # the label each row becomes
+    key: str | None = None                       # column identifying the row; defaults to name
+    name: str | None = None                      # column holding the display name
+    properties: dict[str, Column | str] = field(default_factory=dict)  # property_name -> Column; a str means STRING
+    links: list[Link] = field(default_factory=list)                    # columns that point at other entities
+    standalone: bool = False                     # a new label that deliberately relates to nothing
+    description: str | None = None
+```
+
+| Field | Description |
+|-------|-------------|
+| `source` | Matched to the ingested file on its basename. Also the **signature**: every property this table writes is stored as `<signature>__<property>` (`employees__age`), so two tables describing one entity cannot overwrite each other, and an extracted property (always unsigned) cannot collide with a declared one. |
+| `label` | May be new. A new label must connect to something — a `Link`, an entity in `entities`, or `standalone=True` — or `Ontology` raises `ValueError`, because rows nothing can reach are almost always a typo. |
+| `key` | Derives the node id, so a corrected export updates in place. Rows with a blank key are skipped and reported; a repeated key is logged. Defaults to `name`. Declare a separate key when names can repeat, change, or are what other tables link by. |
+| `name` | What joins a row to a prose mention of the same thing. Two rows sharing a name fall back to their key and are reported, so an ambiguous mention joins neither. |
+| `properties` | Validated against the file's real header before anything is written. The signed columns reach the ontology as `Attribute(structured=True)` and are left out of the extraction prompt. |
+| `links` | See `Link`. |
+
+`MappingError` is raised for a declaration that does not fit — an unknown column, a cell that does not parse as its type, a label the sanitiser would rewrite — and the graph is left untouched.
+
+### Column
+
+```python
+@dataclass
+class Column:
+    name: str                     # the column in the source record
+    type: str = "STRING"          # one of COLUMN_TYPES
+    description: str | None = None
+```
+
+`COLUMN_TYPES`: `STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`. Types are declared, never sniffed. `INTEGER` and `FLOAT` accept `1,234.56` and `1.234,56`; `FLOAT` refuses `nan`/`inf`; `LIST` is parsed as a CSV row. A blank cell writes no property.
+
+### Link
+
+```python
+@dataclass
+class Link:
+    type: str                                    # relationship type, e.g. "WORKS_AT"
+    to: str                                      # label of the target
+    by: str                                      # column holding the target's key
+    name: str | None = None                      # column holding the target's display name, if denormalised
+    properties: dict[str, Column | str] = {}     # columns written onto the edge
+    description: str | None = None
+```
+
+Written as a `RELATES` edge with `rel_type=type`, like every data edge. The target is **keyed, never named**: a missing target is created as a placeholder (`is_stub: true`) that is renamed in place — edges intact — when the owning table arrives; an existing target, another table's row or an entity a document mentioned, only gains the key. A link can therefore never overwrite what the owning source wrote.
+
+### Record loaders
+
+```python
+class RecordLoaderStrategy(ABC):
+    @abstractmethod
+    async def load_records(self, source: str, ctx: Context) -> RecordBatch: ...
+
+@dataclass
+class RecordBatch:
+    open_records: Callable[[], Iterator[dict[str, Any]]]   # re-openable; the file is streamed twice
+    columns: list[str]
+    document_info: DocumentInfo
+    record_count: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+class CsvRecordLoader(RecordLoaderStrategy):
+    def __init__(self, *, delimiter: str | None = None, encoding: str = "utf-8-sig", document_id: str | None = None): ...
+```
+
+`CsvRecordLoader` is the default; `delimiter=None` sniffs comma, semicolon, tab or pipe from the first kilobyte, and the default encoding reads UTF-8 with or without the byte-order mark Excel writes. The file is read once before anything is written: a row with more fields than the header — an unquoted delimiter inside a cell — is refused with its row number rather than loaded shifted. Implement `RecordLoaderStrategy` for another format and pass it as `ingest(..., record_loader=...)`.
+
+### StructuredIngestionResult
+
+Returned by `ingest()` for a table (`graphrag_sdk.ingestion.structured_pipeline.StructuredIngestionResult`).
+
+| Field | Description |
+|-------|-------------|
+| `document_id` | The table's handle: its name, or the `document_id` you passed. |
+| `records`, `chunks` | Rows written. Each row is a `Chunk` (`kind: "record"`) carrying its cells beside the rendered text, under a `Document` named for the table. |
+| `entities`, `references`, `edges` | Nodes written, placeholders created for foreign keys, `RELATES` edges written. |
+| `rows_skipped`, `rows_in_source` | Rows dropped for a blank key, out of the rows read. |
+| `replaced_existing`, `no_op` | The source was already in the graph. `no_op` when the content hash — rows and mapping — was unchanged. |
+| `chunks_deleted`, `entities_deleted` | On a re-sync: rows gone from the export and entities nothing mentions any more. |
+| `entities_moved`, `identity_moved` | Nodes moved to the id their name now gives them — a renamed row, or a placeholder a row filled in — and the `old_id -> new_id` map. |
+| `references_ambiguous` | `(label, key)` pairs a foreign key named that more than one existing node answers to — two tables numbering one label from 1. The edge was left on a placeholder carrying the key rather than given to either. |
+
+### How a table is written
+
+- **Re-ingesting is a re-sync.** A table is a snapshot: a deleted row is removed, a blanked cell loses its column, a moved foreign key leaves its old target, and a node another source still mentions survives with the table's signed columns and identity retracted. The content hash covers the mapping, so re-declaring a type rewrites the source.
+- **A Document records how it was written**, so `update()` cannot re-read a table as prose or a document as records. `update()`, `delete_document()` and `drop_table()` all take the table's name.
+- **No mapping declared?** With a model, one is proposed from the measured columns, the first rows and the current ontology, held to the data (unique key, existing columns, known link targets), stored as `derived=True` and reported by `finalize().proposed_mappings`. Without a model the file is read as-is: the label from the filename, the leftmost unique-and-complete column as key, no name column. Declare a `TableMapping` to replace it, or `drop_table()` to refuse it.
+- **Ontology registration is additive.** Declared types reach the ontology so text-to-Cypher sees `age` as an `INTEGER`; an existing label is extended, not redeclared, and a type contradiction raises.
+
+---
+
+## Retrieval Strategies
+
+### RetrievalStrategy (ABC)
+
+Uses the Template Method pattern.
+
+```python
+class RetrievalStrategy(ABC):
+    def __init__(self, graph_store=None, vector_store=None): ...
+
+    async def search(self, query, ctx=None, **kwargs) -> RetrieverResult: ...
+
+    def set_ontology(self, ontology) -> None: ...
+
+    @abstractmethod
+    async def _execute(self, query, ctx, **kwargs) -> RawSearchResult: ...
+```
+
+`set_ontology()` is called by the facade whenever the working ontology changes — an evolution call, a table declaring typed columns — so a strategy that generates Cypher always sees the current schema. A no-op by default; `MultiPathRetrieval` overrides it.
+
+### LocalRetrieval
+
+```python
+LocalRetrieval(graph_store, vector_store, embedder, top_k=5, include_entities=True)
+```
+
+### MultiPathRetrieval
+
+```python
+MultiPathRetrieval(
+    graph_store, vector_store, embedder, llm,
+    *,
+    chunk_top_k=15,
+    max_entities=30,
+    max_relationships=20,
+    rel_top_k=15,
+    keyword_limit=10,
+)
+```
+
+---
+
+## Reranking Strategies
+
+### RerankingStrategy (ABC)
+
+```python
+class RerankingStrategy(ABC):
+    @abstractmethod
+    async def rerank(self, query, result: RetrieverResult, ctx: Context) -> RetrieverResult: ...
+```
+
+### CosineReranker
+
+```python
+CosineReranker(embedder: Embedder, top_k: int = 15)
+```
+
+---
+
+## Storage
+
+```python
+from graphrag_sdk import GraphStore, VectorStore
+```
+
+### GraphStore
+
+```python
+GraphStore(connection: FalkorDBConnection)
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `upsert_nodes` | `(nodes: list[GraphNode]) -> int` | Batched MERGE, returns count |
+| `upsert_relationships` | `(rels: list[GraphRelationship]) -> int` | Batched MERGE with label hints |
+| `get_connected_entities` | `(chunk_id, max_hops=1) -> list[dict]` | N-hop entity traversal |
+| `query_raw` | `(cypher, params=None) -> Any` | Raw Cypher execution |
+| `get_statistics` | `() -> dict` | Node/edge counts, types, density |
+| `delete_all` | `() -> None` | Delete all data |
+
+### VectorStore
+
+```python
+VectorStore(connection, embedder=None, index_name="chunk_embeddings", embedding_dimension=256, similarity_function="cosine")
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `create_vector_index` | `(label="Chunk", property="embedding") -> None` | Create vector index |
+| `create_entity_vector_index` | `() -> None` | Create entity vector index |
+| `create_fulltext_index` | `(label="Chunk", *properties) -> None` | Create fulltext index |
+| `ensure_indices` | `() -> None` | Create all standard indices |
+| `index_chunks` | `(chunks: TextChunks) -> int` | Embed and store chunk vectors |
+| `backfill_entity_embeddings` | `() -> int` | Embed all entities missing vectors |
+| `embed_relationships` | `() -> int` | Embed fact text on RELATES edges |
+| `search` | `(query_vector, top_k=5, label="Chunk") -> list[dict]` | Vector similarity search |
+| `search_entities` | `(query_vector, top_k=5) -> list[dict]` | Entity vector search |
+| `search_relationships` | `(query_vector, top_k=15) -> list[dict]` | RELATES edge vector search |
+| `fulltext_search` | `(query, top_k=5, label="Chunk") -> list[dict]` | Fulltext keyword search |
+
+---
+
+## Context
+
+```python
+from graphrag_sdk import Context
+```
+
+Execution context for logging and budget tracking.
+
+```python
+Context(tenant_id: str = "default", latency_budget_ms: float = 60000.0)
+```
+
+| Method/Property | Description |
+|----------------|-------------|
+| `ctx.log(message, log_level=logging.INFO)` | Log a message |
+| `ctx.budget_exceeded` | True if elapsed time > latency_budget_ms |
+
+---
+
+## Exceptions
+
+```python
+from graphrag_sdk import GraphRAGError
+```
+
+| Exception | When Raised |
+|-----------|------------|
+| `GraphRAGError` | Base exception for all SDK errors |
+| `LoaderError` | File loading failures |
+| `ChunkingError` | Text splitting failures |
+| `ExtractionError` | LLM extraction or JSON parsing failures |
+| `ResolutionError` | Entity deduplication failures |
+| `RetrieverError` | Retrieval execution failures |
+| `DatabaseError` | FalkorDB connection or query failures |
+| `IngestionError` | Pipeline orchestration failures |
+| `SchemaValidationError` | Schema constraint violations |

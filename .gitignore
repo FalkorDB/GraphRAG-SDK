@@ -56,6 +56,8 @@ debug_*.py
 
 # Virtual environments
 .venv/
+# No trailing slash: also ignore a .venv symlink, which `.venv/` does not match.
+graphrag_sdk/.venv
 .venv-*/
 venv/
 
@@ -64,3 +66,7 @@ dist/
 build/
 *.egg-info/
 *.egg
+
+# Docs tooling (npm deps for scripts/check_mdx.mjs)
+node_modules/
+package-lock.json

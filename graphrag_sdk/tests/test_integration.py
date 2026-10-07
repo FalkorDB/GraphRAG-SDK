@@ -6,6 +6,8 @@ import os
 
 import pytest
 
+from graphrag_sdk.core.providers import Embedder
+
 
 class TestTopLevelImports:
     """Verify all public API exports are importable."""
@@ -189,7 +191,7 @@ class TestSubmoduleImports:
 #
 #   - ``ExactMatchResolution`` — the default; mention IDs and node IDs
 #     align without remapping.
-#   - ``SemanticResolution(embedder=…)`` — fuzzy resolver. Tripwire for
+#   - ``LLMVerifiedResolution(embedder=…)`` — fuzzy resolver. Tripwire for
 #     the v1.1.0 mention-remap fix; without that fix, MENTIONED_IN
 #     edges silently fail to write for any merged entity, breaking
 #     orphan-cleanup correctness for fuzzy-resolver users.
@@ -199,7 +201,37 @@ class TestSubmoduleImports:
 
 
 def _resolver_param_ids():
-    return ["ExactMatch", "Semantic"]
+    return ["ExactMatch", "LLMVerified"]
+
+
+class OrthogonalNameEmbedder(Embedder):
+    """Same name → identical vector (cosine 1.0, merges); different name →
+    orthogonal vector (cosine 0.0, never merges).
+
+    The integration assertions below are all ``_entity_count(...) == 1``, so
+    they need both halves to be deterministic: a resolver that silently fused
+    two distinct entities and one that silently fused nothing would otherwise
+    be indistinguishable from a passing run.
+    """
+
+    DIMENSION = 64
+
+    def __init__(self) -> None:
+        self._basis: dict[str, int] = {}
+
+    @property
+    def model_name(self) -> str:
+        return "orthogonal-name-embedder"
+
+    def embed_query(self, text: str, **kwargs) -> list[float]:
+        key = text.strip().lower()
+        index = self._basis.setdefault(key, len(self._basis))
+        # Fixed width: hnswlib requires every vector in an index to agree on
+        # dimension, so this cannot grow with the basis.
+        assert index < self.DIMENSION, "more distinct names than basis vectors"
+        vector = [0.0] * self.DIMENSION
+        vector[index] = 1.0
+        return vector
 
 
 @pytest.fixture(params=_resolver_param_ids())
@@ -210,13 +242,20 @@ def resolver(request, embedder):
     from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
         ExactMatchResolution,
     )
-    from graphrag_sdk.ingestion.resolution_strategies.semantic_resolution import (
-        SemanticResolution,
+    from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
+        LLMVerifiedResolution,
     )
 
     if request.param == "ExactMatch":
         return ExactMatchResolution()
-    return SemanticResolution(embedder=embedder)
+    # No llm: the surrounding tests script their LLM for extraction, so a
+    # resolver that also calls it would consume those scripted responses.
+    # Without an llm only the >=hard_threshold tier can merge, so the
+    # embedder decides what this tripwire actually exercises — hence
+    # OrthogonalNameEmbedder rather than the hash-derived MockEmbedder,
+    # whose all-positive vectors put unrelated names at an arbitrary,
+    # PYTHONHASHSEED-dependent similarity that could merge Alice into Bob.
+    return LLMVerifiedResolution(embedder=OrthogonalNameEmbedder())
 
 
 async def _entity_count(rag, name: str) -> int:
@@ -995,4 +1034,306 @@ class TestIncrementalUpdateInvariants:
         assert len(scids_after_delete) == 1, (
             f"After deleting doc-B, RELATES.source_chunk_ids should contain "
             f"exactly one chunk (doc-A's) — got {scids_after_delete!r}."
+        )
+
+    async def test_dedup_remap_does_not_fork_survivor_into_ghost_node(
+        self, real_falkordb_rag_factory, embedder
+    ):
+        """The remap must not create a second node carrying the survivor's id.
+
+        Pre-fix, every ``_REMAP_QUERIES`` entry wrote the survivor inline —
+        ``MERGE (s:__Entity__ {id: $survivor_id})-[nr:RELATES]->(b)`` — with
+        ``s`` unbound. MERGE creates the *entire* pattern when it fails to
+        match, so the survivor forked into a second, type-label-less
+        ``__Entity__`` node that took the remapped edges, while the real
+        labelled survivor was left with none. Nothing raised, and there is no
+        uniqueness constraint on ``__Entity__.id`` to catch it.
+        """
+        from graphrag_sdk.storage.deduplicator import EntityDeduplicator
+
+        rag = real_falkordb_rag_factory(llm=None, resolver=None)
+        conn = rag._graph_store._conn
+
+        await conn.query(
+            "CREATE (:__Entity__:Person {id: 'alice-1', name: 'Alice', "
+            "description: 'longer description that wins survivorship'})",
+            {},
+        )
+        await conn.query(
+            "CREATE (:__Entity__:Person {id: 'alice-2', name: 'Alice', description: 'short'})",
+            {},
+        )
+        await conn.query(
+            "CREATE (:__Entity__:Organization {id: 'acme', name: 'Acme', description: ''})",
+            {},
+        )
+        await conn.query("CREATE (:Chunk {id: 'chunk-1', text: 'Alice at Acme'})", {})
+        # The duplicate holds both edge kinds, so all three remap queries run.
+        await conn.query(
+            "MATCH (d:__Entity__ {id: 'alice-2'}), (o:__Entity__ {id: 'acme'}) "
+            "CREATE (d)-[:RELATES {rel_type: 'WORKS_AT', source_chunk_ids: ['chunk-1']}]->(o)",
+            {},
+        )
+        await conn.query(
+            "MATCH (d:__Entity__ {id: 'alice-2'}), (c:Chunk {id: 'chunk-1'}) "
+            "CREATE (d)-[:MENTIONED_IN]->(c)",
+            {},
+        )
+
+        dedup = EntityDeduplicator(rag._graph_store, embedder)
+        merged = await dedup.deduplicate(fuzzy=False)
+        assert merged >= 1, "test setup: dedup should have merged alice-1/alice-2"
+
+        # Which Alice survives is the ranking's call (the better-connected one);
+        # the invariant is that exactly one node is left carrying either id.
+        result = await conn.query(
+            "MATCH (n:__Entity__) WHERE n.id IN ['alice-1', 'alice-2'] "
+            "RETURN count(n) AS n, "
+            "       sum(CASE WHEN 'Person' IN labels(n) THEN 1 ELSE 0 END) AS labelled",
+            {},
+        )
+        node_count, labelled = result.result_set[0][0], result.result_set[0][1]
+        assert node_count == 1, (
+            f"exactly one node may carry the survivor id — got {node_count}. "
+            "Pre-fix, the unbound MERGE forked the survivor into a "
+            "label-less ghost holding the remapped edges."
+        )
+        assert labelled == 1, "the surviving node must keep its type label"
+
+        # The real survivor — not a ghost — must hold the migrated edges.
+        result = await conn.query(
+            "MATCH (n:__Entity__) WHERE n.id IN ['alice-1', 'alice-2'] "
+            "RETURN size((n)-[:RELATES]->()) AS relates, "
+            "       size((n)-[:MENTIONED_IN]->()) AS mentions",
+            {},
+        )
+        assert result.result_set[0][0] == 1, (
+            "the labelled survivor must hold the remapped RELATES edge, "
+            "not a ghost node with the same id"
+        )
+        assert result.result_set[0][1] == 1, (
+            "the MENTIONED_IN remap has the same unbound-survivor shape "
+            "and must also land on the real survivor"
+        )
+
+    async def test_dedup_remap_keeps_distinct_facts_between_same_pair(
+        self, real_falkordb_rag_factory, embedder
+    ):
+        """Two different facts between the same pair must survive the merge.
+
+        Pre-fix, the RELATES ``MERGE`` matched *any* edge between the pair
+        regardless of ``rel_type``, so a survivor's ``FOUNDED`` and a
+        duplicate's ``WORKS_AT`` collapsed onto one edge. ``SET nr +=
+        properties(r)`` then overwrote ``rel_type`` and ``fact`` — destroying
+        one fact outright and leaving *its* ``source_chunk_ids`` attached to
+        the other, so a chunk vouches for a fact it never asserted.
+        """
+        from graphrag_sdk.storage.deduplicator import EntityDeduplicator
+
+        rag = real_falkordb_rag_factory(llm=None, resolver=None)
+        conn = rag._graph_store._conn
+
+        await conn.query(
+            "CREATE (:__Entity__:Person {id: 'alice-1', name: 'Alice', "
+            "description: 'longer description that wins survivorship'})",
+            {},
+        )
+        await conn.query(
+            "CREATE (:__Entity__:Person {id: 'alice-2', name: 'Alice', description: 'short'})",
+            {},
+        )
+        await conn.query(
+            "CREATE (:__Entity__:Organization {id: 'acme', name: 'Acme', description: ''})",
+            {},
+        )
+        await conn.query(
+            "MATCH (s:__Entity__ {id: 'alice-1'}), (o:__Entity__ {id: 'acme'}) "
+            "CREATE (s)-[:RELATES {rel_type: 'FOUNDED', fact: 'Alice founded Acme', "
+            "source_chunk_ids: ['chunk-founded']}]->(o)",
+            {},
+        )
+        await conn.query(
+            "MATCH (d:__Entity__ {id: 'alice-2'}), (o:__Entity__ {id: 'acme'}) "
+            "CREATE (d)-[:RELATES {rel_type: 'WORKS_AT', fact: 'Alice works at Acme', "
+            "source_chunk_ids: ['chunk-works']}]->(o)",
+            {},
+        )
+
+        dedup = EntityDeduplicator(rag._graph_store, embedder)
+        merged = await dedup.deduplicate(fuzzy=False)
+        assert merged >= 1, "test setup: dedup should have merged alice-1/alice-2"
+
+        result = await conn.query(
+            "MATCH (:__Entity__ {id: 'alice-1'})-[r:RELATES]->(:__Entity__ {id: 'acme'}) "
+            "RETURN r.rel_type AS rel_type, r.source_chunk_ids AS scids ORDER BY r.rel_type",
+            {},
+        )
+        by_type = {row[0]: set(row[1] or []) for row in result.result_set}
+        assert set(by_type) == {"FOUNDED", "WORKS_AT"}, (
+            f"both facts must survive the merge — got {sorted(by_type)}. "
+            "Pre-fix, the un-keyed MERGE collapsed them onto one edge and "
+            "SET nr += properties(r) overwrote rel_type, destroying a fact."
+        )
+        # Provenance must not cross-contaminate: each fact keeps its own chunk.
+        assert by_type["FOUNDED"] == {"chunk-founded"}, (
+            f"FOUNDED must keep only its own provenance — got {by_type['FOUNDED']}. "
+            "The collapse mis-attributed the duplicate's chunk to the survivor's fact."
+        )
+        assert by_type["WORKS_AT"] == {"chunk-works"}, (
+            f"WORKS_AT must keep only its own provenance — got {by_type['WORKS_AT']}."
+        )
+
+    async def test_dedup_remap_survives_relates_edge_without_rel_type(
+        self, real_falkordb_rag_factory, embedder
+    ):
+        """A RELATES edge carrying no ``rel_type`` must not abort the remap.
+
+        Keying the MERGE on ``rel_type`` introduces a failure mode the bug it
+        fixes did not have: FalkorDB rejects a MERGE keyed on a null property
+        ("Cannot merge node using null property value"), which fails the whole
+        remap, so ``_remap_entity_edges`` returns False and the duplicate is
+        left un-merged. ``coalesce(r.rel_type, '')`` keeps the key non-null.
+        Graphs written by older versions or by hand can hold such edges.
+        """
+        from graphrag_sdk.storage.deduplicator import EntityDeduplicator
+
+        rag = real_falkordb_rag_factory(llm=None, resolver=None)
+        conn = rag._graph_store._conn
+
+        await conn.query(
+            "CREATE (:__Entity__:Person {id: 'alice-1', name: 'Alice', "
+            "description: 'longer description that wins survivorship'})",
+            {},
+        )
+        await conn.query(
+            "CREATE (:__Entity__:Person {id: 'alice-2', name: 'Alice', description: 'short'})",
+            {},
+        )
+        await conn.query(
+            "CREATE (:__Entity__:Organization {id: 'acme', name: 'Acme', description: ''})",
+            {},
+        )
+        # No rel_type property at all — the shape that aborts a null-keyed MERGE.
+        await conn.query(
+            "MATCH (d:__Entity__ {id: 'alice-2'}), (o:__Entity__ {id: 'acme'}) "
+            "CREATE (d)-[:RELATES {fact: 'untyped fact'}]->(o)",
+            {},
+        )
+
+        dedup = EntityDeduplicator(rag._graph_store, embedder)
+        merged = await dedup.deduplicate(fuzzy=False)
+        assert merged >= 1, (
+            "an untyped RELATES edge must not abort the remap — the duplicate "
+            "was left un-merged, which is how a null-keyed MERGE fails."
+        )
+
+        result = await conn.query(
+            "MATCH (n:__Entity__) WHERE n.id IN ['alice-1', 'alice-2'] RETURN count(n) AS n", {}
+        )
+        assert result.result_set[0][0] == 1, "the duplicate should have been deleted"
+
+        result = await conn.query(
+            "MATCH (a:__Entity__)-[r:RELATES]->(:__Entity__ {id: 'acme'}) "
+            "WHERE a.id IN ['alice-1', 'alice-2'] "
+            "RETURN r.fact AS fact",
+            {},
+        )
+        assert result.result_set, "the untyped fact must be migrated, not dropped"
+        assert result.result_set[0][0] == "untyped fact"
+
+    async def test_upsert_keeps_distinct_facts_between_same_pair(self, real_falkordb_rag_factory):
+        """``upsert_relationships`` must not collapse two facts onto one edge.
+
+        Pre-fix the write path did ``MERGE (a)-[r:RELATES]->(b)``, unkeyed, so
+        one edge existed per entity pair. Writing ``Alice WORKS_AT Acme`` and
+        ``Alice FOUNDED Acme`` left a single edge: one fact destroyed, and its
+        ``source_chunk_ids`` folded into the survivor, so a chunk vouched for
+        a fact it never asserted. This is the same defect as the dedup remap's
+        un-keyed MERGE, on the path that runs for *every* ingest.
+        """
+        from graphrag_sdk.core.models import GraphNode, GraphRelationship
+
+        rag = real_falkordb_rag_factory(llm=None, resolver=None)
+        store = rag._graph_store
+
+        await store.upsert_nodes(
+            [
+                GraphNode(id="alice", label="Person", properties={"name": "Alice"}),
+                GraphNode(id="acme", label="Organization", properties={"name": "Acme"}),
+            ]
+        )
+        await store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={
+                        "rel_type": "WORKS_AT",
+                        "fact": "Alice works at Acme",
+                        "source_chunk_ids": ["chunk-works"],
+                    },
+                ),
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={
+                        "rel_type": "FOUNDED",
+                        "fact": "Alice founded Acme",
+                        "source_chunk_ids": ["chunk-founded"],
+                    },
+                ),
+            ]
+        )
+
+        result = await store._conn.query(
+            "MATCH (:__Entity__ {id: 'alice'})-[r:RELATES]->(:__Entity__ {id: 'acme'}) "
+            "RETURN r.rel_type AS rel_type, r.source_chunk_ids AS scids",
+            {},
+        )
+        by_type = {row[0]: set(row[1] or []) for row in result.result_set}
+        assert set(by_type) == {"FOUNDED", "WORKS_AT"}, (
+            f"both facts must be written as separate edges — got {sorted(by_type)}. "
+            "The RELATES MERGE must be keyed on rel_type, not just the pair."
+        )
+        assert by_type["WORKS_AT"] == {"chunk-works"}
+        assert by_type["FOUNDED"] == {"chunk-founded"}, (
+            "each fact keeps its own provenance — the collapse used to fold "
+            "both chunks onto the single surviving edge"
+        )
+
+    async def test_upsert_same_fact_twice_is_idempotent(self, real_falkordb_rag_factory):
+        """Keying the MERGE on rel_type must not turn re-ingest into duplication."""
+        from graphrag_sdk.core.models import GraphNode, GraphRelationship
+
+        rag = real_falkordb_rag_factory(llm=None, resolver=None)
+        store = rag._graph_store
+
+        await store.upsert_nodes(
+            [
+                GraphNode(id="alice", label="Person", properties={"name": "Alice"}),
+                GraphNode(id="acme", label="Organization", properties={"name": "Acme"}),
+            ]
+        )
+        rel = GraphRelationship(
+            start_node_id="alice",
+            end_node_id="acme",
+            type="RELATES",
+            properties={
+                "rel_type": "WORKS_AT",
+                "fact": "Alice works at Acme",
+                "source_chunk_ids": ["chunk-1"],
+            },
+        )
+        await store.upsert_relationships([rel])
+        await store.upsert_relationships([rel])
+
+        result = await store._conn.query(
+            "MATCH (:__Entity__ {id: 'alice'})-[r:RELATES]->(:__Entity__ {id: 'acme'}) "
+            "RETURN count(r) AS n",
+            {},
+        )
+        assert result.result_set[0][0] == 1, (
+            "writing the same fact twice must still MERGE onto one edge"
         )

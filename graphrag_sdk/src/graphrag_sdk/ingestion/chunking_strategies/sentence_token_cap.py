@@ -27,19 +27,43 @@ class SentenceTokenCapChunking(ChunkingStrategy):
     sentences for context continuity.
 
     Args:
-        max_tokens: Token cap per chunk. Default 512.
+        max_tokens: Token cap per chunk. Default 384.
+
+            384 was originally chosen to match GLiNER's ``config.max_len``,
+            because the entity extractor called ``predict_entities()`` on whole
+            chunks and silently dropped anything past that limit. **Both of
+            those facts have since changed**: the extractor now windows long
+            text, and the default model's limit is 2048. The NER argument for
+            384 no longer applies.
+
+            384 is still the default because it independently won on a second,
+            larger effect. The relationship extractor returns a roughly constant
+            number of relationships per call regardless of how much text it is
+            given — doubling the input grew the reply by 1.3% — so smaller
+            chunks mean more calls and more extracted facts. Measured on an
+            11-document benchmark with the current default model, chunk 384 vs
+            768: entity F1 0.574 vs 0.563, relation F1 0.237 vs 0.223. With the
+            previous model, quality fell monotonically as chunks grew
+            (0.233 / 0.221 / 0.204 at 384 / 768 / 1536).
+
+            Note this cuts against most RAG guidance, which suggests 1024+.
+            Those defaults come from pipelines that use an LLM for entity
+            extraction and do not share this per-call ceiling.
+
+            Raising the cap is therefore a way to trade recall for lower cost,
+            not a quality improvement.
         overlap_sentences: Sentences shared between consecutive chunks. Default 2.
         encoding_name: tiktoken encoding to use. Default ``cl100k_base`` (GPT-4/3.5).
 
     Example::
 
-        chunker = SentenceTokenCapChunking(max_tokens=512, overlap_sentences=2)
+        chunker = SentenceTokenCapChunking(max_tokens=384, overlap_sentences=2)
         result = await chunker.chunk(text, ctx)
     """
 
     def __init__(
         self,
-        max_tokens: int = 512,
+        max_tokens: int = 384,
         overlap_sentences: int = 2,
         encoding_name: str = "cl100k_base",
     ) -> None:
