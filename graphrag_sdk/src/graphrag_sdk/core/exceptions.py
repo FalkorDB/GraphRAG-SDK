@@ -31,6 +31,14 @@ class LLMTimeoutError(LLMError):
     pass
 
 
+class ToolCallingNotSupportedError(LLMError, NotImplementedError):
+    """Raised when an LLM provider has no native tool-calling support.
+
+    Check ``LLMInterface.supports_tool_calling`` before calling
+    ``ainvoke_with_tools`` to avoid it.
+    """
+
+
 class EmbeddingError(GraphRAGError):
     """Raised when an embedding provider call fails."""
 
