@@ -1,28 +1,46 @@
-# GraphRAG SDK — Agentic Retrieval: ReAct loop (Phase 3.1)
-# A budget-aware Thought→Action→Observation controller. Reuses existing
-# retrieval/storage/skill primitives as tools (see tools.py) and stops on
-# a Final Answer, a step cap, or an exhausted latency budget.
+# GraphRAG SDK — Agentic Retrieval: agent loop (Phase 3.1)
+# A budget-aware tool loop. With an LLM that supports native tool calling
+# the model requests tools as structured calls; otherwise the loop falls back
+# to text ReAct (Thought / Action / Observation) and parses the reply. Both
+# paths share the tool registry, the trace and the stop rules.
 
 from __future__ import annotations
 
 import json
 import logging
 import re
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, Literal
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import (
     AgentStep,
     AgentTrace,
+    ChatMessage,
     RawSearchResult,
     RetrieverResult,
     RetrieverResultItem,
+    ToolCall,
 )
-from graphrag_sdk.retrieval.agentic.prompts import render_system_prompt
-from graphrag_sdk.retrieval.agentic.tools import ToolRegistry, build_default_registry
+from graphrag_sdk.retrieval.agentic.prompts import (
+    FINAL_ANSWER_NUDGE,
+    REACT_FORMAT_REMINDER,
+    render_native_system_prompt,
+    render_system_prompt,
+)
+from graphrag_sdk.retrieval.agentic.tools import (
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
+    build_default_registry,
+    refused,
+)
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 
 logger = logging.getLogger(__name__)
+
+AgentMode = Literal["auto", "native", "react"]
 
 _ACTION_RE = re.compile(r"Action\s*:\s*(.+)", re.IGNORECASE)
 _ACTION_INPUT_RE = re.compile(r"Action\s*Input\s*:\s*(\{)", re.IGNORECASE)
@@ -75,21 +93,72 @@ def parse_react_step(text: str) -> dict[str, Any]:
     }
 
 
-class AgenticRetrieval(RetrievalStrategy):
-    """ReAct-style agentic retrieval strategy.
+def history_as_messages(
+    history: Sequence[ChatMessage | dict[str, Any]] | None,
+    *,
+    max_turns: int = 5,
+) -> list[ChatMessage]:
+    """Earlier conversation as text-only user/assistant messages.
 
-    Drives an LLM tool loop that searches, traverses, runs Cypher, and
-    invokes skills until it produces a Final Answer or hits the step /
-    latency budget. The collected observations become retrieval items and
-    the full reasoning trace is exposed in ``RetrieverResult.metadata``.
+    Keeps the last ``max_turns`` exchanges. System messages, tool turns and
+    empty messages are dropped: earlier turns' tool results are large and
+    are not re-sent, and the agent's own system prompt always applies.
+    """
+    if not history or max_turns < 1:
+        return []
+    kept: list[ChatMessage] = []
+    role: Any
+    content: Any
+    tool_calls: Any
+    for msg in history:
+        if isinstance(msg, ChatMessage):
+            role, content, tool_calls = msg.role, msg.content, msg.tool_calls
+        elif isinstance(msg, dict):
+            role, content, tool_calls = msg.get("role"), msg.get("content"), None
+        else:
+            continue
+        if role not in ("user", "assistant") or tool_calls:
+            continue
+        text = str(content or "").strip()
+        if text:
+            kept.append(ChatMessage(role=role, content=text))
+    return kept[-(max_turns * 2) :]
+
+
+class AgenticRetrieval(RetrievalStrategy):
+    """Agentic retrieval: an LLM tool loop over the knowledge graph.
+
+    The model searches, queries and walks the graph through tools until it
+    answers or reaches the step / latency budget. The collected tool results
+    become retrieval items and the full trace is exposed in
+    ``RetrieverResult.metadata``.
+
+    Two loop modes share the same tools and stop rules:
+
+    - ``native``: structured tool calls via ``llm.ainvoke_with_tools``.
+    - ``react``: text Thought / Action / Observation turns parsed from the
+      reply, for providers without native tool calling.
+
+    ``mode="auto"`` (the default) picks ``native`` when
+    ``llm.supports_tool_calling`` is true, otherwise ``react``.
 
     Args:
-        llm: LLM provider (uses ``ainvoke``).
+        llm: LLM provider.
         registry: Tool registry. If omitted, a default registry is built
             from ``strategy`` + ``graph_store``.
         strategy: Inner retrieval strategy backing the ``search`` tool.
-        graph_store: GraphStore backing ``cypher``/``traverse``/skills.
-        max_steps: Hard cap on Thought/Action iterations.
+        graph_store: GraphStore backing the graph tools and skills.
+        vector_store: Optional vector store (kept for API symmetry).
+        max_steps: Maximum model turns that may call tools. When it is
+            reached the model is asked once more to answer, without tools.
+        mode: ``"auto"``, ``"native"`` or ``"react"``.
+        system_prompt: Replace the built-in system prompt (native mode) or
+            prepend to it (react mode, which needs the format instructions).
+        history_turns: Earlier user/assistant exchanges kept from ``history``.
+
+    Pass ``history=[...]`` to :meth:`search` to give the agent the
+    conversation so far (``ChatMessage`` objects or ``{"role", "content"}``
+    dicts).
     """
 
     def __init__(
@@ -101,73 +170,55 @@ class AgenticRetrieval(RetrievalStrategy):
         graph_store: Any | None = None,
         vector_store: Any | None = None,
         max_steps: int = 6,
+        mode: AgentMode = "auto",
+        system_prompt: str | None = None,
+        history_turns: int = 5,
     ) -> None:
         super().__init__(graph_store=graph_store, vector_store=vector_store)
         if max_steps < 1:
             raise ValueError("max_steps must be >= 1")
+        if mode not in ("auto", "native", "react"):
+            raise ValueError("mode must be 'auto', 'native' or 'react'")
         self._llm = llm
         self._max_steps = max_steps
-        self._registry = registry or build_default_registry(
-            strategy=strategy,
-            graph_store=graph_store,
-            llm=llm,
+        self._mode = mode
+        self._system_prompt = system_prompt
+        self._history_turns = history_turns
+        self._registry = (
+            registry
+            if registry is not None
+            else build_default_registry(
+                strategy=strategy,
+                graph_store=graph_store,
+                llm=llm,
+            )
         )
+
+    @property
+    def registry(self) -> ToolRegistry:
+        return self._registry
+
+    def resolved_mode(self) -> Literal["native", "react"]:
+        """The loop mode a run will use with the configured LLM."""
+        if self._mode == "native":
+            return "native"
+        if self._mode == "react":
+            return "react"
+        return "native" if getattr(self._llm, "supports_tool_calling", False) else "react"
 
     async def _execute(self, query: str, ctx: Context, **kwargs: Any) -> RawSearchResult:
-        system = render_system_prompt(
-            tool_descriptions=self._registry.describe(),
-            tool_names=", ".join(self._registry.names()),
-        )
-        scratchpad = f"Question: {query}\n"
-        trace = AgentTrace()
+        if len(self._registry) == 0:
+            raise ValueError("AgenticRetrieval needs at least one tool")
+        history = history_as_messages(kwargs.get("history"), max_turns=self._history_turns)
+        tctx = ToolContext(ctx=ctx)
+        mode = self.resolved_mode()
+        trace = AgentTrace(mode=mode)
         observations: list[str] = []
-        stop_reason = "max_steps"
+        if mode == "native":
+            await self._run_native(query, history, ctx, tctx, trace, observations)
+        else:
+            await self._run_react(query, history, ctx, tctx, trace, observations)
 
-        for step_idx in range(self._max_steps):
-            if ctx.budget_exceeded:
-                stop_reason = "budget_exceeded"
-                ctx.log("Agentic loop stopped: latency budget exhausted")
-                break
-
-            prompt = f"{system}\n\n{scratchpad}\nThought:"
-            timeout = ctx.provider_timeout_seconds(f"agentic step {step_idx}")
-            response = await self._llm.ainvoke(prompt, timeout=timeout)
-            text = response.content or ""
-            parsed = parse_react_step(text)
-
-            if "final_answer" in parsed:
-                trace.steps.append(AgentStep(index=step_idx, thought=parsed.get("thought", "")))
-                trace.answer = parsed["final_answer"]
-                stop_reason = "final_answer"
-                ctx.log(f"Agentic loop produced final answer at step {step_idx}")
-                break
-
-            action = parsed.get("action", "")
-            action_input = parsed.get("action_input", {})
-            if not action:
-                stop_reason = "no_action"
-                ctx.log("Agentic loop stopped: model emitted no action")
-                break
-
-            observation = await self._registry.run(action, action_input, ctx)
-            observations.append(observation)
-            trace.steps.append(
-                AgentStep(
-                    index=step_idx,
-                    thought=parsed.get("thought", ""),
-                    action=action,
-                    action_input=action_input,
-                    observation=observation,
-                )
-            )
-            scratchpad += (
-                f"Thought: {parsed.get('thought', '')}\n"
-                f"Action: {action}\n"
-                f"Action Input: {json.dumps(action_input)}\n"
-                f"Observation: {observation}\n"
-            )
-
-        trace.stop_reason = stop_reason
         records: list[Any] = list(observations)
         if trace.answer:
             records.append(f"Answer: {trace.answer}")
@@ -175,11 +226,212 @@ class AgenticRetrieval(RetrievalStrategy):
             records=records,
             metadata={
                 "agent_trace": trace.model_dump(),
-                "stop_reason": stop_reason,
+                "agent_mode": mode,
+                "stop_reason": trace.stop_reason,
                 "num_steps": trace.num_steps,
                 "answer": trace.answer,
             },
         )
+
+    # ── Shared helpers ────────────────────────────────────────────
+
+    async def _call_tool(
+        self,
+        name: str,
+        args: dict[str, Any],
+        tctx: ToolContext,
+    ) -> ToolResult:
+        tctx.ctx.ensure_budget(f"agent tool {name}")
+        return await self._registry.run(name, args, tctx)
+
+    @staticmethod
+    def _record(
+        trace: AgentTrace,
+        observations: list[str],
+        *,
+        index: int,
+        thought: str,
+        action: str,
+        action_input: dict[str, Any],
+        result: ToolResult,
+        call_id: str = "",
+    ) -> None:
+        if result.status == "ok":
+            observations.append(result.content)
+        trace.steps.append(
+            AgentStep(
+                index=index,
+                thought=thought,
+                action=action,
+                action_input=action_input,
+                observation=result.content,
+                status=result.status,
+                call_id=call_id,
+            )
+        )
+
+    # ── Native tool calling ───────────────────────────────────────
+
+    async def _run_native(
+        self,
+        query: str,
+        history: list[ChatMessage],
+        ctx: Context,
+        tctx: ToolContext,
+        trace: AgentTrace,
+        observations: list[str],
+    ) -> None:
+        system = self._system_prompt or render_native_system_prompt()
+        messages: list[ChatMessage] = [
+            ChatMessage(role="system", content=system),
+            *history,
+            ChatMessage(role="user", content=query),
+        ]
+        specs = self._registry.specs()
+        step = 0
+        try:
+            for turn in range(self._max_steps):
+                if ctx.budget_exceeded:
+                    trace.stop_reason = "budget_exceeded"
+                    ctx.log("Agentic loop stopped: latency budget exhausted")
+                    return
+                response = await self._llm.ainvoke_with_tools(
+                    messages,
+                    specs,
+                    timeout=ctx.provider_timeout_seconds(f"agentic turn {turn}"),
+                )
+                calls = response.tool_calls or []
+                if not calls:
+                    trace.answer = (response.content or "").strip()
+                    trace.stop_reason = "final_answer"
+                    ctx.log(f"Agentic loop answered after {turn} tool turn(s)")
+                    return
+                messages.append(
+                    ChatMessage(role="assistant", content=response.content or "", tool_calls=calls)
+                )
+                thought = (response.content or "").strip()
+                for call in calls:
+                    result = await self._native_call(call, tctx)
+                    self._record(
+                        trace,
+                        observations,
+                        index=step,
+                        thought=thought,
+                        action=call.name,
+                        action_input=call.arguments,
+                        result=result,
+                        call_id=call.id,
+                    )
+                    step += 1
+                    messages.append(
+                        ChatMessage(role="tool", content=result.content, tool_call_id=call.id)
+                    )
+            # Step limit reached with tool calls still pending: one last turn
+            # without tools so the run ends with an answer, not silence.
+            trace.stop_reason = "max_steps"
+            if ctx.budget_exceeded:
+                return
+            messages.append(ChatMessage(role="user", content=FINAL_ANSWER_NUDGE))
+            response = await self._llm.ainvoke_with_tools(
+                messages,
+                specs,
+                tool_choice="none",
+                timeout=ctx.provider_timeout_seconds("agentic final answer"),
+            )
+            trace.answer = (response.content or "").strip()
+        except LatencyBudgetExceededError:
+            trace.stop_reason = "budget_exceeded"
+            ctx.log("Agentic loop stopped: latency budget exhausted mid-run")
+
+    async def _native_call(self, call: ToolCall, tctx: ToolContext) -> ToolResult:
+        if call.parse_error:
+            return refused(call.name, f"{call.parse_error}; send the arguments as a JSON object")
+        return await self._call_tool(call.name, call.arguments, tctx)
+
+    # ── Text ReAct fallback ───────────────────────────────────────
+
+    async def _run_react(
+        self,
+        query: str,
+        history: list[ChatMessage],
+        ctx: Context,
+        tctx: ToolContext,
+        trace: AgentTrace,
+        observations: list[str],
+    ) -> None:
+        system = render_system_prompt(
+            tool_descriptions=self._registry.describe(),
+            tool_names=", ".join(self._registry.names()),
+        )
+        if self._system_prompt:
+            system = f"{self._system_prompt}\n\n{system}"
+        conversation = "".join(f"{m.role.capitalize()}: {m.content}\n" for m in history)
+        scratchpad = (f"Conversation so far:\n{conversation}\n" if conversation else "") + (
+            f"Question: {query}\n"
+        )
+        reminded = False
+        step = 0
+        try:
+            for turn in range(self._max_steps):
+                if ctx.budget_exceeded:
+                    trace.stop_reason = "budget_exceeded"
+                    ctx.log("Agentic loop stopped: latency budget exhausted")
+                    return
+                prompt = f"{system}\n\n{scratchpad}\nThought:"
+                response = await self._llm.ainvoke(
+                    prompt, timeout=ctx.provider_timeout_seconds(f"agentic step {turn}")
+                )
+                parsed = parse_react_step(response.content or "")
+
+                if "final_answer" in parsed:
+                    trace.answer = parsed["final_answer"]
+                    trace.stop_reason = "final_answer"
+                    ctx.log(f"Agentic loop produced final answer at step {turn}")
+                    return
+
+                action = parsed.get("action", "")
+                if not action:
+                    if reminded:
+                        trace.stop_reason = "no_action"
+                        ctx.log("Agentic loop stopped: model emitted no action")
+                        return
+                    # One malformed reply gets a reminder of the format
+                    # before the run gives up.
+                    reminded = True
+                    scratchpad += f"{REACT_FORMAT_REMINDER}\n"
+                    continue
+
+                action_input = parsed.get("action_input", {})
+                result = await self._call_tool(action, action_input, tctx)
+                self._record(
+                    trace,
+                    observations,
+                    index=step,
+                    thought=parsed.get("thought", ""),
+                    action=action,
+                    action_input=action_input,
+                    result=result,
+                )
+                step += 1
+                scratchpad += (
+                    f"Thought: {parsed.get('thought', '')}\n"
+                    f"Action: {action}\n"
+                    f"Action Input: {json.dumps(action_input)}\n"
+                    f"Observation: {result.content}\n"
+                )
+            trace.stop_reason = "max_steps"
+            if ctx.budget_exceeded:
+                return
+            prompt = f"{system}\n\n{scratchpad}\n{FINAL_ANSWER_NUDGE}\nFinal Answer:"
+            response = await self._llm.ainvoke(
+                prompt, timeout=ctx.provider_timeout_seconds("agentic final answer")
+            )
+            text = response.content or ""
+            parsed = parse_react_step(text)
+            trace.answer = parsed.get("final_answer", text).strip()
+        except LatencyBudgetExceededError:
+            trace.stop_reason = "budget_exceeded"
+            ctx.log("Agentic loop stopped: latency budget exhausted mid-run")
 
     def _format(self, raw: RawSearchResult) -> RetrieverResult:
         items = [

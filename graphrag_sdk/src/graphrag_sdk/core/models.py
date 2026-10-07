@@ -1355,21 +1355,34 @@ class SearchType(str, Enum):
 
 
 class AgentStep(DataModel):
-    """A single Thought→Action→Observation step in the agentic loop."""
+    """One tool call in the agentic loop (Thought → Action → Observation).
+
+    ``status`` is ``"ok"`` when the tool ran, ``"refused"`` when it declined
+    the call (bad arguments, nothing to act on) and ``"error"`` when it
+    failed. ``call_id`` is the provider's tool-call id in native mode.
+    """
 
     index: int
     thought: str = ""
     action: str = ""
     action_input: dict[str, Any] = Field(default_factory=dict)
     observation: str = ""
+    status: str = "ok"
+    call_id: str = ""
 
 
 class AgentTrace(DataModel):
-    """Full record of an agentic retrieval run."""
+    """Full record of an agentic retrieval run.
+
+    ``mode`` is ``"native"`` (structured tool calls) or ``"react"`` (text
+    Thought/Action turns). ``stop_reason`` is one of ``"final_answer"``,
+    ``"max_steps"``, ``"budget_exceeded"`` or ``"no_action"``.
+    """
 
     steps: list[AgentStep] = Field(default_factory=list)
     stop_reason: str = ""
     answer: str = ""
+    mode: str = ""
 
     @property
     def num_steps(self) -> int:
