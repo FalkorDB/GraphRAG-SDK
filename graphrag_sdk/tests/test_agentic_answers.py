@@ -298,3 +298,10 @@ class TestFacade:
         assert agent._strategy is rag._retrieval_strategy
         assert "query_graph" in agent.registry.names()
         assert agent._ontology is rag._global_ontology
+
+    async def test_run_skill_checks_arguments(self, mock_conn):
+        rag = self.rag(mock_conn)
+        with pytest.raises(ValueError, match="unknown argument"):
+            await rag.run_skill("gap_analysis", colour="red")
+        result = await rag.run_skill("gap_analysis")
+        assert result.skill == "gap_analysis"

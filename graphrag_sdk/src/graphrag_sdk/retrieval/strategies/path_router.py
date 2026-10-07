@@ -65,9 +65,11 @@ class HeuristicPathRouter:
         q = (query or "").lower()
         plan: set[str] = {"relates", "chunks"}
         # Relationship / connection questions → traversal.
+        # Word stems, so "connected", "relationships", "linked", "neighbours"
+        # and "paths" count as well as the base words.
         rel_pattern = (
-            r"\b(connect|related|relationship|between|link|neighbor"
-            r"|path|how (?:are|is|do))\b"
+            r"\b(connect\w*|relat\w*|between|link\w*|neighbo\w*"
+            r"|paths?|how (?:are|is|do))\b"
         )
         if re.search(rel_pattern, q):
             plan |= {"expansion", "entity_cypher"}

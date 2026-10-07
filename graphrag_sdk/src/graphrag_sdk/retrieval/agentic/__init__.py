@@ -36,6 +36,7 @@ from graphrag_sdk.retrieval.agentic.tools import (
     ToolResult,
     is_read_only_cypher,
     make_skill_tool,
+    object_schema,
 )
 
 __all__ = [
@@ -53,6 +54,7 @@ __all__ = [
     "make_search_tool",
     "make_skill_tool",
     "make_traverse_tool",
+    "object_schema",
     "validate_read_query",
     "REFUSED_PREFIX",
     "history_as_messages",

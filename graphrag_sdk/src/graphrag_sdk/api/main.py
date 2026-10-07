@@ -5028,12 +5028,16 @@ class GraphRAG:
         Returns:
             ``SkillResult`` with the skill's structured findings.
         """
+        from graphrag_sdk.retrieval.agentic.tools import check_arguments
         from graphrag_sdk.skills import build_skill
 
         if ctx is None:
             ctx = Context()
         await self._ensure_ontology_initialized()
         skill_impl = build_skill(skill, self._graph_store, self.llm)
+        problems = check_arguments(skill_impl.parameters, params)
+        if problems:
+            raise ValueError(f"Invalid arguments for skill '{skill}': {'; '.join(problems)}")
         return await skill_impl.run(ctx, **params)
 
     def retrieve_sync(

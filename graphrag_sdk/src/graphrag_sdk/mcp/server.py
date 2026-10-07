@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from graphrag_sdk.mcp.tools import GraphRAGToolset
@@ -13,6 +15,42 @@ from graphrag_sdk.mcp.tools import GraphRAGToolset
 logger = logging.getLogger(__name__)
 
 Transport = Literal["stdio", "sse"]
+
+ASGIApp = Callable[
+    [dict[str, Any], Callable[..., Awaitable[Any]], Callable[..., Awaitable[Any]]], Awaitable[None]
+]
+
+
+def bearer_token_guard(app: ASGIApp, token: str) -> ASGIApp:
+    """Wrap an ASGI app so every HTTP request must send ``Authorization: Bearer <token>``.
+
+    Requests without the right token get ``401`` before reaching the MCP
+    endpoints. The comparison is constant-time.
+    """
+    if not token:
+        raise ValueError("token must be a non-empty string")
+    expected = f"Bearer {token}".encode()
+
+    async def guarded(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") == "http":
+            headers = dict(scope.get("headers") or [])
+            supplied = headers.get(b"authorization", b"")
+            if not hmac.compare_digest(supplied, expected):
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 401,
+                        "headers": [
+                            (b"content-type", b"text/plain"),
+                            (b"www-authenticate", b"Bearer"),
+                        ],
+                    }
+                )
+                await send({"type": "http.response.body", "body": b"Unauthorized"})
+                return
+        await app(scope, receive, send)
+
+    return guarded
 
 
 def _require_mcp() -> Any:
@@ -28,16 +66,23 @@ def _require_mcp() -> Any:
 
 
 class GraphRAGMCPServer:
-    """MCP server exposing a GraphRAG instance as 8 tools.
+    """MCP server exposing a GraphRAG instance as MCP tools.
 
     Args:
         rag: A constructed ``GraphRAG`` facade.
         name: Server name advertised to MCP clients.
+        auth_token: For the SSE transport: require
+            ``Authorization: Bearer <auth_token>`` on every request. Without
+            it the SSE server only accepts unauthenticated local use (binding
+            a non-loopback host without a token is refused).
     """
 
-    def __init__(self, rag: Any, *, name: str = "graphrag-sdk") -> None:
+    def __init__(
+        self, rag: Any, *, name: str = "graphrag-sdk", auth_token: str | None = None
+    ) -> None:
         self._rag = rag
         self._name = name
+        self._auth_token = auth_token or None
         self._toolset = GraphRAGToolset(rag)
 
     @property
@@ -102,6 +147,7 @@ class GraphRAGMCPServer:
         host: str = "127.0.0.1",
         port: int = 8080,
     ) -> None:  # pragma: no cover - network server
+        check_sse_binding(host, self._auth_token)
         import uvicorn  # type: ignore
         from mcp.server.sse import SseServerTransport  # type: ignore
         from starlette.applications import Starlette  # type: ignore
@@ -116,11 +162,30 @@ class GraphRAGMCPServer:
             ):
                 await server.run(read, write, init_options)
 
-        app = Starlette(
+        app: Any = Starlette(
             routes=[
                 Route("/sse", endpoint=handle_sse),
                 Mount("/messages/", app=sse.handle_post_message),
             ]
         )
+        if self._auth_token:
+            app = bearer_token_guard(app, self._auth_token)
         config = uvicorn.Config(app, host=host, port=port, log_level="info")
         await uvicorn.Server(config).serve()
+
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def check_sse_binding(host: str, auth_token: str | None) -> None:
+    """Refuse to serve SSE on a non-loopback host without an auth token.
+
+    The tools can ingest data and query the whole graph; exposing them on a
+    network interface without authentication would hand both to anyone who
+    can reach the port.
+    """
+    if host not in _LOOPBACK_HOSTS and not auth_token:
+        raise ValueError(
+            f"Refusing to serve MCP over SSE on {host!r} without an auth token. "
+            "Set GRAPHRAG_MCP_TOKEN (or pass --token / auth_token=), or bind 127.0.0.1."
+        )

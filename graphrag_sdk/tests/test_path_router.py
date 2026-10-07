@@ -1,4 +1,5 @@
 """Tests for retrieval/strategies/path_router.py and MultiPath path gating."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -87,9 +88,7 @@ class TestHeuristicPathRouter:
         assert {"relates", "chunks"} <= plan
 
     async def test_connection_query_adds_expansion(self):
-        plan = await HeuristicPathRouter().plan(
-            "how are Alice and Bob connected?"
-        )
+        plan = await HeuristicPathRouter().plan("how are Alice and Bob connected?")
         assert "expansion" in plan
 
     async def test_proper_noun_adds_entity_paths(self):
@@ -227,3 +226,22 @@ class TestMultiPathGating:
         await strategy.search("Who is Alice?")
 
         assert called == {"relates", "discover", "expand", "chunks"}
+
+
+class TestHeuristicRelationshipStems:
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "Who is connected to Alice?",
+            "List the relationships of Acme",
+            "What is linked to the incident?",
+            "Show the neighbours of Bob",
+            "Which paths lead to Berlin?",
+        ],
+    )
+    async def test_inflected_relationship_words_select_expansion(self, question):
+        plan = await HeuristicPathRouter().plan(question)
+        assert "expansion" in plan
+
+    async def test_unrelated_question_does_not(self):
+        assert "expansion" not in await HeuristicPathRouter().plan("what colour is the sky")

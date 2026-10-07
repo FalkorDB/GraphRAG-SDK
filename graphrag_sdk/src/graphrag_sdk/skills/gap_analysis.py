@@ -6,15 +6,17 @@ from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import SkillResult
-from graphrag_sdk.skills.base import Skill
+from graphrag_sdk.skills.base import Skill, skill_parameters
+
+MAX_ISOLATED = 500
 
 
 class GapAnalysisSkill(Skill):
     """Surface sparse or missing areas of the knowledge graph.
 
-    Flags entities with no relationships (isolated nodes) and entity
-    labels that are underrepresented, so users can target ingestion or
-    backfill where the graph is thin.
+    Flags entities with no relationships to other entities (isolated nodes)
+    and entity labels that are underrepresented, so users can target
+    ingestion or backfill where the graph is thin.
     """
 
     name = "gap_analysis"
@@ -22,13 +24,27 @@ class GapAnalysisSkill(Skill):
         "Identify gaps in the knowledge graph: isolated entities and "
         "sparsely populated entity types."
     )
+    parameters = skill_parameters(
+        {
+            "min_instances": {
+                "type": "integer",
+                "description": "Entity types with fewer instances are reported, default 2.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": f"Isolated entities listed, 1-{MAX_ISOLATED}, default 50.",
+            },
+        }
+    )
 
     async def run(self, ctx: Context | None = None, **params: Any) -> SkillResult:
-        min_instances = int(params.get("min_instances", 2))
-        limit = int(params.get("limit", 50))
+        min_instances = self._int_param(params, "min_instances", 2, 1, 10**6)
+        limit = self._int_param(params, "limit", 50, 1, MAX_ISOLATED)
 
         isolated_rows = await self._rows(
-            f"MATCH (e:__Entity__) WHERE NOT (e)-[]-(:__Entity__) RETURN e.id AS id LIMIT {limit}"
+            "MATCH (e:__Entity__) WHERE NOT (e)-[:RELATES]-(:__Entity__) "
+            "RETURN e.id AS id ORDER BY id LIMIT $limit",
+            {"limit": limit},
         )
         isolated = [r[0] for r in isolated_rows if r and r[0] is not None]
 

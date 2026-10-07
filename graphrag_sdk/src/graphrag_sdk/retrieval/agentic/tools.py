@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -318,14 +319,26 @@ def is_read_only_cypher(cypher: str) -> bool:
 # ── Skill tools ──────────────────────────────────────────────────
 
 
-def make_skill_tool(skill: Any) -> Tool:
-    """Wrap a :class:`Skill` instance as an agent tool."""
+def make_skill_tool(skill: Any, *, max_data_chars: int = 4000) -> Tool:
+    """Wrap a :class:`Skill` instance as an agent tool.
+
+    The tool's arguments are the skill's ``parameters`` schema. The model
+    reads the skill's summary (when it has an LLM) plus its structured
+    findings as JSON; a ``ValueError`` from the skill (a missing argument,
+    an entity name that matches nothing) comes back as a refusal.
+    """
 
     async def handler(tool_input: dict[str, Any], tctx: ToolContext) -> str:
-        result = await skill.run(tctx.ctx, **tool_input)
-        if result.summary:
-            return result.summary
-        return str(result.data)
+        try:
+            result = await skill.run(tctx.ctx, **tool_input)
+        except ValueError as exc:
+            raise ToolRefusal(str(exc)) from exc
+        data = json.dumps(result.data, default=str, ensure_ascii=False)
+        if len(data) > max_data_chars:
+            data = data[:max_data_chars] + "…[truncated]"
+        parts = [result.summary.strip()] if result.summary else []
+        parts.append(f"Findings ({skill.name}): {data}")
+        return "\n".join(parts)
 
     parameters = getattr(skill, "parameters", None) or object_schema(additional=True)
     return Tool(

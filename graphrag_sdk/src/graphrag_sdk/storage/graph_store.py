@@ -874,15 +874,21 @@ class GraphStore:
     ) -> list[tuple[str, float, str]]:
         """Return weighted neighbors of an entity for dynamic graph walks.
 
-        Each tuple is ``(neighbor_id, edge_weight, edge_label)``. Edge
-        weight falls back to ``1.0`` when the relationship has no stored
-        ``weight`` property.
+        Each tuple is ``(neighbor_id, edge_weight, edge_label)``, one per
+        neighbour (the strongest edge when several connect the pair),
+        strongest first and then by id, so the same graph always yields the
+        same neighbours. Edges in both directions count; SDK bookkeeping
+        edges (``SAME_AS``, ``DISTINCT_FROM``) do not. Edge weight falls back
+        to ``1.0`` when the relationship has no stored ``weight`` property.
         """
         query = (
             "MATCH (n:__Entity__ {id: $node_id})-[r]-(m:__Entity__) "
-            "RETURN m.id AS id, coalesce(r.rel_type, type(r)) AS label, "
-            "coalesce(r.weight, 1.0) AS weight "
-            f"LIMIT {int(limit)}"
+            "WHERE NOT type(r) IN ['SAME_AS', 'DISTINCT_FROM'] AND m.id IS NOT NULL "
+            "WITH m, r, coalesce(r.weight, 1.0) AS w "
+            "ORDER BY w DESC "
+            "WITH m, collect(coalesce(r.rel_type, type(r)))[0] AS label, max(w) AS weight "
+            "RETURN m.id AS id, label, weight "
+            f"ORDER BY weight DESC, id LIMIT {int(limit)}"
         )
         try:
             result = await self._conn.query(query, {"node_id": node_id})
