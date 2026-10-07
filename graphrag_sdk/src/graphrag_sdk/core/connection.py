@@ -163,6 +163,7 @@ class FalkorDBConnection:
         *,
         timeout: int | None = None,
         expected_errors: tuple[str, ...] = (),
+        read_only: bool = False,
     ) -> Any:
         """Execute a Cypher query with retry logic.
 
@@ -170,6 +171,9 @@ class FalkorDBConnection:
             cypher: The Cypher query string.
             params: Optional query parameters.
             timeout: Optional per-query timeout (ms) forwarded to FalkorDB.
+            read_only: Run the query with ``GRAPH.RO_QUERY``, which FalkorDB
+                rejects if the query would write. Use it for any query whose
+                text came from a model or a user.
             expected_errors: Lower-case substrings identifying non-transient
                 failures the caller anticipates and handles itself (e.g.
                 ``"already indexed"`` for an idempotent ``CREATE INDEX``). Such
@@ -202,7 +206,8 @@ class FalkorDBConnection:
         last_exc: Exception | None = None
         for attempt in range(self.config.retry_count):
             try:
-                result = await self._graph.query(cypher, params=params, timeout=effective_timeout)
+                run = self._graph.ro_query if read_only else self._graph.query
+                result = await run(cypher, params=params, timeout=effective_timeout)
                 await self._breaker.record_success()
                 return result
             except Exception as exc:

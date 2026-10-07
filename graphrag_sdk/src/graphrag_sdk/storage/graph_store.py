@@ -840,13 +840,29 @@ class GraphStore:
             logger.warning(f"Failed to get entities for chunk {chunk_id}: {exc}")
             return []
 
-    async def query_raw(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
+    async def query_raw(
+        self,
+        cypher: str,
+        params: dict[str, Any] | None = None,
+        *,
+        read_only: bool = False,
+        timeout: int | None = None,
+    ) -> Any:
         """Execute a raw Cypher query.
 
         Escape hatch for advanced use cases. Prefer specific methods
         for standard operations.
+
+        Args:
+            cypher: The Cypher query string.
+            params: Optional query parameters.
+            read_only: Run with ``GRAPH.RO_QUERY`` so the database rejects
+                any write (use for model- or user-written queries).
+            timeout: Optional per-query timeout in milliseconds.
         """
-        return await self._conn.query(cypher, params)
+        if not read_only and timeout is None:
+            return await self._conn.query(cypher, params)
+        return await self._conn.query(cypher, params, timeout=timeout, read_only=read_only)
 
     # ── Graph Walk (Phase 3.3) ────────────────────────────────────
 

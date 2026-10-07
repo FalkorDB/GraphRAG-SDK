@@ -27,7 +27,8 @@ from graphrag_sdk.retrieval.agentic import (
     is_read_only_cypher,
     parse_react_step,
 )
-from graphrag_sdk.retrieval.agentic.tools import check_arguments, make_search_tool
+from graphrag_sdk.retrieval.agentic.graph_tools import make_search_tool
+from graphrag_sdk.retrieval.agentic.tools import check_arguments
 
 # ── Fakes ────────────────────────────────────────────────────────
 
@@ -213,7 +214,7 @@ class TestToolRegistry:
         strategy = FakeStrategy()
         tool = make_search_tool(strategy)
         out = await tool.handler({"query": "alice", "chunk_top_k": 30}, ToolContext(ctx=ctx))
-        assert "Acme" in out
+        assert out.content == "[1] Alice works at Acme Corp."
         assert strategy.calls == [("alice", {"chunk_top_k": 30})]
 
     def test_default_registry_only_search_without_store(self):

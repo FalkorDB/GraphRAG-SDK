@@ -1,6 +1,6 @@
 # GraphRAG SDK — Agentic Retrieval: Tool registry (Phase 3.1)
-# Tools are thin async wrappers around existing retrieval + storage
-# primitives. Each tool publishes a JSON Schema for its arguments so the
+# Core tool types. The default graph tools live in graph_tools.py.
+# Each tool publishes a JSON Schema for its arguments so the
 # loop can offer it through native tool calling (ToolSpec) or describe it
 # in a ReAct prompt, and every call returns a ToolResult whose status says
 # whether it ran, was refused, or failed.
@@ -50,16 +50,81 @@ class ToolRefusal(Exception):
 
 
 @dataclass
+class Evidence:
+    """One numbered piece of evidence a tool returned during a run.
+
+    ``n`` is the number the model cites as ``[n]``. Numbers run across all
+    tools of one run, so a citation is unambiguous whichever tool produced it.
+    """
+
+    n: int
+    tool: str
+    kind: str
+    content: str
+    source: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "n": self.n,
+            "tool": self.tool,
+            "kind": self.kind,
+            "content": self.content,
+            "source": self.source,
+            **({"metadata": self.metadata} if self.metadata else {}),
+        }
+
+
+class EvidenceLedger:
+    """The run's numbered evidence, shared by every tool call."""
+
+    def __init__(self) -> None:
+        self._items: list[Evidence] = []
+
+    def add(
+        self,
+        *,
+        tool: str,
+        kind: str,
+        content: str,
+        source: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> Evidence:
+        ev = Evidence(
+            n=len(self._items) + 1,
+            tool=tool,
+            kind=kind,
+            content=content,
+            source=source,
+            metadata=dict(metadata or {}),
+        )
+        self._items.append(ev)
+        return ev
+
+    def get(self, n: int) -> Evidence | None:
+        return self._items[n - 1] if 1 <= n <= len(self._items) else None
+
+    @property
+    def items(self) -> list[Evidence]:
+        return list(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+
+@dataclass
 class ToolContext:
     """Per-run state handed to every tool call.
 
     Attributes:
         ctx: The execution context of the retrieval run (budgets, logging).
+        evidence: The run's numbered evidence; tools add what the model may cite.
         state: Scratch space shared by the run's tool calls (e.g. a schema
-            cache), discarded when the run ends.
+            cache, the Cypher queries tried), discarded when the run ends.
     """
 
     ctx: Context
+    evidence: EvidenceLedger = field(default_factory=EvidenceLedger)
     state: dict[str, Any] = field(default_factory=dict)
 
 
@@ -80,7 +145,7 @@ class ToolResult:
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable["str | ToolResult"]]
 
 
-def _object_schema(
+def object_schema(
     properties: dict[str, Any] | None = None,
     required: list[str] | None = None,
     *,
@@ -148,7 +213,7 @@ class Tool:
     name: str
     description: str
     handler: ToolHandler
-    parameters: dict[str, Any] = field(default_factory=lambda: _object_schema(additional=True))
+    parameters: dict[str, Any] = field(default_factory=lambda: object_schema(additional=True))
 
     def spec(self) -> ToolSpec:
         """The tool as a :class:`ToolSpec` for native tool calling."""
@@ -244,171 +309,7 @@ def is_read_only_cypher(cypher: str) -> bool:
     return _WRITE_KEYWORD_RE.search(scannable) is None
 
 
-# ── Default tool builders ────────────────────────────────────────
-
-_SEARCH_OVERRIDES = (
-    "chunk_top_k",
-    "max_entities",
-    "max_relationships",
-    "rel_top_k",
-    "max_cypher_out",
-    "max_entities_out",
-    "max_relationships_out",
-    "max_facts_out",
-    "max_passages_out",
-)
-
-
-def make_search_tool(strategy: Any, *, max_chars: int | None = None) -> Tool:
-    """Vector/multi-path search over the graph, returning context snippets.
-
-    The underlying strategy already bounds its own output (e.g. MultiPath caps
-    passages via ``chunk_top_k`` plus entity/relationship limits), so by default
-    no character truncation is applied and the agent sees the full result.
-    Pass ``max_chars`` only to force an additional hard cap.
-    """
-
-    async def handler(tool_input: dict[str, Any], tctx: ToolContext) -> str:
-        query = str(tool_input["query"]).strip()
-        overrides = {k: tool_input[k] for k in _SEARCH_OVERRIDES if k in tool_input}
-        result = await strategy.search(query, tctx.ctx, **overrides)
-        snippets = [item.content for item in result.items]
-        joined = "\n---\n".join(snippets) if snippets else "No results."
-        return joined if max_chars is None else joined[:max_chars]
-
-    properties: dict[str, Any] = {
-        "query": {
-            "type": "string",
-            "description": "Self-contained search query with concrete names, not pronouns.",
-        }
-    }
-    for key in _SEARCH_OVERRIDES:
-        properties[key] = {"type": "integer", "description": "Optional retrieval limit."}
-    return Tool(
-        name="search",
-        description=(
-            "Semantic search of the knowledge graph: returns the most relevant entities, "
-            "relationships, facts and source passages for a query."
-        ),
-        handler=handler,
-        parameters=_object_schema(properties, ["query"]),
-    )
-
-
-def _format_cypher_value(value: Any) -> Any:
-    """Render a Cypher result value readably for the LLM.
-
-    FalkorDB returns Node/Edge objects whose ``str()`` is an opaque
-    ``<... object at 0x...>``. Surface their properties instead so the
-    agent can actually read entity names, types, and facts.
-    """
-    props = getattr(value, "properties", None)
-    if isinstance(props, dict):
-        labels = getattr(value, "labels", None) or getattr(value, "relation", None)
-        readable = {k: v for k, v in props.items() if k != "embedding"}
-        if labels:
-            return {"labels": labels, **readable}
-        return readable
-    if isinstance(value, list | tuple):
-        return [_format_cypher_value(v) for v in value]
-    return value
-
-
-def make_cypher_tool(graph_store: Any, *, max_rows: int = 25) -> Tool:
-    """Run a read-only Cypher query against the graph."""
-
-    async def handler(tool_input: dict[str, Any], tctx: ToolContext) -> str:
-        cypher = str(tool_input["cypher"]).strip()
-        if not is_read_only_cypher(cypher):
-            raise ToolRefusal("only read-only Cypher (MATCH ... RETURN ...) is permitted")
-        try:
-            rows_cap = int(tool_input.get("max_rows", max_rows))
-        except (TypeError, ValueError):
-            rows_cap = max_rows
-        if rows_cap < 1:
-            rows_cap = max_rows
-        result = await graph_store.query_raw(cypher)
-        rows = list(getattr(result, "result_set", []) or [])[:rows_cap]
-        if not rows:
-            return "No rows."
-        return "\n".join(str(_format_cypher_value(r)) for r in rows)
-
-    return Tool(
-        name="cypher",
-        description="Run a read-only Cypher query (MATCH ... RETURN ...) against the graph.",
-        handler=handler,
-        parameters=_object_schema(
-            {
-                "cypher": {"type": "string", "description": "A read-only Cypher query."},
-                "max_rows": {"type": "integer", "description": "Rows to return."},
-            },
-            ["cypher"],
-        ),
-    )
-
-
-def make_traverse_tool(
-    graph_store: Any,
-    *,
-    beam_width: int = 5,
-    max_depth: int = 3,
-) -> Tool:
-    """Weighted graph walk from a start entity (optionally toward a goal)."""
-
-    async def handler(tool_input: dict[str, Any], tctx: ToolContext) -> str:
-        from graphrag_sdk.retrieval.graph_walk import DynamicGraphWalk
-
-        start = str(tool_input["start"]).strip()
-        goal = tool_input.get("goal")
-
-        def _pos_int(key: str, default: int) -> int:
-            try:
-                val = int(tool_input.get(key, default))
-            except (TypeError, ValueError):
-                return default
-            return val if val > 0 else default
-
-        bw = _pos_int("beam_width", beam_width)
-        depth = _pos_int("max_depth", max_depth)
-
-        try:
-            weights = await graph_store.pagerank()
-        except Exception:
-            weights = {}
-
-        async def neighbor_fn(node_id: str) -> list[tuple[str, float, str]]:
-            return await graph_store.weighted_neighbors(node_id)
-
-        walk = DynamicGraphWalk(
-            neighbor_fn,
-            node_weights=weights,
-            beam_width=bw,
-            max_depth=depth,
-        )
-        if goal:
-            path = await walk.bidirectional_search(start, str(goal), ctx=tctx.ctx)
-            if path is None:
-                return f"No path found between '{start}' and '{goal}'."
-            return " -> ".join(path.nodes)
-        paths = await walk.beam_search(start, ctx=tctx.ctx)
-        if not paths:
-            return f"No neighbors found for '{start}'."
-        return "\n".join(f"{' -> '.join(p.nodes)} (score={p.score:.3f})" for p in paths)
-
-    return Tool(
-        name="traverse",
-        description="Walk the graph from a start entity id, optionally toward a goal entity id.",
-        handler=handler,
-        parameters=_object_schema(
-            {
-                "start": {"type": "string", "description": "Start entity id."},
-                "goal": {"type": "string", "description": "Optional goal entity id."},
-                "beam_width": {"type": "integer"},
-                "max_depth": {"type": "integer"},
-            },
-            ["start"],
-        ),
-    )
+# ── Skill tools ──────────────────────────────────────────────────
 
 
 def make_skill_tool(skill: Any) -> Tool:
@@ -420,32 +321,10 @@ def make_skill_tool(skill: Any) -> Tool:
             return result.summary
         return str(result.data)
 
-    parameters = getattr(skill, "parameters", None) or _object_schema(additional=True)
+    parameters = getattr(skill, "parameters", None) or object_schema(additional=True)
     return Tool(
         name=skill.name,
         description=skill.description,
         handler=handler,
         parameters=parameters,
     )
-
-
-def build_default_registry(
-    *,
-    strategy: Any | None = None,
-    graph_store: Any | None = None,
-    llm: Any | None = None,
-    include_skills: bool = True,
-) -> ToolRegistry:
-    """Assemble the standard agent toolset from available primitives."""
-    registry = ToolRegistry()
-    if strategy is not None:
-        registry.register(make_search_tool(strategy))
-    if graph_store is not None:
-        registry.register(make_cypher_tool(graph_store))
-        registry.register(make_traverse_tool(graph_store))
-        if include_skills:
-            from graphrag_sdk.skills import SKILL_REGISTRY
-
-            for skill_cls in SKILL_REGISTRY.values():
-                registry.register(make_skill_tool(skill_cls(graph_store, llm)))
-    return registry

@@ -18,11 +18,13 @@ from graphrag_sdk.core.models import (
     AgentStep,
     AgentTrace,
     ChatMessage,
+    Ontology,
     RawSearchResult,
     RetrieverResult,
     RetrieverResultItem,
     ToolCall,
 )
+from graphrag_sdk.retrieval.agentic.graph_tools import build_default_registry
 from graphrag_sdk.retrieval.agentic.prompts import (
     FINAL_ANSWER_NUDGE,
     REACT_FORMAT_REMINDER,
@@ -33,7 +35,6 @@ from graphrag_sdk.retrieval.agentic.tools import (
     ToolContext,
     ToolRegistry,
     ToolResult,
-    build_default_registry,
     refused,
 )
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
@@ -155,6 +156,8 @@ class AgenticRetrieval(RetrievalStrategy):
         system_prompt: Replace the built-in system prompt (native mode) or
             prepend to it (react mode, which needs the format instructions).
         history_turns: Earlier user/assistant exchanges kept from ``history``.
+        ontology: Ontology the ``query_graph`` tool writes Cypher against.
+            The facade keeps it current through :meth:`set_ontology`.
 
     Pass ``history=[...]`` to :meth:`search` to give the agent the
     conversation so far (``ChatMessage`` objects or ``{"role", "content"}``
@@ -173,6 +176,7 @@ class AgenticRetrieval(RetrievalStrategy):
         mode: AgentMode = "auto",
         system_prompt: str | None = None,
         history_turns: int = 5,
+        ontology: Ontology | None = None,
     ) -> None:
         super().__init__(graph_store=graph_store, vector_store=vector_store)
         if max_steps < 1:
@@ -184,6 +188,8 @@ class AgenticRetrieval(RetrievalStrategy):
         self._mode = mode
         self._system_prompt = system_prompt
         self._history_turns = history_turns
+        self._ontology = ontology
+        self._strategy = strategy
         self._registry = (
             registry
             if registry is not None
@@ -191,8 +197,16 @@ class AgenticRetrieval(RetrievalStrategy):
                 strategy=strategy,
                 graph_store=graph_store,
                 llm=llm,
+                ontology_getter=lambda: self._ontology,
             )
         )
+
+    def set_ontology(self, ontology: Any) -> None:
+        """Adopt the current ontology (for ``query_graph``) and pass it on."""
+        self._ontology = ontology
+        inner = getattr(self._strategy, "set_ontology", None)
+        if callable(inner):
+            inner(ontology)
 
     @property
     def registry(self) -> ToolRegistry:
@@ -230,6 +244,8 @@ class AgenticRetrieval(RetrievalStrategy):
                 "stop_reason": trace.stop_reason,
                 "num_steps": trace.num_steps,
                 "answer": trace.answer,
+                "evidence": [ev.to_dict() for ev in tctx.evidence.items],
+                "generated_cypher": list(tctx.state.get("generated_cypher", [])),
             },
         )
 
