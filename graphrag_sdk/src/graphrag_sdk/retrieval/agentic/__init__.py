@@ -19,6 +19,7 @@ from graphrag_sdk.retrieval.agentic.graph_tools import (
     make_search_tool,
     make_traverse_tool,
 )
+from graphrag_sdk.retrieval.agentic.limits import AgentLimits
 from graphrag_sdk.retrieval.agentic.loop import (
     AgenticRetrieval,
     history_as_messages,
@@ -38,6 +39,7 @@ from graphrag_sdk.retrieval.agentic.tools import (
 )
 
 __all__ = [
+    "AgentLimits",
     "AgenticRetrieval",
     "DEFAULT_UNGROUNDED_ANSWER",
     "GroundedAnswer",

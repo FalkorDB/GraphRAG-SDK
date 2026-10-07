@@ -23,6 +23,7 @@ from graphrag_sdk.retrieval.agentic.cypher_guard import (
     mask_internal_labels,
     validate_read_query,
 )
+from graphrag_sdk.retrieval.agentic.limits import AgentLimits
 from graphrag_sdk.retrieval.agentic.tools import (
     Tool,
     ToolContext,
@@ -166,12 +167,20 @@ def split_search_items(items: list[RetrieverResultItem]) -> list[tuple[str, str,
     return entries
 
 
-def make_search_tool(strategy: Any, *, max_items: int = 40) -> Tool:
-    """Semantic search; each returned statement or passage is numbered."""
+def make_search_tool(strategy: Any, *, max_items: int = 40, max_limit: int = 50) -> Tool:
+    """Semantic search; each returned statement or passage is numbered.
+
+    Retrieval-limit arguments the model passes are clamped to ``max_limit``
+    (output caps ``max_*_out`` may be 0, which omits that section).
+    """
 
     async def handler(tool_input: dict[str, Any], tctx: ToolContext) -> ToolResult:
         query = str(tool_input["query"]).strip()
-        overrides = {k: tool_input[k] for k in SEARCH_OVERRIDES if k in tool_input}
+        overrides = {
+            k: clamp_int(tool_input[k], max_limit, 0 if k.endswith("_out") else 1, max_limit)
+            for k in SEARCH_OVERRIDES
+            if k in tool_input
+        }
         result = await strategy.search(query, tctx.ctx, **overrides)
         entries = split_search_items(list(result.items))[:max_items]
         if not entries:
@@ -192,7 +201,10 @@ def make_search_tool(strategy: Any, *, max_items: int = 40) -> Tool:
         }
     }
     for key in SEARCH_OVERRIDES:
-        properties[key] = {"type": "integer", "description": "Optional retrieval limit."}
+        properties[key] = {
+            "type": "integer",
+            "description": f"Optional retrieval limit (at most {max_limit}).",
+        }
     return Tool(
         name="search",
         description=(
@@ -688,22 +700,43 @@ def build_default_registry(
     llm: Any | None = None,
     include_skills: bool = True,
     ontology_getter: OntologyGetter | None = None,
+    limits: AgentLimits | None = None,
 ) -> ToolRegistry:
     """Assemble the standard agent toolset from available primitives.
 
     ``search`` needs a retrieval strategy; ``query_graph`` needs a graph
     store and an LLM; ``traverse``, ``lookup_entity`` and the skills need a
-    graph store.
+    graph store. ``limits`` sets the tools' ceilings.
     """
+    limits = limits or AgentLimits()
     registry = ToolRegistry()
     if strategy is not None:
-        registry.register(make_search_tool(strategy))
+        registry.register(
+            make_search_tool(
+                strategy, max_items=limits.search_max_items, max_limit=limits.search_max_limit
+            )
+        )
     if graph_store is not None:
         if llm is not None:
             registry.register(
-                make_query_graph_tool(graph_store, llm, ontology_getter=ontology_getter)
+                make_query_graph_tool(
+                    graph_store,
+                    llm,
+                    ontology_getter=ontology_getter,
+                    max_rows=limits.query_max_rows,
+                    max_cell_chars=limits.query_max_cell_chars,
+                    timeout_ms=limits.query_timeout_ms,
+                    attempts=limits.query_attempts,
+                )
             )
-        registry.register(make_traverse_tool(graph_store))
+        registry.register(
+            make_traverse_tool(
+                graph_store,
+                max_depth=limits.traverse_max_depth,
+                max_expansions=limits.traverse_max_expansions,
+                max_timeout_ms=limits.traverse_max_timeout_ms,
+            )
+        )
         registry.register(make_lookup_entity_tool(graph_store))
         if include_skills:
             from graphrag_sdk.skills import SKILL_REGISTRY

@@ -30,6 +30,7 @@ from graphrag_sdk.retrieval.agentic.citations import (
     ground_answer,
 )
 from graphrag_sdk.retrieval.agentic.graph_tools import build_default_registry
+from graphrag_sdk.retrieval.agentic.limits import AgentLimits, truncate
 from graphrag_sdk.retrieval.agentic.prompts import (
     FINAL_ANSWER_NUDGE,
     REACT_FORMAT_REMINDER,
@@ -155,12 +156,13 @@ class AgenticRetrieval(RetrievalStrategy):
         strategy: Inner retrieval strategy backing the ``search`` tool.
         graph_store: GraphStore backing the graph tools and skills.
         vector_store: Optional vector store (kept for API symmetry).
-        max_steps: Maximum model turns that may call tools. When it is
-            reached the model is asked once more to answer, without tools.
+        max_steps: Shortcut for ``limits.max_steps``: model turns that may
+            call tools. When reached the model is asked once more to answer,
+            without tools.
         mode: ``"auto"``, ``"native"`` or ``"react"``.
         system_prompt: Replace the built-in system prompt (native mode) or
             prepend to it (react mode, which needs the format instructions).
-        history_turns: Earlier user/assistant exchanges kept from ``history``.
+        history_turns: Shortcut for ``limits.max_history_turns``.
         ontology: Ontology the ``query_graph`` tool writes Cypher against.
             The facade keeps it current through :meth:`set_ontology`.
         grounding: How the answer's ``[N]`` citations are enforced:
@@ -168,6 +170,10 @@ class AgenticRetrieval(RetrievalStrategy):
             result with ``ungrounded_answer``; ``"annotate"`` keeps it and
             reports ``grounded=False``; ``"off"`` skips the check.
         ungrounded_answer: The answer shown instead of an ungrounded one.
+        limits: Every bound on the run and the default tools (see
+            :class:`AgentLimits`): turns, tool calls (in total and per
+            turn), text returned to the model, trace size, and the
+            ceilings of search / query_graph / traverse.
 
     The run's answer is final: ``metadata["answer"]`` is what the agent
     concluded (after the grounding check), ``metadata["citations"]`` the
@@ -191,24 +197,34 @@ class AgenticRetrieval(RetrievalStrategy):
         strategy: Any | None = None,
         graph_store: Any | None = None,
         vector_store: Any | None = None,
-        max_steps: int = 6,
+        max_steps: int | None = None,
         mode: AgentMode = "auto",
         system_prompt: str | None = None,
-        history_turns: int = 5,
+        history_turns: int | None = None,
         ontology: Ontology | None = None,
         grounding: GroundingPolicy = "strict",
         ungrounded_answer: str = DEFAULT_UNGROUNDED_ANSWER,
+        limits: AgentLimits | None = None,
     ) -> None:
         super().__init__(graph_store=graph_store, vector_store=vector_store)
-        if max_steps < 1:
+        if max_steps is not None and max_steps < 1:
             raise ValueError("max_steps must be >= 1")
         if mode not in ("auto", "native", "react"):
             raise ValueError("mode must be 'auto', 'native' or 'react'")
+        limits = limits or AgentLimits()
+        overrides: dict[str, int] = {}
+        if max_steps is not None:
+            overrides["max_steps"] = max_steps
+        if history_turns is not None:
+            overrides["max_history_turns"] = history_turns
+        if overrides:
+            limits = AgentLimits(**{**limits.to_dict(), **overrides})
+        self._limits = limits
         self._llm = llm
-        self._max_steps = max_steps
+        self._max_steps = limits.max_steps
         self._mode = mode
         self._system_prompt = system_prompt
-        self._history_turns = history_turns
+        self._history_turns = limits.max_history_turns
         if grounding not in ("strict", "annotate", "off"):
             raise ValueError("grounding must be 'strict', 'annotate' or 'off'")
         self._grounding: GroundingPolicy = grounding
@@ -223,6 +239,7 @@ class AgenticRetrieval(RetrievalStrategy):
                 graph_store=graph_store,
                 llm=llm,
                 ontology_getter=lambda: self._ontology,
+                limits=limits,
             )
         )
 
@@ -236,6 +253,10 @@ class AgenticRetrieval(RetrievalStrategy):
     @property
     def registry(self) -> ToolRegistry:
         return self._registry
+
+    @property
+    def limits(self) -> AgentLimits:
+        return self._limits
 
     def resolved_mode(self) -> Literal["native", "react"]:
         """The loop mode a run will use with the configured LLM."""
@@ -284,6 +305,8 @@ class AgenticRetrieval(RetrievalStrategy):
                 "num_steps": trace.num_steps,
                 "evidence": records,
                 "generated_cypher": list(tctx.state.get("generated_cypher", [])),
+                "tool_calls": tctx.state.get("tool_calls", 0),
+                "limits": self._limits.to_dict(),
             },
         )
 
@@ -296,6 +319,14 @@ class AgenticRetrieval(RetrievalStrategy):
         tctx: ToolContext,
     ) -> ToolResult:
         tctx.ctx.ensure_budget(f"agent tool {name}")
+        used = tctx.state.get("tool_calls", 0)
+        if used >= self._limits.max_tool_calls:
+            return refused(
+                name,
+                f"the limit of {self._limits.max_tool_calls} tool calls for this question is "
+                "reached; answer from the results you already have",
+            )
+        tctx.state["tool_calls"] = used + 1
         before = len(tctx.evidence)
         result = await self._registry.run(name, args, tctx)
         tool = self._registry.get(name)
@@ -310,10 +341,15 @@ class AgenticRetrieval(RetrievalStrategy):
         ):
             ev = tctx.evidence.add(tool=name, kind="tool_result", content=result.content)
             result.content = f"[{ev.n}] {result.content}"
+        # The model sees a bounded result; the evidence keeps the full text.
+        result.content = truncate(result.content, self._limits.max_observation_chars)
         return result
 
-    @staticmethod
+    def _calls_exhausted(self, tctx: ToolContext) -> bool:
+        return int(tctx.state.get("tool_calls", 0)) >= self._limits.max_tool_calls
+
     def _record(
+        self,
         trace: AgentTrace,
         observations: list[str],
         *,
@@ -326,13 +362,16 @@ class AgenticRetrieval(RetrievalStrategy):
     ) -> None:
         if result.status == "ok":
             observations.append(result.content)
+        cap = self._limits.max_trace_chars
+        encoded = json.dumps(action_input, default=str)
+        recorded_input = action_input if len(encoded) <= cap else {"_truncated": encoded[:cap]}
         trace.steps.append(
             AgentStep(
                 index=index,
-                thought=thought,
+                thought=truncate(thought, cap),
                 action=action,
-                action_input=action_input,
-                observation=result.content,
+                action_input=recorded_input,
+                observation=truncate(result.content, cap),
                 status=result.status,
                 call_id=call_id,
             )
@@ -378,8 +417,15 @@ class AgenticRetrieval(RetrievalStrategy):
                     ChatMessage(role="assistant", content=response.content or "", tool_calls=calls)
                 )
                 thought = (response.content or "").strip()
-                for call in calls:
-                    result = await self._native_call(call, tctx)
+                for position, call in enumerate(calls):
+                    if position >= self._limits.max_calls_per_turn:
+                        result = refused(
+                            call.name,
+                            f"only {self._limits.max_calls_per_turn} tool calls run per turn; "
+                            "call it again in the next turn if it is still needed",
+                        )
+                    else:
+                        result = await self._native_call(call, tctx)
                     self._record(
                         trace,
                         observations,
@@ -394,9 +440,13 @@ class AgenticRetrieval(RetrievalStrategy):
                     messages.append(
                         ChatMessage(role="tool", content=result.content, tool_call_id=call.id)
                     )
-            # Step limit reached with tool calls still pending: one last turn
-            # without tools so the run ends with an answer, not silence.
-            trace.stop_reason = "max_steps"
+                if self._calls_exhausted(tctx):
+                    trace.stop_reason = "max_tool_calls"
+                    break
+            else:
+                trace.stop_reason = "max_steps"
+            # Step or tool-call limit reached with work still pending: one last
+            # turn without tools so the run ends with an answer, not silence.
             if ctx.budget_exceeded:
                 return
             messages.append(ChatMessage(role="user", content=FINAL_ANSWER_NUDGE))
@@ -487,7 +537,11 @@ class AgenticRetrieval(RetrievalStrategy):
                     f"Action Input: {json.dumps(action_input)}\n"
                     f"Observation: {result.content}\n"
                 )
-            trace.stop_reason = "max_steps"
+                if self._calls_exhausted(tctx):
+                    trace.stop_reason = "max_tool_calls"
+                    break
+            else:
+                trace.stop_reason = "max_steps"
             if ctx.budget_exceeded:
                 return
             prompt = f"{system}\n\n{scratchpad}\n{FINAL_ANSWER_NUDGE}\nFinal Answer:"
