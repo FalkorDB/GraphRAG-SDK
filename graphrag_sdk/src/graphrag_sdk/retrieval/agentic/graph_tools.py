@@ -446,6 +446,7 @@ def make_lookup_entity_tool(graph_store: Any) -> Tool:
             "to use with traverse. Not a source to cite."
         ),
         handler=handler,
+        citable=False,
         parameters=object_schema(
             {"name": {"type": "string", "description": "A name or part of one."}}, ["name"]
         ),

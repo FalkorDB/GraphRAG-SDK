@@ -232,7 +232,7 @@ class TestNativeLoop:
         llm = ToolCallingLLM(
             [
                 LLMResponse(content="", tool_calls=[call("search", query="alice")]),
-                LLMResponse(content="Alice works at Acme."),
+                LLMResponse(content="Alice works at Acme [1]."),
             ]
         )
         agent = AgenticRetrieval(llm, strategy=FakeStrategy())
@@ -240,7 +240,11 @@ class TestNativeLoop:
 
         assert result.metadata["agent_mode"] == "native"
         assert result.metadata["stop_reason"] == "final_answer"
-        assert result.metadata["answer"] == "Alice works at Acme."
+        assert result.metadata["answer"] == "Alice works at Acme [1]."
+        assert result.metadata["grounded"] is True
+        assert result.metadata["citations"][0]["n"] == 1
+        assert result.items[0].content == "[1] Alice works at Acme Corp."
+        assert result.items[0].metadata["citation"] == 1
         trace = result.metadata["agent_trace"]
         assert trace["steps"][0]["action"] == "search"
         assert trace["steps"][0]["status"] == "ok"
@@ -264,13 +268,13 @@ class TestNativeLoop:
             [
                 LLMResponse(content="", tool_calls=[bad]),
                 LLMResponse(content="", tool_calls=[call("search", "c2", query="alice")]),
-                LLMResponse(content="Acme."),
+                LLMResponse(content="Acme [1]."),
             ]
         )
         result = await AgenticRetrieval(llm, strategy=FakeStrategy()).search("q", ctx)
         steps = result.metadata["agent_trace"]["steps"]
         assert [s["status"] for s in steps] == ["refused", "ok"]
-        assert result.metadata["answer"] == "Acme."
+        assert result.metadata["answer"] == "Acme [1]."
 
     async def test_multiple_calls_in_one_turn(self, ctx: Context):
         llm = ToolCallingLLM(
@@ -294,13 +298,13 @@ class TestNativeLoop:
             [
                 LLMResponse(content="", tool_calls=[call("search", query="x")]),
                 LLMResponse(content="", tool_calls=[call("search", query="y")]),
-                LLMResponse(content="Best answer from what I found."),
+                LLMResponse(content="Best answer from what I found [2]."),
             ]
         )
         agent = AgenticRetrieval(llm, strategy=FakeStrategy(), max_steps=2)
         result = await agent.search("q", ctx)
         assert result.metadata["stop_reason"] == "max_steps"
-        assert result.metadata["answer"] == "Best answer from what I found."
+        assert result.metadata["answer"] == "Best answer from what I found [2]."
         assert llm.requests[-1]["tool_choice"] == "none"
         assert "limit of tool calls" in llm.requests[-1]["messages"][-1].content
 
@@ -347,7 +351,7 @@ class TestReactLoop:
         llm = ScriptedLLM(
             [
                 'Thought: search\nAction: search\nAction Input: {"query": "alice"}',
-                "Thought: I now have enough information.\nFinal Answer: Alice works at Acme.",
+                "Thought: I now have enough information.\nFinal Answer: Alice works at Acme [1].",
             ]
         )
         agent = AgenticRetrieval(llm, strategy=FakeStrategy(), max_steps=4)
@@ -382,14 +386,14 @@ class TestReactLoop:
             [
                 'Action: search\nAction Input: {"query": "x"}',
                 'Action: search\nAction Input: {"query": "y"}',
-                "Final Answer: summarised",
+                "Final Answer: summarised [1][2]",
             ]
         )
         agent = AgenticRetrieval(llm, strategy=FakeStrategy(), max_steps=2)
         result = await agent.search("q", ctx)
         assert result.metadata["stop_reason"] == "max_steps"
         assert result.metadata["num_steps"] == 2
-        assert result.metadata["answer"] == "summarised"
+        assert result.metadata["answer"] == "summarised [1][2]"
 
     async def test_refused_call_is_traced(self, ctx: Context):
         llm = ScriptedLLM(["Action: search\nAction Input: {}", "Final Answer: none"])

@@ -208,12 +208,18 @@ class Tool:
     ``parameters`` is a JSON Schema object. Arguments are checked against it
     before the handler runs, so handlers can rely on required arguments
     being present and of the declared JSON type.
+
+    ``citable`` tools produce evidence. One that does not number its own
+    output gets a single evidence number for the whole result; set it to
+    ``False`` for navigation tools whose output is not a source (e.g. an
+    entity lookup).
     """
 
     name: str
     description: str
     handler: ToolHandler
     parameters: dict[str, Any] = field(default_factory=lambda: object_schema(additional=True))
+    citable: bool = True
 
     def spec(self) -> ToolSpec:
         """The tool as a :class:`ToolSpec` for native tool calling."""

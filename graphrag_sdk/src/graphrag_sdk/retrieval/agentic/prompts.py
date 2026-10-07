@@ -31,8 +31,12 @@ AGENT_RULES = """Rules:
 - A tool result that starts with "Refused:" did not run. Read why, fix the
   call (or pick another tool) and try again instead of giving up.
 - When search misses breadth, retry it with larger limits before concluding.
+- Tool results are numbered [N]. Cite every factual claim with the number of
+  the result that supports it, e.g. "Alice works at Acme [3]." Use only numbers
+  that appeared in tool results for this question; never invent one.
 - Answer concisely and only from what the tools returned. If they returned
-  nothing useful, say that the knowledge graph does not contain the answer."""
+  nothing that answers the question, say that the knowledge graph does not
+  contain the answer instead of answering from memory."""
 
 NATIVE_SYSTEM_PROMPT = """You are a graph retrieval agent. Answer the user's \
 question by calling the available tools to gather evidence from a knowledge \

@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from graphrag_sdk.retrieval.agentic.citations import (
+    DEFAULT_UNGROUNDED_ANSWER,
+    GroundedAnswer,
+    ground_answer,
+)
 from graphrag_sdk.retrieval.agentic.cypher_guard import (
     GraphSchema,
     enforce_row_cap,
@@ -34,6 +39,9 @@ from graphrag_sdk.retrieval.agentic.tools import (
 
 __all__ = [
     "AgenticRetrieval",
+    "DEFAULT_UNGROUNDED_ANSWER",
+    "GroundedAnswer",
+    "ground_answer",
     "Evidence",
     "EvidenceLedger",
     "GraphSchema",

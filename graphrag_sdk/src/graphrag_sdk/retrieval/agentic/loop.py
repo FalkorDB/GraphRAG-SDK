@@ -24,6 +24,11 @@ from graphrag_sdk.core.models import (
     RetrieverResultItem,
     ToolCall,
 )
+from graphrag_sdk.retrieval.agentic.citations import (
+    DEFAULT_UNGROUNDED_ANSWER,
+    GroundingPolicy,
+    ground_answer,
+)
 from graphrag_sdk.retrieval.agentic.graph_tools import build_default_registry
 from graphrag_sdk.retrieval.agentic.prompts import (
     FINAL_ANSWER_NUDGE,
@@ -158,11 +163,25 @@ class AgenticRetrieval(RetrievalStrategy):
         history_turns: Earlier user/assistant exchanges kept from ``history``.
         ontology: Ontology the ``query_graph`` tool writes Cypher against.
             The facade keeps it current through :meth:`set_ontology`.
+        grounding: How the answer's ``[N]`` citations are enforced:
+            ``"strict"`` (default) replaces an answer that cites no real tool
+            result with ``ungrounded_answer``; ``"annotate"`` keeps it and
+            reports ``grounded=False``; ``"off"`` skips the check.
+        ungrounded_answer: The answer shown instead of an ungrounded one.
+
+    The run's answer is final: ``metadata["answer"]`` is what the agent
+    concluded (after the grounding check), ``metadata["citations"]`` the
+    evidence it cites, and :meth:`GraphRAG.completion` returns it as-is
+    instead of generating a second answer. The result items are the numbered
+    evidence (``"[N] ..."``) the tools returned.
 
     Pass ``history=[...]`` to :meth:`search` to give the agent the
     conversation so far (``ChatMessage`` objects or ``{"role", "content"}``
     dicts).
     """
+
+    #: The facade forwards conversation history to strategies that set this.
+    accepts_history = True
 
     def __init__(
         self,
@@ -177,6 +196,8 @@ class AgenticRetrieval(RetrievalStrategy):
         system_prompt: str | None = None,
         history_turns: int = 5,
         ontology: Ontology | None = None,
+        grounding: GroundingPolicy = "strict",
+        ungrounded_answer: str = DEFAULT_UNGROUNDED_ANSWER,
     ) -> None:
         super().__init__(graph_store=graph_store, vector_store=vector_store)
         if max_steps < 1:
@@ -188,6 +209,10 @@ class AgenticRetrieval(RetrievalStrategy):
         self._mode = mode
         self._system_prompt = system_prompt
         self._history_turns = history_turns
+        if grounding not in ("strict", "annotate", "off"):
+            raise ValueError("grounding must be 'strict', 'annotate' or 'off'")
+        self._grounding: GroundingPolicy = grounding
+        self._ungrounded_answer = ungrounded_answer
         self._ontology = ontology
         self._strategy = strategy
         self._registry = (
@@ -233,18 +258,31 @@ class AgenticRetrieval(RetrievalStrategy):
         else:
             await self._run_react(query, history, ctx, tctx, trace, observations)
 
-        records: list[Any] = list(observations)
-        if trace.answer:
-            records.append(f"Answer: {trace.answer}")
+        grounded = ground_answer(
+            trace.answer,
+            tctx.evidence,
+            tools_called=bool(trace.steps),
+            policy=self._grounding,
+            ungrounded_answer=self._ungrounded_answer,
+        )
+        if not grounded.grounded:
+            ctx.log(f"Agentic answer not grounded ({grounded.reason})")
+        records = [ev.to_dict() for ev in tctx.evidence.items]
         return RawSearchResult(
             records=records,
             metadata={
+                "answer": grounded.answer,
+                "answer_is_final": True,
+                "raw_answer": grounded.raw_answer,
+                "grounded": grounded.grounded,
+                "grounding_reason": grounded.reason,
+                "citations": [ev.to_dict() for ev in grounded.citations(tctx.evidence)],
+                "invalid_citations": grounded.invalid,
                 "agent_trace": trace.model_dump(),
                 "agent_mode": mode,
                 "stop_reason": trace.stop_reason,
                 "num_steps": trace.num_steps,
-                "answer": trace.answer,
-                "evidence": [ev.to_dict() for ev in tctx.evidence.items],
+                "evidence": records,
                 "generated_cypher": list(tctx.state.get("generated_cypher", [])),
             },
         )
@@ -258,7 +296,21 @@ class AgenticRetrieval(RetrievalStrategy):
         tctx: ToolContext,
     ) -> ToolResult:
         tctx.ctx.ensure_budget(f"agent tool {name}")
-        return await self._registry.run(name, args, tctx)
+        before = len(tctx.evidence)
+        result = await self._registry.run(name, args, tctx)
+        tool = self._registry.get(name)
+        # A tool that does not number its own output (a custom tool, a skill)
+        # gets one evidence number for the whole result, so it can be cited.
+        if (
+            result.status == "ok"
+            and tool is not None
+            and tool.citable
+            and len(tctx.evidence) == before
+            and result.content.strip()
+        ):
+            ev = tctx.evidence.add(tool=name, kind="tool_result", content=result.content)
+            result.content = f"[{ev.n}] {result.content}"
+        return result
 
     @staticmethod
     def _record(
@@ -450,8 +502,21 @@ class AgenticRetrieval(RetrievalStrategy):
             ctx.log("Agentic loop stopped: latency budget exhausted mid-run")
 
     def _format(self, raw: RawSearchResult) -> RetrieverResult:
-        items = [
-            RetrieverResultItem(content=str(rec), metadata={"source": "agentic"})
-            for rec in raw.records
-        ]
+        items = []
+        for rec in raw.records:
+            if isinstance(rec, dict):
+                items.append(
+                    RetrieverResultItem(
+                        content=f"[{rec['n']}] {rec['content']}",
+                        metadata={
+                            "source": "agentic",
+                            "citation": rec["n"],
+                            "tool": rec.get("tool", ""),
+                            "kind": rec.get("kind", ""),
+                            "document": rec.get("source", ""),
+                        },
+                    )
+                )
+            else:
+                items.append(RetrieverResultItem(content=str(rec), metadata={"source": "agentic"}))
         return RetrieverResult(items=items, metadata=raw.metadata)
