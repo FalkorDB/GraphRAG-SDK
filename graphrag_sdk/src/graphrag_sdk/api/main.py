@@ -79,7 +79,9 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
 from graphrag_sdk.ingestion.ingestion_planner import (
     IngestionPlanner,
     LLMIngestionPlanner,
-    build_ingestion_strategies,
+    build_chunker,
+    build_extractor,
+    build_resolver,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
@@ -2763,17 +2765,20 @@ class GraphRAG:
         # below (build via `or ...`), so behavior is never silently lost.
         preloaded_document: DocumentOutput | None = None
         if auto and (chunker is None or extractor is None or resolver is None):
-            chunker, extractor, resolver, preloaded_document = (
-                await self._plan_ingestion_strategies(
-                    text=text,
-                    source=source,
-                    loader=loader,
-                    chunker=chunker,
-                    extractor=extractor,
-                    resolver=resolver,
-                    planner=planner,
-                    ctx=ctx,
-                )
+            (
+                chunker,
+                extractor,
+                resolver,
+                preloaded_document,
+            ) = await self._plan_ingestion_strategies(
+                text=text,
+                source=source,
+                loader=loader,
+                chunker=chunker,
+                extractor=extractor,
+                resolver=resolver,
+                planner=planner,
+                ctx=ctx,
             )
 
         pipeline = IngestionPipeline(
@@ -3022,27 +3027,58 @@ class GraphRAG:
             plan = await active.plan(sample_text, source=source, ctx=ctx)
             if plan is None:
                 raise ValueError("planner returned no plan")
-            entity_types = (
-                [e.label for e in self.ontology.entities] if self.ontology.entities else None
-            )
-            built_chunker, built_extractor, built_resolver = build_ingestion_strategies(
-                plan,
-                llm=self.llm,
-                embedder=self.embedder,
-                entity_types=entity_types,
-            )
         except LatencyBudgetExceededError:
             raise
         except Exception as exc:  # noqa: BLE001
             logger.debug("Ingestion planner failed (%s); using defaults", exc)
             return chunker, extractor, resolver, preloaded_document
 
-        return (
-            chunker if chunker is not None else built_chunker,
-            extractor if extractor is not None else built_extractor,
-            resolver if resolver is not None else built_resolver,
-            preloaded_document,
-        )
+        # "structural" groups a loaded document's elements; without them
+        # (text mode, or a loader that produced none) it only delegates to the
+        # sentence chunker, so say so instead of reporting a structural plan.
+        if plan.chunker == "structural" and chunker is None:
+            no_elements = text is not None or (
+                preloaded_document is not None and not preloaded_document.elements
+            )
+            if no_elements:
+                plan = dataclasses.replace(plan, chunker="sentence")
+
+        # Build only the slots the caller left unset, each on its own: one slot
+        # that cannot be built (e.g. GLiNER not installed) falls back to its
+        # default without discarding the rest of the plan.
+        entity_types = [e.label for e in self.ontology.entities] if self.ontology.entities else None
+        builders = {
+            "chunker": lambda: build_chunker(
+                plan.chunker, llm=self.llm, params=plan.chunker_params
+            ),
+            "extractor": lambda: build_extractor(
+                plan.extractor,
+                llm=self.llm,
+                entity_types=entity_types,
+                params=plan.extractor_params,
+            ),
+            "resolver": lambda: build_resolver(
+                plan.resolver, llm=self.llm, embedder=self.embedder, params=plan.resolver_params
+            ),
+        }
+        slots: dict[str, Any] = {"chunker": chunker, "extractor": extractor, "resolver": resolver}
+        for slot, build in builders.items():
+            if slots[slot] is not None:
+                continue
+            try:
+                slots[slot] = build()
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Ingestion planner: could not build %s %r (%s); using the default %s",
+                    slot,
+                    getattr(plan, slot),
+                    exc,
+                    slot,
+                )
+
+        return slots["chunker"], slots["extractor"], slots["resolver"], preloaded_document
 
     def _default_ingest_resolver(self) -> ResolutionStrategy:
         """Return the default ingest-time resolver: ``ExactMatchResolution``.

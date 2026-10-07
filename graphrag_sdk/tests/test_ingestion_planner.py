@@ -283,7 +283,9 @@ class TestPlanIngestionStrategiesMerge:
             planner=HeuristicIngestionPlanner(),
             ctx=None,
         )
-        assert isinstance(chunker, StructuralChunking)
+        # Text mode has no document elements, so "structural" would only
+        # delegate to the sentence chunker; the plan says so.
+        assert isinstance(chunker, SentenceTokenCapChunking)
 
     async def test_planner_failure_leaves_slots_none(self):
         class BoomPlanner:
@@ -581,3 +583,64 @@ class TestCostCeiling:
         out = restrict_plan(plan, extractors=("gliner",))
         assert out.chunker == "fixed" and out.chunker_params == {"chunk_size": 1500}
         assert out.extractor == "gliner" and out.extractor_params == {}
+
+
+# -- per-slot building --
+
+
+class TestPerSlotBuild:
+    async def _plan(self, rag, planner, **kw):
+        args = dict(text="hello", source="x.txt", chunker=None, extractor=None, resolver=None)
+        args.update(kw)
+        return await GraphRAG._plan_ingestion_strategies(rag, planner=planner, ctx=None, **args)
+
+    async def test_one_failing_slot_keeps_the_rest(self, monkeypatch, caplog):
+        import graphrag_sdk.api.main as main_mod
+
+        def boom(*a, **k):
+            raise ImportError("gliner is not installed")
+
+        monkeypatch.setattr(main_mod, "build_extractor", boom)
+
+        class P:
+            async def plan(self, *a, **k):
+                return IngestionPlan(chunker="fixed", extractor="gliner", resolver="llm_verified")
+
+        with caplog.at_level("WARNING"):
+            chunker, extractor, resolver, _ = await self._plan(_fake_rag(MockLLM()), P())
+        assert isinstance(chunker, FixedSizeChunking)
+        assert extractor is None  # the pipeline's default extractor applies
+        assert isinstance(resolver, LLMVerifiedResolution)
+        assert "could not build extractor" in caplog.text
+
+    async def test_explicit_slots_are_not_built(self, monkeypatch):
+        import graphrag_sdk.api.main as main_mod
+
+        def must_not_run(*a, **k):
+            raise AssertionError("built a slot the caller passed")
+
+        monkeypatch.setattr(main_mod, "build_chunker", must_not_run)
+
+        class P:
+            async def plan(self, *a, **k):
+                return IngestionPlan(chunker="contextual")
+
+        mine = SentenceTokenCapChunking()
+        chunker, _, _, _ = await self._plan(_fake_rag(MockLLM()), P(), chunker=mine)
+        assert chunker is mine
+
+    async def test_structural_kept_when_loaded_document_has_elements(self, tmp_path):
+        from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+
+        md = tmp_path / "notes.md"
+        md.write_text("# Title\n\nSome text.\n\n## Part\n\nMore text.\n")
+
+        class P:
+            async def plan(self, *a, **k):
+                return IngestionPlan(chunker="structural")
+
+        chunker, _, _, doc = await self._plan(
+            _fake_rag(MockLLM()), P(), text=None, source=str(md), loader=MarkdownLoader()
+        )
+        assert doc is not None and doc.elements
+        assert isinstance(chunker, StructuralChunking)
