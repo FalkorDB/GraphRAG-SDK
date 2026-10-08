@@ -59,7 +59,9 @@ async def test_relationship_snapshot_and_mapping_reload_on_real_falkordb(
     path = write_csv(
         tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20", "U-2,B-2,CONSUMED_BATCH,2026-09-21"]
     )
-    assert (await rag.ingest(str(path))).relationships_written == 2
+    added = await rag.apply_changes(added=[str(path)])
+    assert added.added[0].is_success
+    assert added.added[0].result.metadata["relationships_written"] == 2
     assert (await rag.ingest(str(path))).relationships_written == 2
     assert await counts() == before
     stored = await rag._ontology_store.load()
@@ -72,8 +74,9 @@ async def test_relationship_snapshot_and_mapping_reload_on_real_falkordb(
     assert edges.result_set == [["U-1", "B-1", "2026-09-20"], ["U-2", "B-2", "2026-09-21"]]
 
     write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,"])
-    result = await rag.ingest(str(path))
-    assert result.relationships_deleted == 1
+    modified = await rag.apply_changes(modified=[str(path)])
+    assert modified.modified[0].is_success
+    assert modified.modified[0].result.metadata["relationships_deleted"] == 1
     edges = await rag._graph_store.query_raw(
         "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() RETURN r.consumed_batch__consumed_on"
     )

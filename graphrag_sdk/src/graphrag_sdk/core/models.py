@@ -1236,6 +1236,9 @@ class ApplyChangesResult(DataModel):
     A table in ``added`` or ``modified`` is reported in the same result type
     as a prose file, with the structured counts -- ``records``, ``entities``,
     ``references``, ``edges`` -- in ``result.metadata``.
+    Relationship-only tables use the same wrapper, with their relationship and
+    endpoint counts in ``result.metadata``; ``document_info`` identifies the
+    source, not a persisted Document node.
     """
 
     added: list[BatchEntry[IngestionResult]] = Field(default_factory=list)

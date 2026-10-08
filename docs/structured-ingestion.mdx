@@ -107,6 +107,10 @@ the new file lose that source's contribution. An edge supported by another
 relationship table or by document chunks remains. Use `await rag.drop_table(
 "consumed_batch.csv")` to remove the mapping and its contributions explicitly.
 Use `ingest()` again to refresh a relationship table; `update()` is for documents.
+`apply_changes(added=[path])` and `apply_changes(modified=[path])` also support
+relationship tables. Each entry uses the existing batch-result wrapper, with
+relationship and endpoint counts in `entry.result.metadata`; its source
+identifier does not imply a persisted `Document` node.
 
 Validation and endpoint checks precede relationship writes, but the batched
 write is not a database transaction. Inspect `incomplete_writes` if a batch

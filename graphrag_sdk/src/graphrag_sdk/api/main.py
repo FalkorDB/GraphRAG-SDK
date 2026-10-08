@@ -4193,6 +4193,18 @@ class GraphRAG:
             async with update_sem:
                 try:
                     if self._is_tabular(path, loader):
+                        mapping = await self._mapping_for(path, ctx=ctx.child())
+                        if isinstance(mapping, RelationshipMapping):
+                            relationships = await self.ingest(path, ctx=ctx.child())
+                            assert isinstance(relationships, RelationshipIngestionResult)
+                            return BatchEntry.ok(
+                                UpdateResult(
+                                    document_info=DocumentInfo(uid=relationships.source, path=path),
+                                    relationships_created=relationships.relationships_written,
+                                    metadata=relationships.as_dict(),
+                                    replaced_existing=True,
+                                )
+                            )
                         # The chunker, extractor, resolver and chunk cache are
                         # for the prose in this batch; records have no use for
                         # them, and update() refuses them on a table.
@@ -4265,6 +4277,15 @@ class GraphRAG:
                     )
                     added_results[i] = BatchEntry.fail(exc)
                     continue
+            if isinstance(structured, RelationshipIngestionResult):
+                added_results[i] = BatchEntry.ok(
+                    IngestionResult(
+                        document_info=DocumentInfo(uid=structured.source, path=path),
+                        relationships_created=structured.relationships_written,
+                        metadata=structured.as_dict(),
+                    )
+                )
+                continue
             assert isinstance(structured, StructuredIngestionResult)
             added_results[i] = BatchEntry.ok(
                 # Same shape a table takes in ``modified``: the counts a

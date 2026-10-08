@@ -2294,6 +2294,58 @@ class TestGraphRAGDeleteDocument:
 class TestApplyChanges:
     """v1.1.0: heterogeneous batch dispatcher (the CI use case)."""
 
+    @pytest.mark.parametrize("bucket", ["added", "modified"])
+    async def test_relationship_tables_use_ingest_and_serializable_batch_results(
+        self, graphrag, bucket
+    ):
+        from graphrag_sdk import EndpointMapping, RelationshipMapping
+        from graphrag_sdk.ingestion.structured_pipeline import RelationshipIngestionResult
+
+        mapping = RelationshipMapping(
+            source="edges.csv",
+            start=EndpointMapping("Unit", "units__id", "unit"),
+            end=EndpointMapping("Batch", "batches__id", "batch"),
+            type="CONSUMED_BATCH",
+        )
+        outcome = RelationshipIngestionResult("edges.csv")
+        outcome.rows = 3
+        outcome.relationships_written = 2
+        outcome.rows_skipped = 1
+        graphrag._mapping_for = AsyncMock(return_value=mapping)
+        graphrag.ingest = AsyncMock(return_value=outcome)
+        graphrag.update = AsyncMock()
+        result = await graphrag.apply_changes(**{bucket: ["edges.csv"]})
+        entry = getattr(result, bucket)[0]
+        assert entry.is_success
+        assert entry.result.relationships_created == 2
+        assert entry.result.nodes_created == entry.result.chunks_indexed == 0
+        assert entry.result.metadata["rows_skipped"] == 1
+        assert '"relationships_written":2' in result.model_dump_json()
+        graphrag.ingest.assert_awaited_once()
+        graphrag.update.assert_not_awaited()
+
+    @pytest.mark.parametrize("bucket", ["added", "modified"])
+    async def test_relationship_table_errors_remain_per_file(self, graphrag, bucket):
+        from graphrag_sdk import EndpointMapping, RelationshipMapping
+        from graphrag_sdk.ingestion.structured_pipeline import RelationshipIngestionResult
+
+        graphrag._mapping_for = AsyncMock(
+            return_value=RelationshipMapping(
+                source="edges.csv",
+                start=EndpointMapping("Unit", "units__id", "unit"),
+                end=EndpointMapping("Batch", "batches__id", "batch"),
+                type="CONSUMED_BATCH",
+            )
+        )
+        graphrag.ingest = AsyncMock(
+            side_effect=[ValueError("missing endpoint"), RelationshipIngestionResult("ok.csv")]
+        )
+        result = await graphrag.apply_changes(**{bucket: ["edges.csv", "ok.csv"]})
+        failed, succeeded = getattr(result, bucket)
+        assert failed.error_type == "ValueError"
+        assert failed.error == "missing endpoint"
+        assert succeeded.is_success
+
     async def test_dispatches_to_each_primitive(self, graphrag, tmp_path):
         """One call routes added/modified/deleted to the right method."""
         added_path = tmp_path / "new.txt"
