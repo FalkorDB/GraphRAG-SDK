@@ -1118,8 +1118,9 @@ class GraphRAG:
 
         The label the table used stays in the ontology, because a document or
         another table may be using it; ``drop_entity()`` removes a label that
-        nothing else does. ``source`` is matched the way ``ingest()`` matches it,
-        by exact stored path first, then by basename when no exact match exists.
+        nothing else does. ``drop_table()`` matches ``source`` by exact stored
+        path first, then by basename when no exact match exists. Unlike this
+        deletion lookup, ``ingest()`` selects declared mappings by basename.
 
         Raises:
             ValueError: No table with that name is in the ontology.
