@@ -89,7 +89,42 @@ async def test_relationship_snapshot_and_mapping_reload_on_real_falkordb(
             "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() RETURN count(r)"
         )
     ).result_set == [[1]]
-    await rag.drop_table("consumed_batch.csv")
+    # A new instance registers a replacement mapping, then fails its first
+    # ingest. Old property declarations must survive for the next retry.
+    write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])
+    await rag.ingest(str(path))
+    replacement = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        connection=rag._conn,
+        ontology=Ontology(relationship_tables=[consumed_mapping(properties={})]),
+    )
+    await replacement.get_ontology()
+    write_csv(tmp_path, ["U-1,B-404,CONSUMED_BATCH,"])
+    with pytest.raises(RelationshipResolutionError):
+        await replacement.ingest(str(path))
+    assert (
+        await rag._graph_store.query_raw(
+            "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() RETURN r.consumed_batch__consumed_on"
+        )
+    ).result_set == [["2026-09-20"]]
+    retry = real_falkordb_rag_factory(llm=llm, resolver=None, connection=rag._conn)
+    write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,"])
+    await retry.ingest(str(path))
+    assert (
+        await rag._graph_store.query_raw(
+            "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() RETURN r.consumed_batch__consumed_on"
+        )
+    ).result_set == [[None]]
+    declared = await retry.get_ontology()
+    assert not any(
+        prop.name == "consumed_batch__consumed_on"
+        for relation in declared.relations
+        for prop in relation.properties
+    )
+    deleted = await retry.apply_changes(deleted=[str(path)])
+    assert deleted.deleted[0].is_success
+    assert deleted.deleted[0].result.document_uid == str(path)
     assert (
         await rag._graph_store.query_raw(
             "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() RETURN count(r)"
@@ -220,7 +255,7 @@ class TestRelationshipMappingModel:
 
     def test_endpoint_keys_must_exist_in_registered_schema(self):
         properties = {
-            entity.label: {prop.name for prop in entity.properties}
+            entity.label: {prop.name: prop.type for prop in entity.properties}
             for entity in [
                 Entity(
                     label="Unit",
@@ -383,3 +418,100 @@ class TestRelationshipIngestion:
         assert result.relationships_written == count
         assert max(store.resolve_sizes) <= store._BATCH_SIZE
         assert store.write_calls == 21
+
+
+class TestRelationshipReviewRegressions:
+    @pytest.mark.parametrize("kind", ["INTEGER", "FLOAT", "BOOLEAN", "LIST"])
+    def test_non_string_endpoint_keys_are_refused_before_writes(self, kind):
+        problems = GraphRAG._relationship_endpoint_schema_problems(
+            consumed_mapping(),
+            {"Unit": {"unit__unit_id": kind}, "Batch": {"batch__batch_id": "STRING"}},
+        )
+        assert len(problems) == 1
+        assert "must be declared STRING" in problems[0]
+
+    def test_incoming_description_matches_pattern(self):
+        relation = ontology_for_relationship(consumed_mapping(direction="INCOMING")).relations[0]
+        assert relation.description.startswith("Batch to Unit")
+        assert relation.patterns == [("Batch", "Unit")]
+
+    def test_endpoint_types_are_protected_from_drop(self):
+        ontology = Ontology(relationship_tables=[consumed_mapping()])
+        assert ontology.tables_naming("Unit") == {
+            "consumed_batch.csv": "relationship start endpoint"
+        }
+        assert ontology.tables_naming("Batch") == {
+            "consumed_batch.csv": "relationship end endpoint"
+        }
+
+    def test_merge_refuses_source_declared_under_two_kinds(self):
+        from graphrag_sdk import TableMapping
+
+        nodes = Ontology(
+            tables=[
+                TableMapping(source="consumed_batch.csv", label="Event", key="id", standalone=True)
+            ]
+        )
+        edges = Ontology(relationship_tables=[consumed_mapping()])
+        for left, right in ((nodes, edges), (edges, nodes)):
+            with pytest.raises(ValueError, match="declared twice"):
+                left.merge(right)
+
+    def test_node_and_edge_signatures_have_separate_namespaces(self):
+        from graphrag_sdk import TableMapping
+        from graphrag_sdk.storage.ontology_store import OntologyStore
+
+        nodes = Ontology(
+            tables=[TableMapping(source="HR.csv", label="Event", key="id", standalone=True)]
+        )
+        edges = Ontology(relationship_tables=[consumed_mapping(source="hr.csv")])
+        assert nodes.tables[0].signature == edges.relationship_tables[0].signature
+        merged = nodes.merge(edges)
+        assert len(merged.tables) == len(merged.relationship_tables) == 1
+        OntologyStore._check_no_signature_collision(nodes, edges)
+
+    async def test_duplicate_invalid_rows_count_once(self, tmp_path):
+        path = write_csv(tmp_path, ["U-1,B-404,CONSUMED_BATCH,", "U-1,B-404,CONSUMED_BATCH,"])
+        result = await RelationshipIngestionPipeline(CsvRecordLoader(), RelationshipStore()).run(
+            str(path), consumed_mapping(missing_endpoint="skip"), Context()
+        )
+        assert (result.rows, result.duplicate_rows, result.rows_skipped, result.missing_end) == (
+            2,
+            1,
+            1,
+            1,
+        )
+
+    async def test_unchanged_file_removes_rows_that_become_ambiguous(self, tmp_path):
+        path = write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,"])
+        store = RelationshipStore()
+        pipeline = RelationshipIngestionPipeline(CsvRecordLoader(), store)
+        mapping = consumed_mapping(ambiguous_endpoint="skip")
+        await pipeline.run(str(path), mapping, Context())
+        assert len(store.relationships) == 1
+        store.entities[("Unit", "unit__unit_id")]["U-1"] = ["unit-1", "duplicate-unit"]
+        result = await pipeline.run(str(path), mapping, Context())
+        assert result.rows_skipped == result.relationships_deleted == 1
+        assert store.relationships == {}
+
+    async def test_batch_delete_failure_is_attributable_and_does_not_abort(
+        self, mock_connection, llm, embedder
+    ):
+        from unittest.mock import AsyncMock
+
+        from graphrag_sdk.core.connection import ConnectionConfig
+
+        mock_connection.config = ConnectionConfig(graph_name="unit-test")
+        rag = GraphRAG(connection=mock_connection, llm=llm, embedder=embedder)
+        rag._global_ontology = Ontology(relationship_tables=[consumed_mapping()])
+        rag._ensure_ontology_initialized = AsyncMock()
+        rag.drop_table = AsyncMock(side_effect=[RuntimeError("database busy"), Ontology()])
+        rag.delete_document = AsyncMock(side_effect=AssertionError("no document exists"))
+        results = await rag.apply_changes(
+            deleted=["first/consumed_batch.csv", "second/consumed_batch.csv"]
+        )
+        assert results.deleted[0].error_type == "RuntimeError"
+        assert results.deleted[0].error == "database busy"
+        assert results.deleted[1].is_success
+        assert results.deleted[1].result.chunks_deleted == 0
+        rag.delete_document.assert_not_awaited()

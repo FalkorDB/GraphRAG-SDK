@@ -617,11 +617,13 @@ def ontology_for(mapping: TableMapping) -> Ontology:
 
 def ontology_for_relationship(mapping: RelationshipMapping) -> Ontology:
     """The ontology contribution of an edge-only table."""
+    source, target = mapping.start.entity, mapping.end.entity
+    if mapping.direction == "INCOMING":
+        source, target = target, source
     relations = [
         Relation(
             label=relationship_type,
-            description=mapping.description
-            or f"{mapping.start.entity} to {mapping.end.entity} from {mapping.source}",
+            description=mapping.description or f"{source} to {target} from {mapping.source}",
             patterns=[
                 (
                     mapping.start.entity if mapping.direction == "OUTGOING" else mapping.end.entity,

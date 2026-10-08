@@ -11,6 +11,7 @@ import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
@@ -480,13 +481,12 @@ class RelationshipIngestionPipeline:
                 result.duplicate_rows += 1
                 continue
             seen[prepared.identity] = fingerprint
-        snapshot = hashlib.sha256(mapping.fingerprint_of_declaration.encode("utf-8"))
-        for identity, properties in sorted(seen.items()):
-            snapshot.update(repr((identity, properties)).encode("utf-8"))
-        snapshot_token = snapshot.hexdigest()
+        # A fresh generation marks this attempt, not just the file's bytes.
+        # Unchanged rows can resolve differently (e.g. newly ambiguous keys).
+        snapshot_token = uuid4().hex
 
         batch_size = int(getattr(self.graph_store, "_BATCH_SIZE", 500))
-        for prepared_batch in self._prepared_batches(batch, mapping, batch_size):
+        for prepared_batch in self._prepared_batches(batch, mapping, batch_size, unique=True):
             await self._resolve_batch(mapping, prepared_batch, result, collect_issues=True)
         result.rows_skipped = len(result._failed_rows)
 
@@ -558,10 +558,20 @@ class RelationshipIngestionPipeline:
 
     @classmethod
     def _prepared_batches(
-        cls, batch: RecordBatch, mapping: RelationshipMapping, batch_size: int
+        cls,
+        batch: RecordBatch,
+        mapping: RelationshipMapping,
+        batch_size: int,
+        *,
+        unique: bool = False,
     ) -> Iterator[list[_PreparedRelationship]]:
         pending: list[_PreparedRelationship] = []
+        identities: set[tuple[str, str, str]] = set()
         for prepared in cls._prepared(batch, mapping):
+            if unique and prepared.identity in identities:
+                continue
+            if unique:
+                identities.add(prepared.identity)
             pending.append(prepared)
             if len(pending) == batch_size:
                 yield pending

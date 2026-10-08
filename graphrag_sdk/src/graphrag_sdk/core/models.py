@@ -492,11 +492,11 @@ class Ontology(DataModel):
         by_signature: dict[str, list[str]] = {}
         for mapping in self.tables:
             by_signature.setdefault(mapping.signature, []).append(mapping.source)
-        for relationship_mapping in self.relationship_tables:
-            by_signature.setdefault(relationship_mapping.signature, []).append(
-                relationship_mapping.source
-            )
         collisions = {sig: srcs for sig, srcs in by_signature.items() if len(srcs) > 1}
+        edge_signatures: dict[str, list[str]] = {}
+        for mapping in self.relationship_tables:
+            edge_signatures.setdefault(mapping.signature, []).append(mapping.source)
+        collisions.update({sig: srcs for sig, srcs in edge_signatures.items() if len(srcs) > 1})
         if collisions:
             detail = "; ".join(
                 f"{sig!r} claimed by {', '.join(sorted(srcs))}"
@@ -769,7 +769,7 @@ class Ontology(DataModel):
         }
         for mapping in other.relationship_tables:
             merged_relationship_tables.setdefault(mapping.source, mapping)
-        return self.model_copy(
+        merged = self.model_copy(
             update={
                 "entities": list(ent_by_label.values()),
                 "relations": list(rel_by_label.values()),
@@ -777,6 +777,10 @@ class Ontology(DataModel):
                 "relationship_tables": list(merged_relationship_tables.values()),
             }
         )
+
+        merged._refuse_duplicate_sources()
+        merged._refuse_colliding_signatures()
+        return merged
 
     def tables_naming(self, label: str) -> dict[str, str]:
         """``source -> how`` for every mapping that names ``label``.
@@ -795,6 +799,14 @@ class Ontology(DataModel):
             links = sorted(link.type for link in mapping.links if link.to == label)
             if links:
                 naming[mapping.source] = "Link " + ", ".join(links)
+        for mapping in self.relationship_tables:
+            endpoints = [
+                side
+                for side, endpoint in (("start", mapping.start), ("end", mapping.end))
+                if endpoint.entity == label
+            ]
+            if endpoints:
+                naming[mapping.source] = "relationship " + "/".join(endpoints) + " endpoint"
         return naming
 
 

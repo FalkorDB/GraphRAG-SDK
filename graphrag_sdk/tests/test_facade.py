@@ -2320,6 +2320,8 @@ class TestApplyChanges:
         assert entry.result.relationships_created == 2
         assert entry.result.nodes_created == entry.result.chunks_indexed == 0
         assert entry.result.metadata["rows_skipped"] == 1
+        if bucket == "modified":
+            assert entry.result.replaced_existing is False
         assert '"relationships_written":2' in result.model_dump_json()
         graphrag.ingest.assert_awaited_once()
         graphrag.update.assert_not_awaited()

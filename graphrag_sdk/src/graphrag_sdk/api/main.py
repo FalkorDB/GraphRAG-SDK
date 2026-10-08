@@ -1144,18 +1144,20 @@ class GraphRAG:
                 None,
             )
             if relationship_mapping is not None:
-                signed_properties = [
-                    relationship_mapping.signed_name(prop)
-                    for prop in relationship_mapping.typed_properties
-                ]
+                properties_by_relation = {
+                    (relation.label, prop.name)
+                    for relation in self._global_ontology.relations
+                    for prop in relation.properties
+                    if prop.name.startswith(f"{relationship_mapping.signature}__")
+                }
+                signed_properties = sorted({name for _, name in properties_by_relation})
                 await self._graph_store.drop_relationship_source(
                     relationship_mapping.signature, signed_properties
                 )
-                for relationship_type in relationship_mapping.relationship_types:
-                    for property_name in signed_properties:
-                        await self._ontology_store.drop_relation_property(
-                            relationship_type, property_name
-                        )
+                for relationship_type, property_name in properties_by_relation:
+                    await self._ontology_store.drop_relation_property(
+                        relationship_type, property_name
+                    )
                 await self._ontology_store.drop_relationship_mapping(relationship_mapping.source)
                 return await self._refresh_global_ontology()
             raise ValueError(
@@ -2185,12 +2187,13 @@ class GraphRAG:
         rather than silently retyping a property.
         """
         existing = await self._ontology_store.load()
-        available_endpoint_properties: dict[str, set[str]] = {
-            entity.label: {prop.name for prop in entity.properties} for entity in existing.entities
+        available_endpoint_properties: dict[str, dict[str, str]] = {
+            entity.label: {prop.name: prop.type for prop in entity.properties}
+            for entity in existing.entities
         }
         for entity in incoming.entities:
-            available_endpoint_properties.setdefault(entity.label, set()).update(
-                prop.name for prop in entity.properties
+            available_endpoint_properties.setdefault(entity.label, {}).update(
+                {prop.name: prop.type for prop in entity.properties}
             )
         for relationship_mapping in incoming.relationship_tables:
             endpoint_problems = self._relationship_endpoint_schema_problems(
@@ -2309,7 +2312,7 @@ class GraphRAG:
 
     @staticmethod
     def _relationship_endpoint_schema_problems(
-        mapping: RelationshipMapping, properties_by_entity: dict[str, set[str]]
+        mapping: RelationshipMapping, properties_by_entity: dict[str, dict[str, str]]
     ) -> list[str]:
         problems: list[str] = []
         for endpoint_name, endpoint in (("start", mapping.start), ("end", mapping.end)):
@@ -2323,6 +2326,11 @@ class GraphRAG:
                 problems.append(
                     f"{endpoint_name} endpoint key {endpoint.entity}.{endpoint.key} "
                     "is not a declared ontology property"
+                )
+            elif properties[endpoint.key] != "STRING":
+                problems.append(
+                    f"{endpoint_name} endpoint key {endpoint.entity}.{endpoint.key} "
+                    "must be declared STRING; non-string endpoint keys are not supported"
                 )
         return problems
 
@@ -2670,7 +2678,7 @@ class GraphRAG:
             None,
         )
         properties_by_entity = {
-            entity.label: {prop.name for prop in entity.properties}
+            entity.label: {prop.name: prop.type for prop in entity.properties}
             for entity in self._global_ontology.entities
         }
         endpoint_problems = self._relationship_endpoint_schema_problems(
@@ -2689,7 +2697,17 @@ class GraphRAG:
             loader=record_loader or CsvRecordLoader(),
             graph_store=self._graph_store,
         )
-        stale_properties = {mapping.signed_name(prop) for prop in mapping.typed_properties}
+        # Relation declarations retain old signed properties until a successful
+        # snapshot reconciles them, even if initialization replaced the mapping.
+        # This persisted schema is the retry journal across SDK instances.
+        old_properties = [
+            (relation.label, prop.name)
+            for relation in self._global_ontology.relations
+            for prop in relation.properties
+            if prop.name.startswith(f"{mapping.signature}__")
+        ]
+        stale_properties = {name for _, name in old_properties}
+        stale_properties.update(mapping.signed_name(prop) for prop in mapping.typed_properties)
         if previous is not None:
             stale_properties.update(
                 previous.signed_name(prop) for prop in previous.typed_properties
@@ -2701,19 +2719,20 @@ class GraphRAG:
             strict=strict,
             stale_properties=sorted(stale_properties),
         )
-        if previous is not None:
+        if not result.incomplete_writes:
             current_relation_properties = {
                 (relationship_type, mapping.signed_name(prop))
                 for relationship_type in mapping.relationship_types
                 for prop in mapping.typed_properties
             }
-            for relationship_type in previous.relationship_types:
-                for prop in previous.typed_properties:
-                    property_name = previous.signed_name(prop)
-                    if (relationship_type, property_name) not in current_relation_properties:
-                        await self._ontology_store.drop_relation_property(
-                            relationship_type, property_name
-                        )
+            for relationship_type, property_name in old_properties:
+                if (relationship_type, property_name) not in current_relation_properties:
+                    await self._graph_store.clear_relationship_source_property(
+                        mapping.signature, relationship_type, property_name
+                    )
+                    await self._ontology_store.drop_relation_property(
+                        relationship_type, property_name
+                    )
         return result
 
     # Suffixes the record loader can read. One of these means the source is
@@ -4172,7 +4191,21 @@ class GraphRAG:
         delete_results: list[BatchEntry[DeleteDocumentResult]] = []
         for doc_id in deleted:
             try:
-                delete_results.append(BatchEntry.ok(await self.delete_document(doc_id)))
+                await self._ensure_ontology_initialized()
+                wanted = os.path.basename(os.path.normpath(doc_id))
+                relationship_mapping = next(
+                    (
+                        mapping
+                        for mapping in self._global_ontology.relationship_tables
+                        if os.path.basename(os.path.normpath(mapping.source)) == wanted
+                    ),
+                    None,
+                )
+                if relationship_mapping is not None:
+                    await self.drop_table(relationship_mapping.source)
+                    delete_results.append(BatchEntry.ok(DeleteDocumentResult(document_uid=doc_id)))
+                else:
+                    delete_results.append(BatchEntry.ok(await self.delete_document(doc_id)))
             except Exception as exc:
                 logger.warning(
                     "apply_changes: delete failed for %r: %s: %s",
@@ -4202,7 +4235,6 @@ class GraphRAG:
                                     document_info=DocumentInfo(uid=relationships.source, path=path),
                                     relationships_created=relationships.relationships_written,
                                     metadata=relationships.as_dict(),
-                                    replaced_existing=True,
                                 )
                             )
                         # The chunker, extractor, resolver and chunk cache are

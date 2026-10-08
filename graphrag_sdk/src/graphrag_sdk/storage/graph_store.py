@@ -897,6 +897,18 @@ class GraphStore:
         rows = getattr(stale, "result_set", None) or []
         return int(rows[0][0]) if rows and rows[0] else 0
 
+    async def clear_relationship_source_property(
+        self, signature: str, relationship_type: str, property_name: str
+    ) -> None:
+        """Retract a removed mapping property from surviving source-owned edges."""
+        safe_property = sanitize_cypher_label(property_name)
+        await self._conn.query(
+            "MATCH ()-[r:RELATES]->() "
+            "WHERE r.rel_type = $type AND $signature IN coalesce(r.structured_sources, []) "
+            f"REMOVE r.`{safe_property}`",
+            {"signature": signature, "type": relationship_type},
+        )
+
     async def drop_relationship_source(
         self, signature: str, signed_properties: Sequence[str]
     ) -> int:

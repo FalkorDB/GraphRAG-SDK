@@ -441,23 +441,23 @@ class OntologyStore:
                 "relationship-only"
             )
 
-        owner: dict[str, str] = {m.signature: m.source for m in existing.tables}
-        owner.update({m.signature: m.source for m in existing.relationship_tables})
-        incoming_signatures = [(mapping.signature, mapping.source) for mapping in incoming.tables]
-        incoming_signatures.extend(
-            (mapping.signature, mapping.source) for mapping in incoming.relationship_tables
-        )
-        for signature, source in incoming_signatures:
-            prior = owner.get(signature)
-            if prior is not None and prior != source:
-                raise OntologyContradictionError(
-                    f"{source!r} and the already-registered {prior!r} both reduce "
-                    f"to the property signature {signature!r}. Every property a "
-                    f"source writes is stored as '<signature>__<property>', so these would "
-                    f"share one namespace and overwrite each other. The signature is the "
-                    f"file's basename, so give one of them a distinct filename "
-                    f"(for example {signature}_2026_02.csv)."
-                )
+        for stored, declared in (
+            (existing.tables, incoming.tables),
+            (existing.relationship_tables, incoming.relationship_tables),
+        ):
+            owner = {m.signature: m.source for m in stored}
+            incoming_signatures = [(m.signature, m.source) for m in declared]
+            for signature, source in incoming_signatures:
+                prior = owner.get(signature)
+                if prior is not None and prior != source:
+                    raise OntologyContradictionError(
+                        f"{source!r} and the already-registered {prior!r} both reduce "
+                        f"to the property signature {signature!r}. Every property a "
+                        f"source writes is stored as '<signature>__<property>', so these would "
+                        f"share one namespace and overwrite each other. The signature is the "
+                        f"file's basename, so give one of them a distinct filename "
+                        f"(for example {signature}_2026_02.csv)."
+                    )
 
     @staticmethod
     def _check_one_key_per_label(existing: Ontology, incoming: Ontology) -> None:

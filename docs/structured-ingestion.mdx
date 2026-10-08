@@ -44,10 +44,15 @@ property, writes no entity, event, `Document`, or `Chunk`, and never falls back
 to the shared `entity_key`:
 
 ```python
-from graphrag_sdk import Column, EndpointMapping, Ontology, RelationshipMapping
+from graphrag_sdk import (
+    Attribute, Column, EndpointMapping, Entity, GraphRAG, Ontology, RelationshipMapping,
+)
 
 ONTOLOGY = Ontology(
-    entities=[...],  # Unit and Batch declare the key properties used below
+    entities=[
+        Entity(label="Unit", properties=[Attribute(name="units__unit_id", type="STRING")]),
+        Entity(label="Batch", properties=[Attribute(name="batches__batch_id", type="STRING")]),
+    ],
     relationship_tables=[
         RelationshipMapping(
             source="consumed_batch.csv",
@@ -70,15 +75,17 @@ ONTOLOGY = Ontology(
     ],
 )
 
-result = await rag.ingest("data/consumed_batch.csv")
+# Reuse your configured connection and providers. Endpoint entities must already exist.
+async with GraphRAG(connection=connection, llm=llm, embedder=embedder, ontology=ONTOLOGY) as rag:
+    result = await rag.ingest("data/consumed_batch.csv")
 ```
 
 `key` is the exact property already stored on the endpoint node. For a
 `TableMapping`, this is normally its signed key
 (``<table signature>__<safe key column>``), not `entity_key`. Naming the key
 space explicitly prevents two unrelated identifiers on the same entity label
-from being merged or resolved interchangeably. The property must be declared
-in the ontology, so relationship-only mappings intentionally cannot resolve
+from being merged or resolved interchangeably. The property must be declared as `STRING`
+in the ontology (numeric, boolean and list endpoint keys are rejected), so relationship-only mappings intentionally cannot resolve
 against undeclared prose-only `name` or internal `entity_key` values.
 
 `type="CONSUMED_BATCH"` fixes the semantic `rel_type`. For a heterogeneous edge
@@ -108,7 +115,8 @@ relationship table or by document chunks remains. Use `await rag.drop_table(
 "consumed_batch.csv")` to remove the mapping and its contributions explicitly.
 Use `ingest()` again to refresh a relationship table; `update()` is for documents.
 `apply_changes(added=[path])` and `apply_changes(modified=[path])` also support
-relationship tables. Each entry uses the existing batch-result wrapper, with
+relationship tables; `deleted=[source]` removes their mappings and source contributions.
+Each entry uses the existing batch-result wrapper, with
 relationship and endpoint counts in `entry.result.metadata`; its source
 identifier does not imply a persisted `Document` node.
 
