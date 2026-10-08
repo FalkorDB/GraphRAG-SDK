@@ -1033,3 +1033,5 @@ stated once rather than two ways of choosing a path that could disagree.
 ## Example
 
 `examples/11_structured_ingestion.py` runs the whole path against a local FalkorDB: two CSVs declared on the ontology, a document whose "Acme Corp" lands on the CSV's row from the first write, `finalize()` and its report, the ontology the mappings declared, a structured question, a prose question and one that needs both halves, and a re-ingest that corrects a row, adds one and drops one.
+
+Relationship-only and entity-table mappings must use distinct property signatures (derived from filenames). Entity-table links also write relationship properties, so sharing a signature across mapping kinds is refused. `drop_table()` selects an exact stored source path before falling back to its basename.

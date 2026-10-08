@@ -490,13 +490,9 @@ class Ontology(DataModel):
         other on its own.
         """
         by_signature: dict[str, list[str]] = {}
-        for mapping in self.tables:
+        for mapping in [*self.tables, *self.relationship_tables]:
             by_signature.setdefault(mapping.signature, []).append(mapping.source)
         collisions = {sig: srcs for sig, srcs in by_signature.items() if len(srcs) > 1}
-        edge_signatures: dict[str, list[str]] = {}
-        for mapping in self.relationship_tables:
-            edge_signatures.setdefault(mapping.signature, []).append(mapping.source)
-        collisions.update({sig: srcs for sig, srcs in edge_signatures.items() if len(srcs) > 1})
         if collisions:
             detail = "; ".join(
                 f"{sig!r} claimed by {', '.join(sorted(srcs))}"

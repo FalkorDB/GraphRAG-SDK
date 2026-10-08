@@ -442,8 +442,10 @@ class OntologyStore:
             )
 
         for stored, declared in (
-            (existing.tables, incoming.tables),
-            (existing.relationship_tables, incoming.relationship_tables),
+            (
+                [*existing.tables, *existing.relationship_tables],
+                [*incoming.tables, *incoming.relationship_tables],
+            ),
         ):
             owner = {m.signature: m.source for m in stored}
             incoming_signatures = [(m.signature, m.source) for m in declared]

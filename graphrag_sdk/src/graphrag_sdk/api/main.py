@@ -1119,23 +1119,36 @@ class GraphRAG:
         The label the table used stays in the ontology, because a document or
         another table may be using it; ``drop_entity()`` removes a label that
         nothing else does. ``source`` is matched the way ``ingest()`` matches it,
-        on the basename, so any spelling of the path names the same table.
+        by exact stored path first, then by basename when no exact match exists.
 
         Raises:
             ValueError: No table with that name is in the ontology.
         """
         await self._ensure_ontology_initialized()
         wanted = os.path.basename(os.path.normpath(source))
-        mapping = next(
+        exact = os.path.normpath(source)
+        exact_relationship = next(
             (
                 m
-                for m in self._global_ontology.tables
-                if os.path.basename(os.path.normpath(m.source)) == wanted
+                for m in self._global_ontology.relationship_tables
+                if os.path.normpath(m.source) == exact
             ),
             None,
         )
+        mapping = next(
+            (m for m in self._global_ontology.tables if os.path.normpath(m.source) == exact), None
+        )
+        if mapping is None and exact_relationship is None:
+            mapping = next(
+                (
+                    m
+                    for m in self._global_ontology.tables
+                    if os.path.basename(os.path.normpath(m.source)) == wanted
+                ),
+                None,
+            )
         if mapping is None:
-            relationship_mapping = next(
+            relationship_mapping = exact_relationship or next(
                 (
                     item
                     for item in self._global_ontology.relationship_tables
@@ -4193,14 +4206,28 @@ class GraphRAG:
             try:
                 await self._ensure_ontology_initialized()
                 wanted = os.path.basename(os.path.normpath(doc_id))
+                exact = os.path.normpath(doc_id)
                 relationship_mapping = next(
                     (
                         mapping
                         for mapping in self._global_ontology.relationship_tables
-                        if os.path.basename(os.path.normpath(mapping.source)) == wanted
+                        if os.path.normpath(mapping.source) == exact
                     ),
                     None,
                 )
+                exact_entity = any(
+                    os.path.normpath(mapping.source) == exact
+                    for mapping in self._global_ontology.tables
+                )
+                if relationship_mapping is None and not exact_entity:
+                    relationship_mapping = next(
+                        (
+                            mapping
+                            for mapping in self._global_ontology.relationship_tables
+                            if os.path.basename(os.path.normpath(mapping.source)) == wanted
+                        ),
+                        None,
+                    )
                 if relationship_mapping is not None:
                     await self.drop_table(relationship_mapping.source)
                     delete_results.append(BatchEntry.ok(DeleteDocumentResult(document_uid=doc_id)))

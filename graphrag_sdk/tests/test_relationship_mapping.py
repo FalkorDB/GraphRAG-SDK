@@ -457,7 +457,7 @@ class TestRelationshipReviewRegressions:
             with pytest.raises(ValueError, match="declared twice"):
                 left.merge(right)
 
-    def test_node_and_edge_signatures_have_separate_namespaces(self):
+    def test_node_and_edge_signatures_cannot_overlap(self):
         from graphrag_sdk import TableMapping
         from graphrag_sdk.storage.ontology_store import OntologyStore
 
@@ -466,9 +466,13 @@ class TestRelationshipReviewRegressions:
         )
         edges = Ontology(relationship_tables=[consumed_mapping(source="hr.csv")])
         assert nodes.tables[0].signature == edges.relationship_tables[0].signature
-        merged = nodes.merge(edges)
-        assert len(merged.tables) == len(merged.relationship_tables) == 1
-        OntologyStore._check_no_signature_collision(nodes, edges)
+        for left, right in ((nodes, edges), (edges, nodes)):
+            with pytest.raises(ValueError, match="property signature"):
+                left.merge(right)
+            from graphrag_sdk.storage.ontology_store import OntologyContradictionError
+
+            with pytest.raises(OntologyContradictionError, match="property signature"):
+                OntologyStore._check_no_signature_collision(left, right)
 
     async def test_duplicate_invalid_rows_count_once(self, tmp_path):
         path = write_csv(tmp_path, ["U-1,B-404,CONSUMED_BATCH,", "U-1,B-404,CONSUMED_BATCH,"])
@@ -514,4 +518,35 @@ class TestRelationshipReviewRegressions:
         assert results.deleted[0].error == "database busy"
         assert results.deleted[1].is_success
         assert results.deleted[1].result.chunks_deleted == 0
+        rag.delete_document.assert_not_awaited()
+
+    async def test_delete_uses_exact_relationship_path_before_entity_basename(
+        self, mock_connection, llm, embedder
+    ):
+        from unittest.mock import AsyncMock
+        from graphrag_sdk import TableMapping
+        from graphrag_sdk.core.connection import ConnectionConfig
+
+        mock_connection.config = ConnectionConfig(graph_name="unit-test")
+        rag = GraphRAG(connection=mock_connection, llm=llm, embedder=embedder)
+        mapping = consumed_mapping(source="relations/links.csv")
+        # Simulate a legacy stored collision: new declarations now refuse this.
+        rag._global_ontology = Ontology(relationship_tables=[mapping]).model_copy(
+            update={
+                "tables": [
+                    TableMapping(
+                        source="people/links.csv", label="Event", key="id", standalone=True
+                    )
+                ]
+            }
+        )
+        rag._ensure_ontology_initialized = AsyncMock()
+        rag._refresh_global_ontology = AsyncMock(return_value=Ontology())
+        rag._graph_store.drop_relationship_source = AsyncMock()
+        rag._ontology_store.drop_relationship_mapping = AsyncMock()
+        rag.delete_document = AsyncMock(side_effect=AssertionError("wrong entity table"))
+        result = await rag.apply_changes(deleted=["relations/links.csv"])
+        assert result.deleted[0].is_success
+        rag._ontology_store.drop_relationship_mapping.assert_awaited_once_with(mapping.source)
+        rag._graph_store.drop_relationship_source.assert_awaited_once_with(mapping.signature, [])
         rag.delete_document.assert_not_awaited()
