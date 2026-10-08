@@ -385,6 +385,31 @@ class GraphStore:
             if row[1]
         }
 
+    async def resolve_by_property(
+        self, label: str, property_name: str, keys: Sequence[str]
+    ) -> dict[str, list[str]]:
+        """Resolve exact endpoint keys without crossing declared key spaces."""
+        if not keys:
+            return {}
+        await self._ensure_label_id_index(label, property_name)
+        safe_label = sanitize_cypher_label(label)
+        safe_property = sanitize_cypher_label(property_name)
+        resolved: dict[str, list[str]] = {}
+        unique = list(dict.fromkeys(keys))
+        for start in range(0, len(unique), self._BATCH_SIZE):
+            batch = unique[start : start + self._BATCH_SIZE]
+            found = await self.query_raw(
+                f"UNWIND $keys AS k "
+                f"MATCH (n:__Entity__:`{safe_label}` {{`{safe_property}`: k}}) "
+                "RETURN k, collect(DISTINCT n.id)",
+                {"keys": batch},
+            )
+            for row in getattr(found, "result_set", None) or []:
+                if not (isinstance(row, list) and len(row) >= 2 and row[0]):
+                    continue
+                resolved[str(row[0])] = [node_id for node_id in row[1] if node_id]
+        return resolved
+
     async def reconcile_keyed_identity(
         self, label: str, signed_key: str, rows: Sequence[tuple[str, str]]
     ) -> dict[str, str]:
@@ -658,13 +683,21 @@ class GraphStore:
             return 0
 
         # Group relationships by type
-        by_type: dict[str, list[GraphRelationship]] = {}
+        by_type: dict[tuple[str, tuple[str, ...]], list[GraphRelationship]] = {}
         for rel in relationships:
-            by_type.setdefault(rel.type, []).append(rel)
+            clear = tuple(
+                sorted(
+                    name for name, value in rel.properties.items() if value is None and "__" in name
+                )
+            )
+            by_type.setdefault((rel.type, clear), []).append(rel)
 
         count = 0
-        for rel_type, group in by_type.items():
+        for (rel_type, clear_properties), group in by_type.items():
             safe_rel_type = sanitize_cypher_label(rel_type)
+            clear_clause = "".join(
+                f" REMOVE r.`{sanitize_cypher_label(name)}`" for name in clear_properties
+            )
             # Sanitize IDs once and filter out empty endpoints
             pre_filter = len(group)
             cleaned_group: list[tuple[GraphRelationship, str, str]] = [
@@ -730,9 +763,14 @@ class GraphStore:
                         f"{{rel_type: coalesce(item.properties.rel_type, '')}}]->(b) "
                         f"WITH r, item, "
                         f"     coalesce(r.source_chunk_ids, []) AS old, "
-                        f"     coalesce(item.properties.source_chunk_ids, []) AS contrib "
+                        f"     coalesce(item.properties.source_chunk_ids, []) AS contrib, "
+                        f"     coalesce(r.structured_sources, []) AS old_sources, "
+                        f"     coalesce(item.properties.structured_sources, []) AS sources "
                         f"SET r += item.properties "
-                        f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]"
+                        f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old], "
+                        f"    r.structured_sources = old_sources + "
+                        f"[s IN sources WHERE NOT s IN old_sources]"
+                        f"{clear_clause}"
                     )
                 else:
                     query = (
@@ -741,6 +779,7 @@ class GraphStore:
                         f"(b:`{safe_tgt}` {{id: item.end_id}}) "
                         f"MERGE (a)-[r:`{safe_rel_type}`]->(b) "
                         f"SET r += item.properties"
+                        f"{clear_clause}"
                     )
                 try:
                     await self._conn.query(query, {"batch": batch_data})
@@ -771,9 +810,15 @@ class GraphStore:
                                 f"{{rel_type: coalesce($properties.rel_type, '')}}]->(b) "
                                 f"WITH r, $properties AS props, "
                                 f"     coalesce(r.source_chunk_ids, []) AS old, "
-                                f"     coalesce($properties.source_chunk_ids, []) AS contrib "
+                                f"     coalesce($properties.source_chunk_ids, []) AS contrib, "
+                                f"     coalesce(r.structured_sources, []) AS old_sources, "
+                                f"     coalesce($properties.structured_sources, []) AS sources "
                                 f"SET r += props "
-                                f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]"
+                                f"SET r.source_chunk_ids = old + "
+                                f"[c IN contrib WHERE NOT c IN old], "
+                                f"    r.structured_sources = old_sources + "
+                                f"[s IN sources WHERE NOT s IN old_sources]"
+                                f"{clear_clause}"
                             )
                         else:
                             q = (
@@ -781,6 +826,7 @@ class GraphStore:
                                 f"(b:`{safe_fb_tgt}` {{id: $end_id}}) "
                                 f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
                                 f"SET r += $properties"
+                                f"{clear_clause}"
                             )
                         params = {
                             "start_id": sid,
@@ -799,6 +845,80 @@ class GraphStore:
 
         logger.debug(f"Upserted {count} relationships")
         return count
+
+    async def finalize_relationship_snapshot(
+        self,
+        signature: str,
+        marker_property: str,
+        snapshot_token: str,
+        signed_properties: Sequence[str],
+    ) -> int:
+        """Remove stale contributions after a complete relationship-table write.
+
+        Current rows carry ``marker_property=snapshot_token``. Older rows from
+        the same mapping lose only that mapping's signed properties and source
+        marker. The physical edge is deleted only when no structured table and
+        no document chunk still supports it.
+        """
+        marker = sanitize_cypher_label(marker_property)
+        cleanup_marker = sanitize_cypher_label(f"relationship_cleanup_{signature}")
+        for property_name in signed_properties:
+            safe_property = sanitize_cypher_label(property_name)
+            await self._conn.query(
+                "MATCH ()-[r:RELATES]->() "
+                "WHERE $signature IN coalesce(r.structured_sources, []) "
+                f"AND coalesce(r.`{marker}`, '') <> $snapshot "
+                f"REMOVE r.`{safe_property}`",
+                {"signature": signature, "snapshot": snapshot_token},
+            )
+        stale = await self._conn.query(
+            "MATCH ()-[r:RELATES]->() "
+            "WHERE $signature IN coalesce(r.structured_sources, []) "
+            f"AND coalesce(r.`{marker}`, '') <> $snapshot "
+            "SET r.structured_sources = "
+            "[s IN r.structured_sources WHERE s <> $signature] "
+            f"SET r.`{cleanup_marker}` = true "
+            f"REMOVE r.`{marker}` "
+            "RETURN count(r)",
+            {"signature": signature, "snapshot": snapshot_token},
+        )
+        await self._conn.query(
+            "MATCH ()-[r:RELATES]->() "
+            f"WHERE r.`{cleanup_marker}` = true "
+            "AND size(coalesce(r.source_chunk_ids, [])) = 0 "
+            "AND size(coalesce(r.structured_sources, [])) = 0 "
+            "DELETE r"
+        )
+        await self._conn.query(
+            "MATCH ()-[r:RELATES]->() "
+            f"WHERE r.`{cleanup_marker}` = true "
+            f"REMOVE r.`{cleanup_marker}`"
+        )
+        rows = getattr(stale, "result_set", None) or []
+        return int(rows[0][0]) if rows and rows[0] else 0
+
+    async def clear_relationship_source_property(
+        self, signature: str, relationship_type: str, property_name: str
+    ) -> None:
+        """Retract a removed mapping property from surviving source-owned edges."""
+        safe_property = sanitize_cypher_label(property_name)
+        await self._conn.query(
+            "MATCH ()-[r:RELATES]->() "
+            "WHERE r.rel_type = $type AND $signature IN coalesce(r.structured_sources, []) "
+            f"REMOVE r.`{safe_property}`",
+            {"signature": signature, "type": relationship_type},
+        )
+
+    async def drop_relationship_source(
+        self, signature: str, signed_properties: Sequence[str]
+    ) -> int:
+        """Remove one relationship table's contribution without touching peers."""
+        return await self.finalize_relationship_snapshot(
+            signature,
+            f"relationship_mapping_{signature}",
+            "__removed_relationship_mapping__",
+            signed_properties,
+        )
 
     # ── Read Operations ──────────────────────────────────────────
 
@@ -1533,6 +1653,7 @@ class GraphStore:
                 "MATCH (e:__Entity__ {id: eid})-[r:RELATES]-(:__Entity__) "
                 "WHERE r.source_chunk_ids IS NOT NULL "
                 "AND size(r.source_chunk_ids) = 0 "
+                "AND size(coalesce(r.structured_sources, [])) = 0 "
                 "WITH DISTINCT r "
                 "DELETE r "
                 "RETURN count(r) AS n",
