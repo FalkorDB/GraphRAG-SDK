@@ -46,6 +46,14 @@ class TestBeamSearch:
         assert len(paths) <= 3
         assert all(isinstance(p, ScoredPath) for p in paths)
 
+    async def test_low_scoring_goal_is_not_pruned_by_the_beam(self, ctx: Context):
+        # The goal is a direct neighbour but scores below the other neighbour;
+        # with beam_width=1 it used to be cut before the goal check.
+        adj = {"a": [("x", 1.0, "R"), ("goal", 0.01, "R")], "x": [("y", 1.0, "R")]}
+        walk = DynamicGraphWalk(make_neighbor_fn(adj), beam_width=1, max_depth=3)
+        paths = await walk.beam_search("a", goal="goal", ctx=ctx)
+        assert paths and paths[0].nodes == ["a", "goal"]
+
     async def test_reaches_goal(self, ctx: Context):
         adj = {
             "a": [("b", 1.0, "R")],
@@ -160,4 +168,6 @@ class TestWeightedNeighborsQuery:
         assert "NOT type(r) IN ['SAME_AS', 'DISTINCT_FROM']" in cypher
         assert "ORDER BY weight DESC, id LIMIT 7" in cypher
         assert "max(w) AS weight" in cypher
+        # Equal-weight parallel edges always yield the same label.
+        assert "ORDER BY w DESC, coalesce(r.rel_type, type(r))" in cypher
         assert out == [("acme", 2.0, "WORKS_AT")]

@@ -99,8 +99,10 @@ class TestGuard:
     @pytest.mark.parametrize(
         "cypher",
         [
-            "MATCH (p:Person)-[r:RELATES]->(c:Company) WHERE r.rel_type = 'WORKS_AT' "
-            "RETURN c.name, count(p) AS n",
+            (
+                "MATCH (p:Person)-[r:RELATES]->(c:Company) WHERE r.rel_type = 'WORKS_AT' "
+                "RETURN c.name, count(p) AS n"
+            ),
             "MATCH (p:Person) WHERE p.name = 'call center: delete' RETURN p.name",
             "MATCH (n) RETURN [x IN collect(n) WHERE x:Person | x.name] AS names",
             "MATCH (n)-[r:RELATES]-(m) WHERE r.rel_type IN ['WORKS_AT'] RETURN m.name",
@@ -200,6 +202,33 @@ class SectionStrategy:
 
 
 class TestSearch:
+    async def test_search_puts_passages_before_entity_lines(self):
+        from graphrag_sdk.retrieval.agentic.graph_tools import make_search_tool, rank_search_entries
+
+        entities = "## Key Entities\n" + "\n".join(f"- Entity {i}" for i in range(30))
+        passages = "## Source Passages\n[Source: book]\nThe answer is here.\n---\nMore text."
+
+        class Strategy:
+            async def search(self, q, ctx, **kw):
+                return RetrieverResult(
+                    items=[
+                        RetrieverResultItem(content=entities, metadata={"section": "entities"}),
+                        RetrieverResultItem(content=passages, metadata={"section": "passages"}),
+                    ]
+                )
+
+        tctx = ToolContext(ctx=Context())
+        out = await make_search_tool(Strategy(), max_items=5).handler({"query": "q"}, tctx)
+        lines = out.content.splitlines()
+        assert lines[0] == "[1] (source: book) The answer is here."
+        assert lines[1] == "[2] More text."
+        assert len(lines) == 5 and lines[2] == "[3] Entity 0"
+        # Stable within a kind.
+        ranked = rank_search_entries(
+            [("entity", "a", ""), ("passage", "p1", ""), ("entity", "b", ""), ("passage", "p2", "")]
+        )
+        assert [t for _, t, _ in ranked] == ["p1", "p2", "a", "b"]
+
     def test_split_search_items(self):
         items = asyncio.run(SectionStrategy().search("q", Context())).items
         assert split_search_items(items) == [
@@ -215,11 +244,12 @@ class TestSearch:
         state = tctx()
         first = await tool.handler({"query": "alice"}, state)
         second = await tool.handler({"query": "acme"}, state)
-        assert first.content.splitlines()[0] == "[1] Alice: an engineer"
-        assert "[4] (source: hr.pdf) Alice joined Acme in 2020." in first.content
+        # Passages are numbered first, then the statement lines.
+        assert first.content.splitlines()[0] == "[1] (source: hr.pdf) Alice joined Acme in 2020."
+        assert "Alice: an engineer" in first.content
         assert second.content.splitlines()[0].startswith("[6] ")
         assert len(state.evidence) == 10
-        assert state.evidence.get(4).source == "hr.pdf"
+        assert state.evidence.get(1).source == "hr.pdf"
 
     async def test_no_results(self):
         class Empty:

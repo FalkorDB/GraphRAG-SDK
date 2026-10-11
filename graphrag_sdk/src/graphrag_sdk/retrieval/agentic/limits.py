@@ -22,7 +22,9 @@ class AgentLimits:
         max_calls_per_turn: Tool calls run from one model response; the rest
             of that response's calls are refused.
         max_observation_chars: Characters of one tool result sent back to the
-            model (the evidence keeps the full text).
+            model (the evidence keeps the full text). Sized so one search's
+            source passages (15 by default, ~1,500 characters each) reach
+            the model, as they do in a normal completion.
         max_history_turns: Earlier user/assistant exchanges kept.
         max_trace_chars: Characters kept per trace step (observation and
             JSON-encoded arguments).
@@ -41,7 +43,7 @@ class AgentLimits:
     max_steps: int = 6
     max_tool_calls: int = 12
     max_calls_per_turn: int = 4
-    max_observation_chars: int = 8000
+    max_observation_chars: int = 24_000
     max_history_turns: int = 5
     max_trace_chars: int = 2000
 

@@ -1001,11 +1001,17 @@ class ToolCall(DataModel):
     parse_error: str | None = None
 
     def to_openai(self) -> dict[str, Any]:
-        """Return the OpenAI-compatible tool-call entry for an assistant message."""
+        """Return the OpenAI-compatible tool-call entry for an assistant message.
+
+        The provider's own argument text is echoed when there is one; a call
+        built from decoded ``arguments`` alone (a custom provider, a test)
+        serialises them, so the history sent back still carries the call.
+        """
+        arguments = self.raw_arguments or json.dumps(self.arguments, default=str)
         return {
             "id": self.id,
             "type": "function",
-            "function": {"name": self.name, "arguments": self.raw_arguments or "{}"},
+            "function": {"name": self.name, "arguments": arguments},
         }
 
 

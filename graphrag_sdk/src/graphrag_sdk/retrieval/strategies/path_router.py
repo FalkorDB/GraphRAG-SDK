@@ -62,7 +62,8 @@ class HeuristicPathRouter:
     """
 
     async def plan(self, query: str, ctx: Context | None = None) -> set[str]:
-        q = (query or "").lower()
+        text = query or ""
+        q = text.lower()
         plan: set[str] = {"relates", "chunks"}
         # Relationship / connection questions → traversal.
         # Word stems, so "connected", "relationships", "linked", "neighbours"
@@ -78,8 +79,9 @@ class HeuristicPathRouter:
         # only a capitalized token *after* the first word signals a real name,
         # otherwise the entity paths fire on virtually every question and the
         # router never prunes.
-        rest = query.split(maxsplit=1)[1] if len(query.split(maxsplit=1)) > 1 else ""
-        if '"' in query or "'" in query or re.search(r"\b[A-Z][a-z]+\b", rest):
+        parts = text.split(maxsplit=1)
+        rest = parts[1] if len(parts) > 1 else ""
+        if '"' in text or "'" in text or re.search(r"\b[A-Z][a-z]+\b", rest):
             plan |= {"entity_cypher", "entity_fulltext"}
         return plan & _PATH_SET or all_paths()
 

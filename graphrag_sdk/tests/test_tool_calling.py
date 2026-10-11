@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -103,6 +104,14 @@ class TestChatMessageToolFields:
 
     def test_tool_call_without_raw_arguments_sends_empty_object(self):
         assert ToolCall(id="c1", name="cypher").to_openai()["function"]["arguments"] == "{}"
+
+    def test_tool_call_built_from_arguments_keeps_them(self):
+        call = ToolCall(id="c1", name="search", arguments={"query": "acme", "k": 3})
+        assert json.loads(call.to_openai()["function"]["arguments"]) == {"query": "acme", "k": 3}
+
+    def test_provider_argument_text_is_echoed_verbatim(self):
+        call = ToolCall(id="c1", name="search", arguments={"query": "x"}, raw_arguments='{"query":"x"}')
+        assert call.to_openai()["function"]["arguments"] == '{"query":"x"}'
 
     def test_tool_result_dict(self):
         msg = ChatMessage(role="tool", content="3 rows", tool_call_id="c1")

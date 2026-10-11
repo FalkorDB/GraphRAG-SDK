@@ -885,7 +885,9 @@ class GraphStore:
             "MATCH (n:__Entity__ {id: $node_id})-[r]-(m:__Entity__) "
             "WHERE NOT type(r) IN ['SAME_AS', 'DISTINCT_FROM'] AND m.id IS NOT NULL "
             "WITH m, r, coalesce(r.weight, 1.0) AS w "
-            "ORDER BY w DESC "
+            # The label tie-break makes the chosen label stable when parallel
+            # edges have the same weight.
+            "ORDER BY w DESC, coalesce(r.rel_type, type(r)) "
             "WITH m, collect(coalesce(r.rel_type, type(r)))[0] AS label, max(w) AS weight "
             "RETURN m.id AS id, label, weight "
             f"ORDER BY weight DESC, id LIMIT {int(limit)}"
