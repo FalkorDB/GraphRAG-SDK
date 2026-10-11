@@ -147,7 +147,7 @@ def clamp_params(component: str, strategy: str, raw: dict[str, Any] | None) -> d
             continue
         try:
             num = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):  # int too large for float
             continue
         if not math.isfinite(num):  # inf / nan: unusable, keep the default
             continue
@@ -254,9 +254,6 @@ def _guide(
         )
         lines.extend(tunable)
     return "\n".join(lines) + "\n"
-
-
-_GUIDE = _guide()
 
 
 @dataclass(frozen=True)
@@ -380,11 +377,12 @@ def parse_plan(text: str) -> IngestionPlan | None:
     fields: dict[str, str] = {}
     params: dict[str, dict[str, Any]] = {}
 
-    # First try strict JSON (possibly wrapped in ```json fences).
-    fenced = re.search(r"\{.*\}", raw, re.DOTALL)
-    if fenced:
+    # First try strict JSON (possibly wrapped in ```json fences). Decode one
+    # object from the first "{" so trailing prose (even with braces) is ignored.
+    start = raw.find("{")
+    if start != -1:
         try:
-            obj = json.loads(fenced.group(0))
+            obj, _end = json.JSONDecoder().raw_decode(raw, start)
             if isinstance(obj, dict):
                 for k in ("chunker", "extractor", "resolver", "reason"):
                     v = obj.get(k)

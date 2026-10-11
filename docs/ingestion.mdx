@@ -276,6 +276,7 @@ from graphrag_sdk import HeuristicIngestionPlanner
 await rag.ingest(source="handbook.md", auto=True, planner=HeuristicIngestionPlanner())
 
 # Explicit strategies always win — the planner only fills the rest
+from graphrag_sdk import ExactMatchResolution
 await rag.ingest(source="handbook.md", auto=True, resolver=ExactMatchResolution())
 ```
 
@@ -292,11 +293,11 @@ The planner may also tune parameters inside the chosen strategy (e.g. `max_token
 **Safety guarantees:**
 
 - **Explicit wins** — any `chunker` / `extractor` / `resolver` you pass is kept as-is; the planner only fills the ones left unset.
-- **Never silently broken** — an empty/invalid plan or any planner error falls back to the default strategies (`sentence` / `gliner` / `exact`), reproducing today's behavior.
+- **Never silently broken** — an empty/invalid plan or any planner error falls back to the default strategies (`sentence` / `gliner` / `exact`), reproducing today's behavior. The one exception is an exhausted latency budget (`LatencyBudgetExceededError`), which is raised like everywhere else in the SDK.
 - **Opt-in** — `auto=False` is the default; nothing changes unless you enable it.
 - **Bounded blast radius on malicious content** — the `LLMIngestionPlanner` prompt includes a sample of the document itself, so adversarial document content could in principle try to steer the planner's choice. The worst case is still one of the options you allow (below) with clamped parameters (see `PARAM_SPECS`) — never an arbitrary strategy or an out-of-range value.
 
-**Cost ceiling.** By default the LLM planner may pick any option above, and the `llm_verified` pair budget it sets is capped at 500 (the resolver's default). To make sure document text can never add LLM cost, allow only the cheap options:
+**Cost ceiling.** By default the LLM planner may pick any option above, and the `llm_verified` pair budget it sets is capped at 500 (the resolver's default). To make sure document text can never add strategy-dependent LLM cost, allow only the cheap options (the planner itself still makes its one LLM call per document; use `HeuristicIngestionPlanner` for none):
 
 ```python
 from graphrag_sdk import LLMIngestionPlanner
@@ -317,7 +318,7 @@ Two planners ship in the SDK:
 | Planner | Cost | How it decides |
 |---------|------|----------------|
 | `LLMIngestionPlanner` (default when `auto=True`) | One small LLM call per document | Guided prompt over a document sample |
-| `HeuristicIngestionPlanner` | Zero (no LLM call) | Cheap document features (structure cues, length) |
+| `HeuristicIngestionPlanner` | Zero (no LLM call) | Cheap document features (file extension, headings, lists) |
 
 **What was chosen.** With `auto=True`, each `IngestionResult` records the decision in `metadata["plan"]`:
 
@@ -332,7 +333,7 @@ result.metadata["plan"]
 #  "notes": []}
 ```
 
-`slots` says where each strategy came from: `"caller"` (you passed it), `"planner"` or `"default"` (the planner failed, or that strategy could not be built — the other slots still follow the plan). `notes` explains any fallback or adjustment, e.g. `structural` becoming `sentence` when the document has no structural elements (text mode). Planner failures are also logged at WARNING. Structured sources (`.csv`, `.tsv`, …) never run the planner: no chunker, extractor or resolver applies to them.
+`slots` says where each strategy came from: `"caller"` (you passed it), `"planner"` (built from the returned plan) or `"default"` (the planner raised or returned no plan, or that strategy could not be built — the other slots still follow the plan). `LLMIngestionPlanner` does not raise when its LLM call fails or its reply is not a plan: it returns the default plan, so the slots read `"planner"` and `plan.reason` starts with `default:`. Re-ingesting unchanged content skips the planner as well (a note says so). `notes` explains any fallback or adjustment, e.g. `structural` becoming `sentence` when the document has no structural elements (text mode). Planner failures are also logged at WARNING. Structured sources (`.csv`, `.tsv`, …) never run the planner: no chunker, extractor or resolver applies to them.
 
 **Code:** [`ingestion_planner.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/ingestion_planner.py) · wired into `GraphRAG.ingest()` in [`api/main.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/api/main.py).
 

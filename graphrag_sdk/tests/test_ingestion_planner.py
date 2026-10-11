@@ -91,6 +91,14 @@ class TestParsePlan:
         assert plan.chunker == "fixed"
         assert plan.extractor == "gliner"  # default-filled
 
+    def test_trailing_prose_with_braces_keeps_params(self):
+        plan = parse_plan(
+            '{"chunker": "fixed", "chunker_params": {"chunk_size": 500}}\n'
+            "Note: I chose {fixed} because the text is uniform."
+        )
+        assert plan.chunker == "fixed"
+        assert plan.chunker_params == {"chunk_size": 500}
+
     def test_parses_key_value(self):
         plan = parse_plan("chunker: contextual\nextractor = gliner\nresolver: exact")
         assert plan == IngestionPlan("contextual", "gliner", "exact")
@@ -463,6 +471,11 @@ class TestClampEdgeCases:
     def test_lone_overlap_checked_against_default_size(self):
         out = clamp_params("chunker", "fixed", {"chunk_overlap": 1500})
         assert out == {"chunk_overlap": 999}
+
+    def test_int_too_large_for_float_dropped(self):
+        assert clamp_params("chunker", "fixed", {"chunk_size": 10**400}) == {}
+        plan = IngestionPlan(chunker="fixed", chunker_params={"chunk_size": 10**400})
+        assert plan.chunker_params == {}
 
     @pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan"), "Infinity", "nan"])
     def test_non_finite_values_dropped(self, bad):

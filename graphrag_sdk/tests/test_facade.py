@@ -20,6 +20,7 @@ from graphrag_sdk.core.models import (
     ApplyChangesResult,
     ChatMessage,
     DeleteDocumentResult,
+    DocumentRecord,
     GraphData,
     IngestionResult,
     RagResult,
@@ -320,6 +321,85 @@ class TestGraphRAGIngest:
         assert load_calls["count"] == 1
         assert result.metadata["plan"]["plan"]["chunker"] == "structural"
 
+    @staticmethod
+    def _counting_planner():
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+
+        calls: list[str | None] = []
+
+        class P:
+            async def plan(self, text, *, source=None, ctx=None):
+                calls.append(source)
+                return IngestionPlan()
+
+        return P(), calls
+
+    async def test_ingest_auto_skips_planner_for_unchanged_text(self, mock_conn, embedder, llm):
+        import hashlib
+
+        txt = "Alice works at Acme."
+        planner, calls = self._counting_planner()
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        record = DocumentRecord(path="d1", content_hash=hashlib.sha256(txt.encode()).hexdigest())
+        g._graph_store.get_document_record = AsyncMock(return_value=record)
+        result = await g.ingest(text=txt, document_id="d1", auto=True, planner=planner)
+        assert calls == []
+        assert result.metadata["skipped_unchanged"] is True
+        assert result.metadata["plan"]["planner"] is None
+        assert "unchanged" in result.metadata["plan"]["notes"][0]
+
+    async def test_ingest_auto_skips_planner_for_unchanged_file(
+        self, mock_conn, embedder, llm, tmp_path, monkeypatch
+    ):
+        import hashlib
+
+        from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+
+        f = tmp_path / "a.txt"
+        f.write_text("Alice works at Acme.")
+        loads: list[str] = []
+        original_load = TextLoader.load
+
+        async def counting_load(self_loader, source, ctx):
+            loads.append(source)
+            return await original_load(self_loader, source, ctx)
+
+        monkeypatch.setattr(TextLoader, "load", counting_load)
+        text = (await original_load(TextLoader(), str(f), Context())).text
+        planner, calls = self._counting_planner()
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        record = DocumentRecord(path=str(f), content_hash=hashlib.sha256(text.encode()).hexdigest())
+        g._graph_store.get_document_record = AsyncMock(return_value=record)
+        result = await g.ingest(str(f), auto=True, planner=planner)
+        assert calls == []
+        assert len(loads) == 1  # loaded once, reused by the pipeline
+        assert result.metadata["skipped_unchanged"] is True
+
+    async def test_ingest_auto_plans_changed_content_once_loaded(
+        self, mock_conn, embedder, llm, tmp_path, monkeypatch
+    ):
+        from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+
+        f = tmp_path / "a.txt"
+        f.write_text("Alice works at Acme.")
+        loads: list[str] = []
+        original_load = TextLoader.load
+
+        async def counting_load(self_loader, source, ctx):
+            loads.append(source)
+            return await original_load(self_loader, source, ctx)
+
+        monkeypatch.setattr(TextLoader, "load", counting_load)
+        planner, calls = self._counting_planner()
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        record = DocumentRecord(path=str(f), content_hash="old-hash")
+        g._graph_store.get_document_record = AsyncMock(return_value=record)
+        result = await g.ingest(str(f), auto=True, planner=planner)
+        assert len(calls) == 1
+        assert len(loads) == 1
+        assert "skipped_unchanged" not in result.metadata
+        assert result.metadata["plan"]["planner"] == "P"
+
     async def test_ingest_auto_records_plan_in_metadata(self, mock_conn, embedder, llm):
         from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
 
@@ -424,8 +504,12 @@ class TestGraphRAGIngest:
     async def test_ingest_auto_does_not_plan_a_table(
         self, mock_conn, embedder, llm, tmp_path, monkeypatch
     ):
+        planned: list[object] = []
+
         class MustNotRun:
             async def plan(self, *a, **k):
+                # Recorded, not raised: the planner path swallows exceptions.
+                planned.append(a)
                 raise AssertionError("planner ran for a table")
 
         csv = tmp_path / "people.csv"
@@ -436,6 +520,7 @@ class TestGraphRAGIngest:
         monkeypatch.setattr(g, "_ingest_structured", AsyncMock(return_value=sentinel))
         result = await g.ingest(str(csv), auto=True, planner=MustNotRun())
         assert result is sentinel
+        assert planned == []
 
 
 class TestGraphRAGDeduplicateEntities:

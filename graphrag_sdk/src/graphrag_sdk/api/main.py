@@ -1898,7 +1898,9 @@ class GraphRAG:
             planner is LLM-backed (one small call); pass a custom ``planner``
             (e.g. ``HeuristicIngestionPlanner()``) for a zero-cost heuristic.
             On an empty/invalid plan or planner error it falls back to the
-            defaults above, so behavior is never silently lost.
+            defaults above, so behavior is never silently lost (an exhausted
+            latency budget still raises ``LatencyBudgetExceededError``).
+            Re-ingesting unchanged content skips the planner too.
 
         Args:
             source: File path (or list of paths) — file mode only.
@@ -2765,7 +2767,28 @@ class GraphRAG:
         # below (build via `or ...`), so behavior is never silently lost.
         preloaded_document: DocumentOutput | None = None
         plan_report: dict[str, Any] | None = None
-        if auto and (chunker is None or extractor is None or resolver is None):
+        needs_plan = auto and (chunker is None or extractor is None or resolver is None)
+        unchanged = False
+        if needs_plan and existing is not None and existing.content_hash:
+            # Re-ingest of content the graph already holds is a no-op in the
+            # pipeline (no provider calls), so check it before planning: the
+            # planner would otherwise spend an LLM call on a skipped document.
+            # The file is loaded here once and reused by the pipeline.
+            if text is not None:
+                current_text: str | None = text
+            else:
+                try:
+                    preloaded_document = await (loader or TextLoader()).load(source, ctx)
+                    current_text = preloaded_document.text
+                except LatencyBudgetExceededError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Unchanged-content pre-check load failed (%s)", exc)
+                    current_text = None
+            if current_text is not None:
+                digest = hashlib.sha256(current_text.encode("utf-8")).hexdigest()
+                unchanged = digest == existing.content_hash
+        if needs_plan and not unchanged:
             plan_report = {}
             (
                 chunker,
@@ -2782,6 +2805,7 @@ class GraphRAG:
                 planner=planner,
                 ctx=ctx,
                 report=plan_report,
+                loaded_document=preloaded_document,
             )
 
         pipeline = IngestionPipeline(
@@ -2805,6 +2829,14 @@ class GraphRAG:
             result = await pipeline.run(source, ctx, text=text, document_info=doc_info)
         if plan_report is not None:
             result.metadata["plan"] = plan_report
+        elif unchanged:
+            given = {"chunker": chunker, "extractor": extractor, "resolver": resolver}
+            result.metadata["plan"] = {
+                "planner": None,
+                "plan": None,
+                "slots": {k: "caller" if v is not None else "default" for k, v in given.items()},
+                "notes": ["content unchanged, so the planner did not run"],
+            }
         elif auto:
             result.metadata["plan"] = {
                 "planner": None,
@@ -2998,6 +3030,7 @@ class GraphRAG:
         planner: IngestionPlanner | None,
         ctx: Context | None,
         report: dict[str, Any] | None = None,
+        loaded_document: DocumentOutput | None = None,
     ) -> tuple[
         ChunkingStrategy | None,
         ExtractionStrategy | None,
@@ -3022,6 +3055,8 @@ class GraphRAG:
         loaded (file mode only) to build the planner's content sample, if
         any. The caller should pass it on to ``IngestionPipeline.run()`` as
         ``loaded_document=`` so the file is not loaded a second time.
+        A ``loaded_document`` passed in (file mode, already loaded by the
+        caller) is planned from and returned as is, without loading again.
         """
         # In file mode the raw text isn't loaded yet, so give the planner a real
         # content sample (best-effort) rather than only the file path — many
@@ -3031,7 +3066,11 @@ class GraphRAG:
         # the source a second time via the pipeline.
         sample_text = text
         preloaded_document: DocumentOutput | None = None
-        if sample_text is None and source is not None and loader is not None:
+        if sample_text is None and loaded_document is not None:
+            # Already loaded by the caller: plan from it, load nothing.
+            sample_text = loaded_document.text
+            preloaded_document = loaded_document
+        elif sample_text is None and source is not None and loader is not None:
             try:
                 loaded = await loader.load(source, ctx or Context())
                 sample_text = loaded.text
