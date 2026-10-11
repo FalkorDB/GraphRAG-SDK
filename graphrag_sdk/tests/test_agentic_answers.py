@@ -493,3 +493,23 @@ class TestFacade:
             await rag.run_skill("gap_analysis", colour="red")
         result = await rag.run_skill("gap_analysis")
         assert result.skill == "gap_analysis"
+
+
+# ── Prompt routing ───────────────────────────────────────────────
+
+
+class TestPromptRouting:
+    def test_connection_lists_go_to_query_graph_and_are_reported_whole(self):
+        from graphrag_sdk.retrieval.agentic.prompts import (
+            render_native_system_prompt,
+            render_system_prompt,
+        )
+
+        for prompt in (render_native_system_prompt(), render_system_prompt("tools", "search")):
+            # "Who is connected to X" is a complete-list question for query_graph,
+            # not search (top passages) or traverse (a bounded walk).
+            assert "which X are connected to Y" in prompt
+            assert "rather than search or traverse" in prompt
+            assert "report every item" in prompt
+            # Content questions still go to search first.
+            assert "Search first with the\n  question as it was asked" in prompt
