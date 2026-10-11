@@ -93,7 +93,7 @@ agent = rag.agentic_retrieval(limits=AgentLimits(max_steps=8, max_tool_calls=16,
 | `max_steps` | 6 | model turns that may call tools |
 | `max_tool_calls` | 12 | tool calls in the whole run |
 | `max_calls_per_turn` | 4 | calls run from one model response |
-| `max_observation_chars` | 8000 | text of one tool result sent to the model |
+| `max_observation_chars` | 24000 | text of one tool result sent to the model (fits one search's passages) |
 | `max_history_turns` | 5 | earlier exchanges kept |
 | `search_max_items` / `search_max_limit` | 40 / 50 | search results / retrieval-limit arguments |
 | `query_max_rows` / `query_timeout_ms` / `query_attempts` | 25 / 5000 / 3 | `query_graph` |

@@ -192,6 +192,29 @@ def split_search_items(items: list[RetrieverResultItem]) -> list[tuple[str, str,
     return entries
 
 
+#: Order in which search results reach the model when they exceed the item or
+#: text cap: source passages and facts carry the answer's wording, entity
+#: lines are bare names. The order within each kind is retrieval's ranking.
+_SEARCH_KIND_PRIORITY = {
+    "passage": 0,
+    "fact": 1,
+    "relationship": 2,
+    "graph_query": 3,
+    "context": 4,
+    "entity": 5,
+}
+
+
+def rank_search_entries(entries: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+    """``entries`` with passages first, then facts, relationships, entities.
+
+    MultiPath returns entities first; cutting that list at the item cap kept
+    up to 40 bare entity names and relationship lines and dropped every source
+    passage, which is where most answers are. Stable within a kind.
+    """
+    return sorted(entries, key=lambda e: _SEARCH_KIND_PRIORITY.get(e[0], 4))
+
+
 def make_search_tool(strategy: Any, *, max_items: int = 40, max_limit: int = 50) -> Tool:
     """Semantic search; each returned statement or passage is numbered.
 
@@ -207,7 +230,7 @@ def make_search_tool(strategy: Any, *, max_items: int = 40, max_limit: int = 50)
             if k in tool_input
         }
         result = await strategy.search(query, tctx.ctx, **overrides)
-        entries = split_search_items(list(result.items))[:max_items]
+        entries = rank_search_entries(split_search_items(list(result.items)))[:max_items]
         if not entries:
             return ToolResult("No results. Try different keywords or a narrower query.")
         lines = []
