@@ -33,20 +33,35 @@ from graphrag_sdk.retrieval.agentic.tools import check_arguments
 # ── Fakes ────────────────────────────────────────────────────────
 
 
+def _next_scripted(script: list[Any], i: int, repeat_last: bool) -> Any:
+    """The scripted reply for call ``i``.
+
+    A loop that asks for more turns than the test scripted fails loudly, so a
+    regression in turn counting cannot pass by replaying the last reply.
+    Tests that drive the loop to a limit with one repeated reply opt in with
+    ``repeat_last=True``.
+    """
+    if i < len(script):
+        return script[i]
+    assert repeat_last, f"the agent loop asked for turn {i + 1}; only {len(script)} scripted"
+    return script[-1]
+
+
 class ScriptedLLM:
     """Text-only LLM returning a fixed list of ReAct turns in order."""
 
     supports_tool_calling = False
 
-    def __init__(self, turns: list[str]):
+    def __init__(self, turns: list[str], *, repeat_last: bool = False):
         self._turns = turns
+        self._repeat_last = repeat_last
         self._i = 0
         self.model_name = "scripted"
         self.prompts: list[str] = []
 
     async def ainvoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
         self.prompts.append(prompt)
-        text = self._turns[min(self._i, len(self._turns) - 1)]
+        text = _next_scripted(self._turns, self._i, self._repeat_last)
         self._i += 1
         return LLMResponse(content=text)
 
@@ -61,14 +76,15 @@ class ToolCallingLLM:
     supports_tool_calling = True
     model_name = "tool-calling"
 
-    def __init__(self, responses: list[LLMResponse]):
+    def __init__(self, responses: list[LLMResponse], *, repeat_last: bool = False):
         self._responses = responses
+        self._repeat_last = repeat_last
         self._i = 0
         self.requests: list[dict[str, Any]] = []
 
     async def ainvoke_with_tools(self, messages, tools, **kwargs: Any) -> LLMResponse:
         self.requests.append({"messages": list(messages), "tools": list(tools), **kwargs})
-        resp = self._responses[min(self._i, len(self._responses) - 1)]
+        resp = _next_scripted(self._responses, self._i, self._repeat_last)
         self._i += 1
         return resp
 
@@ -378,10 +394,15 @@ class TestReactLoop:
         assert "did not follow the format" in llm.prompts[1]
 
     async def test_stops_after_two_malformed_replies(self, ctx: Context):
-        llm = ScriptedLLM(["Thought: hmm, nothing to do here."])
-        agent = AgenticRetrieval(llm, strategy=FakeStrategy(), max_steps=3)
+        # Exactly two malformed replies: one reminder, then the run stops.
+        # (Citation repair, which would add a third call, is tested elsewhere.)
+        llm = ScriptedLLM(["Thought: hmm, nothing to do here."] * 2)
+        agent = AgenticRetrieval(
+            llm, strategy=FakeStrategy(), max_steps=3, repair_citations=False
+        )
         result = await agent.search("q", ctx)
         assert result.metadata["stop_reason"] == "no_action"
+        assert len(llm.prompts) == 2
 
     async def test_max_steps_forces_a_final_answer(self, ctx: Context):
         llm = ScriptedLLM(

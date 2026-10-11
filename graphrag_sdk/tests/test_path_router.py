@@ -91,6 +91,10 @@ class TestHeuristicPathRouter:
         plan = await HeuristicPathRouter().plan("how are Alice and Bob connected?")
         assert "expansion" in plan
 
+    async def test_none_query_is_tolerated(self):
+        plan = await HeuristicPathRouter().plan(None)  # type: ignore[arg-type]
+        assert {"relates", "chunks"} <= plan
+
     async def test_proper_noun_adds_entity_paths(self):
         plan = await HeuristicPathRouter().plan("Tell me about Alice")
         assert {"entity_cypher", "entity_fulltext"} <= plan

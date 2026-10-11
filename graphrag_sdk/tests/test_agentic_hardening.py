@@ -146,6 +146,28 @@ class TestReadOnlyFailFast:
             await conn.query("MATCH (n) RETURN m", read_only=True)
         assert graph.ro_query.await_count == 1
         breaker.record_failure.assert_not_awaited()
+        # The server answered, so it counts as reachable.
+        breaker.record_success.assert_awaited_once()
+
+    async def test_rejected_half_open_probe_does_not_strand_the_breaker(self):
+        import time
+
+        from redis.exceptions import ResponseError
+
+        from graphrag_sdk.core.circuit_breaker import CircuitBreaker, CircuitState
+
+        conn, graph, _ = self.conn(ResponseError("Variable `m` not defined"))
+        breaker = CircuitBreaker()
+        breaker._state = CircuitState.OPEN
+        breaker._failure_count = breaker.failure_threshold
+        breaker._last_failure_time = time.monotonic() - breaker.recovery_timeout - 1
+        conn._breaker = breaker
+        # The half-open probe is a model-written query the server rejects.
+        with pytest.raises(DatabaseError, match="not defined"):
+            await conn.query("MATCH (n) RETURN m", read_only=True)
+        assert breaker.state == CircuitState.CLOSED
+        graph.query = AsyncMock(return_value=SimpleNamespace(result_set=[[1]]))
+        assert (await conn.query("RETURN 1")).result_set == [[1]]
 
     async def test_network_errors_are_still_retried(self):
         conn, graph, breaker = self.conn(ConnectionError("reset"))
@@ -182,6 +204,10 @@ def ledger(n: int) -> EvidenceLedger:
 
 
 class TestGrounding:
+    def test_code_index_is_not_a_figure_in_conversation(self):
+        g = ground_answer("Use items[0] as the key.", EvidenceLedger(), tools_called=False)
+        assert g.grounded and g.reason == "conversation"
+
     def test_figures_without_tools_are_not_conversation(self):
         g = ground_answer("Acme was founded in 1999.", EvidenceLedger(), tools_called=False)
         assert not g.grounded and g.reason == "no_citations"

@@ -11,8 +11,9 @@ from graphrag_sdk.skills.base import Skill, skill_parameters
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 MAX_EVENTS = 500
-#: Entities scanned per requested event: properties are filtered in Python,
-#: so the query reads more rows than it returns.
+#: Candidate entities read per requested event. The query keeps only entities
+#: with a date-like property name; the exact word check and date parsing run
+#: in Python, so a few candidates per event can still drop out.
 _SCAN_FACTOR = 5
 _MAX_SCAN = 5000
 
@@ -63,9 +64,17 @@ class TimelineReconstructionSkill(Skill):
         scan = min(limit * _SCAN_FACTOR, _MAX_SCAN)
 
         match = f"(e:`{sanitize_cypher_label(label)}`)" if label else "(e:__Entity__)"
+        # Filter to entities with a date-like property *before* the LIMIT, so
+        # undated entities cannot use up the scan and hide dated ones, and
+        # return only those properties (never the embedding vector).
         rows = await self._rows(
-            f"MATCH {match} RETURN e.id AS id, properties(e) AS props LIMIT $scan",
-            {"scan": scan},
+            f"MATCH {match} "
+            "WITH e, [k IN keys(e) WHERE NOT toLower(k) CONTAINS 'embedding' "
+            "AND (any(w IN $words WHERE toLower(k) CONTAINS w) OR k ENDS WITH 'On' "
+            "OR toLower(k) ENDS WITH '_on') | [k, e[k]]] AS dated "
+            "WHERE size(dated) > 0 "
+            "RETURN e.id AS id, e.name AS name, dated LIMIT $scan",
+            {"scan": scan, "words": sorted(_DATE_WORDS - {"on"})},
         )
 
         events: list[dict[str, Any]] = []
@@ -73,14 +82,15 @@ class TimelineReconstructionSkill(Skill):
             if not row:
                 continue
             entity_id = row[0]
-            props = dict(row[1] or {}) if len(row) > 1 else {}
+            name = row[1] if len(row) > 1 and row[1] is not None else entity_id
+            props = {str(k): v for k, v in (row[2] or [])} if len(row) > 2 else {}
             found = _extract_date(props)
             if found is not None:
                 sort_key, raw, key = found
                 events.append(
                     {
                         "entity": entity_id,
-                        "name": props.get("name", entity_id),
+                        "name": name,
                         "date": raw,
                         "attribute": key,
                         "sort": sort_key,

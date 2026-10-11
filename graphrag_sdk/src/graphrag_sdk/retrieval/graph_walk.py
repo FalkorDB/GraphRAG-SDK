@@ -98,7 +98,6 @@ class DynamicGraphWalk:
         # neighbor of ``start`` — still appear in goal-less results instead of
         # silently vanishing while deeper branches survive.
         terminal: list[ScoredPath] = []
-        visited: set[str] = {start}
 
         for depth in range(self._max_depth):
             if ctx is not None:
@@ -126,7 +125,6 @@ class DynamicGraphWalk:
                     if nbr in nodes:
                         continue  # no cycles within a single path
                     candidates.append((nodes + [nbr], edges + [label], e_weights + [weight]))
-                    visited.add(nbr)
                     extended = True
                 if not extended and len(nodes) > 1:
                     dead_ends.append((nodes, edges, e_weights))
@@ -154,26 +152,28 @@ class DynamicGraphWalk:
                 ),
                 reverse=True,
             )
+            # Look for the goal among all candidates before the beam is cut: a
+            # path reaching the goal must not be pruned for a low score (with
+            # beam_width=1 a goal that is a direct neighbour was dropped).
+            goal_hits = [c for c in candidates if c[0][-1] == goal] if goal is not None else []
             beam = candidates[: self._beam_width]
 
-            if goal is not None and any(c[0][-1] == goal for c in beam):
+            if goal_hits:
                 # Promote goal-reaching paths immediately.
-                for nodes, edges, e_weights in beam:
-                    if nodes[-1] == goal:
-                        completed.append(
-                            ScoredPath(
-                                nodes=list(nodes),
-                                edges=list(edges),
-                                score=score_path(
-                                    nodes,
-                                    self._weights,
-                                    e_weights,
-                                    length_penalty=self._length_penalty,
-                                ),
-                            )
+                for nodes, edges, e_weights in goal_hits:
+                    completed.append(
+                        ScoredPath(
+                            nodes=list(nodes),
+                            edges=list(edges),
+                            score=score_path(
+                                nodes,
+                                self._weights,
+                                e_weights,
+                                length_penalty=self._length_penalty,
+                            ),
                         )
-                if completed:
-                    break
+                    )
+                break
 
         results = (
             completed

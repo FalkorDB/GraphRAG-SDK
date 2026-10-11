@@ -62,9 +62,13 @@ _FINAL_RE = re.compile(r"Final\s*Answer\s*:\s*(.+)", re.IGNORECASE | re.DOTALL)
 #: empty because the run ended before the model answered).
 _REPAIRABLE = frozenset({"no_citations", "invalid_citations", "empty"})
 #: Upper bound on the evidence text sent with a citation repair, and on one
-#: evidence item within it.
-REPAIR_MAX_EVIDENCE_CHARS = 12_000
-REPAIR_MAX_ITEM_CHARS = 1_500
+#: evidence item within it. The total matches the default
+#: ``AgentLimits.max_observation_chars``, so a repair sees about as much of the
+#: evidence as the run did; one item fits a full source passage.
+REPAIR_MAX_EVIDENCE_CHARS = 24_000
+REPAIR_MAX_ITEM_CHARS = 4_000
+#: Characters kept of an evidence item's source name.
+REPAIR_MAX_SOURCE_CHARS = 200
 
 
 def _normalize_query(text: str) -> str:
@@ -90,7 +94,8 @@ def render_repair_evidence(
     lines: list[str] = []
     used = 0
     for ev in ordered:
-        prefix = f"(source: {ev.source}) " if ev.source else ""
+        source = truncate(ev.source, REPAIR_MAX_SOURCE_CHARS) if ev.source else ""
+        prefix = f"(source: {source}) " if source else ""
         line = f"[{ev.n}] {prefix}{truncate(ev.content, max_item_chars)}"
         if lines and used + len(line) > max_chars:
             continue

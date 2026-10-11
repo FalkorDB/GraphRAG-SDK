@@ -118,7 +118,8 @@ def ground_answer(
         not invalid
         and not tools_called
         and len(cleaned) <= max_uncited_chars
-        and not _DIGIT_RE.search(cleaned)
+        # ``[0]`` is kept as code (``items[0]``), not a figure.
+        and not _DIGIT_RE.search(cleaned.replace("[0]", ""))
     ):
         return GroundedAnswer(cleaned, raw, True, "conversation", cited, invalid)
 

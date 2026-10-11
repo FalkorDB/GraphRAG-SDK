@@ -220,6 +220,11 @@ class FalkorDBConnection:
                 # Cypher can never take the connection down for everyone.
                 if read_only and self._is_server_rejection(exc):
                     logger.debug("Read-only query rejected by FalkorDB: %s", exc)
+                    # The server answered, so it is reachable: close the
+                    # breaker. Without this a rejected query that happens to
+                    # be the half-open probe leaves the breaker HALF_OPEN for
+                    # good and every later query is refused.
+                    await self._breaker.record_success()
                     raise DatabaseError(f"FalkorDB query failed: {exc}") from exc
                 # Don't retry non-transient errors (e.g. schema/index conflicts)
                 if self._is_non_transient(exc):

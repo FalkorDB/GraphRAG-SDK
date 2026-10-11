@@ -291,10 +291,11 @@ class TestTimelineReconstruction:
     async def test_orders_events_by_date(self, ctx: Context):
         store = FakeGraphStore(
             query_map={
-                "properties(e)": [
-                    ["e2", {"name": "Second", "date": "2020-05-01"}],
-                    ["e1", {"name": "First", "year": "1999"}],
-                    ["e3", {"name": "NoDate", "color": "red"}],
+                "AS dated": [
+                    ["e2", "Second", [["date", "2020-05-01"]]],
+                    ["e1", "First", [["year", "1999"]]],
+                    # The query's name prefilter is broader than _is_date_key.
+                    ["e3", "NoDate", [["friend", "red"]]],
                 ],
             }
         )
@@ -327,11 +328,15 @@ class TestTimelineReconstruction:
         assert _extract_date({"year": "founded in 1887 by"})[0] == (1887, 0, 0)
 
     async def test_limit_applies_after_filtering(self, ctx: Context):
-        rows = [[f"x{i}", {"name": f"N{i}"}] for i in range(10)] + [["d", {"date": "2001"}]]
-        store = FakeGraphStore(query_map={"properties(e)": rows})
+        store = FakeGraphStore(query_map={"AS dated": [["d", "D", [["date", "2001"]]]]})
         result = await TimelineReconstructionSkill(store).run(ctx, limit=1)
         assert [e["entity"] for e in result.data["timeline"]] == ["d"]
-        assert store.queries[-1][1]["scan"] == 5
+        cypher, params = store.queries[-1]
+        assert params["scan"] == 5
+        # Undated entities are filtered out in the query, before its LIMIT, so
+        # they cannot use up the scan; embeddings are never read.
+        assert cypher.index("WHERE size(dated) > 0") < cypher.index("LIMIT $scan")
+        assert "properties(e)" not in cypher and "'embedding'" in cypher
 
 
 class TestSkillAsTool:

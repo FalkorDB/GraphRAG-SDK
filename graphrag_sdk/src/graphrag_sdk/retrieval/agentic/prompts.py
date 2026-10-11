@@ -106,7 +106,9 @@ FINAL_ANSWER_NUDGE = (
 
 #: Sent once when the answer cites none of the evidence the tools returned:
 #: the model rewrites it from the numbered evidence, with citations, or says
-#: the evidence does not answer the question.
+#: the evidence does not answer the question. That uncited not-found reply is
+#: deliberate: it stays ungrounded, so the run ends with the configured
+#: ``ungrounded_answer`` rather than a claim the evidence does not support.
 CITATION_REPAIR_PROMPT = """You answered a question from numbered evidence \
 but did not cite it. Rewrite the answer using ONLY the evidence below.
 

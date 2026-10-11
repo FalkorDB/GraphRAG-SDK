@@ -99,8 +99,10 @@ class TestGuard:
     @pytest.mark.parametrize(
         "cypher",
         [
-            "MATCH (p:Person)-[r:RELATES]->(c:Company) WHERE r.rel_type = 'WORKS_AT' "
-            "RETURN c.name, count(p) AS n",
+            (
+                "MATCH (p:Person)-[r:RELATES]->(c:Company) WHERE r.rel_type = 'WORKS_AT' "
+                "RETURN c.name, count(p) AS n"
+            ),
             "MATCH (p:Person) WHERE p.name = 'call center: delete' RETURN p.name",
             "MATCH (n) RETURN [x IN collect(n) WHERE x:Person | x.name] AS names",
             "MATCH (n)-[r:RELATES]-(m) WHERE r.rel_type IN ['WORKS_AT'] RETURN m.name",

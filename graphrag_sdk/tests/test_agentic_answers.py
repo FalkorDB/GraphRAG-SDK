@@ -350,6 +350,14 @@ class TestCitationRepair:
         assert "provider down" in md["citation_repair"]["error"]
         assert "citation repair failed" in caplog.text
 
+    def test_repair_evidence_truncates_long_sources(self):
+        from graphrag_sdk.retrieval.agentic.loop import render_repair_evidence
+
+        led = EvidenceLedger()
+        led.add(tool="search", kind="passage", content="text", source="s" * 5000)
+        line = render_repair_evidence(led.items)
+        assert len(line) < 300 and line.endswith(" text")
+
     def test_repair_evidence_respects_the_budget(self):
         from graphrag_sdk.retrieval.agentic.loop import render_repair_evidence
 
