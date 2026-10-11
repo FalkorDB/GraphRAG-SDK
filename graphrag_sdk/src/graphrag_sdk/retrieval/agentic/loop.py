@@ -26,18 +26,21 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.retrieval.agentic.citations import (
     DEFAULT_UNGROUNDED_ANSWER,
+    GroundedAnswer,
     GroundingPolicy,
     ground_answer,
 )
 from graphrag_sdk.retrieval.agentic.graph_tools import build_default_registry
 from graphrag_sdk.retrieval.agentic.limits import AgentLimits, truncate
 from graphrag_sdk.retrieval.agentic.prompts import (
+    CITATION_REPAIR_PROMPT,
     FINAL_ANSWER_NUDGE,
     REACT_FORMAT_REMINDER,
     render_native_system_prompt,
     render_system_prompt,
 )
 from graphrag_sdk.retrieval.agentic.tools import (
+    Evidence,
     ToolContext,
     ToolRegistry,
     ToolResult,
@@ -53,6 +56,47 @@ _ACTION_RE = re.compile(r"Action\s*:\s*(.+)", re.IGNORECASE)
 _ACTION_INPUT_RE = re.compile(r"Action\s*Input\s*:\s*(\{)", re.IGNORECASE)
 _THOUGHT_RE = re.compile(r"Thought\s*:\s*(.+)", re.IGNORECASE)
 _FINAL_RE = re.compile(r"Final\s*Answer\s*:\s*(.+)", re.IGNORECASE | re.DOTALL)
+
+#: Grounding verdicts a citation repair can fix: the tools returned evidence
+#: but the answer cites none of it (or cites numbers that do not exist, or is
+#: empty because the run ended before the model answered).
+_REPAIRABLE = frozenset({"no_citations", "invalid_citations", "empty"})
+#: Upper bound on the evidence text sent with a citation repair, and on one
+#: evidence item within it.
+REPAIR_MAX_EVIDENCE_CHARS = 12_000
+REPAIR_MAX_ITEM_CHARS = 1_500
+
+
+def _normalize_query(text: str) -> str:
+    return " ".join(re.findall(r"\w+", text.lower()))
+
+
+def render_repair_evidence(
+    items: Sequence[Evidence],
+    *,
+    first: Sequence[int] = (),
+    max_chars: int = REPAIR_MAX_EVIDENCE_CHARS,
+    max_item_chars: int = REPAIR_MAX_ITEM_CHARS,
+) -> str:
+    """The numbered evidence for a citation repair, within ``max_chars``.
+
+    Items whose numbers are in ``first`` lead (the passages a repair search
+    just found for the question); the rest follow in the order the tools
+    returned them. Items that no longer fit are left out whole.
+    """
+    lead = [ev for n in first for ev in items if ev.n == n]
+    lead_ns = {ev.n for ev in lead}
+    ordered = lead + [ev for ev in items if ev.n not in lead_ns]
+    lines: list[str] = []
+    used = 0
+    for ev in ordered:
+        prefix = f"(source: {ev.source}) " if ev.source else ""
+        line = f"[{ev.n}] {prefix}{truncate(ev.content, max_item_chars)}"
+        if lines and used + len(line) > max_chars:
+            continue
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines)
 
 
 def _parse_action_input(text: str, start: int) -> dict[str, Any]:
@@ -183,6 +227,13 @@ class AgenticRetrieval(RetrievalStrategy):
             result with ``ungrounded_answer``; ``"annotate"`` keeps it and
             reports ``grounded=False``; ``"off"`` skips the check.
         ungrounded_answer: The answer shown instead of an ungrounded one.
+        repair_citations: When the answer cites none of the evidence the
+            tools returned, ask the model once to rewrite it from that
+            evidence with citations before the grounding check decides
+            (default ``True``; never applies with ``grounding="off"``). If
+            the question as asked was never searched, it is searched first so
+            the rewrite has its passages to cite. The outcome is in
+            ``metadata["citation_repair"]``.
         limits: Every bound on the run and the default tools (see
             :class:`AgentLimits`): turns, tool calls (in total and per
             turn), text returned to the model, trace size, and the
@@ -217,6 +268,7 @@ class AgenticRetrieval(RetrievalStrategy):
         ontology: Ontology | None = None,
         grounding: GroundingPolicy = "strict",
         ungrounded_answer: str = DEFAULT_UNGROUNDED_ANSWER,
+        repair_citations: bool = True,
         limits: AgentLimits | None = None,
     ) -> None:
         super().__init__(graph_store=graph_store, vector_store=vector_store)
@@ -242,6 +294,7 @@ class AgenticRetrieval(RetrievalStrategy):
             raise ValueError("grounding must be 'strict', 'annotate' or 'off'")
         self._grounding: GroundingPolicy = grounding
         self._ungrounded_answer = ungrounded_answer
+        self._repair_citations = repair_citations
         self._ontology = ontology
         self._strategy = strategy
         self._registry = (
@@ -292,13 +345,10 @@ class AgenticRetrieval(RetrievalStrategy):
         else:
             await self._run_react(query, history, ctx, tctx, trace, observations)
 
-        grounded = ground_answer(
-            trace.answer,
-            tctx.evidence,
-            tools_called=bool(trace.steps),
-            policy=self._grounding,
-            ungrounded_answer=self._ungrounded_answer,
-        )
+        grounded = self._ground(trace.answer, tctx, trace)
+        repair: dict[str, Any] = {"attempted": False}
+        if self._should_repair(grounded, ctx, trace):
+            grounded, repair = await self._repair(query, grounded, ctx, tctx, trace, observations)
         if not grounded.grounded:
             ctx.log(f"Agentic answer not grounded ({grounded.reason})")
         records = [ev.to_dict() for ev in tctx.evidence.items]
@@ -312,6 +362,7 @@ class AgenticRetrieval(RetrievalStrategy):
                 "grounding_reason": grounded.reason,
                 "citations": [ev.to_dict() for ev in grounded.citations(tctx.evidence)],
                 "invalid_citations": grounded.invalid,
+                "citation_repair": repair,
                 "agent_trace": trace.model_dump(),
                 "agent_mode": mode,
                 "stop_reason": trace.stop_reason,
@@ -322,6 +373,103 @@ class AgenticRetrieval(RetrievalStrategy):
                 "limits": self._limits.to_dict(),
             },
         )
+
+    # ── Grounding and citation repair ─────────────────────────────
+
+    def _ground(self, answer: str, tctx: ToolContext, trace: AgentTrace) -> GroundedAnswer:
+        return ground_answer(
+            answer,
+            tctx.evidence,
+            tools_called=bool(trace.steps),
+            policy=self._grounding,
+            ungrounded_answer=self._ungrounded_answer,
+        )
+
+    def _should_repair(self, grounded: GroundedAnswer, ctx: Context, trace: AgentTrace) -> bool:
+        return (
+            self._repair_citations
+            and self._grounding != "off"
+            and not grounded.grounded
+            and grounded.reason in _REPAIRABLE
+            and not ctx.budget_exceeded
+            and trace.stop_reason != "budget_exceeded"
+        )
+
+    async def _repair(
+        self,
+        query: str,
+        grounded: GroundedAnswer,
+        ctx: Context,
+        tctx: ToolContext,
+        trace: AgentTrace,
+        observations: list[str],
+    ) -> tuple[GroundedAnswer, dict[str, Any]]:
+        """One rewrite of an uncited answer from the run's numbered evidence.
+
+        When the question itself was never searched (the model went straight
+        to a graph query or a walk, or searched only reworded queries), it is
+        searched first: the question as asked is what a normal completion
+        retrieves with, and its passages are often the ones the answer needs.
+        The rewrite goes through the same grounding check as any answer, so a
+        reply that still cites nothing stays ungrounded.
+        """
+        info: dict[str, Any] = {
+            "attempted": True,
+            "searched": False,
+            "grounded": False,
+            "reason_before": grounded.reason,
+        }
+        try:
+            first: list[int] = []
+            asked = _normalize_query(query)
+            searched = any(
+                step.action == "search"
+                and step.status == "ok"
+                and _normalize_query(str(step.action_input.get("query", ""))) == asked
+                for step in trace.steps
+            )
+            if not searched and "search" in self._registry.names():
+                result = await self._call_tool("search", {"query": query}, tctx)
+                self._record(
+                    trace,
+                    observations,
+                    index=len(trace.steps),
+                    thought="citation repair: search the question for passages to cite",
+                    action="search",
+                    action_input={"query": query},
+                    result=result,
+                )
+                if result.status == "ok":
+                    info["searched"] = True
+                    first = list((result.data or {}).get("evidence", []))
+            if not len(tctx.evidence):
+                info["skipped"] = "no evidence to cite"
+                return grounded, info
+            prompt = CITATION_REPAIR_PROMPT.format(
+                question=query,
+                evidence=render_repair_evidence(tctx.evidence.items, first=first),
+                draft=grounded.raw_answer or "(no answer)",
+            )
+            response = await self._llm.ainvoke(
+                prompt, timeout=ctx.provider_timeout_seconds("agentic citation repair")
+            )
+        except LatencyBudgetExceededError:
+            info["skipped"] = "latency budget exhausted"
+            return grounded, info
+        except Exception as exc:  # noqa: BLE001 - a failed repair keeps the verdict
+            logger.warning("Agentic citation repair failed: %s", exc)
+            info["error"] = f"{type(exc).__name__}: {exc}"[:300]
+            return grounded, info
+
+        repaired = self._ground((response.content or "").strip(), tctx, trace)
+        info["grounded"] = repaired.grounded
+        if repaired.grounded:
+            ctx.log("Agentic answer grounded after citation repair")
+            # ``raw_answer`` stays the model's first answer, for inspection;
+            # the answer shown is the cited rewrite.
+            repaired.raw_answer = grounded.raw_answer
+            return repaired, info
+        return grounded, info
 
     # ── Shared helpers ────────────────────────────────────────────
 

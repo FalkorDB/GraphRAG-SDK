@@ -91,6 +91,33 @@ FINAL_ANSWER_NUDGE = (
 )
 
 
+#: Sent once when the answer cites none of the evidence the tools returned:
+#: the model rewrites it from the numbered evidence, with citations, or says
+#: the evidence does not answer the question.
+CITATION_REPAIR_PROMPT = """You answered a question from numbered evidence \
+but did not cite it. Rewrite the answer using ONLY the evidence below.
+
+Rules:
+- End every sentence that states a fact with the [N] of the evidence that
+  supports it, e.g. "Alice works at Acme [3]."
+- Keep only claims the evidence supports; drop the rest.
+- If the evidence does not answer the question, reply with exactly one
+  sentence saying the knowledge graph does not contain the answer, without
+  any [N].
+- Reply with the answer only.
+
+Question:
+{question}
+
+Evidence:
+{evidence}
+
+Your earlier answer:
+{draft}
+
+Answer:"""
+
+
 def render_native_system_prompt(tool_guide: str = TOOL_GUIDE) -> str:
     return NATIVE_SYSTEM_PROMPT.format(tool_guide=tool_guide, rules=AGENT_RULES)
 

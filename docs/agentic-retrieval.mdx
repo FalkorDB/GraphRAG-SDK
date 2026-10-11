@@ -70,6 +70,8 @@ Tool results are numbered `[N]` across the whole run. After the run, the answer'
 - markers that point at nothing are removed (`metadata["invalid_citations"]`);
 - an answer that cites no real result is **ungrounded** (with the conversation exception below).
 
+Before an answer is declared ungrounded, the agent gets one **citation repair**: the model rewrites its answer from the run's numbered evidence, citing it. If no `search` ran during the run (the model went straight to a graph query or a walk), the question is searched first so the rewrite has passages to cite. The rewrite passes through the same check, so a reply that still cites nothing — or cites numbers that do not exist — stays ungrounded. It costs one extra LLM call (plus at most one search), only for answers that would otherwise be discarded. The outcome is in `metadata["citation_repair"]`; turn it off with `repair_citations=False`.
+
 | `grounding=` | An ungrounded answer is… |
 |---|---|
 | `"strict"` (default) | replaced with `ungrounded_answer` ("I couldn't find information about that in the knowledge graph.") |
@@ -107,7 +109,8 @@ The run's `Context` latency budget still applies; if it runs out mid-run, the pa
 
 | Key | Meaning |
 |---|---|
-| `answer`, `raw_answer` | the answer after / before the grounding check |
+| `answer`, `raw_answer` | the answer after / before the grounding check (`raw_answer` is the model's first answer, also when a citation repair rewrote it) |
+| `citation_repair` | `{"attempted": false}`, or whether a repair ran, searched, and grounded the answer |
 | `grounded`, `grounding_reason` | the verdict and why (`cited`, `conversation`, `no_citations`, `invalid_citations`, `empty`) |
 | `citations`, `evidence` | cited results / all results, each `{n, tool, kind, content, source}` |
 | `agent_trace` | every call: tool, arguments, result, status (`ok` / `refused` / `error`) |

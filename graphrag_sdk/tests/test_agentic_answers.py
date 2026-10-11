@@ -174,6 +174,194 @@ class TestLoopGrounding:
         assert result.metadata["grounded"] is False
 
 
+# ── Citation repair ──────────────────────────────────────────────
+
+
+class RepairLLM(LLM):
+    """Tool turns from ``responses``; text calls (the repair) from ``rewrites``."""
+
+    def __init__(self, *responses: LLMResponse, rewrites: list[str]):
+        super().__init__(*responses)
+        self.rewrites = list(rewrites)
+        self.prompts: list[str] = []
+
+    async def ainvoke(self, prompt, **kwargs):
+        self.prompts.append(prompt)
+        return LLMResponse(content=self.rewrites.pop(0))
+
+
+class CountingStrategy(Strategy):
+    def __init__(self):
+        self.queries: list[str] = []
+
+    async def search(self, query: str, ctx: Context, **kwargs: Any) -> RetrieverResult:
+        self.queries.append(query)
+        return await super().search(query, ctx, **kwargs)
+
+
+class TestCitationRepair:
+    async def test_uncited_answer_is_rewritten_with_citations(self, ctx):
+        llm = RepairLLM(
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="c", name="search", arguments={"query": "Where?"})],
+            ),
+            LLMResponse(content="Alice works at Acme."),
+            rewrites=["Alice works at Acme [1]."],
+        )
+        md = (await AgenticRetrieval(llm, strategy=Strategy()).search("Where?", ctx)).metadata
+        assert md["answer"] == "Alice works at Acme [1]."
+        assert md["grounded"] is True and md["grounding_reason"] == "cited"
+        assert md["raw_answer"] == "Alice works at Acme."
+        assert md["citation_repair"] == {
+            "attempted": True,
+            "searched": False,
+            "grounded": True,
+            "reason_before": "no_citations",
+        }
+        prompt = llm.prompts[0]
+        assert "Where?" in prompt and "[1] Alice works at Acme." in prompt
+        assert "Alice works at Acme." in prompt.split("Your earlier answer:", 1)[1]
+
+    async def test_rewrite_that_still_cites_nothing_stays_ungrounded(self, ctx):
+        llm = RepairLLM(
+            LLMResponse(
+                content="", tool_calls=[ToolCall(id="c", name="search", arguments={"query": "a"})]
+            ),
+            LLMResponse(content="Bob runs Acme."),
+            rewrites=["The knowledge graph does not contain the answer."],
+        )
+        md = (await AgenticRetrieval(llm, strategy=Strategy()).search("q", ctx)).metadata
+        assert md["answer"] == DEFAULT_UNGROUNDED_ANSWER and md["grounded"] is False
+        assert md["raw_answer"] == "Bob runs Acme."
+        assert md["citation_repair"]["attempted"] and not md["citation_repair"]["grounded"]
+
+    async def test_invented_citation_rewrite_cannot_pass(self, ctx):
+        llm = RepairLLM(
+            LLMResponse(
+                content="", tool_calls=[ToolCall(id="c", name="search", arguments={"query": "a"})]
+            ),
+            LLMResponse(content="Bob runs Acme [5]."),
+            rewrites=["Bob runs Acme [9]."],
+        )
+        md = (await AgenticRetrieval(llm, strategy=Strategy()).search("q", ctx)).metadata
+        assert md["grounded"] is False and md["answer"] == DEFAULT_UNGROUNDED_ANSWER
+
+    async def test_searches_the_question_when_no_search_ran(self, ctx):
+        async def walk(args, tctx):
+            return "Alice -> Acme"
+
+        strategy = CountingStrategy()
+        registry = ToolRegistry()
+        registry.register(make_search_tool(strategy))
+        registry.register(Tool("walk", "Walk.", walk))
+        llm = RepairLLM(
+            LLMResponse(content="", tool_calls=[ToolCall(id="w", name="walk", arguments={})]),
+            LLMResponse(content="Alice works at Acme."),
+            rewrites=["Alice works at Acme [2]."],
+        )
+        md = (await AgenticRetrieval(llm, registry=registry).search("Where does Alice work?", ctx)).metadata
+        assert strategy.queries == ["Where does Alice work?"]
+        assert md["citation_repair"]["searched"] is True and md["grounded"] is True
+        steps = md["agent_trace"]["steps"]
+        assert [s["action"] for s in steps] == ["walk", "search"]
+        assert steps[1]["thought"].startswith("citation repair")
+        # The repair search's passages lead the evidence the rewrite sees.
+        evidence = llm.prompts[0].split("Evidence:", 1)[1]
+        assert evidence.index("[2] Alice works at Acme.") < evidence.index("[1] Alice -> Acme")
+
+    async def test_question_is_searched_when_only_reworded_queries_ran(self, ctx):
+        strategy = CountingStrategy()
+        llm = RepairLLM(
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="c", name="search", arguments={"query": "acme staff"})],
+            ),
+            LLMResponse(content="Not in the graph."),
+            rewrites=["Alice works at Acme [2]."],
+        )
+        md = (
+            await AgenticRetrieval(llm, strategy=strategy).search("Who works at Acme?", ctx)
+        ).metadata
+        assert strategy.queries == ["acme staff", "Who works at Acme?"]
+        assert md["citation_repair"]["searched"] is True and md["grounded"] is True
+
+    async def test_question_searched_verbatim_is_not_searched_again(self, ctx):
+        strategy = CountingStrategy()
+        llm = RepairLLM(
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(id="c", name="search", arguments={"query": "who works at ACME"})
+                ],
+            ),
+            LLMResponse(content="Alice."),
+            rewrites=["Alice works at Acme [1]."],
+        )
+        md = (
+            await AgenticRetrieval(llm, strategy=strategy).search("Who works at Acme?", ctx)
+        ).metadata
+        assert strategy.queries == ["who works at ACME"]
+        assert md["citation_repair"]["searched"] is False and md["grounded"] is True
+
+    async def test_cited_answer_is_not_repaired(self, ctx):
+        llm = RepairLLM(
+            LLMResponse(
+                content="", tool_calls=[ToolCall(id="c", name="search", arguments={"query": "a"})]
+            ),
+            LLMResponse(content="Alice works at Acme [1]."),
+            rewrites=[],
+        )
+        md = (await AgenticRetrieval(llm, strategy=Strategy()).search("q", ctx)).metadata
+        assert md["citation_repair"] == {"attempted": False} and llm.prompts == []
+
+    async def test_conversation_is_not_repaired(self, ctx):
+        llm = RepairLLM(LLMResponse(content="Hello! How can I help?"), rewrites=[])
+        md = (await AgenticRetrieval(llm, strategy=Strategy()).search("hi", ctx)).metadata
+        assert md["grounded"] is True and md["citation_repair"] == {"attempted": False}
+
+    @pytest.mark.parametrize("options", [{"repair_citations": False}, {"grounding": "off"}])
+    async def test_repair_can_be_turned_off(self, ctx, options):
+        llm = RepairLLM(
+            LLMResponse(
+                content="", tool_calls=[ToolCall(id="c", name="search", arguments={"query": "a"})]
+            ),
+            LLMResponse(content="Alice works at Acme."),
+            rewrites=[],
+        )
+        md = (await AgenticRetrieval(llm, strategy=Strategy(), **options).search("q", ctx)).metadata
+        assert md["citation_repair"] == {"attempted": False} and llm.prompts == []
+
+    async def test_repair_failure_keeps_the_verdict(self, ctx, caplog):
+        class Broken(RepairLLM):
+            async def ainvoke(self, prompt, **kwargs):
+                raise RuntimeError("provider down")
+
+        llm = Broken(
+            LLMResponse(
+                content="", tool_calls=[ToolCall(id="c", name="search", arguments={"query": "a"})]
+            ),
+            LLMResponse(content="Alice works at Acme."),
+            rewrites=[],
+        )
+        with caplog.at_level("WARNING"):
+            md = (await AgenticRetrieval(llm, strategy=Strategy()).search("q", ctx)).metadata
+        assert md["grounded"] is False and md["answer"] == DEFAULT_UNGROUNDED_ANSWER
+        assert "provider down" in md["citation_repair"]["error"]
+        assert "citation repair failed" in caplog.text
+
+    def test_repair_evidence_respects_the_budget(self):
+        from graphrag_sdk.retrieval.agentic.loop import render_repair_evidence
+
+        led = EvidenceLedger()
+        for i in range(10):
+            led.add(tool="search", kind="passage", content="x" * 400 + str(i))
+        text = render_repair_evidence(led.items, first=[10], max_chars=1000, max_item_chars=300)
+        assert len(text) <= 1000
+        assert text.startswith("[10] ")
+        assert all(len(line) <= 345 for line in text.splitlines())  # item cap + note
+
+
 # ── Facade integration ───────────────────────────────────────────
 
 

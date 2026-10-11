@@ -287,7 +287,7 @@ class TestNativeLoop:
             ]
         )
         strategy = FakeStrategy()
-        result = await AgenticRetrieval(llm, strategy=strategy).search("q", ctx)
+        result = await AgenticRetrieval(llm, strategy=strategy, repair_citations=False).search("q", ctx)
         assert [q for q, _ in strategy.calls] == ["x", "y"]
         assert result.metadata["num_steps"] == 2
         tool_msgs = [m for m in llm.requests[1]["messages"] if m.role == "tool"]
