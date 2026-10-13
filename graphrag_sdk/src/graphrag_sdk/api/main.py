@@ -4547,8 +4547,9 @@ class GraphRAG:
         the entity vector index, and the flag is removed when the run ends
         (kept on an entity whose check did not complete — a failed lookup,
         judge call or merge write, an answer that was not a full partition,
-        or no name vector — so the next run retries it, up to 3 runs) — a second call on an
-        unchanged graph does no work, and the graph keeps no dedup data. A
+        or no name vector — so the next run retries it, up to 3 runs) — a
+        second call with nothing pending does no work, and once every check
+        has completed the graph keeps no dedup data. A
         graph written before the flag existed has none: pass
         ``dedup_all=True`` once to check every entity. The new entities'
         name embeddings (``e.embedding``) are written by this call.
@@ -4673,8 +4674,8 @@ class GraphRAG:
            indexes. Exact-name / acronym dedup, then (``judge``) one LLM pass
            over each new entity and its nearest names from the vector index;
            see :meth:`deduplicate_entities`. Dedup embeds the names it reads
-           and stores them on the nodes. Calling ``finalize()`` again on
-           an unchanged graph does no dedup work.
+           and stores them on the nodes. Calling ``finalize()`` again with
+           nothing pending does no dedup work.
         3. ``backfill_entity_embeddings()`` — name embeddings on every entity
            still missing one. After dedup, so a duplicate the merge removes
            is not embedded first; ``FinalizeResult.entities_embedded`` counts

@@ -188,7 +188,7 @@ the rest of the graph through the vector index — its LLM calls,
 embeddings and merges follow the **change size**, not the graph size.
 Finding the flagged entities and the ones missing an embedding is one
 label scan each (about 0.1 s on a 44k-entity graph), so a `finalize()`
-with nothing new does no dedup work. For CI
+with nothing pending does no dedup work. For CI
 use cases, batch all PR changes through `apply_changes` and call
 `finalize` **once** at the end of the run: one call judges the whole
 batch's new entities together, in fewer LLM calls than one per file.

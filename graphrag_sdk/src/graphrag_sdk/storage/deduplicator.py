@@ -2,8 +2,8 @@
 # Incremental entity deduplication: each run checks only the entities ingest
 # flagged ``dedup_pending`` since the last one, against the whole graph reached
 # through the entity vector index — never by reading every entity — and clears
-# the flag when done, so a finalized graph carries no dedup data. Phases: exact
-# name match and the LLM-judged cross-document phase
+# the flag once the check completes, so a fully checked graph carries no dedup
+# data. Phases: exact name match and the LLM-judged cross-document phase
 # (``judge_dedup.LLMJudgeDeduplicator``: the vector index nominates, the LLM
 # decides in one pass). Preserves label-aware grouping to prevent cross-type
 # merging.
@@ -624,7 +624,7 @@ class EntityDeduplicator:
         Only entities flagged ``dedup_pending`` at ingest are query points;
         the flag is removed at the end (kept on any whose check did not
         complete, up to ``MAX_DEDUP_ATTEMPTS`` runs, then released with a
-        warning), so running this again on an unchanged graph does no work.
+        warning), so running this again with nothing pending does no work.
         ``dedup_all=True`` checks every entity instead — for a graph written
         before the flag existed, which has none.
         """

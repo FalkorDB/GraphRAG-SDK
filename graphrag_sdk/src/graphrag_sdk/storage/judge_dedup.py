@@ -54,8 +54,8 @@ logger = logging.getLogger(__name__)
 
 #: Set on an entity node when ingest creates it, removed by the finalize that
 #: checks it for duplicates. Only flagged entities are query points of a dedup
-#: run, so its cost follows what was added since the last one; once finalize is
-#: done the graph carries no dedup data.
+#: run, so its cost follows what was added since the last one; once every check
+#: has completed (or been released) the graph carries no dedup data.
 DEDUP_PENDING_KEY = "dedup_pending"
 #: Failed checks of a still-pending entity (a lookup, judge call or merge write
 #: that did not complete, an answer that was not a full partition, or no name

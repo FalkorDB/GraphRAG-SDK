@@ -542,7 +542,7 @@ After all documents have been ingested, run post-ingestion steps to deduplicate 
 The recommended approach is to call `finalize()` after all ingestion is complete. It bundles five steps in order:
 
 1. Remove NULL-name stub entities left by legacy writes (only nodes no mapping wrote).
-2. `deduplicate_entities()` -- incremental: entities added since the last `finalize()` get exact-name dedup, then one LLM judge pass over their nearest names in the whole graph. A second `finalize()` with nothing new does no dedup work; `finalize(dedup_all=True)` checks every entity (once, for a graph built before the `dedup_pending` flag existed).
+2. `deduplicate_entities()` -- incremental: entities added since the last `finalize()` get exact-name dedup, then one LLM judge pass over their nearest names in the whole graph. A second `finalize()` with nothing pending does no dedup work (an entity whose check failed stays pending and is retried, up to 3 runs); `finalize(dedup_all=True)` checks every entity (once, for a graph built before the `dedup_pending` flag existed).
 3. `backfill_entity_embeddings()` -- embed entity names for vector search.
 4. `embed_relationships()` -- embed fact text on RELATES edges.
 5. `ensure_indices()` -- create all 5 standard indexes (idempotent).

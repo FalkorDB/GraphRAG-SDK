@@ -161,8 +161,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sets `dedup_pending = true` on every entity node it *creates*, and
   `finalize()` checks only those entities — against the whole graph, through
   the `__Entity__` vector index, never by reading every entity — then removes
-  the flag. A `finalize()` with nothing new does no dedup work, and a
-  finalized graph carries no dedup data. Measured: +1,000 new entities on a
+  the flag. A `finalize()` with nothing pending does no dedup work, and once
+  every check has completed the graph carries no dedup data. Measured: +1,000 new entities on a
   ~39k-entity graph finalize in 4.5 s (fake LLM), where the previous flow spent
   about 256 s of dedup and 5,982 LLM calls on every call; on a labeled set of
   277 entities (138 true pairs, gpt-4.1, 3 runs) precision rose from 0.81 to
@@ -183,7 +183,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     answer that was not a full partition, or no name vector) keeps its flag and is retried by the next `finalize()`, up to
     3 runs; after that it is released and named in a warning. When all of a
     new entity's 10 nearest names are exact-phase matches, the lookup widens
-    (up to 1,000) so none past the tenth is missed. A table
+    (up to 1,000) to find matches beyond the tenth. A table
     re-sync that renames a row flags it, so it is checked under its new
     name. When
     the judge renames a merged node, its name vector is replaced too.

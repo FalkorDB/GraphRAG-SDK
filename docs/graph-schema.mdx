@@ -89,7 +89,7 @@ The layers are connected by `MENTIONED_IN` edges, which link entities to the chu
 | `aliases` | `list[string]` | Other names the entity was merged under |
 | `descriptions` | `list[string]` | Every merged member's description (`description` joins them with `" \| "`) |
 | `merged_labels` | `string` | Labels a merge added, joined with `" \| "` |
-| `dedup_pending` | `bool` | Set when ingest creates the entity; removed by the `finalize()` that checks it |
+| `dedup_pending` | `bool` | Set when ingest creates the entity; removed once a dedup run has checked it, or after 3 failed checks |
 | `dedup_attempts` | `int` | Failed dedup checks of a still-pending entity; removed with the flag |
 
 **Created in:** Step 7 (Write). `__Entity__` label is automatically added. Embedding is backfilled during `finalize()`.
