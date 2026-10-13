@@ -80,6 +80,8 @@ PROMPT_TOKEN_BUDGET = 3000
 # capped too, so no single field can push a set past it.
 MAX_DESC_CHARS = 600
 MAX_NAME_CHARS = 120
+# Aliases shown per entity: the names it already absorbed in earlier merges.
+MAX_ALIASES_SHOWN = 5
 # Properties an earlier build used to cache description vectors on entity
 # nodes. The judge no longer stores them anywhere: each run removes them from
 # every node that still has them, and no merge copies them in the meantime.
@@ -93,7 +95,8 @@ JUDGE_PROMPT = (
     "graph.\n\n"
     "WHAT YOU ARE GIVEN\n"
     "Entities were extracted from documents by an NER model and an LLM. Each has "
-    "a name, a type label in [brackets], and a description summarised from the "
+    "a name, a type label in [brackets], other names it was already merged under "
+    "(also: ...), when it has any, and a description summarised from the "
     "text where it was mentioned. Descriptions are partial and may miss facts; "
     "type labels are sometimes wrong, so the same entity can appear under two "
     "labels. Below are {n} independent SETS. A set was formed automatically by "
@@ -135,10 +138,14 @@ JUDGE_PROMPT = (
     "merge corrupts the graph permanently; a missed merge is recoverable. When in "
     "doubt, separate.\n\n"
     "OUTPUT\n"
-    "One line per group, prefixed by its set number, listing the member numbers:\n"
-    "  SET 1 GROUP: 1, 4\n"
+    "One line per group, prefixed by its set number, listing the member numbers. "
+    "For a group of two or more, add the best name for the merged entity after "
+    '"| NAME:": its most complete, commonly used form, copied exactly from the '
+    "names and aliases shown in that group (a full name over an initial, a "
+    "company name over a ticker symbol or a generic reference):\n"
+    "  SET 1 GROUP: 1, 4 | NAME: International Business Machines\n"
     "  SET 1 GROUP: 2\n"
-    "  SET 2 GROUP: 1, 2\n"
+    "  SET 2 GROUP: 1, 2 | NAME: Marie Curie\n"
     "List every entity of every set exactly once. No commentary.\n\n"
     "Answer:"
 )
@@ -313,9 +320,20 @@ def render_set(members: list[int], ents: list[dict]) -> str:
         labels = "/".join(_field(lab, MAX_NAME_CHARS) for lab in ent.get("labels") or [] if lab)
         labels = labels or _field(ent.get("label"), MAX_NAME_CHARS) or "Entity"
         name = _field(ent["name"], MAX_NAME_CHARS)
+        aliases = [
+            _field(a, MAX_NAME_CHARS)
+            for a in ent.get("aliases") or []
+            if isinstance(a, str) and a.strip() and a.strip() != str(ent["name"]).strip()
+        ][:MAX_ALIASES_SHOWN]
+        # JSON-quoted like the description, so an alias cannot break the line.
+        also = (
+            " (also: " + ", ".join(json.dumps(a, ensure_ascii=False) for a in aliases) + ")"
+            if aliases
+            else ""
+        )
         desc = _field(ent.get("description"), MAX_DESC_CHARS)
         shown = json.dumps(desc, ensure_ascii=False) if desc else "(no description)"
-        lines.append(f"{i}. {name} [{labels}] — {shown}")
+        lines.append(f"{i}. {name} [{labels}]{also} — {shown}")
     return "\n".join(lines)
 
 
@@ -394,7 +412,8 @@ def parse_groups(text: str, sizes: list[int]) -> dict[int, list[list[int]]]:
             continue
         if not 0 <= si < len(sizes):
             continue
-        nums = [int(x) - 1 for x in re.findall(r"\d+", after.split(":", 1)[-1])]
+        members_part = re.split(r"\|\s*NAME\s*:", after, maxsplit=1, flags=re.IGNORECASE)[0]
+        nums = [int(x) - 1 for x in re.findall(r"\d+", members_part.split(":", 1)[-1])]
         picked = sorted({x for x in nums if 0 <= x < sizes[si]})
         if picked:
             out.setdefault(si, []).append(picked)
@@ -445,6 +464,57 @@ def pairs_by_set_from_response(text: str, order: list[list[int]]) -> dict[tuple[
                 for y in range(x + 1, len(real)):
                     out[(min(real[x], real[y]), max(real[x], real[y]))] = si
     return out
+
+
+_NAME_PART = re.compile(r"\|\s*NAME\s*:\s*(.+?)\s*$", re.IGNORECASE)
+
+
+def group_names_from_response(text: str, order: list[list[int]]) -> dict[frozenset[int], str]:
+    """The best name the judge gave each group of two or more, keyed by the
+    group's entity indices. Only groups :func:`parse_groups` accepted count;
+    the name is returned as written and checked against the members by the
+    caller."""
+    sizes = [len(m) for m in order]
+    accepted = {
+        (si, tuple(grp)) for si, groups in parse_groups(text, sizes).items() for grp in groups
+    }
+    out: dict[frozenset[int], str] = {}
+    for line in text.splitlines():
+        m = _ANSWER_LINE.match(line)
+        name = _NAME_PART.search(line)
+        if not m or not name:
+            continue
+        si = int(m.group(1)) - 1
+        if not 0 <= si < len(sizes):
+            continue
+        members_part = _NAME_PART.split(line[m.end() :])[0]
+        nums = [int(x) - 1 for x in re.findall(r"\d+", members_part.split(":", 1)[-1])]
+        picked = tuple(sorted({x for x in nums if 0 <= x < sizes[si]}))
+        if len(picked) > 1 and (si, picked) in accepted:
+            out[frozenset(order[si][k] for k in picked)] = name.group(1).strip().strip('"')
+    return out
+
+
+def pick_group_name(
+    group: list[int], names: dict[frozenset[int], str], ents: list[dict]
+) -> str | None:
+    """The judge's name for a merged group: the one given to the largest
+    judged sub-group, kept only if it is one of the members' own names or
+    aliases (returned in that exact spelling) — never a name the model made up."""
+    members = set(group)
+    proposals = sorted(
+        ((len(sub), name) for sub, name in names.items() if sub <= members), reverse=True
+    )
+    known: dict[str, str] = {}
+    for i in group:
+        for n in [ents[i].get("name"), *(ents[i].get("aliases") or [])]:
+            if isinstance(n, str) and n.strip():
+                known.setdefault(n.strip().casefold(), n.strip())
+    for _, name in proposals:
+        hit = known.get(name.casefold())
+        if hit:
+            return hit
+    return None
 
 
 # ── the deduplicator ────────────────────────────────────────────────────────
@@ -622,8 +692,10 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         embedder: embedding provider (entity names).
         llm: judge model. gpt-4.1-class models measured 9 wrong merges where
             gpt-4o-mini made 51 on the same input; use the strongest you can.
-        merge_group: ``async (members: list[dict]) -> (survivor_id,
-            absorbed_ids)`` that performs the merge of one agreed group.
+        merge_group: ``async (members: list[dict], preferred_name=...) ->
+            (survivor_id, absorbed_ids)`` that performs the merge of one agreed
+            group. ``preferred_name`` is passed only when the judge named the
+            group with one of its members' own names or aliases.
             ``EntityDeduplicator`` supplies :meth:`_merge_judged_group`, so a
             judge merge obeys the same rules as every other phase (a table row
             survives a mention, two keyed rows never merge, properties and
@@ -641,13 +713,15 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         graph_store: Any,
         embedder: Embedder,
         llm: LLMInterface,
-        merge_group: Callable[[list[dict]], Awaitable[tuple[str, set[str]]]],
+        merge_group: Callable[..., Awaitable[tuple[str, set[str]]]],
         *,
         vote: bool = False,
         max_concurrency: int | None = None,
         seed: int = 0,
     ) -> None:
         super().__init__(graph_store, embedder)
+        # Best name per agreed group, from the last pass (see _judge).
+        self._group_names: dict[frozenset[int], str] = {}
         self._llm = llm
         self._merge = merge_group
         self._conc = max_concurrency
@@ -684,6 +758,7 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
             pos += len(order)
         results = await self._llm.abatch_invoke(prompts, max_concurrency=self._conc)
         same: dict[tuple[int, int], int] = {}
+        self._group_names: dict[frozenset[int], str] = {}
         failed = 0
         failed_sets: set[int] = set()
         for item in results:
@@ -697,6 +772,7 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
                 failed_sets.add(ids[si])
             for pair, si in pairs_by_set_from_response(content, orders[item.index]).items():
                 same[pair] = ids[si]
+            self._group_names.update(group_names_from_response(content, orders[item.index]))
         return same, len(prompts), failed, failed_sets
 
     async def deduplicate(
@@ -825,7 +901,12 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         for idxs in groups.values():
             if len(idxs) < 2:
                 continue
-            _, absorbed = await self._merge([byid[ents[i]["id"]] for i in idxs])
+            members = [byid[ents[i]["id"]] for i in idxs]
+            name = pick_group_name(idxs, self._group_names, ents)
+            if name is not None:
+                _, absorbed = await self._merge(members, preferred_name=name)
+            else:
+                _, absorbed = await self._merge(members)
             stats["merged"] += len(absorbed)
             # A name vector written this run to a node the merge then deleted
             # is not a vector the graph holds; the count is of those it does.

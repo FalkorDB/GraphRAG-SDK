@@ -1447,10 +1447,14 @@ class EntityDeduplicator:
         """
         skip = self._undecidable_pairs
 
-        async def merge_group(members: list[dict[str, Any]]) -> tuple[str, set[str]]:
+        async def merge_group(
+            members: list[dict[str, Any]], preferred_name: str | None = None
+        ) -> tuple[str, set[str]]:
             # Fresh rows: an earlier group of this run may have changed them.
             by_id = await self._fetch_entities_by_ids(m["id"] for m in members)
-            return await self._merge_judged_group(members, by_id, skip)
+            return await self._merge_judged_group(
+                members, by_id, skip, preferred_name=preferred_name
+            )
 
         judge = LLMJudgeDeduplicator(self._graph, self._embedder, judge_llm, merge_group)
         try:
@@ -1474,8 +1478,16 @@ class EntityDeduplicator:
         members: list[dict[str, Any]],
         by_id: dict[str, dict[str, Any]],
         skip: set[frozenset[str]],
+        preferred_name: str | None = None,
     ) -> tuple[str, set[str]]:
         """Merge one group the judge agreed on; ``(survivor id, ids absorbed)``.
+
+        ``preferred_name`` is the judge's best name for the group (one of its
+        members' names or aliases). The survivor is still picked by
+        :func:`_survivor_rank` — that decides which node, edges and id remain —
+        but it takes this name, and its own moves into ``aliases``: "AAPL" can
+        win on connections and still read "Apple Inc.". A table row keeps the
+        name its table declared.
 
         ``members`` are the judge's rows (they carry every label of each node);
         the merge ranks and folds the rows :meth:`_fetch_all_entities` read, so
@@ -1513,7 +1525,31 @@ class EntityDeduplicator:
             logger.info(
                 "Judge merged %s %r -> %r", survivor["label"], dup["name"], survivor["name"]
             )
+        if (
+            absorbed
+            and preferred_name
+            and survivor.get("is_stub") is None
+            and preferred_name.strip() != str(survivor.get("name") or "").strip()
+        ):
+            await self._rename_survivor(survivor, preferred_name.strip())
         return survivor["id"], absorbed
+
+    async def _rename_survivor(self, survivor: dict[str, Any], name: str) -> None:
+        """Give a merged node the judge's best name; the old one becomes an
+        alias, and the new one leaves the alias list. The id does not change."""
+        try:
+            await self._graph.query_raw(
+                "MATCH (s:__Entity__ {id: $id}) "
+                "WITH s, coalesce(s.aliases, []) + [s.name] AS names "
+                "SET s.name = $name, "
+                "s.aliases = reduce(acc = [], a IN names | "
+                "CASE WHEN a = $name OR a IN acc THEN acc ELSE acc + [a] END)",
+                {"id": survivor["id"], "name": name},
+            )
+            logger.info("Judge named merged %s %r -> %r", survivor["label"], survivor["name"], name)
+        except Exception as exc:
+            # The merge stands; only the display name was not changed.
+            logger.warning("Could not rename %s to %r: %s", survivor["id"], name, exc)
 
     async def _describe_structured_entities(self, by_id: dict[str, dict[str, Any]]) -> None:
         """Give each structured entity a description made of its signed values.
