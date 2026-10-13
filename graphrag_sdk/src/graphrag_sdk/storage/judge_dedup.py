@@ -626,6 +626,10 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         super().__init__(graph_store, embedder)
         # Best name per agreed group, from the last pass (see _judge).
         self._group_names: dict[frozenset[int], str] = {}
+        # Entities of the last run whose set got no usable verdict (a failed
+        # call, or an answer that was not a full partition). The caller keeps
+        # them pending so the next run asks again.
+        self.unjudged_ids: set[str] = set()
         self._llm = llm
         self._merge = merge_group
         self._conc = max_concurrency
@@ -646,13 +650,19 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         self._group_names: dict[frozenset[int], str] = {}
         failed = 0
         for item in results:
+            order = orders[item.index]
             if not item.ok or item.response is None:
                 failed += 1  # a failed call merges nothing — the safe default
+                self.unjudged_ids.update(ents[i]["id"] for members in order for i in members)
                 continue
             content = item.response.content or ""
-            for pair, si in pairs_by_set_from_response(content, orders[item.index]).items():
+            answered = parse_groups(content, [len(members) for members in order])
+            for si, members in enumerate(order):
+                if si not in answered:
+                    self.unjudged_ids.update(ents[i]["id"] for i in members)
+            for pair, si in pairs_by_set_from_response(content, order).items():
                 same[pair] = offsets[item.index] + si
-            self._group_names.update(group_names_from_response(content, orders[item.index]))
+            self._group_names.update(group_names_from_response(content, order))
         return same, len(prompts), failed
 
     async def deduplicate(
@@ -676,6 +686,7 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         """
         skip = skip_pairs or set()
 
+        self.unjudged_ids = set()
         stats = self.last_stats = {
             "entities": 0,
             "neighbours": 0,
@@ -696,22 +707,28 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         # Before the size check: a lone named entity still gets its name
         # vector persisted, as the API promises for ``judge=True``.
         nv = await self.name_vectors(pending)
-        if not pending or nv.shape[1] == 0:
+        if not pending:
             return stats
-        await self.ensure_vector_index(nv.shape[1])
 
         # ents = the new entities, then every neighbour the index returned.
         ents: list[dict] = list(pending)
         index = {e["id"]: i for i, e in enumerate(ents)}
         edges: dict[tuple[int, int], float] = {}
-        for pi, ent, sim in await self.neighbours(pending, NEIGHBOUR_K, NEIGHBOUR_GATE):
-            j = index.get(ent["id"])
-            if j is None:
-                j = index[ent["id"]] = len(ents)
-                ents.append(ent)
-            a, b = min(pi, j), max(pi, j)
-            if a != b:
-                edges[(a, b)] = max(sim, edges.get((a, b), -1.0))
+        if nv.shape[1] == 0:
+            # No name vectors (the embedder returned none): the index cannot
+            # nominate, so the new entities stay pending for the next run. The
+            # pairs handed over below need no vector and are still judged.
+            self.unjudged_ids.update(e["id"] for e in pending)
+        else:
+            await self.ensure_vector_index(nv.shape[1])
+            for pi, ent, sim in await self.neighbours(pending, NEIGHBOUR_K, NEIGHBOUR_GATE):
+                j = index.get(ent["id"])
+                if j is None:
+                    j = index[ent["id"]] = len(ents)
+                    ents.append(ent)
+                a, b = min(pi, j), max(pi, j)
+                if a != b:
+                    edges[(a, b)] = max(sim, edges.get((a, b), -1.0))
         if extra_pairs:
             unseen = [i for p in extra_pairs for i in p if i not in index]
             for ent in await self.fetch_by_ids(list(dict.fromkeys(unseen)), batch_size):

@@ -170,6 +170,24 @@ class TestUpsertNodesFlagsNewEntitiesForDedup:
         assert "ON CREATE SET n.dedup_pending = true" in cypher
         assert "ON MATCH" not in cypher.split("WITH")[0]
 
+    async def test_an_incoming_flag_value_cannot_unflag_a_new_entity(
+        self, graph_store, mock_connection
+    ):
+        """``dedup_pending`` is the SDK's: a property of that name in the data
+        is dropped, so ``SET n += item.properties`` cannot overwrite the flag
+        the create just set."""
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="acme",
+                    label="Organization",
+                    properties={"name": "Acme", "dedup_pending": False},
+                )
+            ]
+        )
+        params = upsert_calls(mock_connection)[0][0][1]
+        assert params["batch"][0]["properties"] == {"name": "Acme"}
+
     async def test_a_structural_node_is_never_flagged(self, graph_store, mock_connection):
         await graph_store.upsert_nodes([GraphNode(id="c1", label="Chunk", properties={})])
         cypher = upsert_calls(mock_connection)[0][0][0]

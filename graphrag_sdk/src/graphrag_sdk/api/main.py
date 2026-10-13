@@ -4535,10 +4535,11 @@ class GraphRAG:
         written from a declared key, and a mention two such rows could equally
         own, are never put to the judge.
 
-        Both phases are incremental: only entities ingest flagged
-        ``dedup_pending`` are query points, compared with the rest of the graph
-        through the entity vector index, and the flag is removed when the run
-        ends — a second call on an unchanged graph does no work, and the graph
+        Both phases are incremental: only entities flagged ``dedup_pending`` at
+        ingest are query points, compared with the rest of the graph through
+        the entity vector index, and the flag is removed when the run ends
+        (kept on an entity whose lookup or judge call failed, so the next run
+        retries it) — a second call on an unchanged graph does no work, and the graph
         keeps no dedup data. A graph written before the flag existed has none:
         pass ``dedup_all=True`` once to check every entity. The new entities'
         name embeddings (``e.embedding``) are written by this call.

@@ -1636,7 +1636,8 @@ class TestAdoptionMovesEverythingItShould:
         # A guessed twin of the declared node, with an edge each way.
         await rag.query(
             "MERGE (g:Concept {id:'carbon_farming__concept'}) "
-            "SET g.name = 'Carbon Farming', g.description = 'from prose' "
+            "SET g.name = 'Carbon Farming', g.description = 'from prose', "
+            "g.dedup_pending = true "
             "SET g:__Entity__ "
             "MERGE (o:Location {id:'kenya__location'}) SET o.name = 'Kenya' SET o:__Entity__ "
             "MERGE (g)-[:RELATES {rel_type:'PRACTISED_IN'}]->(o) "
@@ -1737,7 +1738,7 @@ class TestAdoptionOnlyCorrectsAGuessTheExtractorCouldNotAvoid:
         )
         await rag.query(
             "CREATE (:__Entity__:Product {id:'apple__product', name:'Apple', "
-            "description:'a fruit grown in orchards'})"
+            "description:'a fruit grown in orchards', dedup_pending: true})"
         )
         await rag.ingest(str(suppliers))
         summary = await rag.finalize()
@@ -1773,7 +1774,7 @@ class TestAdoptionOnlyCorrectsAGuessTheExtractorCouldNotAvoid:
         )
         await rag.query(
             "CREATE (:__Entity__:Concept {id:'carbon_farming__concept', name:'Carbon Farming', "
-            "description:'a soil practice'})"
+            "description:'a soil practice', dedup_pending: true})"
         )
         await rag.ingest(str(practices))
         await rag.finalize()

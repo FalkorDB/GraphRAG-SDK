@@ -2194,10 +2194,12 @@ class GraphStore:
         - Lists: filter items to primitives only, strip control chars from strings.
         - Dicts: serialise to JSON string.
         - Other: convert to string and strip control characters.
+        - ``dedup_pending`` is dropped: the SDK owns that flag, and an incoming
+          value would overwrite the one set when the node is created.
         """
         cleaned: dict[str, Any] = {}
         for key, value in props.items():
-            if value is None:
+            if value is None or key == DEDUP_PENDING_KEY:
                 continue
             if isinstance(value, str | int | float | bool):
                 cleaned[key] = cls._sanitize_string(value) if isinstance(value, str) else value

@@ -178,7 +178,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the name alone (Paris, France and Paris, Texas); a table row still absorbs
     a same-named mention by rule.
   - A "different" answer writes nothing to the graph; it is not asked again
-    because the flag is cleared.
+    because the flag is cleared. An entity whose check did not complete (a
+    failed name lookup or judge call, or an answer that was not a full
+    partition) keeps its flag and is retried by the next `finalize()`. When
+    the judge renames a merged node, its name vector is replaced too.
   - **BREAKING:** the fuzzy name-embedding phase is removed
     (`deduplicate_entities(fuzzy=..., similarity_threshold=...)`). Finalize
     dedup is the exact phase plus the judge. Ingest-time resolvers

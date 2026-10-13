@@ -150,7 +150,7 @@ class TestNothingIsDeletedWithoutSaying:
         whichever of them ranked first -- by degree, description length or id,
         none of which say which John the note meant. The wrong employee got the
         note's facts and the note got his key. The mention stays its own node and
-        the pair is reported for a resolver or the reader to decide.
+        the pair is reported for the reader to decide.
         """
         ontology = Ontology(
             entities=[Entity(label="Person")],
@@ -172,8 +172,8 @@ class TestNothingIsDeletedWithoutSaying:
         await rag.ingest(str(path))
         await rag.ingest(text="John Smith presented the roadmap.", document_id="note.txt")
 
-        # No resolver: this is about what the name rule alone may do.
-        summary = await rag.finalize(resolve=False)
+        # No judge: this is about what the name rule alone may do.
+        summary = await rag.finalize(judge=False)
 
         rows = await rag.query(
             "MATCH (p:Person {name:'John Smith'}) RETURN p.people__employee_id, p.description"
@@ -191,14 +191,11 @@ class TestNothingIsDeletedWithoutSaying:
     async def test_the_default_finalize_does_not_give_the_mention_to_either_row_either(
         self, real_falkordb_rag_factory, resolver, tmp_path
     ):
-        """The same note and rows, under ``finalize()`` as shipped.
+        """The same note and rows, under ``finalize()`` as shipped, with the judge.
 
-        ``resolve=False`` kept the three nodes; the default did not. The resolver
-        it builds merges identical names before it asks anything, and the merge
-        loop accepted the mention-to-row assignment the exact phase had just
-        refused -- so the note's facts and provenance landed on one Alice Smith,
-        chosen by rank. The refusal has to hold in every phase: the resolver is
-        told the pairs are settled, and a merge it returns anyway is dropped.
+        The exact phase refuses to give the mention to either row; the judge
+        must not undo that. The undecidable pairs are never put to it, and a
+        group it returns anyway is not merged through them.
         """
         ontology = Ontology(
             entities=[Entity(label="Person")],
@@ -237,7 +234,7 @@ class TestNothingIsDeletedWithoutSaying:
             ["e-1__person", "E-1", None],
             ["e-2__person", "E-2", None],
         ], "three nodes in, three nodes out; the note is nobody's until something says whose"
-        assert summary.resolved_duplicates == [] and summary.entities_deduplicated == 0
+        assert summary.entities_deduplicated == 0
         assert llm._call_index == 1, "extraction only: the pairs were never put to the model"
         reported = [line for line in summary.probable_duplicates if "2 keyed rows" in line]
         assert len(reported) == 2, summary.probable_duplicates
@@ -446,7 +443,7 @@ class TestTwoTablesOwningOneLabelStayApart:
         await rag.ingest(str(hr))
         await rag.ingest(str(crm))
         await rag.ingest(str(hr))
-        await rag.finalize(resolve=False)
+        await rag.finalize(judge=False)
 
         rows = await rag.query(
             "MATCH (p:Person) RETURN p.name, p.hr__employee_id, p.crm__contact_id ORDER BY p.name"
@@ -488,31 +485,6 @@ class TestTwoTablesOwningOneLabelStayApart:
             ["Bob Jones", "2", None, 1],
             ["Carol White", "3", None, 1],
         ]
-        await rag.close()
-
-    async def test_fuzzy_dedup_leaves_two_keyed_rows_alone(
-        self, real_falkordb_rag_factory, llm, resolver, tmp_path, embedder
-    ):
-        """Names that embed alike are still two rows when both carry a key.
-
-        The exact phase refuses this merge; the optional embedding phase judged
-        the same pair by cosine score alone and deleted one of them.
-        """
-        from graphrag_sdk.storage.deduplicator import EntityDeduplicator
-
-        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=self._ontology())
-        hr = tmp_path / "hr.csv"
-        hr.write_text("employee_id,full_name\n1,Jon Smith\n2,John Smith\n")
-        await rag.ingest(str(hr))
-
-        # A threshold of -1 declares every pair similar, so nothing about the
-        # embedder decides this: only the keyed-row guard can keep them apart.
-        dedup = EntityDeduplicator(rag._graph_store, embedder)
-        merged = await dedup.deduplicate(fuzzy=True, similarity_threshold=-1.0)
-
-        assert merged == 0
-        rows = await rag.query("MATCH (p:Person) RETURN p.hr__employee_id ORDER BY p.name")
-        assert rows == [["2"], ["1"]]
         await rag.close()
 
     async def test_a_foreign_key_two_rows_answer_to_is_given_to_neither(

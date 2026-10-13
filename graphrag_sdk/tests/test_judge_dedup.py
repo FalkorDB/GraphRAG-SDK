@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import graphrag_sdk.storage.judge_dedup as JD
 from graphrag_sdk.core.providers.base import LLMBatchItem
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.judge_dedup import (
@@ -244,6 +245,13 @@ def _knn_answer(rows, params, everyone_close=False):
     return SimpleNamespace(result_set=out)
 
 
+def _by_ids(rows, cypher, params):
+    """An ``UNWIND $ids`` read answers only the ids it asked for."""
+    if "UNWIND $ids" in cypher:
+        return [r for r in rows if r[0] in params["ids"]]
+    return list(rows)
+
+
 class ScriptedGraph:
     """Records every Cypher call; answers the entity fetch with fixed rows."""
 
@@ -261,7 +269,7 @@ class ScriptedGraph:
         if "db.idx.vector.queryNodes" in cypher:
             return _knn_answer(self.rows, params)
         if "RETURN e.id, e.name, e.description" in cypher:
-            return SimpleNamespace(result_set=list(self.rows))
+            return SimpleNamespace(result_set=_by_ids(self.rows, cypher, params))
         return SimpleNamespace(result_set=[])
 
 
@@ -377,7 +385,43 @@ def test_failed_llm_call_merges_nothing():
     assert not any("SAME_AS" in c[0] or "DISTINCT_FROM" in c[0] for c in graph.calls)
 
 
-def test_agreements_chain_across_sets_but_never_through_a_protected_pair():
+def test_handed_over_pairs_are_judged_without_name_vectors():
+    """With no name vector the index cannot nominate, but a same-name pair the
+    exact phase handed over needs none: it is still judged, and the new
+    entities stay pending so the next run looks up their neighbours."""
+
+    class NoVectors:
+        async def aembed_documents(self, texts, **kw):
+            return [[] for _ in texts]
+
+    rows = [(*r[:5], None) for r in ROWS]
+    graph = ScriptedGraph(rows)
+    merge = RecordingMerge()
+    dd = LLMJudgeDeduplicator(graph, NoVectors(), ScriptedLLM([[IBM]]), merge)
+    stats = asyncio.run(dd.deduplicate(extra_pairs=[("e1", "e2")]))
+    assert stats["llm_calls"] == 1 and merge.groups == [["e1", "e2"]]
+    assert {"e1", "e2", "e3"} <= dd.unjudged_ids
+
+
+def test_an_unjudged_set_is_reported_so_its_entities_stay_pending():
+    """A failed call, or an answer that is not a full partition, is not a
+    verdict: the set's entities are listed in ``unjudged_ids`` so the caller
+    keeps them pending and the next run asks again."""
+    for answer in (None, "SET 1 GROUP: 1"):
+        graph = ScriptedGraph(ROWS)
+        dd = LLMJudgeDeduplicator(
+            graph, FakeEmbedder(DESC_EMB), ScriptedLLM([answer]), RecordingMerge()
+        )
+        stats = asyncio.run(dd.deduplicate())
+        assert stats["merged"] == 0
+        assert {"e1", "e2"} <= dd.unjudged_ids, answer
+    graph = ScriptedGraph(ROWS)
+    dd = LLMJudgeDeduplicator(graph, FakeEmbedder(DESC_EMB), ScriptedLLM([[IBM]]), RecordingMerge())
+    asyncio.run(dd.deduplicate())
+    assert dd.unjudged_ids == set()
+
+
+def test_agreements_chain_across_sets_but_never_through_a_protected_pair(monkeypatch):
     """AAPL = "Apple Inc." judged in one set and "Apple Inc." = "Apple" in
     another is one company: agreed pairs are unioned across sets. A union that
     would put a protected pair into one group through a third member is
@@ -388,11 +432,15 @@ def test_agreements_chain_across_sets_but_never_through_a_protected_pair():
         ("c", "AAPL", "Its stock rose.", ["Organization"], None, [0.62, 0.79, 0.0]),
     ]
     same = {"Apple", "Apple Inc.", "AAPL"}
+    # Two sets that share "Apple Inc.": {Apple, Apple Inc.} and {Apple Inc., AAPL}.
+    monkeypatch.setattr(JD, "make_groups_dense", lambda edges, **kw: [[0, 1], [1, 2]])
     graph = ScriptedGraph(rows)
     merge = RecordingMerge()
-    dd = LLMJudgeDeduplicator(graph, FakeEmbedder({}), ScriptedLLM([[same]]), merge)
-    asyncio.run(dd.deduplicate())
-    assert merge.groups == [["a", "b", "c"]]
+    llm = ScriptedLLM([[same]])
+    dd = LLMJudgeDeduplicator(graph, FakeEmbedder({}), llm, merge)
+    stats = asyncio.run(dd.deduplicate())
+    assert stats["sets"] == 2 and "--- Set 2 ---" in llm.prompts[0]
+    assert merge.groups == [["a", "b", "c"]], "agreements in two sets chain into one group"
 
     graph = ScriptedGraph(rows)
     merge = RecordingMerge()
@@ -564,7 +612,7 @@ class _JudgeGraph:
         if "db.idx.vector.queryNodes" in cypher:
             return _knn_answer(self.rows, params)
         if "RETURN e.id, e.name, e.description" in cypher:
-            return SimpleNamespace(result_set=list(self.rows))
+            return SimpleNamespace(result_set=_by_ids(self.rows, cypher, params))
         if "DISTINCT_FROM" in cypher and "RETURN a.id, b.id" in cypher:
             return SimpleNamespace(result_set=list(self.distinct))
         if "properties(k), properties(d)" in cypher:
@@ -574,6 +622,65 @@ class _JudgeGraph:
         if "SAME_AS" in cypher:
             return SimpleNamespace(result_set=[[params["a"]]])
         return SimpleNamespace(result_set=[])
+
+
+def _cleared(graph) -> set[str]:
+    """Ids the run removed ``dedup_pending`` from."""
+    return {
+        eid
+        for cypher, params in graph.calls
+        if "REMOVE e.dedup_pending" in cypher
+        for eid in params["ids"]
+    }
+
+
+def test_entities_the_judge_could_not_check_keep_their_flag():
+    """The flag is removed only from entities whose check completed: a judge
+    call that failed leaves its set's entities pending for the next run."""
+    g = _JudgeGraph()
+    dd = EntityDeduplicator(g, FakeEmbedder(DESC_EMB))
+    asyncio.run(dd.deduplicate(judge_llm=ScriptedLLM([None])))
+    assert not {"e1", "e2"} & _cleared(g)
+
+    g = _JudgeGraph()
+    dd = EntityDeduplicator(g, FakeEmbedder(DESC_EMB))
+    asyncio.run(dd.deduplicate(judge_llm=ScriptedLLM([[IBM]])))
+    assert {"e1", "e3"} <= _cleared(g)
+
+
+def test_a_judge_that_raises_leaves_every_new_entity_pending():
+    class Raises:
+        async def abatch_invoke(self, prompts, **kw):
+            raise RuntimeError("provider unreachable")
+
+    g = _JudgeGraph()
+    dd = EntityDeduplicator(g, FakeEmbedder(DESC_EMB))
+    asyncio.run(dd.deduplicate(judge_llm=Raises()))
+    assert _cleared(g) == set()
+
+
+def test_a_renamed_survivor_gets_the_new_names_vector():
+    """The judge's best name replaces the node's name, so the name vector is
+    replaced too; one that cannot be embedded is removed for the backfill."""
+    g = _JudgeGraph()
+    dd = EntityDeduplicator(g, FakeEmbedder({"Apple Inc.": [0.1, 0.2, 0.3]}))
+    asyncio.run(
+        dd._rename_survivor({"id": "s", "label": "Organization", "name": "AAPL"}, "Apple Inc.")
+    )
+    (cypher, params) = g.calls[-1]
+    assert "SET s.name = $name" in cypher and "s.embedding = vecf32($v)" in cypher
+    assert params["v"] == [0.1, 0.2, 0.3]
+
+    class NoVector:
+        async def aembed_documents(self, texts, **kw):
+            raise RuntimeError("embedder down")
+
+    g = _JudgeGraph()
+    dd = EntityDeduplicator(g, NoVector())
+    asyncio.run(
+        dd._rename_survivor({"id": "s", "label": "Organization", "name": "AAPL"}, "Apple Inc.")
+    )
+    assert "REMOVE s.embedding" in g.calls[-1][0]
 
 
 @pytest.mark.parametrize("judge", [False, True])
@@ -754,12 +861,11 @@ class _LabelledGraph(_JudgeGraph):
                 )
             return SimpleNamespace(result_set=rows)
         if "RETURN e.id, e.name, e.description" in cypher:
-            return SimpleNamespace(
-                result_set=[
-                    (nid, n["name"], n["description"], list(n["labels"]), None, [1.0, 0.0, 0.0])
-                    for nid, n in self.nodes.items()
-                ]
-            )
+            rows = [
+                (nid, n["name"], n["description"], list(n["labels"]), None, [1.0, 0.0, 0.0])
+                for nid, n in self.nodes.items()
+            ]
+            return SimpleNamespace(result_set=_by_ids(rows, cypher, params or {}))
         if "RETURN properties(k), properties(d), labels(k), labels(d)" in cypher:
             k, d = self.nodes[params["survivor_id"]], self.nodes[params["dup_id"]]
             props = lambda n: {  # noqa: E731

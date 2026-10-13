@@ -591,7 +591,7 @@ merged_count = await rag.deduplicate_entities(
 | `judge_llm`            | `LLMInterface \| None` | `None` | Judge model; defaults to the instance's `llm`.        |
 | `dedup_all`            | `bool`  | `False` | Check every entity, not only those flagged since the last run.      |
 
-Only entities ingest flagged `dedup_pending` since the last run are checked (pass `dedup_all=True` to check every entity); the flag is removed when the run ends.
+Only entities flagged `dedup_pending` since the last run are checked (pass `dedup_all=True` to check every entity); the flag is removed when the run ends, except on an entity whose check did not complete, which the next run retries.
 
 **Phase 1 (always runs): Exact name match.** Groups the new entities and their nearest names from the vector index by canonical name (case, accents, punctuation and a leading English article folded; `A.I.` = `AI`; `Surname, Given` un-inverted; common abbreviations expanded; one trailing legal form such as `Ltd` or `Inc` dropped) and label to prevent cross-type merging. An acronym joins its long form when exactly one same-label entity spells its initials (`AIHS` / `Ashford Island Historical Society`). The survivor is the node whose id came from a declared table key, then a real node over a placeholder, then the long form over an acronym, then the best-connected entity (most RELATES and MENTIONED_IN edges), then the longest description. The duplicate's description is appended to the survivor's with `" | "`, its name is recorded in the survivor's `aliases`, its `source_chunk_ids` are unioned in, any property the survivor lacks is copied over, and its RELATES and MENTIONED_IN edges are remapped before it is deleted.
 

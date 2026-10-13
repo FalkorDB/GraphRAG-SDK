@@ -576,12 +576,19 @@ class EntityDeduplicator:
         # names).
         self._pending_ids: list[str] = []
         self._run_entity_ids: list[str] = []
+        # Every nearest name the index returned for them, whether or not the
+        # exact phase could group it: the near-miss report reads these too.
+        self._near_ids: list[str] = []
         # Check every entity, not only the flagged ones (see deduplicate()).
         self._dedup_all = False
         # Same-name pairs the exact phase handed to the judge instead of merging.
         self._judge_pairs: list[tuple[str, str]] = []
         # Name vectors this run wrote while looking up nearest names.
         self.names_embedded = 0
+        self._name_embedded_ids: set[str] = set()
+        # New entities whose check did not complete (a failed lookup or judge
+        # call); they keep dedup_pending so the next run checks them again.
+        self._unchecked_ids: set[str] = set()
 
     async def deduplicate(
         self,
@@ -602,18 +609,22 @@ class EntityDeduplicator:
         in ``self.last_judge_stats``. Without it, only spelling variants merge
         and the rest is reported.
 
-        Only entities ingest flagged ``dedup_pending`` are query points; the
-        flag is removed at the end, so running this again on an unchanged
-        graph does no work. ``dedup_all=True`` checks every entity instead —
-        for a graph written before the flag existed, which has none.
+        Only entities flagged ``dedup_pending`` at ingest are query points;
+        the flag is removed at the end (kept on any whose check did not
+        complete), so running this again on an unchanged graph does no work.
+        ``dedup_all=True`` checks every entity instead — for a graph written
+        before the flag existed, which has none.
         """
         self._declared_labels = {label.strip().lower() for label in (declared_labels or set())}
         self._ambiguous_mentions = []
         self.last_judge_stats = {}
         self._pending_ids = []
         self._run_entity_ids = []
+        self._near_ids = []
         self._dedup_all = dedup_all
         self.names_embedded = 0
+        self._name_embedded_ids = set()
+        self._unchecked_ids = set()
         # With a judge, names that only *look* the same (Paris, France and
         # Paris, Texas) are put to it instead of being merged on spelling.
         self._judge_pairs = []
@@ -624,9 +635,18 @@ class EntityDeduplicator:
 
         # What is left over that probably should not be. Reported, never merged.
         await self._report_near_misses(batch_size)
+        await self._count_names_embedded()
 
-        # Checked: the next run queries only what is added after this one.
-        await self._clear_pending(self._pending_ids, batch_size)
+        # Checked: the next run queries only what is added after this one. An
+        # entity whose check did not complete stays flagged and is retried.
+        checked = [eid for eid in self._pending_ids if eid not in self._unchecked_ids]
+        if len(checked) < len(self._pending_ids):
+            logger.warning(
+                "%d new entities were not fully checked (a lookup or judge call "
+                "failed); they stay pending for the next run",
+                len(self._pending_ids) - len(checked),
+            )
+        await self._clear_pending(checked, batch_size)
 
         logger.info(f"EntityDeduplicator total: {total} duplicates merged")
         return total
@@ -658,11 +678,13 @@ class EntityDeduplicator:
         judgement this class does not have — it holds no LLM — so it reports.
         """
         try:
-            # The entities this run looked at, as they are now: a pair of two
-            # old entities was reported by the run that checked them.
-            survivors = list(
-                (await self._fetch_entities_by_ids(self._run_entity_ids, batch_size)).values()
-            )
+            # The entities this run looked at and every nearest name the index
+            # returned for them (an existing "Maya Ellison" beside a new
+            # "M. Ellison" is no exact match, but is a near miss), as they are
+            # now. A pair of two old entities was reported by the run that
+            # checked them, so only pairs touching a new entity are kept.
+            ids = list(dict.fromkeys(self._run_entity_ids + self._near_ids))
+            survivors = list((await self._fetch_entities_by_ids(ids, batch_size)).values())
             alive = {ent["id"] for ent in survivors}
             # A mention left between two rows first: it is an exact name match
             # that did not merge, which is the finding most worth a look. One the
@@ -672,7 +694,11 @@ class EntityDeduplicator:
                 for miss in self._ambiguous_mentions
                 if miss.id_a in alive and miss.id_b in alive
             ]
-            self.near_misses = open_mentions + find_near_misses(survivors)
+            found = find_near_misses(survivors)
+            if not self._dedup_all:
+                new = set(self._pending_ids)
+                found = [m for m in found if m.id_a in new or m.id_b in new]
+            self.near_misses = open_mentions + found
         except Exception:
             # A report is never worth failing a finalize over.
             logger.debug("Near-miss detection failed", exc_info=True)
@@ -1159,7 +1185,9 @@ class EntityDeduplicator:
             logger.warning("LLM judge failed over the graph: %s", exc)
             # Merges committed before the failure are real; report them.
             self.last_judge_stats = dict(judge.last_stats)
+            self._unchecked_ids |= set(self._pending_ids)
             return int(self.last_judge_stats.get("merged", 0) or 0)
+        self._unchecked_ids |= judge.unjudged_ids
         merged = int(self.last_judge_stats.get("merged", 0) or 0)
         logger.info(f"EntityDeduplicator phase 2 (judge): merged {merged} duplicates")
         return merged
@@ -1227,15 +1255,26 @@ class EntityDeduplicator:
 
     async def _rename_survivor(self, survivor: dict[str, Any], name: str) -> None:
         """Give a merged node the judge's best name; the old one becomes an
-        alias, and the new one leaves the alias list. The id does not change."""
+        alias, and the new one leaves the alias list. The id does not change.
+
+        The name vector is the old name's, so it is replaced with the new
+        name's; if that cannot be embedded it is removed, and the embedding
+        backfill writes it."""
+        try:
+            vector = list((await self._embedder.aembed_documents([name]))[0] or [])
+        except Exception:
+            logger.debug("Could not embed renamed survivor %s", survivor["id"], exc_info=True)
+            vector = []
+        set_vector = "s.embedding = vecf32($v)" if vector else None
         try:
             await self._graph.query_raw(
                 "MATCH (s:__Entity__ {id: $id}) "
                 "WITH s, coalesce(s.aliases, []) + [s.name] AS names "
                 "SET s.name = $name, "
                 "s.aliases = reduce(acc = [], a IN names | "
-                "CASE WHEN a = $name OR a IN acc THEN acc ELSE acc + [a] END)",
-                {"id": survivor["id"], "name": name},
+                "CASE WHEN a = $name OR a IN acc THEN acc ELSE acc + [a] END)"
+                + (f", {set_vector}" if set_vector else " REMOVE s.embedding"),
+                {"id": survivor["id"], "name": name, "v": vector},
             )
             logger.info("Judge named merged %s %r -> %r", survivor["label"], survivor["name"], name)
         except Exception as exc:
@@ -1471,7 +1510,7 @@ class EntityDeduplicator:
         try:
             rows = await index.fetch_by_ids([ent["id"] for ent in pending], batch_size)
             vecs = await index.name_vectors(rows)
-            self.names_embedded += int(index.last_stats.get("embedded", 0) or 0)
+            self._name_embedded_ids |= index._embedded_ids
             if not rows or vecs.shape[1] == 0:
                 return []
             await index.ensure_vector_index(vecs.shape[1])
@@ -1482,6 +1521,7 @@ class EntityDeduplicator:
                 "entities among themselves only",
                 exc,
             )
+            self._unchecked_ids |= {ent["id"] for ent in pending}
             return []
         # Only a neighbour the exact phase could group with a new entity is
         # read in full: the same canonical name, or an acronym / long-form
@@ -1506,12 +1546,30 @@ class EntityDeduplicator:
             )
 
         pending_ids = {ent["id"] for ent in pending}
+        self._near_ids = list(
+            dict.fromkeys(ent["id"] for _, ent, _ in hits if ent["id"] not in pending_ids)
+        )
         ids = [
             ent["id"]
             for _, ent, _ in hits
             if ent["id"] not in pending_ids and could_group(ent["name"])
         ]
         return list((await self._fetch_entities_by_ids(ids, batch_size)).values())
+
+    async def _count_names_embedded(self) -> None:
+        """Name vectors this run wrote that are still in the graph: a vector
+        written to a node a merge then deleted is not one the graph holds."""
+        ids = list(self._name_embedded_ids)
+        if not ids:
+            return
+        try:
+            result = await self._graph.query_raw(
+                "UNWIND $ids AS id MATCH (e:__Entity__ {id: id}) RETURN count(e)", {"ids": ids}
+            )
+            self.names_embedded = int((result.result_set or [[0]])[0][0] or 0)
+        except Exception:
+            logger.debug("Could not count the name vectors written", exc_info=True)
+            self.names_embedded = len(ids)
 
     async def _clear_pending(self, ids: list[str], batch_size: int) -> None:
         """Remove the ``dedup_pending`` flag from ``ids`` — only the ones this

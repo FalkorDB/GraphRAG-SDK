@@ -162,7 +162,7 @@ async with GraphRAG(connection=ConnectionConfig(...), llm=..., embedder=...) as 
         modified=["docs/api.md"],
         deleted=["docs/removed_page.md"],
     )
-    await graph.finalize()  # once per batch — finalize is O(graph size)
+    await graph.finalize()  # once per batch — dedup cost follows the change size
 
     # Per-file outcomes are wrapped in BatchEntry — the batch never raises.
     for entry in result.added + result.modified + result.deleted:
@@ -184,9 +184,11 @@ no extra plumbing. See [`examples/07_incremental_updates.py`](graphrag_sdk/examp
 
 **Cost model.** `finalize()` deduplicates only the entities ingested
 since the last `finalize()` (flagged `dedup_pending` at ingest), reaching
-the rest of the graph through the vector index — its dedup cost follows
-the **change size**, not the graph size, and a `finalize()` with nothing
-new does no dedup work. Embedding backfill is O(change size) too. For CI
+the rest of the graph through the vector index — its LLM calls,
+embeddings and merges follow the **change size**, not the graph size.
+Finding the flagged entities and the ones missing an embedding is one
+label scan each (about 0.1 s on a 44k-entity graph), so a `finalize()`
+with nothing new does no dedup work. For CI
 use cases, batch all PR changes through `apply_changes` and call
 `finalize` **once** at the end of the run: one call judges the whole
 batch's new entities together, in fewer LLM calls than one per file.
