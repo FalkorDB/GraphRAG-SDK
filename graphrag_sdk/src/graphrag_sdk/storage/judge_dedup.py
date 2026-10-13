@@ -138,15 +138,19 @@ JUDGE_PROMPT = (
     "merge corrupts the graph permanently; a missed merge is recoverable. When in "
     "doubt, separate.\n\n"
     "OUTPUT\n"
-    "One line per group, prefixed by its set number, listing the member numbers. "
-    "For a group of two or more, add the best name for the merged entity after "
-    '"| NAME:": its most complete, commonly used form, copied exactly from the '
+    "For every set, write one line per group. Every line must start with "
+    '"SET <set number> GROUP:" followed by the member numbers. For a group of '
+    'two or more, end the line with "| NAME:" and the best name for the merged '
+    "entity: its most complete, commonly used form, copied exactly from the "
     "names and aliases shown in that group (a full name over an initial, a "
-    "company name over a ticker symbol or a generic reference):\n"
+    "company name over a ticker symbol or a generic reference). Example for a "
+    "set of 4 and a set of 2:\n"
     "  SET 1 GROUP: 1, 4 | NAME: International Business Machines\n"
     "  SET 1 GROUP: 2\n"
+    "  SET 1 GROUP: 3\n"
     "  SET 2 GROUP: 1, 2 | NAME: Marie Curie\n"
-    "List every entity of every set exactly once. No commentary.\n\n"
+    "Every member of every set must appear in exactly one line, including the "
+    "last set. No other text.\n\n"
     "Answer:"
 )
 
