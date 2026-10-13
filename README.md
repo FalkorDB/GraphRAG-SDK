@@ -217,7 +217,8 @@ guards the default.
 | Area | Step | Cost |
 | --- | --- | --- |
 | Ingestion | Extract entities & relations | LLM |
-| Ingestion | Resolve & deduplicate entities | LLM |
+| Ingestion | Resolve entities within a document (exact match) | — |
+| Finalize | Deduplicate new entities across documents (LLM judge) | LLM |
 | Ingestion | Embed & index | LLM |
 | Retrieval | Vector search | DB |
 | Retrieval | Full-text search | DB |

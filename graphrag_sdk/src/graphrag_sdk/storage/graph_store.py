@@ -543,8 +543,12 @@ class GraphStore:
         return 0, 1
 
     # The row about to be written sets ``is_stub`` itself; a placeholder's
-    # ``True`` must not land on the node first and then have to be undone.
-    _NEVER_CARRY_ON_RECONCILE = frozenset({"id", "embedding", "is_stub"})
+    # ``True`` must not land on the node first and then have to be undone. The
+    # dedup flag and failure count belong to each node's own checks: the fold
+    # flags the survivor itself, and another node's count would cut its retries.
+    _NEVER_CARRY_ON_RECONCILE = frozenset(
+        {"id", "embedding", "is_stub", DEDUP_PENDING_KEY, DEDUP_ATTEMPTS_KEY}
+    )
 
     async def _carry_then_delete(self, old_id: str, new_id: str) -> None:
         """Copy what only the old node knew onto the new one, then delete the old.

@@ -222,8 +222,8 @@ class TestNameGrouping:
         """Finalize-time exact match keys on (name, label).
 
         ``Paris``/Location and ``Paris``/Person are homographs, not duplicates.
-        Deciding otherwise needs context, which is the ingest-time LLM
-        resolver's job -- this pass deletes nodes without one.
+        Deciding otherwise needs context, which is the LLM judge's job at
+        finalize() -- this pass deletes nodes without one.
         """
         groups = {
             ("paris", "location"): [_ent("1", "Paris", "Location")],

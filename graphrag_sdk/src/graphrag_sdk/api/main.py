@@ -1935,7 +1935,7 @@ class GraphRAG:
                 raise ValueError(
                     "'resolver' does not apply to a structured source: a row is "
                     "matched on its declared key, and identity across sources is "
-                    "judged by finalize(resolver=...)."
+                    "judged by finalize()."
                 )
             mapping = await self._mapping_for(
                 source, document_id=document_id, record_loader=record_loader, ctx=ctx
@@ -2906,12 +2906,14 @@ class GraphRAG:
         correct and ~4 wrong merges per run for ~90 extra LLM calls, and QA
         moved by less than one question.
 
-        Cross-document dedup runs **once, in** :meth:`finalize`: the resolver
-        pass and the LLM-judged phase (``storage/judge_dedup.py``) see every
-        entity of every document. Ingest stays zero-LLM-cost for resolution: no
-        ``llm`` is passed, so ``ExactMatchResolution`` neither summarises merged
+        Cross-document dedup runs **once, in** :meth:`finalize`: exact-name and
+        acronym matching, then the LLM judge (``storage/judge_dedup.py``), over
+        the entities added since the last run against their nearest names in
+        the whole graph. Ingest stays zero-LLM-cost for resolution: no ``llm``
+        is passed, so ``ExactMatchResolution`` neither summarises merged
         descriptions (they are kept as a list and joined with ``" | "``) nor
-        merges same-name nodes of different labels — both are finalize's job.
+        merges same-name nodes of different labels — cross-label merges are
+        left to finalize's judge and declared-label adoption.
         Pass a resolver to ``ingest()`` to change this per call.
         """
         return ExactMatchResolution(llm=None, cross_label_merge=False)
@@ -2935,9 +2937,9 @@ class GraphRAG:
     # source path in file mode). ``apply_changes()`` is a CI-friendly
     # batch wrapper that dispatches to the right primitive per file.
     #
-    # All three are intentionally separate from ``finalize()``: dedup is
-    # O(graph size) and should be amortized across a whole batch, not
-    # paid per file. See CHANGELOG 1.1.0 cost-model note.
+    # All three are intentionally separate from ``finalize()``: dedup should
+    # run once per batch, so its LLM calls cover the batch's new entities
+    # together rather than once per file. See CHANGELOG 1.1.0 cost-model note.
 
     async def _run_post_cutover_cleanup(self, document_id: str, ctx: Context) -> tuple[int, int]:
         """Read persisted cleanup state from a Document and execute it.
@@ -3895,9 +3897,9 @@ class GraphRAG:
         future entity-budget enforcement may rely on. Callers should
         not assume reordering is safe.
 
-        **This method does NOT call ``finalize()``.** Cross-document
-        deduplication is O(graph size); call ``finalize()`` once after
-        the whole batch (e.g. once per CI run, not once per file).
+        **This method does NOT call ``finalize()``.** Call ``finalize()``
+        once after the whole batch (e.g. once per CI run, not once per file),
+        so its dedup judges the batch's new entities together.
 
         Canonical CI usage::
 
@@ -4517,14 +4519,16 @@ class GraphRAG:
         fuzzy: bool | None = None,
         similarity_threshold: float | None = None,
     ) -> int:
-        """Global entity deduplication across all ingested documents.
+        """Incremental cross-document entity deduplication.
 
-        Phase 1 (always): Exact name match — groups entities by normalized
-        name and label, keeps the survivor the merge rules pick (a table row
-        over a mention, then the best-connected and best-described), keeps
-        every member's description in the ``descriptions`` list (joined with
-        ``" | "`` in ``description``), remaps all RELATES and MENTIONED_IN
-        edges, deletes duplicates.
+        Phase 1 (always): Exact name match — groups entities by canonical
+        name and label (an acronym joins its unique same-label long form),
+        keeps the survivor the merge rules pick (a table row over a mention,
+        then the best-connected and best-described), keeps every member's
+        description in the ``descriptions`` list (joined with ``" | "`` in
+        ``description``), remaps all RELATES and MENTIONED_IN edges, deletes
+        duplicates. With ``judge=True``, a group of extracted mentions only is
+        handed to the judge instead of merged on the name.
 
         Phase 2 (opt-in here, ``judge=True``; on by default in
         :meth:`finalize`): LLM-judged cross-document dedup of the entities
@@ -4541,8 +4545,9 @@ class GraphRAG:
         Both phases are incremental: only entities flagged ``dedup_pending`` at
         ingest are query points, compared with the rest of the graph through
         the entity vector index, and the flag is removed when the run ends
-        (kept on an entity whose lookup or judge call failed, so the next run
-        retries it, up to ``MAX_DEDUP_ATTEMPTS`` runs) — a second call on an
+        (kept on an entity whose check did not complete — a failed lookup,
+        judge call or merge write, an answer that was not a full partition,
+        or no name vector — so the next run retries it, up to 3 runs) — a second call on an
         unchanged graph does no work, and the graph keeps no dedup data. A
         graph written before the flag existed has none: pass
         ``dedup_all=True`` once to check every entity. The new entities'
@@ -4602,7 +4607,7 @@ class GraphRAG:
             judge_llm=(judge_llm or self.llm) if judge else None,
             dedup_all=dedup_all,
         )
-        # The graph has now been swept globally, so the pending-dedup reminder
+        # Dedup has run over what was pending, so the pending-dedup reminder
         # no longer applies. Reset here rather than in finalize() so a caller
         # who runs dedup directly is also covered.
         self._docs_since_dedup = 0
@@ -4667,8 +4672,8 @@ class GraphRAG:
            the last finalize are checked, against the whole graph through
            indexes. Exact-name / acronym dedup, then (``judge``) one LLM pass
            over each new entity and its nearest names from the vector index;
-           see :meth:`deduplicate_entities`. The judge embeds the names it
-           reads and stores them on the nodes. Calling ``finalize()`` again on
+           see :meth:`deduplicate_entities`. Dedup embeds the names it reads
+           and stores them on the nodes. Calling ``finalize()`` again on
            an unchanged graph does no dedup work.
         3. ``backfill_entity_embeddings()`` — name embeddings on every entity
            still missing one. After dedup, so a duplicate the merge removes
@@ -4718,7 +4723,7 @@ class GraphRAG:
         if null_cleaned:
             ctx_log(f"finalize: removed {null_cleaned} NULL-name stub entities")
 
-        # Step 2: Global dedup (exact, then LLM-judged)
+        # Step 2: Incremental dedup (exact, then LLM-judged)
         dedup_count = await self.deduplicate_entities(
             judge=judge,
             judge_llm=judge_llm,

@@ -175,16 +175,16 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 **Alternative: LLMVerifiedResolution**
 - Runs the same exact-match pass first, then compares the surviving names by embedding similarity within each label
 - Pairs at or above `hard_threshold` (0.95) merge outright; pairs down to `soft_threshold` (0.65) go to the LLM for a YES/NO verdict
-- Useful when the same entity is named inconsistently across documents (e.g., "Acme Corp" vs "Acme Corporation")
+- Useful when the same entity is named inconsistently within a document (e.g., "Acme Corp" vs "Acme Corporation")
 
 **At `finalize()`: incremental cross-document dedup**
-- Ingest flags every entity node it *creates* with `dedup_pending = true`; an entity that already exists is not flagged again
+- Ingest flags every entity node it *creates* with `dedup_pending = true`; an entity that already exists is not flagged again, except a table row a re-sync renames or folds into another node, which is flagged so it is checked under its new name
 - `finalize()` checks only the flagged entities, against the whole graph through FalkorDB indexes — it never reads every entity. Each new entity's name is embedded once (stored as `e.embedding`, the vector search also uses), and the `__Entity__` vector index returns its nearest names (no LLM)
-- Same spelling once normalised, or a unique acronym of it, as a same-label **table row** → merged into the row by rule, no LLM (an extracted entity under a guessed label can also be adopted by a declared label of the same name). Same spelling between extracted mentions only, and the 5 nearest names at cosine ≥ 0.5, become candidate pairs; candidates form dense sets of ≤ 8
+- Same spelling once normalised, or a unique acronym of it, as a same-label **table row** → merged into the row by rule, no LLM (an extracted entity under a guessed label can also be adopted by a declared label of the same name). Same spelling between extracted mentions only, an acronym that spells several long forms, and the 5 nearest names at cosine ≥ 0.5, become candidate pairs; candidates form dense sets of ≤ 8
 - The judge LLM partitions each set **once** into same-referent groups, reading names, labels, descriptions and existing aliases, and names each merged group
 - Same → **merge**, by the same rules as every finalize merge: a table's row survives a mention, every member's description is kept in `descriptions` (joined with `" | "` in `description`), other names kept in `aliases`, edges moved first, then the loser deleted; the survivor gains every member's label and takes the judge's name for the group (a table row keeps its declared name). Groups chain: A = B and B = C become one node
-- Different → **nothing** is written
-- The flag is removed from the entities the run read, so `finalize()` on an unchanged graph does no dedup work and a finalized graph carries no dedup data. A graph built before the flag existed has none: run `finalize(dedup_all=True)` once to check every entity
+- Different → **nothing** is written; the pair is judged again only if a later new entity brings it into a set
+- The flag is removed from the entities the run read — except one whose check did not complete (a failed lookup, judge call or merge write, an answer that was not a full partition, or no name vector), which is retried up to 3 runs — so `finalize()` on an unchanged graph does no dedup work and a finalized graph carries no dedup data. A graph built before the flag existed has none: run `finalize(dedup_all=True)` once to check every entity
 - Two keyed rows of a table, and a mention two such rows could own, are never asked or grouped
 - `finalize(judge=False)` skips the judge (exact-name dedup only, no model); `deduplicate_entities()` on its own runs it only with `judge=True`; `judge_llm=` picks the model (gpt-4.1-class recommended); pass `resolver=LLMVerifiedResolution(...)` to `ingest()` to also resolve per document
 

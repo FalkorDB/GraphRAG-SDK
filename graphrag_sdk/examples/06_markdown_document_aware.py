@@ -199,7 +199,7 @@ async def main():
     print(f"Done: {result.nodes_created} nodes, {result.relationships_created} edges, "
           f"{result.chunks_indexed} chunks indexed")
 
-    # Post-ingestion: dedup entities, embed entity/relationship descriptions,
+    # Post-ingestion: dedup entities, embed entity names and relationship facts,
     # and build full-text + vector indexes.  Required before retrieval works.
     await rag.finalize()
 

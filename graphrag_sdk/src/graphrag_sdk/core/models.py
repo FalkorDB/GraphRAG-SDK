@@ -1086,15 +1086,16 @@ class FinalizeResult(DataModel):
     probable_duplicates: list[str] = Field(default_factory=list)
     """Same-label entities that probably denote one thing and did not merge.
 
-    The merge is exact string equality on the display name, so two sources that
-    spell a name differently leave two nodes: an HR export's "Maya Ellison" and a
+    Grouping is by canonical name, so two sources that spell a name in ways it
+    does not unify, and that the judge did not merge, leave two nodes: an HR
+    export's "Maya Ellison" and a
     board review's "M. Ellison" become two people, one holding her age and the
     other holding what she did. Every question needing both then comes back wrong
     while looking answered, and nothing used to say so.
 
     Not merged on a guess, because a merge in the graph cannot be undone. Fix
-    the spelling in the source, which fixes it for good; the decision is yours,
-    never a threshold's. Non-empty here is a prompt to look at your data, not a
+    the spelling in the source, which fixes it for good; the decision is yours
+    or the judge's, never a threshold's. Non-empty here is a prompt to look at your data, not a
     failure.
     """
 

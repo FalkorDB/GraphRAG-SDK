@@ -96,8 +96,8 @@ async def main():
         )
 
         # ── 6. Finalize ONCE at the end of the batch ───────────────
-        # finalize() is O(graph size) for cross-document dedup, so
-        # call it after the whole batch — never per file. apply_changes
+        # finalize() judges the batch's new entities together, so call
+        # it after the whole batch — never per file. apply_changes
         # deliberately does not call finalize internally.
         finalize_result = await rag.finalize()
         print(

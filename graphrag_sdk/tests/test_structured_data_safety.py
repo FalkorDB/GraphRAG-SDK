@@ -194,8 +194,9 @@ class TestNothingIsDeletedWithoutSaying:
         """The same note and rows, under ``finalize()`` as shipped, with the judge.
 
         The exact phase refuses to give the mention to either row; the judge
-        must not undo that. The undecidable pairs are never put to it, and a
-        group it returns anyway is not merged through them.
+        must not undo that. The undecidable pairs are never put to it: the
+        model is called for the extraction only, and the three nodes stay
+        three.
         """
         ontology = Ontology(
             entities=[Entity(label="Person")],
@@ -214,7 +215,8 @@ class TestNothingIsDeletedWithoutSaying:
             '{"entities": [{"name": "Alice Smith", "type": "Person", '
             '"description": "Presented the plan"}], "relationships": []}'
         )
-        # Would say YES to anything, so a merge here can only mean it was asked.
+        # Any judge call would consume a scripted answer; the call count below
+        # proves the pairs were never put to the model.
         llm = MockLLM([extraction, "YES", "YES", "YES"], strict=True)
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
         path = tmp_path / "people.csv"

@@ -225,11 +225,11 @@ After all documents have been ingested, run `finalize()` to deduplicate entities
 
 ```python
 results = await rag.finalize()
-print(f"Deduplicated: {results['entities_deduplicated']}")
-print(f"Embedded: {results['entities_embedded']} entities, {results['relationships_embedded']} relationships")
+print(f"Deduplicated: {results.entities_deduplicated}")
+print(f"Embedded: {results.entities_embedded} entities, {results.relationships_embedded} relationships")
 ```
 
-This step is important for query accuracy. It merges duplicate entities (e.g., "J. Doe" and "Jane Doe") and ensures all entities have vector embeddings for semantic search.
+This step is important for query accuracy. It merges duplicate entities — spelling variants such as "Acme Ltd" and "Acme Limited" by rule, and pairs such as "J. Doe" and "Jane Doe" when the LLM judge decides they are one person — and ensures all entities have vector embeddings for semantic search.
 
 ---
 

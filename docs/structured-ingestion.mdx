@@ -706,7 +706,7 @@ The row's key is not the identity. It is carried as `entity_key`, and it is what
 
 The same caution runs the other way. `entity_key` is one unsigned slot, so two tables that both number `Person` from 1 leave two nodes carrying `entity_key = "1"`, and a third table's foreign key `1` cannot say which it means. That link is left on a placeholder that says only "Person keyed 1" and reported in `StructuredIngestionResult.references_ambiguous`, rather than attached to whichever node the graph listed last. Give the tables distinct key spaces, or key the link on a column only one of them owns.
 
-What `finalize()` still does is handle **spelling variants**: `NORTHWIND ENERGY` from a NER model and `Northwind Energy` from a CSV are different strings and so different ids. It groups every entity by `(canonical name, label)` and merges each group. The canonical form is reduced independently on both sides — case and accents
+What `finalize()` still does is handle **spelling variants**: `NORTHWIND ENERGY` from a NER model and `Northwind Energy` from a CSV are different strings and so different ids. It groups the entities added since the last `finalize()`, with their nearest names in the graph, by `(canonical name, label)` and merges each group that holds a table row; a group of extracted mentions only goes to the LLM judge (with `finalize(judge=False)`, the rule merges it too). The canonical form is reduced independently on both sides — case and accents
 folded, punctuation split, abbreviation dots removed (`A.I.` = `AI`), a leading
 English article dropped, `Surname, Given` un-inverted, abbreviations expanded,
 one trailing legal form dropped — so the join is an equality rather than a
@@ -715,7 +715,7 @@ merges. An acronym also joins the one same-label entity whose initials it spells
 order is deliberately preserved: sorting the tokens would wrongly merge `Stanley
 Morgan` with `Morgan Stanley`, a person and a bank, and a merge is not reversible.
 
-Because the match is on the name, a table whose display names are spelled differently from the prose will not join: `Maya Ellison` and `M. Ellison` stay two nodes, one holding her age and the other holding what she did. No canonical form can unify an initial with a full given name without also merging every other M-surname person, so those are **reported, never merged**:
+Because the match is on the name, a table whose display names are spelled differently from the prose will not join: `Maya Ellison` and `M. Ellison` stay two nodes, one holding her age and the other holding what she did. No canonical form can unify an initial with a full given name without also merging every other M-surname person, so the canonical rule never merges them — the LLM judge may (see below), and a pair it leaves apart is **reported**:
 
 ```python
 summary = await rag.finalize()
@@ -737,7 +737,7 @@ await rag.query("""
 
 An empty result means nothing joined.
 
-A name that matches letter for letter needs no `finalize()` to join: the row and the mention already share a node. `finalize()` is for the names that do not — the spelling variants the canonical rule folds and the pairs the judge (or the resolver) decides — and it carries what the table wrote onto the survivor:
+A name that matches letter for letter needs no `finalize()` to join: the row and the mention already share a node. `finalize()` is for the names that do not — the spelling variants the canonical rule folds and the pairs the judge decides — and it carries what the table wrote onto the survivor:
 
 ```python
 await rag.ingest("employees.csv")
@@ -786,8 +786,8 @@ of 4).
 <Note>
 The same applies within a label. `A. Smith` and `Alice Smith` reduce to different
 canonical names, so they remain separate nodes. That floor is deliberate: it never
-merges two different people, and anything fuzzier belongs in the semantic
-resolution pass. Embeddings were measured on this question and cannot decide it —
+merges two different people, and anything fuzzier is the LLM judge's job at
+`finalize()`. Embeddings were measured on this question and cannot decide it —
 over realistic pairs, "same" scored 0.601–0.980 and "different" 0.706–0.930, so
 the ranges overlap and no threshold exists.
 </Note>

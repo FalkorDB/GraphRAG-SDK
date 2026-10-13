@@ -166,7 +166,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ~39k-entity graph finalize in 4.5 s (fake LLM), where the previous flow spent
   about 256 s of dedup and 5,982 LLM calls on every call; on a labeled set of
   277 entities (138 true pairs, gpt-4.1, 3 runs) precision rose from 0.81 to
-  0.87–0.91 and F1 from 0.71–0.73 to 0.75–0.80, with 5 LLM calls instead of 14.
+  0.92–0.93 and F1 from 0.71–0.73 to 0.83–0.84, with 5 LLM calls instead of 14.
   - Candidates come from each new entity's nearest names in the vector index
     (one name embedding per entity, also used by search); descriptions are no
     longer embedded, but the judge still reads them.
@@ -177,11 +177,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Extracted mentions with the same spelling are judged rather than merged on
     the name alone (Paris, France and Paris, Texas); a table row still absorbs
     a same-named mention by rule.
-  - A "different" answer writes nothing to the graph; it is not asked again
-    because the flag is cleared. An entity whose check did not complete (a
-    failed name lookup or judge call, or an answer that was not a full
-    partition) keeps its flag and is retried by the next `finalize()`, up to
-    3 runs; after that it is released and named in a warning. A table
+  - A "different" answer writes nothing to the graph; the pair is judged
+    again only if a later new entity brings it into a set. An entity whose
+    check did not complete (a failed lookup, judge call or merge write, an
+    answer that was not a full partition, or no name vector) keeps its flag and is retried by the next `finalize()`, up to
+    3 runs; after that it is released and named in a warning. When all of a
+    new entity's 10 nearest names are exact-phase matches, the lookup widens
+    (up to 1,000) so none past the tenth is missed. A table
     re-sync that renames a row flags it, so it is checked under its new
     name. When
     the judge renames a merged node, its name vector is replaced too.
@@ -252,9 +254,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   punctuation, apostrophes and `&`, `Surname, Given` inversion, common
   abbreviations (`Corp.` → `corporation`) and one trailing legal form
   (`Ltd`, `Inc`, `GmbH`) are normalised, word order is not — `Morgan Stanley`
-  and `Stanley Morgan` stay apart. Spellings the rule deliberately declines to
-  join (`M. Ellison` / `Maya Ellison`, a pure reordering) are listed in
-  `FinalizeResult.probable_duplicates` with the reason, never merged.
+  and `Stanley Morgan` stay apart. A group holding a table row merges by rule;
+  with the judge on, a group of extracted mentions only goes to the judge.
+  Spellings the rule deliberately declines to join (`M. Ellison` / `Maya
+  Ellison`, a pure reordering) are never merged by the rule; the judge may
+  merge them, and a pair it leaves apart is listed in
+  `FinalizeResult.probable_duplicates` with the reason.
 
 - **`ingest()` of a tabular file returns a `StructuredIngestionResult`.** It
   is not an `IngestionResult`: a row is not a chunk, so it reports `records`,
@@ -272,10 +277,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run. For a corpus with no structured sources only the degree and tie-break
   steps are new.
 
-- `EntityDeduplicator.deduplicate()` and `GraphRAG.deduplicate_entities()`
-  default `similarity_threshold` raised from `0.9` to `0.95`: at `0.9` the
-  name-embedding tier merged 2 of 33 deliberate hard-negative pairs for no
-  added recall.
 - `GraphExtraction` now ships a default relation vocabulary,
   `DEFAULT_RELATION_TYPES` (31 UPPER_SNAKE_CASE labels: `LOCATED_IN`,
   `PART_OF`, `EMPLOYED_AT`, `AUTHORED`, ...), the counterpart of
@@ -361,7 +362,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block are compared — the same pairs, under a second at 5k.
 - A merge kept the survivor's description even when the deleted node's was
   the longer one (the paragraph from the PDF, lost to the row's template
-  line). The longer description is carried.
+  line). Both descriptions are kept.
 - Re-ingesting the same file no longer duplicates its chunks. Chunk ids are
   now derived from document id + position + text instead of a fresh
   `uuid4()`, so `MERGE` finds the existing node (17 → 17 → 17 chunks across
@@ -548,8 +549,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A merge no longer discards the duplicate's properties.** The deduplicator
   remapped edges only, so `DETACH DELETE` took the duplicate's properties with
-  it — its description, which entity vector search embeds, and every value only
-  it knew. Properties are now carried onto the survivor in the same statement
+  it — its description and every value only it knew. Properties are now carried onto the survivor in the same statement
   that deletes the duplicate, with a value already on the survivor always
   winning; the two descriptions are joined with `" | "` and the duplicate's
   name is recorded in the survivor's `aliases`. The same policy applies when a

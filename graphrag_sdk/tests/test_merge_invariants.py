@@ -456,8 +456,6 @@ class TestJudgeMergeSite:
                 return _props_read(self.page, params)
             if "DETACH DELETE dup RETURN s.id" in cypher:
                 return SimpleNamespace(result_set=[[params["survivor_id"]]])
-            if "SAME_AS" in cypher:
-                return SimpleNamespace(result_set=[[params["a"]]])
             return SimpleNamespace(result_set=[])
 
     class _Emb:

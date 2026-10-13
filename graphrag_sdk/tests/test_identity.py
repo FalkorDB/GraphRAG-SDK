@@ -1,8 +1,9 @@
 """Near-miss identity: finding the pairs exact matching cannot, and acting on them.
 
-The join between a table row and a prose mention is exact string equality on the
-display name. Real sources disagree about spelling, so the interesting failure is
-not a wrong merge — it is two nodes that should have been one, with no warning.
+The join between a table row and a prose mention is the canonical name. Real
+sources disagree about spelling in ways it cannot unify, so the interesting
+failure is not a wrong merge — it is two nodes that should have been one, with
+no warning.
 """
 
 from __future__ import annotations
@@ -220,8 +221,9 @@ class TestFinalizeReports:
         path.write_text("employee_id,full_name,age\nE-1,Maya Ellison,34\n")
         await rag.ingest(str(path))
 
+        # No judge: this is about what the name rule alone does with the pair.
         with caplog.at_level(logging.WARNING):
-            summary = await rag.finalize()
+            summary = await rag.finalize(judge=False)
 
         assert any(
             "Maya Ellison" in line and "M. Ellison" in line for line in summary.probable_duplicates
@@ -230,7 +232,7 @@ class TestFinalizeReports:
 
         # Reported, not merged. Two nodes are recoverable; a merge is not, and
         # a merge would not even hold — the next extraction recreates the node
-        # it deleted. The fix is the spelling in the source.
+        # it deleted. The fix is the spelling in the source, or the judge.
         people = await rag.query("MATCH (p:Person) RETURN count(p)")
         assert people[0][0] == 2
         await rag.close()

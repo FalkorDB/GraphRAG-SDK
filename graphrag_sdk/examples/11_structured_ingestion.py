@@ -6,7 +6,7 @@ Tables and documents in one graph, end to end:
   - declare a mapping          — in the ontology, alongside the entity types
   - rag.ingest(csv)            — deterministic, no model involved
   - rag.ingest(text=...)       — the ordinary extraction path, unchanged
-  - rag.finalize()             — embeddings, indexes, a resolver across sources
+  - rag.finalize()             — embeddings, indexes, an LLM judge across sources
   - retrieval                  — including aggregation over typed columns
 
 The problem this solves: run a CSV through the prose path and every cell
@@ -186,10 +186,9 @@ async def main():
         # The note's "Acme Corp" and orgs.csv's ORG-42 are already one node: a
         # row's id is derived from its name exactly as a mention's is, so there
         # was no merge to do. finalize() is where the graph becomes queryable as
-        # a whole — entity and edge embeddings, indexes — and where a resolver
-        # judges the names that do not match letter for letter across sources,
-        # remembering a NO so the pair is never asked about again. Its report
-        # lists what it could not decide for you.
+        # a whole — entity and edge embeddings, indexes — and where the LLM
+        # judge decides the names that do not match letter for letter across
+        # sources. Its report lists what it could not decide for you.
         summary = await rag.finalize()
         print(
             f"── finalize: {summary.entities_deduplicated} merged, "

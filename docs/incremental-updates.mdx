@@ -261,9 +261,13 @@ result = await rag.finalize()
 FinalizeResult(
     null_stubs_removed:     int,
     entities_deduplicated:  int,
+    judge_llm_calls:        int,
+    judge_stats:            dict[str, int | str],
     entities_embedded:      int,
     relationships_embedded: int,
     indexes:                dict[str, bool],
+    # plus the report lists: probable_duplicates, unmerged_name_collisions,
+    # property_conflicts, ... — see the API reference
 )
 ```
 

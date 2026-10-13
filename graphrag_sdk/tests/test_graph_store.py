@@ -386,6 +386,18 @@ class TestReconcileKeyedIdentity:
         ]
         assert flagged and flagged[-1][1] == {"new": "initech__org"}
 
+    async def test_a_fold_does_not_carry_the_folded_nodes_dedup_state(self):
+        """The fold flags the survivor itself; the folded node's failure count
+        would cut the survivor's retries short."""
+        from graphrag_sdk.storage.deduplicator import properties_to_carry
+        from graphrag_sdk.storage.graph_store import GraphStore
+
+        dup = {"id": "old", "dedup_pending": True, "dedup_attempts": 2, "role": "engineer"}
+        carried = properties_to_carry(
+            {"id": "new"}, dup, never=GraphStore._NEVER_CARRY_ON_RECONCILE
+        )
+        assert carried == {"role": "engineer"}
+
     async def test_the_key_it_matches_on_is_indexed_first(self, graph_store, mock_connection):
         mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[]))
 

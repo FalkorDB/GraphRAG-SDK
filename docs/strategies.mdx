@@ -418,7 +418,7 @@ resolver = ExactMatchResolution(
 
 **When to use:** Default. Extraction is consistent, or ingest cost matters more than duplicate recall. Ingest is per document, so cross-document duplicates with different surface forms (`Airbus` / `Airbus SE`) are left for `finalize()`, whose LLM-judged phase checks each newly ingested entity against the whole graph (see [Storage](/storage)).
 
-### Built-in: LLMVerifiedResolution (opt-in at ingest and at `finalize()`)
+### Built-in: LLMVerifiedResolution (opt-in at ingest)
 
 Three tiers that catch the near-duplicates exact match misses (e.g. `Acme Corp` vs `Acme Corporation`):
 

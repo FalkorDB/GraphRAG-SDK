@@ -23,17 +23,18 @@
 #      This class decides *identity* only; it never writes a merge itself.
 #
 # Nothing else is written: a pair the judge keeps apart is simply left alone.
-# It is not asked again because the caller clears the entity's
-# ``dedup_pending`` flag once finalize is done, and only flagged entities are
-# ever query points.
+# The caller clears the entity's ``dedup_pending`` flag once its check
+# completes, and only flagged entities are query points, so the pair is put to
+# the judge again only if a later new entity brings it into a set.
 #
 # Pairs the caller has already settled — a mention two keyed rows could
 # equally own (``skip_pairs``), and any two rows written from a declared key
 # (``is_stub``) — are dropped before the model is asked and
 # never unioned into one group.
 #
-# Measured on a labeled 277-entity set (138 true pairs), gpt-4.1: one pass over
-# index-nominated sets scored P 0.94 / R 0.90 against P 0.81 / R 0.64 for the
+# Measured on a labeled 277-entity set (138 true pairs), gpt-4.1, 3 runs: one
+# pass over index-nominated sets scored P 0.92-0.93 / R 0.75-0.77 (F1
+# 0.83-0.84) in 5 LLM calls, against P 0.81 / R 0.63-0.67 in 14 calls for the
 # previous resolver + two-pass vote, which also re-ran over the whole graph.
 
 from __future__ import annotations
@@ -56,8 +57,9 @@ logger = logging.getLogger(__name__)
 #: run, so its cost follows what was added since the last one; once finalize is
 #: done the graph carries no dedup data.
 DEDUP_PENDING_KEY = "dedup_pending"
-#: Failed checks of a still-pending entity (a lookup or judge call that did not
-#: complete). Removed with the flag; after ``MAX_DEDUP_ATTEMPTS`` failures the
+#: Failed checks of a still-pending entity (a lookup, judge call or merge write
+#: that did not complete, an answer that was not a full partition, or no name
+#: vector). Removed with the flag; after ``MAX_DEDUP_ATTEMPTS`` failures the
 #: entity is no longer retried.
 DEDUP_ATTEMPTS_KEY = "dedup_attempts"
 MAX_DEDUP_ATTEMPTS = 3
@@ -90,9 +92,8 @@ JUDGE_PROMPT = (
     "(also: ...), when it has any, and a description summarised from the "
     "text where it was mentioned. Descriptions are partial and may miss facts; "
     "type labels are sometimes wrong, so the same entity can appear under two "
-    "labels. Below are {n} independent SETS. A set was formed automatically by "
-    "embedding similarity of names and of descriptions, and by one entity's "
-    "name appearing inside another's description. Because of how they were "
+    "labels. Below are {n} independent SETS. A set was formed automatically "
+    "from name similarity and identical spellings. Because of how they were "
     "formed, most members of a set are merely RELATED — same document, same "
     "topic, same family, same firm, same place — and only some, or none, are "
     "the SAME real-world entity.\n"
@@ -180,9 +181,10 @@ def make_groups_dense(
     can. Edges left straddling two groups are kept as 2-member sets, so two
     sets may share a member but never a pair.
 
-    ``keep_apart(i, j)`` names pairs already decided distinct; two components
-    are not joined when that would put such a pair in one set, so the model
-    is never shown — and never asked about — a pair the graph has settled.
+    ``keep_apart(i, j)`` names pairs the caller protects (two keyed rows, a
+    mention two rows could own); two components are not joined when that
+    would put such a pair in one set, so the model is never shown — and never
+    asked about — such a pair.
     """
     nodes = sorted({x for e in edges for x in e})
     uf = _UF(nodes)
@@ -353,8 +355,7 @@ def parse_groups(text: str, sizes: list[int]) -> dict[int, list[list[int]]]:
             # A partition names every member exactly once. A set answered
             # without some of its members was not judged: silence about an
             # entity is not a verdict that it differs from the others, and
-            # treating it as one turns an omission into a SAME_AS link (or,
-            # if both passes omit the same member, into agreement).
+            # treating it as one would turn an omission into a decision.
             logger.warning(
                 "judge dedup: set %d answered with %d of %d members; ignored",
                 si + 1,
@@ -714,6 +715,9 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         nv = await self.name_vectors(pending)
         if not pending:
             return stats
+        # An entity the embedder returned no vector for is not looked up in the
+        # index; it stays pending so the next run nominates its neighbours.
+        self.unjudged_ids.update(e["id"] for e in pending if not e["embedding"])
 
         # ents = the new entities, then every neighbour the index returned.
         ents: list[dict] = list(pending)

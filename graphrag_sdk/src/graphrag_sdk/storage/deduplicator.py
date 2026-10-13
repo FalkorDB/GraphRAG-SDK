@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
+from collections import defaultdict
 from collections.abc import Iterable
 from typing import Any
 
@@ -279,8 +280,8 @@ _REMAP_QUERIES = [
 
 # Folds the duplicate into the survivor and deletes it in ONE statement, so a
 # failed write cannot leave the survivor un-updated with the duplicate already
-# gone. Binding the survivor first also closes a race: ``_fetch_all_entities``
-# snapshots the entity list up front, and a concurrent ``delete_document()``
+# gone. Binding the survivor first also closes a race: the run snapshots its
+# entities up front, and a concurrent ``delete_document()``
 # can remove a survivor mid-loop. The remap queries then match nothing, and a
 # bare ``DETACH DELETE dup`` would destroy every edge the duplicate still
 # holds. Here a missing survivor yields zero rows, nothing is deleted, and the
@@ -491,6 +492,10 @@ _DEGREE_EXPR = "size((e)-[:RELATES]-()) + size((e)-[:MENTIONED_IN]->())"
 #: for among: identical and canonical spellings embed as each other's nearest
 #: neighbours, so no lookup key has to be stored on the graph.
 _EXACT_NEIGHBOUR_K = 10
+#: How far that lookup widens for a new entity whose nearest names are all
+#: exact-phase matches (twenty rows called "John Smith"): the k-th neighbour
+#: being a match says the next one may be too, so k grows tenfold up to this.
+_EXACT_NEIGHBOUR_K_MAX = 1000
 
 # The projection every entity read uses, applied to a bound ``e``.
 _ENTITY_RETURN = (
@@ -527,14 +532,17 @@ def _entity_from_row(row: list[Any]) -> dict[str, Any]:
 
 
 class EntityDeduplicator:
-    """Entity deduplication engine over the whole graph.
+    """Incremental deduplication of the entities flagged ``dedup_pending``,
+    against the rest of the graph reached through the entity vector index.
 
     Phase 1 (always): Exact name match — groups entities by
     ``(canonical_name, label)`` to prevent cross-type merging, folds an
     acronym into its unique same-label long form, keeps the survivor
     :func:`_survivor_rank` picks (a table row over a mention, the long form
     over an acronym, then the best-connected and best-described), remaps all
-    RELATES and MENTIONED_IN edges, deletes duplicates.
+    RELATES and MENTIONED_IN edges, deletes duplicates. With a judge, a group
+    of extracted mentions only (and an acronym that spells several long
+    forms) is handed to it instead of merged on the name.
 
     Phase 2 (optional, ``judge_llm``): LLM-judged cross-document dedup of
     the new entities — the ingest-time resolver only ever sees one document,
@@ -588,8 +596,10 @@ class EntityDeduplicator:
         # Name vectors this run wrote while looking up nearest names.
         self.names_embedded = 0
         self._name_embedded_ids: set[str] = set()
-        # New entities whose check did not complete (a failed lookup or judge
-        # call); they keep dedup_pending so the next run checks them again.
+        # New entities whose check did not complete (a failed lookup, judge
+        # call or merge write, an answer that was not a full partition, or no
+        # name vector); they keep dedup_pending so the next run checks them
+        # again, up to MAX_DEDUP_ATTEMPTS runs.
         self._unchecked_ids: set[str] = set()
 
     async def deduplicate(
@@ -613,7 +623,8 @@ class EntityDeduplicator:
 
         Only entities flagged ``dedup_pending`` at ingest are query points;
         the flag is removed at the end (kept on any whose check did not
-        complete), so running this again on an unchanged graph does no work.
+        complete, up to ``MAX_DEDUP_ATTEMPTS`` runs, then released with a
+        warning), so running this again on an unchanged graph does no work.
         ``dedup_all=True`` checks every entity instead — for a graph written
         before the flag existed, which has none.
         """
@@ -649,8 +660,9 @@ class EntityDeduplicator:
         ]
         if len(unchecked) > len(given_up):
             logger.warning(
-                "%d new entities were not fully checked (a lookup or judge call "
-                "failed); they stay pending for the next run",
+                "%d new entities were not fully checked (a failed lookup, judge call "
+                "or merge write, an answer that was not a full partition, or no name "
+                "vector); they stay pending for the next run",
                 len(unchecked) - len(given_up),
             )
         await self._clear_pending(checked, batch_size)
@@ -673,16 +685,16 @@ class EntityDeduplicator:
     async def _report_near_misses(self, batch_size: int) -> None:
         """Record surviving entities that probably denote one thing.
 
-        The merge is exact string equality on the display name, so two sources
-        spelling a name differently leave two nodes and nothing says so: an HR
+        Grouping is by canonical name, so two sources spelling a name in ways
+        it does not unify leave two nodes, unless the judge merges them: an HR
         export's "Maya Ellison" and a board review's "M. Ellison" end up as two
         people, one holding her age and the other what she did, and every question
         needing both comes back wrong while looking answered.
 
         Found here and **not** merged. Merging on a guess is destructive and
         irreversible; two nodes are recoverable, and a user told which pairs look
-        wrong can fix the source, which fixes it for good. Deciding a pair needs
-        judgement this class does not have — it holds no LLM — so it reports.
+        wrong can fix the source, which fixes it for good. A pair the exact
+        phase cannot decide and the judge did not merge is reported.
         """
         try:
             # The entities this run looked at and every nearest name the index
@@ -877,10 +889,12 @@ class EntityDeduplicator:
             logger.warning(
                 f"Skipping merge of {dup['id']} into {survivor['id']} — could not read both nodes"
             )
+            self._merge_failed(survivor, dup)
             return False
 
         if not await self._remap_entity_edges(dup["id"], survivor["id"]):
             logger.warning(f"Skipping deletion of {dup['id']} — edge remap incomplete")
+            self._merge_failed(survivor, dup)
             return False
 
         # The graph is the truth about what each node holds; the fetched row
@@ -989,6 +1003,7 @@ class EntityDeduplicator:
             logger.warning(
                 f"Failed to merge duplicate entity {dup['id']} into {survivor['id']}: {exc}"
             )
+            self._merge_failed(survivor, dup)
             return False
         if not (getattr(result, "result_set", None) or []):
             logger.warning(
@@ -996,6 +1011,7 @@ class EntityDeduplicator:
                 survivor["id"],
                 dup["id"],
             )
+            self._merge_failed(survivor, dup)
             return False
 
         survivor["description"] = description
@@ -1006,6 +1022,12 @@ class EntityDeduplicator:
         if labels:
             survivor["labels"] = [*(survivor.get("labels") or []), *labels]
         return True
+
+    def _merge_failed(self, survivor: dict[str, Any], dup: dict[str, Any]) -> None:
+        """A merge that was decided but not written (a failed read, remap or
+        write) is not a check that completed: both ends stay pending, so the
+        next run decides the pair again."""
+        self._unchecked_ids |= {survivor["id"], dup["id"]}
 
     async def _read_properties(
         self, survivor_id: str, dup_id: str
@@ -1283,6 +1305,8 @@ class EntityDeduplicator:
                 + (f", {set_vector}" if set_vector else " REMOVE s.embedding"),
                 {"id": survivor["id"], "name": name, "v": vector},
             )
+            if vector:
+                self._name_embedded_ids.add(survivor["id"])
             logger.info("Judge named merged %s %r -> %r", survivor["label"], survivor["name"], name)
         except Exception as exc:
             # The merge stands; only the display name was not changed.
@@ -1513,23 +1537,6 @@ class EntityDeduplicator:
         missing on the new entities are embedded and stored first — they are
         the retrieval vectors, written once). A failed lookup is not fatal:
         the new entities are then matched among themselves only."""
-        index = NameNeighbourIndex(self._graph, self._embedder)
-        try:
-            rows = await index.fetch_by_ids([ent["id"] for ent in pending], batch_size)
-            vecs = await index.name_vectors(rows)
-            self._name_embedded_ids |= index._embedded_ids
-            if not rows or vecs.shape[1] == 0:
-                return []
-            await index.ensure_vector_index(vecs.shape[1])
-            hits = await index.neighbours(rows, _EXACT_NEIGHBOUR_K, 0.0)
-        except Exception as exc:
-            logger.warning(
-                "Exact phase: nearest-name lookup failed (%s); matching the new "
-                "entities among themselves only",
-                exc,
-            )
-            self._unchecked_ids |= {ent["id"] for ent in pending}
-            return []
         # Only a neighbour the exact phase could group with a new entity is
         # read in full: the same canonical name, or an acronym / long-form
         # pair. The rest are the judge's business, which reads its own.
@@ -1552,6 +1559,46 @@ class EntityDeduplicator:
                 or _expansion_key(norm) in acronyms
             )
 
+        index = NameNeighbourIndex(self._graph, self._embedder)
+        try:
+            rows = await index.fetch_by_ids([ent["id"] for ent in pending], batch_size)
+            vecs = await index.name_vectors(rows)
+            self._name_embedded_ids |= index._embedded_ids
+            # An entity the embedder returned no vector for gets no neighbour
+            # lookup: it stays pending, like one whose lookup failed.
+            self._unchecked_ids |= {row["id"] for row in rows if not row["embedding"]}
+            if not rows or vecs.shape[1] == 0:
+                return []
+            await index.ensure_vector_index(vecs.shape[1])
+            k = _EXACT_NEIGHBOUR_K
+            hits = await index.neighbours(rows, k, 0.0)
+            # A new entity whose k nearest names are all matches may have more
+            # beyond them: ask again, wider, for those entities only.
+            while k < _EXACT_NEIGHBOUR_K_MAX:
+                found: dict[int, list[dict[str, Any]]] = defaultdict(list)
+                for pi, ent, _ in hits:
+                    found[pi].append(ent)
+                full = [
+                    pi
+                    for pi, ents in found.items()
+                    if len(ents) >= k and all(could_group(e["name"]) for e in ents)
+                ]
+                if not full:
+                    break
+                k = min(k * 10, _EXACT_NEIGHBOUR_K_MAX)
+                wider = await index.neighbours([rows[pi] for pi in full], k, 0.0)
+                widened = set(full)
+                hits = [h for h in hits if h[0] not in widened] + [
+                    (full[i], ent, sim) for i, ent, sim in wider
+                ]
+        except Exception as exc:
+            logger.warning(
+                "Exact phase: nearest-name lookup failed (%s); matching the new "
+                "entities among themselves only",
+                exc,
+            )
+            self._unchecked_ids |= {ent["id"] for ent in pending}
+            return []
         pending_ids = {ent["id"] for ent in pending}
         self._near_ids = list(
             dict.fromkeys(ent["id"] for _, ent, _ in hits if ent["id"] not in pending_ids)
@@ -1618,9 +1665,11 @@ class EntityDeduplicator:
             try:
                 # One property per statement: on FalkorDB 4.18 a REMOVE (or SET
                 # to null) of two properties on a node holding a vector removed
-                # the wrong ones, the name embedding among them. Only nodes that
-                # carry the property: a no-op REMOVE is still a write.
-                for key in (DEDUP_PENDING_KEY, DEDUP_ATTEMPTS_KEY):
+                # the wrong ones, the name embedding among them. The counter
+                # goes first: if the second statement fails, the node is still
+                # flagged, and no stale count is left on a node without the flag.
+                # Only nodes that carry the property: a no-op REMOVE is a write.
+                for key in (DEDUP_ATTEMPTS_KEY, DEDUP_PENDING_KEY):
                     await self._graph.query_raw(
                         "UNWIND $ids AS id MATCH (e:__Entity__ {id: id}) "
                         f"WHERE e.{key} IS NOT NULL REMOVE e.{key}",

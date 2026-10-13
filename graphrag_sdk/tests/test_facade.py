@@ -412,7 +412,8 @@ class TestGraphRAGDeduplicateEntities:
     ):
         """The backfill runs after the merges, so a duplicate about to be
         deleted is not embedded first, and ``entities_embedded`` is what this
-        call wrote: the backfill's vectors plus the judge's."""
+        call wrote: the backfill's vectors plus the judge's (and the exact
+        phase's, which this test does not cover)."""
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
         order: list[str] = []
 
@@ -2216,7 +2217,7 @@ class TestGraphRAGUpdate:
         graphrag._graph_store.cleanup_pending_documents.assert_awaited_once()
 
     async def test_does_not_call_finalize(self, graphrag):
-        """update() must NOT trigger the O(graph size) dedup pass."""
+        """update() must NOT trigger the dedup pass."""
         _stub_graph_store_for_update(
             graphrag,
             existing_record={"path": "my-doc", "content_hash": "old"},
@@ -2649,8 +2650,8 @@ class TestFinalizeReminder:
 
 class TestDefaultResolver:
     """``ingest()`` resolves with ``ExactMatchResolution`` unless told otherwise;
-    cross-document dedup belongs to ``finalize()``'s LLM-judged phase, where it
-    sees every document.
+    cross-document dedup belongs to ``finalize()``'s LLM-judged phase, which
+    compares each new entity with its nearest names across documents.
 
     These pin that ingest stays zero-LLM-cost for resolution, that an explicit
     ``resolver=`` still wins, and that ``finalize()`` runs the judge with the

@@ -1565,7 +1565,9 @@ class TestIngestOrderMustNotDecideTheGraph:
     ):
         """The guard that matters stays. Neither label is declared by a mapping,
         so there is nothing authoritative to prefer, and "Apple" the company must
-        not become "Apple" the fruit."""
+        not become "Apple" the fruit by the name rule. (The judge is asked here,
+        but the scripted model has no answer left for it and the call fails, so
+        this checks the rule alone.)"""
         llm = scripted_llm(
             [
                 ("Apple", "Organization", "A technology company"),
@@ -1599,8 +1601,8 @@ class TestIngestOrderMustNotDecideTheGraph:
 class TestAdoptionMovesEverythingItShould:
     """The adoption pass deletes a node, so what was on it must survive.
 
-    Merging across labels is the one place the resolver crosses a line it
-    otherwise holds, and it does so by deleting the guessed node. Anything the
+    Adoption is one of two places a merge crosses labels (the judge is the
+    other), and it does so by deleting the guessed node. Anything the
     document contributed has to arrive on the survivor first.
     """
 
