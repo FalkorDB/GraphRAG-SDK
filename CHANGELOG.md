@@ -173,6 +173,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`finalize()` deduplicates incrementally, with one judge pass.** Ingest now
+  sets `dedup_pending = true` on every entity node it *creates*, and
+  `finalize()` checks only those entities — against the whole graph, through
+  the `__Entity__` vector index, never by reading every entity — then removes
+  the flag. A `finalize()` with nothing new does no dedup work, and a
+  finalized graph carries no dedup data. Measured: +1,000 new entities on a
+  ~39k-entity graph finalize in 4.5 s (fake LLM), where the previous flow spent
+  about 256 s of dedup and 5,982 LLM calls on every call; on a labeled set of
+  277 entities (138 true pairs, gpt-4.1, 3 runs) precision rose from 0.81 to
+  0.87–0.91 and F1 from 0.71–0.73 to 0.75–0.80, with 5 LLM calls instead of 14.
+  - Candidates come from each new entity's nearest names in the vector index
+    (one name embedding per entity, also used by search); descriptions are no
+    longer embedded, but the judge still reads them.
+  - The judge runs **once** per set and names each merged group (the survivor
+    takes that name; its old name moves to `aliases`; a table row keeps its
+    declared name). It also sees each entity's existing aliases. Agreed pairs
+    chain across sets.
+  - Extracted mentions with the same spelling are judged rather than merged on
+    the name alone (Paris, France and Paris, Texas); a table row still absorbs
+    a same-named mention by rule.
+  - **No `SAME_AS` or `DISTINCT_FROM` edges are written.** A "different"
+    answer writes nothing; it is not asked again because the flag is cleared.
+    Existing `DISTINCT_FROM` edges are still honoured by the resolver.
+  - **New defaults:** `finalize(resolve=False)` — the whole-graph resolver is
+    opt-in (`resolve=True` or `resolver=...`) and runs only when there are new
+    entities. `judge_vote` is deprecated and ignored. `FinalizeResult.entities_linked`
+    is always 0.
+  - **Upgrading:** a graph built before this change has no flags. Run
+    `finalize(dedup_all=True)` once to check every entity; after that, a
+    plain `finalize()` is enough.
 - **CI runs the FalkorDB-backed tests.** The integration job used to run one
   file (`tests/test_integration.py`); the whole suite now runs with
   `RUN_INTEGRATION=1`, so every test that needs a live graph is exercised on

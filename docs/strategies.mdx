@@ -416,9 +416,9 @@ resolver = ExactMatchResolution(
 )
 ```
 
-**When to use:** Default. Extraction is consistent, or ingest cost matters more than duplicate recall. Ingest is per document, so cross-document duplicates with different surface forms (`Airbus` / `Airbus SE`) are left for `finalize()`, where the resolver pass and the LLM-judged phase see the whole graph (see [Storage](/storage)).
+**When to use:** Default. Extraction is consistent, or ingest cost matters more than duplicate recall. Ingest is per document, so cross-document duplicates with different surface forms (`Airbus` / `Airbus SE`) are left for `finalize()`, whose LLM-judged phase checks each newly ingested entity against the whole graph (see [Storage](/storage)).
 
-### Built-in: LLMVerifiedResolution (opt-in at ingest, default at `finalize()`)
+### Built-in: LLMVerifiedResolution (opt-in at ingest and at `finalize()`)
 
 Three tiers that catch the near-duplicates exact match misses (e.g. `Acme Corp` vs `Acme Corporation`):
 
@@ -451,7 +451,7 @@ resolver = LLMVerifiedResolution(
 
 Both providers are optional but must be passed explicitly when you construct the strategy yourself; `GraphRAG.ingest()` wires its own LLM and embedder only into the default instance. With no `embedder` it degrades to exact match, and with no `llm` the ambiguous zone is skipped so only the `hard_threshold` tier merges.
 
-**When to use:** Pass it to `ingest(resolver=...)` when one document names the same entity inconsistently; recall on real duplicates is roughly 2.5x that of exact match on the benchmark corpus, at the cost of embedding and LLM calls during ingest. Across documents, `finalize()` already runs it over the whole graph by default (`resolve=False` turns that off).
+**When to use:** Pass it to `ingest(resolver=...)` when one document names the same entity inconsistently; recall on real duplicates is roughly 2.5x that of exact match on the benchmark corpus, at the cost of embedding and LLM calls during ingest. Across documents, `finalize()` runs it over the whole graph only when asked (`finalize(resolve=True)` or `finalize(resolver=...)`); by default the LLM judge alone handles cross-document duplicates.
 
 ---
 

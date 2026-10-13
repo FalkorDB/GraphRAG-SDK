@@ -182,14 +182,14 @@ In file mode, `document_id` defaults to `os.path.normpath(source)` so
 `update("docs/x.md")` matches the original `ingest("docs/x.md")` with
 no extra plumbing. See [`examples/07_incremental_updates.py`](graphrag_sdk/examples/07_incremental_updates.py).
 
-**Cost model.** `finalize()` runs cross-document deduplication, which
-scans the full entity table — its cost is **O(graph size)**, not
-O(change size). Embedding backfill within `finalize()` is O(change
-size) (only nodes/edges missing embeddings get touched). For CI use
-cases, batch all PR changes through `apply_changes` and call
-`finalize` **once** at the end of the run, not per file — per-file
-`finalize` multiplies the dedup constant by the number of files
-touched.
+**Cost model.** `finalize()` deduplicates only the entities ingested
+since the last `finalize()` (flagged `dedup_pending` at ingest), reaching
+the rest of the graph through the vector index — its dedup cost follows
+the **change size**, not the graph size, and a `finalize()` with nothing
+new does no dedup work. Embedding backfill is O(change size) too. For CI
+use cases, batch all PR changes through `apply_changes` and call
+`finalize` **once** at the end of the run: one call judges the whole
+batch's new entities together, in fewer LLM calls than one per file.
 
 **Crash safety.** `update()` uses an idempotent rollforward cutover:
 the new content is written to a `__pending__` Document, then a single
