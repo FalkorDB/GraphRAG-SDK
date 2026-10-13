@@ -23,7 +23,7 @@ from graphrag_sdk.core.models import (
     GraphRelationship,
 )
 from graphrag_sdk.storage.deduplicator import _REMAP_QUERIES, properties_to_carry
-from graphrag_sdk.storage.judge_dedup import LEGACY_DESC_KEYS
+from graphrag_sdk.storage.judge_dedup import DEDUP_PENDING_KEY, LEGACY_DESC_KEYS
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 
@@ -221,6 +221,9 @@ class GraphStore:
                 query = f"UNWIND $batch AS item MERGE (n:`{safe_label}` {{id: item.id}}) "
                 if is_entity:
                     query += (
+                        # New to the graph: the next finalize checks it for
+                        # duplicates, then removes the flag.
+                        f"ON CREATE SET n.{DEDUP_PENDING_KEY} = true "
                         "WITH n, item, "
                         "     coalesce(n.source_chunk_ids, []) AS old, "
                         "     coalesce(item.properties.source_chunk_ids, []) AS contrib "
@@ -245,6 +248,7 @@ class GraphStore:
                         q = f"MERGE (n:`{safe_node_label}` {{id: $id}}) "
                         if is_entity:
                             q += (
+                                f"ON CREATE SET n.{DEDUP_PENDING_KEY} = true "
                                 "WITH n, $properties AS props, "
                                 "     coalesce(n.source_chunk_ids, []) AS old, "
                                 "     coalesce($properties.source_chunk_ids, []) AS contrib "
@@ -624,7 +628,7 @@ class GraphStore:
                     f"UNWIND $batch AS item "
                     f"MERGE (n:`{safe_label}` {{id: item.id}}) "
                     f"ON CREATE SET n += item.properties, n.name = item.name, "
-                    f"n.is_stub = true "
+                    f"n.is_stub = true, n.{DEDUP_PENDING_KEY} = true "
                     f"ON MATCH SET n += item.claims, "
                     f"n.entity_key = coalesce(n.entity_key, item.properties.entity_key), "
                     f"n.is_stub = coalesce(n.is_stub, true) "

@@ -157,6 +157,42 @@ class TestUpsertNodesKeepsProvenance:
         assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in fallback[0]
 
 
+class TestUpsertNodesFlagsNewEntitiesForDedup:
+    """An entity node gets ``dedup_pending`` when ingest creates it — and only
+    then — so the next finalize checks exactly what is new, and a re-mention
+    of an existing entity does not re-queue it."""
+
+    async def test_an_entity_is_flagged_on_create_only(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes(
+            [GraphNode(id="acme", label="Organization", properties={"name": "Acme"})]
+        )
+        cypher = upsert_calls(mock_connection)[0][0][0]
+        assert "ON CREATE SET n.dedup_pending = true" in cypher
+        assert "ON MATCH" not in cypher.split("WITH")[0]
+
+    async def test_a_structural_node_is_never_flagged(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes([GraphNode(id="c1", label="Chunk", properties={})])
+        cypher = upsert_calls(mock_connection)[0][0][0]
+        assert "dedup_pending" not in cypher
+
+    async def test_the_per_item_fallback_flags_too(self, graph_store, mock_connection):
+        async def fail_the_batch(cypher, params=None):
+            if "UNWIND" in cypher:
+                raise Exception("batch fail")
+            return MagicMock()
+
+        mock_connection.query = AsyncMock(side_effect=fail_the_batch)
+        await graph_store.upsert_nodes(
+            [GraphNode(id="acme", label="Organization", properties={"name": "Acme"})]
+        )
+        fallback = [
+            call[0][0]
+            for call in mock_connection.query.call_args_list
+            if "UNWIND" not in call[0][0] and not _is_index_housekeeping(call[0][0])
+        ]
+        assert len(fallback) == 1 and "ON CREATE SET n.dedup_pending = true" in fallback[0]
+
+
 class TestUpsertReferenceNodes:
     """A link's target is keyed always and named only ON CREATE."""
 

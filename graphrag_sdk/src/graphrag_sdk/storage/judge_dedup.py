@@ -46,6 +46,12 @@ from graphrag_sdk.core.providers import Embedder, LLMInterface
 
 logger = logging.getLogger(__name__)
 
+#: Set on an entity node when ingest creates it, removed by the finalize that
+#: checks it for duplicates. Only flagged entities are query points of a dedup
+#: run, so its cost follows what was added since the last one; once finalize is
+#: done the graph carries no dedup data.
+DEDUP_PENDING_KEY = "dedup_pending"
+
 NAME_GATE = 0.65
 DESC_GATE = 0.55
 TOP_K = 10
