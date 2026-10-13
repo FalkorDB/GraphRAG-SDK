@@ -300,7 +300,7 @@ class TestGraphRAGDeduplicateEntities:
         read_result.result_set = [[{}, {}, [], []]]  # both nodes exist, nothing to carry
 
         async def query_raw(q, params=None):
-            if "dedup_pending = true" in q:  # the new (unchecked) entities, one page
+            if "WHERE e.dedup_pending = true" in q:  # the new (unchecked) entities, one page
                 return entity_result if not (params or {}).get("last") else empty_result
             if "properties(k), properties(d)" in q:  # property read before any write
                 return read_result
@@ -354,6 +354,37 @@ class TestGraphRAGDeduplicateEntities:
         with caplog.at_level("WARNING", logger="graphrag_sdk.api.main"):
             await g.deduplicate_entities(judge=True, judge_llm=other)
         assert "judge_llm was given" not in caplog.text
+
+    async def test_the_removed_fuzzy_arguments_are_deprecated_not_broken(
+        self, mock_conn, embedder, llm, monkeypatch
+    ):
+        """``fuzzy`` and ``similarity_threshold`` shipped in 1.4.0. The phase is
+        gone, but a call that passes them keeps working for a release: ``False``
+        and a threshold are ignored with a DeprecationWarning, and ``True`` says
+        the phase no longer exists instead of silently doing nothing."""
+        import warnings
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        calls: list[dict] = []
+
+        async def fake_dedup(**kw):
+            calls.append(kw)
+            return 0
+
+        monkeypatch.setattr(g._deduplicator, "deduplicate", fake_dedup)
+
+        with pytest.warns(DeprecationWarning, match="fuzzy"):
+            await g.deduplicate_entities(fuzzy=False, similarity_threshold=0.9)
+        assert len(calls) == 1 and "fuzzy" not in calls[0]
+
+        with pytest.raises(ValueError, match="no longer supported"):
+            await g.deduplicate_entities(fuzzy=True)
+        assert len(calls) == 1
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            await g.deduplicate_entities()
+        assert len(calls) == 2
 
     async def test_finalize_runs_the_judge_by_default(self, mock_conn, embedder, llm, monkeypatch):
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)

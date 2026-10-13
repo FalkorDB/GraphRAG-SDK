@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import warnings
 from collections.abc import Sequence
 from typing import Any, Literal, overload
 from uuid import uuid4
@@ -4513,6 +4514,8 @@ class GraphRAG:
         judge: bool = False,
         judge_llm: LLMInterface | None = None,
         dedup_all: bool = False,
+        fuzzy: bool | None = None,
+        similarity_threshold: float | None = None,
     ) -> int:
         """Global entity deduplication across all ingested documents.
 
@@ -4539,9 +4542,10 @@ class GraphRAG:
         ingest are query points, compared with the rest of the graph through
         the entity vector index, and the flag is removed when the run ends
         (kept on an entity whose lookup or judge call failed, so the next run
-        retries it) — a second call on an unchanged graph does no work, and the graph
-        keeps no dedup data. A graph written before the flag existed has none:
-        pass ``dedup_all=True`` once to check every entity. The new entities'
+        retries it, up to ``MAX_DEDUP_ATTEMPTS`` runs) — a second call on an
+        unchanged graph does no work, and the graph keeps no dedup data. A
+        graph written before the flag existed has none: pass
+        ``dedup_all=True`` once to check every entity. The new entities'
         name embeddings (``e.embedding``) are written by this call.
 
         With ``judge`` off — the default here — this method calls no model;
@@ -4559,6 +4563,11 @@ class GraphRAG:
                 A gpt-4.1-class model is strongly recommended — on the
                 benchmark corpus it made 9 wrong merges where gpt-4o-mini
                 made 51.
+            fuzzy: Deprecated; the fuzzy name-embedding phase was removed.
+                ``False`` is accepted with a ``DeprecationWarning``; ``True``
+                raises ``ValueError``. Use ``judge=True`` instead.
+            similarity_threshold: Deprecated and ignored, with a
+                ``DeprecationWarning``.
             dedup_all: Check every entity, not only the ones flagged
                 ``dedup_pending`` since the last run. Needed once for a graph
                 written before the flag existed.
@@ -4568,6 +4577,19 @@ class GraphRAG:
             details (calls, candidates, agreed pairs, merges) are in
             ``self._deduplicator.last_judge_stats``.
         """
+        if fuzzy:
+            raise ValueError(
+                "deduplicate_entities(fuzzy=True) is no longer supported: the fuzzy "
+                "name-embedding phase was removed. Use judge=True, which compares each "
+                "new entity with its nearest names and lets the model decide."
+            )
+        if fuzzy is not None or similarity_threshold is not None:
+            warnings.warn(
+                "deduplicate_entities(fuzzy=..., similarity_threshold=...) is deprecated "
+                "and ignored; the arguments will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         await self._ensure_ontology_initialized()
         if judge_llm is not None and not judge:
             logger.warning(

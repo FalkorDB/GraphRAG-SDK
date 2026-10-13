@@ -355,6 +355,37 @@ class TestReconcileKeyedIdentity:
             " the key is not such a rival"
         )
 
+    async def test_a_renamed_row_is_flagged_for_the_next_dedup_run(
+        self, graph_store, mock_connection
+    ):
+        """A re-sync that renames a row gives it a name no dedup run has seen;
+        the node is flagged so the next finalize checks it under that name."""
+        mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[[0]]))
+        assert await graph_store._move_entity("globex__org", "initech__org") == (1, 0)
+        (rename,) = [
+            c[0][0] for c in mock_connection.query.call_args_list if "SET n.id = $new" in c[0][0]
+        ]
+        assert "n.dedup_pending = true" in rename and "REMOVE n.embedding" in rename
+
+    async def test_a_row_folded_into_an_existing_node_flags_the_survivor(
+        self, graph_store, mock_connection
+    ):
+        async def answer(cypher, params=None):
+            if "RETURN count(n)" in cypher:
+                return MagicMock(result_set=[[1]])
+            if "RETURN properties(k)" in cypher:
+                return MagicMock(result_set=[[{"id": "initech__org"}, {"id": "globex__org"}]])
+            return MagicMock(result_set=[])
+
+        mock_connection.query = AsyncMock(side_effect=answer)
+        assert await graph_store._move_entity("globex__org", "initech__org") == (0, 1)
+        flagged = [
+            c[0]
+            for c in mock_connection.query.call_args_list
+            if "SET n.dedup_pending = true" in c[0][0]
+        ]
+        assert flagged and flagged[-1][1] == {"new": "initech__org"}
+
     async def test_the_key_it_matches_on_is_indexed_first(self, graph_store, mock_connection):
         mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[]))
 

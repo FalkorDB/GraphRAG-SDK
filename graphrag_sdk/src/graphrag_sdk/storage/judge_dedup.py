@@ -56,6 +56,11 @@ logger = logging.getLogger(__name__)
 #: run, so its cost follows what was added since the last one; once finalize is
 #: done the graph carries no dedup data.
 DEDUP_PENDING_KEY = "dedup_pending"
+#: Failed checks of a still-pending entity (a lookup or judge call that did not
+#: complete). Removed with the flag; after ``MAX_DEDUP_ATTEMPTS`` failures the
+#: entity is no longer retried.
+DEDUP_ATTEMPTS_KEY = "dedup_attempts"
+MAX_DEDUP_ATTEMPTS = 3
 
 # Index-nominated neighbours per new entity, and the cosine floor for them.
 # Measured on the labeled set: k=5 found 92-96 % of true pairs; k=10 doubled

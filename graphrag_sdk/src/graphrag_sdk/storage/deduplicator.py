@@ -22,7 +22,9 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import DEFAU
 from graphrag_sdk.ingestion.resolution_strategies.base import description_list
 from graphrag_sdk.storage.identity import NearMiss, canonical_key, find_near_misses
 from graphrag_sdk.storage.judge_dedup import (
+    DEDUP_ATTEMPTS_KEY,
     DEDUP_PENDING_KEY,
+    MAX_DEDUP_ATTEMPTS,
     LLMJudgeDeduplicator,
     NameNeighbourIndex,
 )
@@ -638,13 +640,18 @@ class EntityDeduplicator:
         await self._count_names_embedded()
 
         # Checked: the next run queries only what is added after this one. An
-        # entity whose check did not complete stays flagged and is retried.
-        checked = [eid for eid in self._pending_ids if eid not in self._unchecked_ids]
-        if len(checked) < len(self._pending_ids):
+        # entity whose check did not complete stays flagged and is retried, up
+        # to MAX_DEDUP_ATTEMPTS runs.
+        unchecked = [eid for eid in self._pending_ids if eid in self._unchecked_ids]
+        given_up = await self._record_failed_checks(unchecked, batch_size)
+        checked = [
+            eid for eid in self._pending_ids if eid not in self._unchecked_ids or eid in given_up
+        ]
+        if len(unchecked) > len(given_up):
             logger.warning(
                 "%d new entities were not fully checked (a lookup or judge call "
                 "failed); they stay pending for the next run",
-                len(self._pending_ids) - len(checked),
+                len(unchecked) - len(given_up),
             )
         await self._clear_pending(checked, batch_size)
 
@@ -1571,19 +1578,54 @@ class EntityDeduplicator:
             logger.debug("Could not count the name vectors written", exc_info=True)
             self.names_embedded = len(ids)
 
+    async def _record_failed_checks(self, ids: list[str], batch_size: int) -> set[str]:
+        """Count one more failed check on ``ids`` and keep them flagged (a
+        ``dedup_all`` run reads entities that had no flag, and they need one to
+        be retried). Returns the ids that have now failed ``MAX_DEDUP_ATTEMPTS``
+        times: retrying them every run would cost the same calls forever, so
+        they are cleared with the rest and named in a warning."""
+        given_up: dict[str, str] = {}
+        for k in range(0, len(ids), batch_size):
+            try:
+                result = await self._graph.query_raw(
+                    "UNWIND $ids AS id MATCH (e:__Entity__ {id: id}) "
+                    f"SET e.{DEDUP_PENDING_KEY} = true, "
+                    f"e.{DEDUP_ATTEMPTS_KEY} = coalesce(e.{DEDUP_ATTEMPTS_KEY}, 0) + 1 "
+                    f"RETURN e.id, e.name, e.{DEDUP_ATTEMPTS_KEY}",
+                    {"ids": ids[k : k + batch_size]},
+                )
+                for eid, name, attempts in result.result_set or []:
+                    if int(attempts or 0) >= MAX_DEDUP_ATTEMPTS:
+                        given_up[eid] = str(name or eid)
+            except Exception:
+                # Still flagged: the count is only for giving up, never for retrying.
+                logger.debug("Could not record failed dedup checks", exc_info=True)
+        if given_up:
+            logger.warning(
+                "%d entities could not be checked for duplicates in %d runs and are no "
+                "longer retried: %s",
+                len(given_up),
+                MAX_DEDUP_ATTEMPTS,
+                ", ".join(sorted(given_up.values())[:10]),
+            )
+        return set(given_up)
+
     async def _clear_pending(self, ids: list[str], batch_size: int) -> None:
         """Remove the ``dedup_pending`` flag from ``ids`` — only the ones this
         run read, so an entity ingested while it ran stays flagged for the next.
         Ids a merge deleted simply match nothing."""
         for k in range(0, len(ids), batch_size):
             try:
-                await self._graph.query_raw(
-                    # Only nodes that carry it: a dedup_all run reads entities
-                    # that never had the flag, and a no-op REMOVE is still a write.
-                    "UNWIND $ids AS id MATCH (e:__Entity__ {id: id}) "
-                    f"WHERE e.{DEDUP_PENDING_KEY} IS NOT NULL REMOVE e.{DEDUP_PENDING_KEY}",
-                    {"ids": ids[k : k + batch_size]},
-                )
+                # One property per statement: on FalkorDB 4.18 a REMOVE (or SET
+                # to null) of two properties on a node holding a vector removed
+                # the wrong ones, the name embedding among them. Only nodes that
+                # carry the property: a no-op REMOVE is still a write.
+                for key in (DEDUP_PENDING_KEY, DEDUP_ATTEMPTS_KEY):
+                    await self._graph.query_raw(
+                        "UNWIND $ids AS id MATCH (e:__Entity__ {id: id}) "
+                        f"WHERE e.{key} IS NOT NULL REMOVE e.{key}",
+                        {"ids": ids[k : k + batch_size]},
+                    )
             except Exception:
                 # Still flagged: simply checked again next time.
                 logger.warning(
@@ -1592,7 +1634,7 @@ class EntityDeduplicator:
 
     # Written by the system, never carried across from a duplicate. The dedup
     # flag too: a survivor's own state decides whether it is still pending.
-    _NEVER_CARRY = frozenset({"id", "embedding", DEDUP_PENDING_KEY})
+    _NEVER_CARRY = frozenset({"id", "embedding", DEDUP_PENDING_KEY, DEDUP_ATTEMPTS_KEY})
 
     async def _remap_entity_edges(self, dup_id: str, survivor_id: str) -> bool:
         """Remap all RELATES and MENTIONED_IN edges from duplicate to survivor.

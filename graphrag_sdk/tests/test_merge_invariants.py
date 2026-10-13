@@ -435,7 +435,7 @@ class TestJudgeMergeSite:
 
         async def query_raw(self, cypher, params=None):
             self.calls.append((cypher, params or {}))
-            if "dedup_pending = true" in cypher:
+            if "WHERE e.dedup_pending = true" in cypher:
                 rows = self.page if not params.get("last") else []
                 return SimpleNamespace(result_set=list(rows))
             if "MATCH (e:__Entity__ {id: id}) WITH e" in cypher:

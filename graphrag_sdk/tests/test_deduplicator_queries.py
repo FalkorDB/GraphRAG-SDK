@@ -364,7 +364,11 @@ class TestMergePreservesDescriptions:
         graph = MagicMock()
 
         async def query_raw(q, params=None):
-            if "MATCH (e:__Entity__)" in q and "RETURN" in q and "dedup_pending = true" in q:
+            if (
+                "MATCH (e:__Entity__)" in q
+                and "RETURN" in q
+                and "WHERE e.dedup_pending = true" in q
+            ):
                 return _result(rows if not params.get("last") else [])
             if "properties(k), properties(d)" in q:
                 return _props_read(rows, params, stored)
@@ -628,7 +632,7 @@ class TestPendingFlag:
 
         async def query_raw(q, params=None):
             params = params or {}
-            if "dedup_pending = true" in q:
+            if "WHERE e.dedup_pending = true" in q:
                 return _result(pending_rows if not params.get("last") else [])
             if "WHERE e.id > $last" in q:
                 return _result(all_rows if not params.get("last") else [])

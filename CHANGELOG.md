@@ -180,11 +180,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A "different" answer writes nothing to the graph; it is not asked again
     because the flag is cleared. An entity whose check did not complete (a
     failed name lookup or judge call, or an answer that was not a full
-    partition) keeps its flag and is retried by the next `finalize()`. When
+    partition) keeps its flag and is retried by the next `finalize()`, up to
+    3 runs; after that it is released and named in a warning. A table
+    re-sync that renames a row flags it, so it is checked under its new
+    name. When
     the judge renames a merged node, its name vector is replaced too.
-  - **BREAKING:** the fuzzy name-embedding phase is removed
-    (`deduplicate_entities(fuzzy=..., similarity_threshold=...)`). Finalize
-    dedup is the exact phase plus the judge. Ingest-time resolvers
+  - **Deprecated:** the fuzzy name-embedding phase is removed. For one
+    release `deduplicate_entities()` still accepts `fuzzy=False` and
+    `similarity_threshold=` (ignored, with a `DeprecationWarning`);
+    `fuzzy=True` raises `ValueError`. Finalize dedup is the exact phase plus
+    the judge. Ingest-time resolvers
     (`ingest(resolver=...)`) are unchanged.
   - **Upgrading:** a graph built before this change has no flags. Run
     `finalize(dedup_all=True)` once to check every entity; after that, a

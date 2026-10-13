@@ -94,7 +94,7 @@ A `.csv`, `.tsv`, `.psv` or `.tab` is read as **records, not prose**: its mappin
 | `loader` | `LoaderStrategy \| None` | `None` | Custom loader (auto-detect if None) |
 | `chunker` | `ChunkingStrategy \| None` | `None` | Custom chunker (`SentenceTokenCapChunking()` if None). Rejected for a table. |
 | `extractor` | `ExtractionStrategy \| None` | `None` | Custom extractor (GraphExtraction if None). Rejected for a table. |
-| `resolver` | `ResolutionStrategy \| None` | `None` | Custom resolver (ExactMatchResolution if None; cross-document dedup is `finalize()`'s resolver and judge phases) |
+| `resolver` | `ResolutionStrategy \| None` | `None` | Custom resolver (ExactMatchResolution if None; cross-document dedup is `finalize()`'s exact-name and judge phases) |
 | `max_concurrency` | `int` | `3` | Max parallel ingestions (list input only) |
 | `ctx` | `Context \| None` | `None` | Execution context |
 
@@ -215,12 +215,14 @@ async def deduplicate_entities(
     judge: bool = False,
     judge_llm: LLMInterface | None = None,
     dedup_all: bool = False,
+    fuzzy: bool | None = None,                # deprecated: False is ignored, True raises
+    similarity_threshold: float | None = None,  # deprecated and ignored
 ) -> int
 ```
 
 Post-ingestion entity deduplication across all documents. The LLM-judged phase is **opt-in** here (`judge=False`); `finalize()` runs it by default (`judge=True`).
 
-It is **incremental**: ingest flags every entity node it creates with `dedup_pending = true`, and only flagged entities are checked — against the whole graph, through the `__Entity__` vector index, never by reading every entity. The flag is removed when the run ends (kept on an entity whose lookup or judge call failed, so the next run retries it), so a second call on an unchanged graph does no work. `dedup_all=True` checks every entity instead; run it once on a graph built before the flag existed.
+It is **incremental**: ingest flags every entity node it creates with `dedup_pending = true`, and only flagged entities are checked — against the whole graph, through the `__Entity__` vector index, never by reading every entity. The flag is removed when the run ends (kept on an entity whose lookup or judge call failed, so the next run retries it, up to 3 runs), so a second call on an unchanged graph does no work. `dedup_all=True` checks every entity instead; run it once on a graph built before the flag existed.
 
 - **Phase 1** (always): Canonical name match between the flagged entities and their nearest names from the vector index — case, accents, punctuation, inner dots (`A.I.` = `AI`), a leading English article, `Surname, Given` inversion, common abbreviations and one trailing legal form (`Ltd`, `Inc`) are normalised; word order is not. An acronym joins its unique same-label long form. A group holding a table row merges here, by rule; a group of extracted mentions only goes to the judge when it runs (Phase 2). Keeps the survivor ranked by declared key, real-over-placeholder, long form over acronym, degree, then description length; merges the duplicate's description (`" | "`-joined, members kept in `descriptions`), `aliases`, `source_chunk_ids` and any property the survivor lacks into it; remaps RELATES and MENTIONED_IN edges; deletes duplicates.
 - **Phase 2** (opt-in here with `judge=True`; on by default in `finalize()`): LLM-judged cross-document dedup -- each new entity's 5 nearest names from the vector index (cosine ≥ 0.5) and Phase 1's same-spelling mention pairs nominate candidates, dense sets of ≤ 8 (more than half of a set's pairs must be nominated, so a chain A–B–C–D cannot form), and the judge partitions each set **once**, reading names, labels, existing aliases and descriptions, and names each merged group. Agreed pairs merge by the same rules as Phase 1 (the survivor additionally gains every member's label, recorded in `merged_labels`, and takes the judge's name when it is one of the members' names or aliases); agreements chain across sets. A "different" answer writes nothing. Two keyed rows of a table, and a mention two such rows could own, are never asked. Descriptions are not embedded. `judge_llm` defaults to the GraphRAG LLM (gpt-4.1-class recommended); given without `judge=True` it is ignored, with a warning. With `judge` off — the default of this method — no model is called. Stats in `_deduplicator.last_judge_stats`.

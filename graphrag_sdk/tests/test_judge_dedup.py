@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-import graphrag_sdk.storage.judge_dedup as JD
 from graphrag_sdk.core.providers.base import LLMBatchItem
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.judge_dedup import (
@@ -433,7 +432,9 @@ def test_agreements_chain_across_sets_but_never_through_a_protected_pair(monkeyp
     ]
     same = {"Apple", "Apple Inc.", "AAPL"}
     # Two sets that share "Apple Inc.": {Apple, Apple Inc.} and {Apple Inc., AAPL}.
-    monkeypatch.setattr(JD, "make_groups_dense", lambda edges, **kw: [[0, 1], [1, 2]])
+    monkeypatch.setattr(
+        "graphrag_sdk.storage.judge_dedup.make_groups_dense", lambda edges, **kw: [[0, 1], [1, 2]]
+    )
     graph = ScriptedGraph(rows)
     merge = RecordingMerge()
     llm = ScriptedLLM([[same]])
@@ -570,7 +571,7 @@ def test_exact_phase_joins_descriptions_and_records_aliases():
 
         async def query_raw(self, cypher, params=None):
             self.calls.append((cypher, params or {}))
-            if "dedup_pending = true" in cypher:
+            if "WHERE e.dedup_pending = true" in cypher:
                 return self.pages.pop(0) if self.pages else SimpleNamespace(result_set=[])
             if "properties(k), properties(d)" in cypher:
                 return _props_read(self.rows, params)
@@ -603,7 +604,7 @@ class _JudgeGraph:
     async def query_raw(self, cypher, params=None):
         self.calls.append((cypher, params or {}))
         params = params or {}
-        if "dedup_pending = true" in cypher or "e.id > $last" in cypher:
+        if "WHERE e.dedup_pending = true" in cypher or "e.id > $last" in cypher:
             # every entity is new to this run; one page, then the end
             rows = self.page if not params.get("last") else []
             return SimpleNamespace(result_set=list(rows))
@@ -646,6 +647,48 @@ def test_entities_the_judge_could_not_check_keep_their_flag():
     dd = EntityDeduplicator(g, FakeEmbedder(DESC_EMB))
     asyncio.run(dd.deduplicate(judge_llm=ScriptedLLM([[IBM]])))
     assert {"e1", "e3"} <= _cleared(g)
+
+
+def test_an_entity_that_keeps_failing_is_released_after_the_last_attempt():
+    """Each failed check is counted on the node; at MAX_DEDUP_ATTEMPTS the
+    entity is cleared with the rest instead of costing calls every run."""
+    from graphrag_sdk.storage.judge_dedup import MAX_DEDUP_ATTEMPTS
+
+    class Counting(_JudgeGraph):
+        def __init__(self, attempts):
+            super().__init__()
+            self.attempts = attempts
+
+        async def query_raw(self, cypher, params=None):
+            if "dedup_attempts = coalesce" in cypher:
+                self.calls.append((cypher, params or {}))
+                rows = [r for r in self.page if r[0] in params["ids"]]
+                return SimpleNamespace(result_set=[[r[0], r[1], self.attempts] for r in rows])
+            return await super().query_raw(cypher, params)
+
+    g = Counting(MAX_DEDUP_ATTEMPTS - 1)
+    asyncio.run(
+        EntityDeduplicator(g, FakeEmbedder(DESC_EMB)).deduplicate(judge_llm=ScriptedLLM([None]))
+    )
+    assert not {"e1", "e2"} & _cleared(g), "still under the cap: retried next run"
+
+    g = Counting(MAX_DEDUP_ATTEMPTS)
+    asyncio.run(
+        EntityDeduplicator(g, FakeEmbedder(DESC_EMB)).deduplicate(judge_llm=ScriptedLLM([None]))
+    )
+    assert {"e1", "e2"} <= _cleared(g), "at the cap: released"
+
+
+def test_the_flag_and_the_counter_are_removed_one_property_per_statement():
+    """FalkorDB 4.18 removed the wrong properties, the name vector among them,
+    when one REMOVE named two properties on a node holding a vector."""
+    g = _JudgeGraph()
+    asyncio.run(EntityDeduplicator(g, FakeEmbedder(DESC_EMB)).deduplicate())
+    removes = [c[0] for c in g.calls if " REMOVE e." in c[0]]
+    assert removes and all(
+        c.count("REMOVE") == 1 and "," not in c.split("REMOVE")[1] for c in removes
+    )
+    assert any("REMOVE e.dedup_attempts" in c for c in removes)
 
 
 def test_a_judge_that_raises_leaves_every_new_entity_pending():
@@ -837,7 +880,7 @@ class _LabelledGraph(_JudgeGraph):
             ]
             return _knn_answer(rows, params, everyone_close=True)
         by_ids = "MATCH (e:__Entity__ {id: id}) WITH e" in cypher
-        if "dedup_pending = true" in cypher or "e.id > $last" in cypher or by_ids:
+        if "WHERE e.dedup_pending = true" in cypher or "e.id > $last" in cypher or by_ids:
             if params.get("last"):
                 return SimpleNamespace(result_set=[])
             rows = []
