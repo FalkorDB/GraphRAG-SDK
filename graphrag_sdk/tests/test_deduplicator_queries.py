@@ -103,9 +103,16 @@ def test_relates_remaps_preserve_provenance() -> None:
 # ── Name grouping ───────────────────────────────────────────────
 
 from graphrag_sdk.storage.deduplicator import (  # noqa: E402
-    is_acronym_of,
+    _acronym_key,
+    _expansion_key,
     normalize_entity_name,
 )
+
+
+def is_acronym_of(short: str, long: str) -> bool:
+    """The rule the exact phase's acronym fold applies to one pair."""
+    key = _acronym_key(normalize_entity_name(short))
+    return key is not None and key == _expansion_key(normalize_entity_name(long))
 
 
 class TestNormalizeEntityName:
@@ -609,44 +616,6 @@ class TestAcronymMerge:
         await dedup.deduplicate()
         (delete,) = self._delete_calls(graph)
         assert delete.args[1]["aliases"] == ["A.I.H.S.", "AIHS", "Ashford Society"]
-
-
-class TestFuzzyMerge:
-    async def test_fuzzy_merge_goes_through_the_same_absorb_path(self):
-        """Fuzzy merges preserve description, aliases and provenance too."""
-        graph = MagicMock()
-        rows = [
-            ["e1", "Jane Doe", "a physicist", "Person"],
-            ["e2", "J. Doe", "born in Leeds", "Person"],
-        ]
-
-        async def query_raw(q, params=None):
-            if "dedup_pending = true" in q or "e.id > $last" in q:
-                return _result(rows if not params.get("last") else [])
-            if "properties(k), properties(d)" in q:
-                return _props_read(rows, params)
-            if "DETACH DELETE" in q:
-                return _result([[params["survivor_id"]]])
-            return _result([])
-
-        graph.query_raw = AsyncMock(side_effect=query_raw)
-        embedder = MagicMock()
-        embedder.aembed_documents = AsyncMock(return_value=[[1.0, 0.0], [0.99, 0.1]])
-        dedup = EntityDeduplicator(graph, embedder)
-
-        merged = await dedup.deduplicate(fuzzy=True, similarity_threshold=0.9)
-        assert merged == 1
-        deletes = [c for c in graph.query_raw.call_args_list if "DETACH DELETE" in c.args[0]]
-        assert len(deletes) == 1
-        q, params = deletes[0].args
-        assert params == {
-            "survivor_id": "e1",
-            "dup_id": "e2",
-            "desc": "a physicist | born in Leeds",
-            "descs": ["a physicist", "born in Leeds"],
-            "aliases": ["J. Doe"],
-        }
-        assert "SET s.description = $desc, s.descriptions = $descs, s.aliases = $aliases" in q
 
 
 class TestPendingFlag:

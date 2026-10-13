@@ -1007,7 +1007,6 @@ class FinalizeResult(DataModel):
 
     null_stubs_removed: int = 0
     entities_deduplicated: int = 0
-    entities_linked: int = 0
     judge_llm_calls: int = 0
     judge_stats: dict[str, int | str] = Field(default_factory=dict)
     entities_embedded: int = 0
@@ -1093,35 +1092,10 @@ class FinalizeResult(DataModel):
     other holding what she did. Every question needing both then comes back wrong
     while looking answered, and nothing used to say so.
 
-    Not merged on a guess, because a merge in the graph cannot be undone. Two
-    ways to close them: fix the spelling in the source, which fixes it for good;
-    or pass ``finalize(resolver=...)`` the same strategy ``ingest`` takes, and
-    let it judge each pair with the document's evidence — what it decided is in
-    ``resolved_duplicates``. Either way the decision is yours or your resolver's,
+    Not merged on a guess, because a merge in the graph cannot be undone. Fix
+    the spelling in the source, which fixes it for good; the decision is yours,
     never a threshold's. Non-empty here is a prompt to look at your data, not a
     failure.
-    """
-
-    resolved_duplicates: list[str] = Field(default_factory=list)
-    """Pairs the resolver passed to ``finalize()`` judged one thing, and were merged.
-
-    As ``label 'duplicate' -> 'survivor'``. The resolver decided identity, the
-    same way it does within a document; the merge kept the node a table wrote,
-    so the entity is still the one the table's next re-sync finds, and every
-    typed value the table signed onto it. What prose knew — description, mentions,
-    relationships — moved onto it. Empty when resolution was disabled
-    (``finalize(resolve=False)``) or the resolver judged no pair one thing.
-    """
-
-    rejected_duplicates: list[str] = Field(default_factory=list)
-    """Pairs the resolver passed to ``finalize()`` judged to be two things.
-
-    As ``label 'a' | 'b'``. Remembered on the graph as a ``DISTINCT_FROM`` edge,
-    so the next ``finalize()`` neither asks about the pair again nor merges it
-    on a threshold, and so the pair leaves ``probable_duplicates``: it is decided.
-    The memory goes with either node — delete or re-read the document and the
-    pair is judged afresh. Empty when resolution was disabled
-    (``finalize(resolve=False)``) or the resolver judged no pair two things.
     """
 
     unmerged_name_collisions: dict[str, list[str]] = Field(default_factory=dict)

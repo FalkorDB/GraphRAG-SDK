@@ -480,7 +480,7 @@ class TestJudgeMergeSite:
         ]
         g = self._Graph(rows)
         dd = EntityDeduplicator(g, self._Emb())
-        merged = asyncio.run(dd.deduplicate(judge_llm=self._LLM(), judge_vote=False))
+        merged = asyncio.run(dd.deduplicate(judge_llm=self._LLM()))
         assert merged == 1 and dd.last_judge_stats["merged"] == 1
         (upd,) = [c for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
         # rule 1: list (survivor = longest description "Toulouse group" first) + join

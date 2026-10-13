@@ -29,7 +29,7 @@
 #
 # Pairs the caller has already settled — a mention two keyed rows could
 # equally own (``skip_pairs``), and any two rows written from a declared key
-# (``distinct_ids`` / ``is_stub``) — are dropped before the model is asked and
+# (``is_stub``) — are dropped before the model is asked and
 # never unioned into one group.
 #
 # Measured on a labeled 277-entity set (138 true pairs), gpt-4.1: one pass over
@@ -57,9 +57,6 @@ logger = logging.getLogger(__name__)
 #: done the graph carries no dedup data.
 DEDUP_PENDING_KEY = "dedup_pending"
 
-NAME_GATE = 0.65
-DESC_GATE = 0.55
-TOP_K = 10
 # Index-nominated neighbours per new entity, and the cosine floor for them.
 # Measured on the labeled set: k=5 found 92-96 % of true pairs; k=10 doubled
 # the LLM calls for no F1 gain.
@@ -69,11 +66,6 @@ NEIGHBOUR_GATE = 0.5
 KNN_BATCH = 250
 GROUP_CAP = 8
 MIN_DENSITY = 0.5
-NAME_IN_DESC_WEIGHT = 0.65
-# A name found inside more descriptions than this is a common word ("Company",
-# "Paris"), not an identifying mention; nominating it would pair one entity
-# with most of the graph and bypass the top-k bound of the embedding doors.
-NAME_IN_DESC_CAP = 50
 PROMPT_TOKEN_BUDGET = 3000
 # Longest description rendered per entity, so a set of GROUP_CAP members with
 # merged descriptions still fits the prompt budget; names and labels are
@@ -82,13 +74,7 @@ MAX_DESC_CHARS = 600
 MAX_NAME_CHARS = 120
 # Aliases shown per entity: the names it already absorbed in earlier merges.
 MAX_ALIASES_SHOWN = 5
-# Properties an earlier build used to cache description vectors on entity
-# nodes. The judge no longer stores them anywhere: each run removes them from
-# every node that still has them, and no merge copies them in the meantime.
-LEGACY_DESC_KEYS = ("description_embedding", "description_embedding_hash")
-_STOP = frozenset(
-    "the a an of and in on at to for de la le el les du des von van der al ibn bin y et".split()
-)
+
 
 JUDGE_PROMPT = (
     "You are the final judge in an entity-resolution pipeline for a knowledge "
@@ -156,74 +142,6 @@ JUDGE_PROMPT = (
 
 
 # ── pure helpers (unit-testable without a graph) ────────────────────────────
-
-
-def _toks(s: str) -> set[str]:
-    return {t for t in re.findall(r"[a-z0-9]+", s.lower()) if t not in _STOP and len(t) > 1}
-
-
-def knn_pairs(vecs: np.ndarray, k: int, gate: float) -> dict[tuple[int, int], float]:
-    """Top-k cosine neighbours per row kept above ``gate`` -> {(i, j): sim}."""
-    n = vecs.shape[0]
-    if n < 2:
-        return {}
-    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-    keep = np.where(norms[:, 0] > 0)[0]
-    if len(keep) < 2:
-        return {}
-    unit = np.zeros_like(vecs, dtype=np.float32)
-    unit[keep] = vecs[keep] / norms[keep]
-    kk = min(k + 1, len(keep))
-    out: dict[tuple[int, int], float] = {}
-    if n <= 2000:
-        sims = unit[keep] @ unit[keep].T
-        for row, i in enumerate(keep):
-            top = np.argpartition(-sims[row], kk - 1)[:kk]
-            for col in top:
-                j = int(keep[col])
-                if j == i:
-                    continue
-                sim = float(sims[row, col])
-                if sim >= gate:
-                    key = (min(i, j), max(i, j))
-                    out[key] = max(sim, out.get(key, -1.0))
-        return out
-    import hnswlib
-
-    idx = hnswlib.Index(space="ip", dim=vecs.shape[1])
-    idx.init_index(max_elements=n, ef_construction=200, M=16)
-    idx.add_items(unit[keep], keep)
-    idx.set_ef(max(64, kk))
-    labels, dists = idx.knn_query(unit[keep], k=kk)
-    for row, i in enumerate(keep):
-        for j, dist in zip(labels[row], dists[row]):
-            j = int(j)
-            if j == i:
-                continue
-            sim = float(1.0 - dist)
-            if sim >= gate:
-                key = (min(i, j), max(i, j))
-                out[key] = max(sim, out.get(key, -1.0))
-    return out
-
-
-def name_in_desc_pairs(ents: list[dict]) -> dict[tuple[int, int], float]:
-    """Every content token of A's name occurs in B's description (or vice versa)."""
-    nt = [_toks(e["name"]) for e in ents]
-    inv: dict[str, set[int]] = defaultdict(set)
-    for j, e in enumerate(ents):
-        for t in _toks(e["description"]):
-            inv[t].add(j)
-    out: dict[tuple[int, int], float] = {}
-    for i, ts in enumerate(nt):
-        if not ts or not all(t in inv for t in ts):
-            continue
-        hits = set.intersection(*(inv[t] for t in ts)) - {i}
-        if len(hits) > NAME_IN_DESC_CAP:
-            continue
-        for j in hits:
-            out[(min(i, j), max(i, j))] = NAME_IN_DESC_WEIGHT
-    return out
 
 
 class _UF:
@@ -396,8 +314,8 @@ def parse_groups(text: str, sizes: list[int]) -> dict[int, list[list[int]]]:
 
     Out-of-range numbers are dropped; an unmentioned set yields no groups (no
     merge). A set whose groups do not cover every member exactly once is not
-    a partition and yields no groups; :func:`unanswered_sets` reports such
-    sets so the caller can treat them as unjudged. A set whose groups overlap
+    a partition and yields no groups: silence about a member is not a verdict
+    that it differs. A set whose groups overlap
     — ``1, 2`` and ``1, 3`` — is not a partition, and taking it at face value
     would merge 2 and 3 through 1 though the model never put them together;
     such a set yields no groups either.
@@ -442,22 +360,9 @@ def parse_groups(text: str, sizes: list[int]) -> dict[int, list[list[int]]]:
     return out
 
 
-def pairs_from_response(text: str, order: list[list[int]]) -> set[tuple[int, int]]:
-    """Entity-index pairs the judge put in one group, for one prompt."""
-    return set(pairs_by_set_from_response(text, order))
-
-
-def unanswered_sets(text: str, order: list[list[int]]) -> set[int]:
-    """Positions in ``order`` whose set got no usable partition from ``text``
-    — omitted, incomplete, or overlapping. The caller treats these as
-    unjudged rather than as "nothing is the same"."""
-    answered = set(parse_groups(text, [len(m) for m in order]))
-    return {si for si in range(len(order)) if si not in answered}
-
-
 def pairs_by_set_from_response(text: str, order: list[list[int]]) -> dict[tuple[int, int], int]:
-    """Like :func:`pairs_from_response`, keyed by pair with the position in
-    ``order`` of the set the pair was judged in, so a caller can tell an
+    """Entity-index pairs the judge put in one group, keyed by pair with the
+    position in ``order`` of the set the pair was judged in, so a caller can tell an
     agreement reached inside one set from one it never asked for."""
     out: dict[tuple[int, int], int] = {}
     for si, groups in parse_groups(text, [len(m) for m in order]).items():
@@ -705,9 +610,6 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
             survives a mention, two keyed rows never merge, properties and
             provenance are carried, labels are unioned). This class decides
             identity only and never writes a merge itself.
-        vote: deprecated and ignored. The judge runs one pass; a second
-            shuffled pass lowered recall on the labeled set without improving
-            precision.
         max_concurrency: judge prompts in flight. ``None`` uses the LLM's own
             ``max_concurrency``.
     """
@@ -719,9 +621,7 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         llm: LLMInterface,
         merge_group: Callable[..., Awaitable[tuple[str, set[str]]]],
         *,
-        vote: bool = False,
         max_concurrency: int | None = None,
-        seed: int = 0,
     ) -> None:
         super().__init__(graph_store, embedder)
         # Best name per agreed group, from the last pass (see _judge).
@@ -730,30 +630,11 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         self._merge = merge_group
         self._conc = max_concurrency
 
-    async def _remove_legacy_desc_vectors(self) -> None:
-        """Strip the description vectors an earlier build cached on entity
-        nodes. Best effort: what a failure leaves, the next run removes."""
-        where = " OR ".join(f"e.{k} IS NOT NULL" for k in LEGACY_DESC_KEYS)
-        remove = ", ".join(f"e.{k}" for k in LEGACY_DESC_KEYS)
-        try:
-            while True:
-                r = await self._graph.query_raw(
-                    f"MATCH (e:__Entity__) WHERE {where} WITH e LIMIT 1000 "
-                    f"REMOVE {remove} RETURN count(e)"
-                )
-                rows = getattr(r, "result_set", None) or [[0]]
-                if int(rows[0][0] or 0) < 1000:
-                    break
-        except Exception as exc:
-            logger.warning("judge dedup: could not remove cached description vectors: %s", exc)
-
     async def _judge(
-        self, sets: list[list[int]], ents: list[dict], set_ids: list[int]
-    ) -> tuple[dict[tuple[int, int], int], int, int, set[int]]:
-        """One pass over ``sets``: ``(same pairs -> set id, prompts, failed
-        prompts, ids of the sets whose prompt failed)``. ``set_ids[k]`` names
-        ``sets[k]`` across passes, so the shuffled second pass reports the
-        same id for the same set."""
+        self, sets: list[list[int]], ents: list[dict]
+    ) -> tuple[dict[tuple[int, int], int], int, int]:
+        """One pass over ``sets``: ``(same pairs -> index of the set they were
+        judged in, prompts, failed prompts)``."""
         prompts, orders = pack_prompts(sets, ents)
         offsets: list[int] = []
         pos = 0
@@ -764,20 +645,15 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         same: dict[tuple[int, int], int] = {}
         self._group_names: dict[frozenset[int], str] = {}
         failed = 0
-        failed_sets: set[int] = set()
         for item in results:
-            ids = set_ids[offsets[item.index] : offsets[item.index] + len(orders[item.index])]
             if not item.ok or item.response is None:
                 failed += 1  # a failed call merges nothing — the safe default
-                failed_sets.update(ids)
                 continue
             content = item.response.content or ""
-            for si in unanswered_sets(content, orders[item.index]):
-                failed_sets.add(ids[si])
             for pair, si in pairs_by_set_from_response(content, orders[item.index]).items():
-                same[pair] = ids[si]
+                same[pair] = offsets[item.index] + si
             self._group_names.update(group_names_from_response(content, orders[item.index]))
-        return same, len(prompts), failed, failed_sets
+        return same, len(prompts), failed
 
     async def deduplicate(
         self,
@@ -785,7 +661,6 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         *,
         pending_ids: list[str] | None = None,
         skip_pairs: set[frozenset[str]] | None = None,
-        distinct_ids: set[str] | None = None,
         extra_pairs: list[tuple[str, str]] | None = None,
     ) -> dict[str, int]:
         """Judge the new entities against their index neighbours; return stats.
@@ -794,14 +669,12 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         flagged entities); without it, every entity flagged
         ``dedup_pending`` is read. Neighbours may be any entity, old or
         new. ``skip_pairs`` are id pairs already decided elsewhere (a mention
-        two keyed rows could equally own); ``distinct_ids`` are ids of rows
-        written from a declared key, and two such rows are never asked about —
-        nor is any pair of nodes that both carry ``is_stub``. ``extra_pairs``
+        two keyed rows could equally own); two rows written from a declared
+        key (both carry ``is_stub``) are never asked about. ``extra_pairs``
         are id pairs that must be put to the judge whatever their similarity —
         the same-name pairs the exact phase declined to merge on spelling alone.
         """
         skip = skip_pairs or set()
-        distinct = set(distinct_ids or set())
 
         stats = self.last_stats = {
             "entities": 0,
@@ -819,7 +692,6 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
             if pending_ids is not None
             else await self.fetch_pending(batch_size)
         )
-        await self._remove_legacy_desc_vectors()
         stats["entities"] = len(pending)
         # Before the size check: a lone named entity still gets its name
         # vector persisted, as the API promises for ``judge=True``.
@@ -850,7 +722,7 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
                     a, b = sorted((index[x], index[y]))
                     edges[(a, b)] = 1.0
         stats["neighbours"] = len(ents) - len(pending)
-        distinct |= {e["id"] for e in ents if e.get("is_stub") is not None}
+        distinct = {e["id"] for e in ents if e.get("is_stub") is not None}
 
         def protected(a: str, b: str) -> bool:
             return frozenset((a, b)) in skip or (a in distinct and b in distinct)
@@ -865,8 +737,7 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
 
         sets = make_groups_dense(edges, keep_apart=protected_idx)
         stats["sets"] = len(sets)
-        set_ids = list(range(len(sets)))
-        same, calls, failed, _ = await self._judge(sets, ents, set_ids)
+        same, calls, failed = await self._judge(sets, ents)
         stats["llm_calls"] += calls
         stats["llm_failed"] += failed
         # The model never saw a protected pair as a candidate, but a partition
