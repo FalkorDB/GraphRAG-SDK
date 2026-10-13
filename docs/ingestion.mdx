@@ -183,7 +183,7 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 - Same spelling once normalised (or an acronym of it) as a **table row** → merged into the row by rule, no LLM. Same spelling between extracted mentions only, and the 5 nearest names at cosine ≥ 0.5, become candidate pairs; candidates form dense sets of ≤ 8
 - The judge LLM partitions each set **once** into same-referent groups, reading names, labels, descriptions and existing aliases, and names each merged group
 - Same → **merge**, by the same rules as every finalize merge: a table's row survives a mention, every member's description is kept in `descriptions` (joined with `" | "` in `description`), other names kept in `aliases`, edges moved first, then the loser deleted; the survivor gains every member's label and takes the judge's name for the group (a table row keeps its declared name). Groups chain: A = B and B = C become one node
-- Different → **nothing** is written. No `SAME_AS` or `DISTINCT_FROM` edge
+- Different → **nothing** is written
 - The flag is removed from the entities the run read, so `finalize()` on an unchanged graph does no dedup work and a finalized graph carries no dedup data. A graph built before the flag existed has none: run `finalize(dedup_all=True)` once to check every entity
 - Two keyed rows of a table, and a mention two such rows could own, are never asked or grouped
 - `finalize(judge=False)` skips the judge (exact-name dedup only, no model); `deduplicate_entities()` on its own runs it only with `judge=True`; `judge_llm=` picks the model (gpt-4.1-class recommended); pass `resolver=LLMVerifiedResolution(...)` to `ingest()` to also resolve per document

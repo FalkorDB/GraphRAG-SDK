@@ -226,7 +226,7 @@ After ingesting multiple documents, the same real-world entity might exist as mu
 2. **Group** by `(canonical_name, label)` — the name is case-folded with accents, punctuation, inner dots (`A.I.` = `AI`) and a leading English article removed, `Surname, Given` un-inverted, common abbreviations expanded and one trailing legal form (`Ltd`, `Inc`) dropped; word order and the letters of non-Latin scripts are kept. Grouping by label prevents cross-type merging (Person "Paris" and Location "Paris" stay separate)
 3. **Fold acronyms:** a 3–6 letter name joins the group of the *single* same-label entity whose initials it spells (`AIHS` / `Ashford Island Historical Society`). An acronym with several candidate expansions is left alone
 4. **For each group with duplicates:**
-   - **Who decides:** when a group holds a node a declared table wrote, it merges here by rule, with no LLM. A group of extracted mentions only is handed to the judge (Phase 4) instead when the judge runs — the same spelling is evidence, not proof (Paris, France and Paris, Texas) — and merges here only with `judge=False`
+   - **Who decides:** when a group holds a node a declared table wrote, it merges here by rule, with no LLM. A group of extracted mentions only is handed to the judge (Phase 2) instead when the judge runs — the same spelling is evidence, not proof (Paris, France and Paris, Texas) — and merges here only with `judge=False`
    - **Survivor:** A node a declared table wrote (it carries the row's key, so the table's next re-sync still finds it), then a real node over a placeholder, then the long form over an acronym, then the best-connected node (most RELATES and MENTIONED_IN edges), then the longest description, then the longest name. Two nodes written from declared keys are never merged into each other, whatever they are called
    - **Remap edges:** All RELATES and MENTIONED_IN edges from duplicates are redirected to the survivor. The survivor is `MATCH`ed before every `MERGE` — a path-`MERGE` with an unbound `(s {id})` creates an empty ghost `__Entity__` node whenever the edge does not exist yet — the RELATES `MERGE` is keyed on `rel_type` so two facts between one pair stay two edges, and RELATES `source_chunk_ids` are unioned rather than overwritten:
      ```cypher
@@ -258,30 +258,16 @@ After ingesting multiple documents, the same real-world entity might exist as mu
      ```
    - **Absorb and delete** in one statement: the duplicate's `source_chunk_ids` are unioned into the survivor's, its description appended to the survivor's with `" | "` (each segment kept once), its name added to the survivor's `aliases` when it is not a spelling variant, and every other property the survivor lacks — a typed column a table signed, `is_stub` — copied over, with a value already on the survivor always winning; then `DETACH DELETE dup`. Because the survivor is matched in the same statement, a survivor removed mid-pass makes this a no-op — the duplicate and its edges stay in place and the merge is not counted.
 
-### Phase 2: Fuzzy Embedding Match (Optional)
+### Phase 2: LLM-Judged Cross-Document Dedup (Default in `finalize()`)
 
-Enabled via `fuzzy=True`. Catches near-duplicates that have slightly different names (e.g., "J. Doe" and "Jane Doe"):
+Ingest resolves per document, so `Airbus` in one file and `Airbus SE` in another never meet until here. `LLMJudgeDeduplicator` (`storage/judge_dedup.py`) runs after Phase 1, over the flagged entities only:
 
-1. **Fetch** all surviving entities with their labels
-2. **Batch-embed** entity names
-3. **Normalize** vectors and compute pairwise cosine similarity in blocks (1000 entities per block to avoid OOM)
-4. **Merge** pairs above the similarity threshold (default: 0.95 — at 0.90 the pass wrongly merged 2 of 33 hard-negative pairs for no added recall), but only within the same label (no cross-type merging)
-5. **Remap and delete** as in Phase 1
-
-### Phase 3: Resolver Across Sources (Opt-in)
-
-Runs only when a resolver is given — `finalize(resolver=...)`, or `finalize(resolve=True)` for the default `LLMVerifiedResolution` over the instance's `llm` and `embedder` — and only when there are flagged entities (or with `dedup_all=True`). It is the one phase that is not incremental: every surviving entity of the graph is shown as one `GraphData`, with the RELATES edges between them, and asked which are one thing. It decides *identity*; the merge follows Phase 1's rules (survivor rank, absorb-and-delete in one statement), so a table's row always survives a mention of it and two keyed rows never fold into each other. Its NO answers are reported in `rejected_duplicates` and kept out of the near-miss report; nothing is written for them. `DISTINCT_FROM` edges an older version wrote are still read and honoured here.
-
-### Phase 4: LLM-Judged Cross-Document Dedup (Default in `finalize()`)
-
-Ingest resolves per document, so `Airbus` in one file and `Airbus SE` in another never meet until here. `LLMJudgeDeduplicator` (`storage/judge_dedup.py`) runs after Phases 1–3, over the flagged entities only:
-
-1. **Embed** each new entity's name once (written to `e.embedding` and kept for retrieval). Descriptions are not embedded; `description_embedding` / `description_embedding_hash` left on nodes by an earlier build are removed
+1. **Embed** each new entity's name once (written to `e.embedding` and kept for retrieval). Descriptions are not embedded
 2. **Nominate** candidate pairs without an LLM: the 5 nearest names of each new entity from the `__Entity__` vector index at cosine ≥ 0.5 (batched, 250 entities per query), plus the same-spelling pairs of extracted mentions Phase 1 handed over
 3. **Group** candidates into dense sets of at most 8: more than half of a set's pairs must be nominated edges, so a chain A–B–C–D where only neighbours are similar (exactly half) cannot form; an edge left between two sets is its own 2-member set. Whole sets are packed into prompts of ≤ 3,000 tokens; the entity text is rendered one line per entity — name, labels, up to 5 existing aliases, description — flattened and quoted, and the prompt tells the model it is untrusted document data
 4. **Judge, one pass** — the LLM partitions each set into same-referent groups (no similarity scores shown) and gives each group of two or more its best name, copied from the members' names and aliases
 5. **Same → merge**, through the same absorb path as Phase 1: survivor by the Phase 1 rank (a table's row over a mention, then degree, then longest description); every member's description kept in `descriptions` and joined with `" | "` in `description`; other names kept in `aliases`; `source_chunk_ids` and missing properties carried; edges remapped to the survivor first, then the loser deleted. The survivor gains every member's label, as Cypher labels and on record in `merged_labels`, and takes the judge's name for the group when it is one of the members' own names or aliases (its old name moves to `aliases`; the id does not change; a table row keeps its declared name). Agreements are unioned across sets — "AAPL" = "Apple Inc." in one set and "Apple Inc." = "Apple" in another become one node — but never through a protected pair. Two keyed rows and a mention two rows could own are never put to the judge
-6. **Different → nothing.** No `SAME_AS` or `DISTINCT_FROM` edge is written; the pair is not asked again because the new entity's flag is cleared when the run ends. A set whose prompt failed is left unjudged
+6. **Different → nothing.** Nothing is written; the pair is not asked again because the new entity's flag is cleared when the run ends. A set whose prompt failed is left unjudged
 
 gpt-4.1 made 9 wrong merges where gpt-4o-mini made 51 on the benchmark corpus, so pass a gpt-4.1-class `judge_llm`. Statistics (entities, neighbours, candidates, sets, calls, agreed pairs, merged) are in `EntityDeduplicator.last_judge_stats` and `FinalizeResult.judge_stats`. `finalize(judge=False)` skips this phase (exact-name dedup only, no model). The standalone `deduplicate_entities()` runs the judge only when asked (`judge=True`).
 
@@ -328,7 +314,7 @@ The connection layer retries transient query failures up to 3 times using expone
 |------|-----------------|
 | [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | GraphStore — batched MERGE, label hints, statistics, cleanup |
 | [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | VectorStore — index management, chunk/entity/relationship embedding, search |
-| [`storage/deduplicator.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/deduplicator.py) | EntityDeduplicator — incremental dedup of flagged entities: exact + fuzzy dedup, edge remapping, clears `dedup_pending`; runs the judge phase |
+| [`storage/deduplicator.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/deduplicator.py) | EntityDeduplicator — incremental dedup of flagged entities: exact dedup, edge remapping, clears `dedup_pending`; runs the judge phase |
 | [`storage/judge_dedup.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/judge_dedup.py) | LLMJudgeDeduplicator — cross-document dedup: nearest names from the vector index, group, judge once, merge |
 | [`utils/cypher.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/utils/cypher.py) | sanitize_cypher_label() and other Cypher utilities |
 | [`core/connection.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/core/connection.py) | FalkorDBConnection — async client, connection pooling, retry |

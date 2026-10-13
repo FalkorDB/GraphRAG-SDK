@@ -722,34 +722,9 @@ summary = await rag.finalize()
 summary.probable_duplicates   # names that look like one thing and did not merge
 ```
 
-Reported rather than merged on a guess, because a merge in the graph cannot be undone. There are three ways to close such a pair. The first is the spelling in the source, which fixes it for good. The second is the LLM judge `finalize()` runs by default: each entity ingested since the last `finalize()` is compared with its nearest names in the whole graph, table rows included, and the model decides which are one thing. The third is the resolver, below.
+Reported rather than merged on a guess, because a merge in the graph cannot be undone. There are two ways to close such a pair. The first is the spelling in the source, which fixes it for good. The second is the LLM judge `finalize()` runs by default: each entity ingested since the last `finalize()` is compared with its nearest names in the whole graph, table rows included, and the model decides which are one thing. The merge follows the table's rules: the row's node survives, because its id is the one the next re-sync recomputes; every value the table signed onto it stays; the mention's description, chunks and relationships move onto it. Two rows of one table are never put to the judge — a declared key has already said they are two things.
 
-### The resolver judges across sources (opt-in)
-
-Within one document, `LLMVerifiedResolution` already decides this kind of pair: it embeds the names, and for the close ones asks the model whether they denote one thing, with each entity's description and relationships as evidence. What it never got was the chance to see a table's row and a document's mention together — they arrive in different `ingest` calls. `finalize(resolve=True)` gives it that chance: it builds an `LLMVerifiedResolution` over the instance's own `llm` and `embedder` and shows it the whole graph. It is off by default — the judge already compares new entities with table rows — and worth turning on when you want a row's signed values in front of the model and the `resolved_duplicates` / `rejected_duplicates` report.
-
-```python
-await rag.ingest("employees.csv")                                   # Priya Raman, 39
-await rag.ingest(text=MARKET_NOTE, document_id="market_note.txt")   # "Ms. Raman said…"
-summary = await rag.finalize(resolve=True)
-summary.resolved_duplicates   # ["Person 'Ms. Raman' -> 'Priya Raman'"]
-```
-
-The split of responsibilities is deliberate. The resolver decides **identity**, exactly as it does within a document. The merge follows the table's rules: the row's node survives, because its id is the one the next re-sync recomputes; every value the table signed onto it stays; the mention's description, chunks and relationships move onto it. Two rows of one table are never merged into each other whatever the resolver says — a declared key has already said they are two things — and a pair under two labels is left to the collision report. A row has no prose description, so the resolver is shown its signed values instead: `employees: employee_id E-3, age 39, title Head of Regulatory`.
-
-The default is tuned for this job. Names across sources differ more than names within one document — an honorific for a first name, a short form for a full one — and with `text-embedding-3-small` "Ms. Raman" against "Priya Raman" scores 0.70, below the within-document `soft_threshold` of 0.80, so at that setting the model would never be asked. `finalize()`'s resolver starts asking at 0.6. The threshold only changes which pairs the model is asked about; it still decides each one, and a **NO** leaves both nodes in place. To use different thresholds, a different model, or a strategy of your own, pass it: `finalize(resolver=LLMVerifiedResolution(llm, embedder, soft_threshold=0.7))`.
-
-Two things keep this cheap. A pair the name rules already flag as a probable duplicate — `M. Ellison` beside `Maya Ellison`, which embeds at 0.60 — is handed to the resolver as a pair to judge whatever it scored, so the threshold is not the only way in. And the resolver runs only when something was ingested since the last `finalize()` (or with `dedup_all=True`), so a pair is not asked again on an unchanged graph. A **NO** is listed in `summary.rejected_duplicates` and leaves that run's `probable_duplicates` — it is decided, not a guess — but nothing is written to the graph for it. `DISTINCT_FROM` edges an older version wrote are still read and honoured.
-
-```python
-summary.resolved_duplicates   # ["Person 'Ms. Raman' -> 'Priya Raman'"]   merged
-summary.rejected_duplicates   # ["Contract 'transmission agreement' | 'Nordic transmission agreement'"]
-summary.probable_duplicates   # what is left: flagged by a name rule, judged by nobody
-```
-
-Two rows of one table are never a question either: they are handed over as pairwise distinct, so a table of a thousand people costs no calls among themselves. A strategy of your own can take part in this through four `ctx.metadata` keys documented on `ResolutionStrategy` — `RESOLUTION_SKIP_PAIRS`, `RESOLUTION_DISTINCT_IDS`, `RESOLUTION_ASK_PAIRS`, `RESOLUTION_REJECTED_PAIRS` — and one that ignores them is still correct, only asked more often.
-
-`finalize(judge=False)` (with the resolver off, the default) switches the judgement off: spelling variants merge, everything else is reported, and no model is called. Choosing join-able names is still the design decision that decides how much of the graph joins at write time, with no model call at all. To check what did join, count the entities reachable from more than one source:
+`finalize(judge=False)` switches the judgement off: spelling variants merge, everything else is reported, and no model is called. Choosing join-able names is still the design decision that decides how much of the graph joins at write time, with no model call at all. To check what did join, count the entities reachable from more than one source:
 
 ```python
 await rag.query("""
