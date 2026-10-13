@@ -361,22 +361,18 @@ class TestANoIsRememberedAndANameRuleIsAsked:
 
         assert result.rejected_duplicates == ["Person 'Ms. Raman' | 'Priya Raman'"]
         assert first.ctx.metadata[RESOLUTION_SKIP_PAIRS] == set(), "nothing decided yet"
-        edges = await rag.query(
-            "MATCH (a:__Entity__)-[d:DISTINCT_FROM]->(b:__Entity__) RETURN a.id, b.id, d.decided_by"
-        )
-        assert edges == [[MS_RAMAN, PRIYA, "SaysTheyAreOne"]]
+        assert result.probable_duplicates == [], "decided this run, so not reported"
+        # The NO is not written to the graph: no bookkeeping edge.
+        assert (await rag.query("MATCH ()-[d:DISTINCT_FROM]->() RETURN count(d)")) == [[0]]
 
+        # Nothing was ingested since: the resolver is not run again, so the
+        # pair is not re-asked (and a strategy that would merge it never sees it).
         second = SaysTheyAreOne({MS_RAMAN: PRIYA})
         result = await rag.finalize(resolver=second)
 
-        assert second.ctx.metadata[RESOLUTION_SKIP_PAIRS] == {pair}, "told what was decided"
-        assert result.rejected_duplicates == [], "not decided again"
-        assert result.resolved_duplicates == ["Person 'Ms. Raman' -> 'Priya Raman'"], (
-            "a strategy that ignores the hint is still obeyed — the hint is economy, not policy"
-        )
-        assert (await rag.query("MATCH ()-[d:DISTINCT_FROM]->() RETURN count(d)")) == [[0]], (
-            "the memory went with the merged node"
-        )
+        assert second.ctx is None, "nothing new, so the resolver was not asked"
+        assert result.rejected_duplicates == result.resolved_duplicates == []
+        assert (await rag.query("MATCH (p:Person) RETURN count(p)")) == [[2]]
         await rag.close()
 
     async def test_a_decided_pair_leaves_the_probable_duplicates_report(
@@ -406,8 +402,10 @@ class TestANoIsRememberedAndANameRuleIsAsked:
             "Person 'Maya Ellison' ~ 'M. Ellison'"
         ]
 
+        # The first finalize checked both entities; judging the pair again
+        # with a resolver means re-checking everything.
         resolver = SaysTheyAreOne({}, reject={frozenset((maya, m))})
-        after = await rag.finalize(resolver=resolver)
+        after = await rag.finalize(resolver=resolver, dedup_all=True)
 
         assert resolver.ctx.metadata[RESOLUTION_ASK_PAIRS] == {frozenset((maya, m))}, (
             "the near miss was handed to the resolver as a pair to judge"
@@ -477,7 +475,8 @@ class TestANoIsRememberedAndANameRuleIsAsked:
 
 
 class TestFinalizeJudgesByDefault:
-    """No resolver given: ``finalize`` builds one over the instance's llm and embedder."""
+    """``resolve=True`` with no resolver given: ``finalize`` builds one over the
+    instance's llm and embedder. (Off by default; the LLM judge runs instead.)"""
 
     def _rag(self, real_falkordb_rag_factory, llm):
         return real_falkordb_rag_factory(
@@ -504,7 +503,7 @@ class TestFinalizeJudgesByDefault:
         rag = self._rag(real_falkordb_rag_factory, llm)
         await self._ingest_row_and_initialled_mention(rag, tmp_path)
 
-        result = await rag.finalize()
+        result = await rag.finalize(resolve=True, judge=False)
 
         assert result.resolved_duplicates == ["Person 'M. Ellison' -> 'Maya Ellison'"]
         assert llm._call_index == 2, "the model was asked exactly once"
@@ -519,14 +518,13 @@ class TestFinalizeJudgesByDefault:
         rag = self._rag(real_falkordb_rag_factory, llm)
         await self._ingest_row_and_initialled_mention(rag, tmp_path)
 
-        first = await rag.finalize()
-        second = await rag.finalize()
+        first = await rag.finalize(resolve=True, judge=False)
+        second = await rag.finalize(resolve=True, judge=False)
 
         assert first.rejected_duplicates == ["Person 'M. Ellison' | 'Maya Ellison'"]
+        # Not asked again (nothing new), and nothing written to remember it by.
         assert second.rejected_duplicates == [] and llm._call_index == 2
-        assert (await rag.query("MATCH ()-[d:DISTINCT_FROM]->() RETURN d.decided_by")) == [
-            ["LLMVerifiedResolution"]
-        ]
+        assert (await rag.query("MATCH ()-[d:DISTINCT_FROM]->() RETURN count(d)")) == [[0]]
         await rag.close()
 
     async def test_resolve_false_reports_and_calls_no_model(
@@ -608,7 +606,8 @@ class TestTheBetterConnectedProseNodeKeepsItsName:
             llm=llm, embedder=NearPairEmbedder({"Austria", "Republik Österreich"})
         )
 
-        result = await rag.finalize(resolver=judge)
+        # Hand-written nodes carry no dedup_pending flag: check every entity.
+        result = await rag.finalize(resolver=judge, dedup_all=True)
 
         assert result.resolved_duplicates == ["Country 'Republik Österreich' -> 'Austria'"]
         rows = await rag.query(
@@ -638,7 +637,7 @@ class TestTheBetterConnectedProseNodeKeepsItsName:
             llm=llm, embedder=NearEmbedder({"Austria", "Republik Österreich"})
         )
 
-        result = await rag.finalize(resolver=judge)
+        result = await rag.finalize(resolver=judge, dedup_all=True)
 
         assert result.resolved_duplicates == ["Country 'Austria' -> 'Republik Österreich'"]
         await rag.close()

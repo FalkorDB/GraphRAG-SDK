@@ -4528,7 +4528,8 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         judge: bool = False,
         judge_llm: LLMInterface | None = None,
-        judge_vote: bool = True,
+        judge_vote: bool = False,
+        dedup_all: bool = False,
     ) -> int:
         """Global entity deduplication across all ingested documents.
 
@@ -4550,20 +4551,24 @@ class GraphRAG:
         the pair, and the merge keeps the table's node and its typed values.
 
         Phase 4 (opt-in here, ``judge=True``; on by default in
-        :meth:`finalize`): LLM-judged cross-document dedup. Name and
-        description embeddings nominate candidate pairs (plus "A's name
-        appears in B's description"); candidates form small dense sets; the
-        judge LLM partitions each set; with ``judge_vote`` a second pass over
-        shuffled sets must agree. Agreed pairs are merged by the same rules as
-        every other phase (survivor rank, descriptions list, aliases,
-        provenance), and the survivor additionally gains every member's label;
-        disagreements are written as ``SAME_AS`` edges instead of merged.
-        Pairs a resolver already judged distinct (``DISTINCT_FROM``), two rows
+        :meth:`finalize`): LLM-judged cross-document dedup of the entities
+        added since the last run. Each new entity's nearest names are read from
+        the entity vector index; candidates form small dense sets; the judge
+        LLM partitions each set in one pass, seeing names, labels and
+        descriptions. Agreed pairs are merged by the same rules as every other
+        phase (survivor rank, descriptions list, aliases, provenance), and the
+        survivor additionally gains every member's label; anything else is left
+        alone — no ``SAME_AS`` or ``DISTINCT_FROM`` edge is written. Two rows
         written from a declared key, and a mention two such rows could equally
-        own are never put to the judge. With ``judge=True`` every named entity
-        ends up with a name embedding in ``e.embedding`` (the judge writes the
-        missing ones); ``judge=False`` leaves that to
-        :meth:`backfill_entity_embeddings`, which :meth:`finalize` runs.
+        own, are never put to the judge.
+
+        Phases 1 and 4 are incremental: only entities ingest flagged
+        ``dedup_pending`` are query points, compared with the rest of the graph
+        through the entity vector index, and the flag is removed when the run
+        ends — a second call on an unchanged graph does no work, and the graph
+        keeps no dedup data. A graph written before the flag existed has none:
+        pass ``dedup_all=True`` once to check every entity. The new entities'
+        name embeddings (``e.embedding``) are written by this call.
 
         Without ``resolver`` and with ``judge`` off — the defaults here — this
         method calls no model, as it always did; :meth:`finalize` is where
@@ -4586,12 +4591,14 @@ class GraphRAG:
                 A gpt-4.1-class model is strongly recommended — on the
                 benchmark corpus it made 9 wrong merges where gpt-4o-mini
                 made 51.
-            judge_vote: Require second-pass agreement before merging
-                (default). ``False`` halves LLM cost, ~3x wrong merges.
+            judge_vote: Deprecated and ignored; the judge runs one pass.
+            dedup_all: Check every entity, not only the ones flagged
+                ``dedup_pending`` since the last run. Needed once for a graph
+                written before the flag existed.
 
         Returns:
             Total number of duplicate entities merged (all phases). Judge-phase
-            details (calls, agreed/disagreed pairs, links) are in
+            details (calls, candidates, agreed pairs, merges) are in
             ``self._deduplicator.last_judge_stats``.
         """
         await self._ensure_ontology_initialized()
@@ -4608,6 +4615,7 @@ class GraphRAG:
             resolver=resolver,
             judge_llm=(judge_llm or self.llm) if judge else None,
             judge_vote=judge_vote,
+            dedup_all=dedup_all,
         )
         # The graph has now been swept globally, so the pending-dedup reminder
         # no longer applies. Reset here rather than in finalize() so a caller
@@ -4682,10 +4690,11 @@ class GraphRAG:
         self,
         *,
         resolver: ResolutionStrategy | None = None,
-        resolve: bool = True,
+        resolve: bool = False,
         judge: bool = True,
         judge_llm: LLMInterface | None = None,
-        judge_vote: bool = True,
+        judge_vote: bool = False,
+        dedup_all: bool = False,
     ) -> FinalizeResult:
         """Run all post-ingestion steps after all documents are ingested.
 
@@ -4695,36 +4704,37 @@ class GraphRAG:
 
         Bundles:
         1. Remove NULL-name stub entities (legacy cleanup)
-        2. ``deduplicate_entities()`` — global exact-name dedup, then the
-           resolver judges the pairs across documents and tables, then
-           (``judge``) the LLM-judged cross-document phase; see
-           :meth:`deduplicate_entities` for what merges and what links. The
-           judge embeds the names it reads and stores them on the nodes.
+        2. ``deduplicate_entities()`` — incremental: only entities added since
+           the last finalize are checked, against the whole graph through
+           indexes. Exact-name / acronym dedup, then (``judge``) one LLM pass
+           over each new entity and its nearest names from the vector index;
+           see :meth:`deduplicate_entities`. The judge embeds the names it
+           reads and stores them on the nodes. Calling ``finalize()`` again on
+           an unchanged graph does no dedup work.
         3. ``backfill_entity_embeddings()`` — name embeddings on every entity
            still missing one. After dedup, so a duplicate the merge removes
            is not embedded first; ``FinalizeResult.entities_embedded`` counts
-           the vectors written by this step and by the judge.
+           the vectors written by this step and by dedup.
         4. ``embed_relationships()`` — fact text embeddings on RELATES edges
         5. ``ensure_indices()`` — all indexes
 
         Args:
-            resolver: The strategy that judges the whole graph: a table's
-                "Priya Raman" against a document's "Ms. Raman". By default an
-                ``LLMVerifiedResolution`` over this instance's ``llm`` and
-                ``embedder``, tuned for names that differ across sources — see
-                :meth:`_default_finalize_resolver`. Pass your own to replace it.
-            resolve: ``False`` skips the resolver pass: no model is called by
-                it, and the pairs it would have judged are left to the judge
-                phase (below) or, with ``judge=False`` too, reported in
-                ``FinalizeResult.probable_duplicates`` and left alone.
-            judge: run the LLM-judged dedup phase (default True). It costs
-                roughly two LLM calls per ~3000 prompt tokens of candidate
-                sets; set ``False`` to skip it. ``judge=False`` alone still
-                runs the resolver over this instance's ``llm``; only
-                ``resolve=False, judge=False`` is exact-name dedup alone, with
-                no LLM calls at all.
+            resolver: An extra resolution strategy run over the whole graph
+                before the judge (legacy, not incremental). Passing one runs it.
+            resolve: ``True`` runs the default ``LLMVerifiedResolution`` resolver
+                (see :meth:`_default_finalize_resolver`) when no ``resolver``
+                is given. Off by default: on a labeled set it lowered recall
+                and added LLM calls without improving precision over the
+                judge alone.
+            judge: run the LLM-judged dedup phase (default True): one LLM call
+                per ~3000 prompt tokens of candidate sets, over new entities
+                only. ``judge=False`` is exact-name dedup alone, with no LLM
+                calls at all.
             judge_llm: judge model, defaults to this instance's ``llm``.
-            judge_vote: require second-pass agreement (default True).
+            judge_vote: deprecated and ignored; the judge runs one pass.
+            dedup_all: check every entity instead of only those ingested since
+                the last finalize. Run it once on a graph built before the
+                ``dedup_pending`` flag existed.
 
         Returns:
             ``FinalizeResult`` — typed counts from each step.
@@ -4758,12 +4768,14 @@ class GraphRAG:
             ctx_log(f"finalize: removed {null_cleaned} NULL-name stub entities")
 
         # Step 2: Global dedup (exact, resolver, then LLM-judged)
-        if not resolve:
-            resolver = None
-        elif resolver is None:
+        if resolver is None and resolve:
             resolver = self._default_finalize_resolver()
         dedup_count = await self.deduplicate_entities(
-            resolver=resolver, judge=judge, judge_llm=judge_llm, judge_vote=judge_vote
+            resolver=resolver,
+            judge=judge,
+            judge_llm=judge_llm,
+            judge_vote=judge_vote,
+            dedup_all=dedup_all,
         )
         judge_stats = dict(getattr(self._deduplicator, "last_judge_stats", {}) or {})
         if not judge:
@@ -4777,6 +4789,7 @@ class GraphRAG:
         # vector written this call to a node still here.
         entity_count = await self._vector_store.backfill_entity_embeddings()
         entity_count += int(judge_stats.get("embedded", 0) or 0)
+        entity_count += int(getattr(self._deduplicator, "names_embedded", 0) or 0)
         ctx_log(f"finalize: embedded {entity_count} entities")
         resolved = list(getattr(self._deduplicator, "resolved_pairs", []) or [])
         rejected = list(getattr(self._deduplicator, "rejected_pairs", []) or [])
@@ -5059,10 +5072,11 @@ class GraphRAG:
         self,
         *,
         resolver: ResolutionStrategy | None = None,
-        resolve: bool = True,
+        resolve: bool = False,
         judge: bool = True,
         judge_llm: LLMInterface | None = None,
-        judge_vote: bool = True,
+        judge_vote: bool = False,
+        dedup_all: bool = False,
     ) -> FinalizeResult:
         """Synchronous finalize convenience method.
 
@@ -5075,6 +5089,7 @@ class GraphRAG:
                 judge=judge,
                 judge_llm=judge_llm,
                 judge_vote=judge_vote,
+                dedup_all=dedup_all,
             )
         )
 

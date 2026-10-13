@@ -298,6 +298,7 @@ class TestGraphRAGDeduplicateEntities:
         absorbed_result.result_set = [["e1"]]
         read_result = MagicMock()
         read_result.result_set = [[{}, {}, [], []]]  # both nodes exist, nothing to carry
+
         async def query_raw(q, params=None):
             if "dedup_pending = true" in q:  # the new (unchecked) entities, one page
                 return entity_result if not (params or {}).get("last") else empty_result
@@ -319,7 +320,7 @@ class TestGraphRAGDeduplicateEntities:
     ):
         """The standalone ``deduplicate_entities()`` makes no LLM call unless
         asked — a caller running it after every ingest batch must not start
-        paying for two judge passes with no source change. ``judge=True`` uses
+        paying for judge calls with no source change. ``judge=True`` uses
         the facade's LLM unless ``judge_llm`` is given; ``finalize()`` is where
         the judge is on by default."""
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
@@ -335,7 +336,8 @@ class TestGraphRAGDeduplicateEntities:
 
         seen.clear()
         await g.deduplicate_entities(judge=True)
-        assert seen["judge_llm"] is g.llm and seen["judge_vote"] is True
+        # judge_vote is deprecated and defaults to False (one judge pass).
+        assert seen["judge_llm"] is g.llm and seen["judge_vote"] is False
 
         other = MagicMock()
         seen.clear()
@@ -370,7 +372,8 @@ class TestGraphRAGDeduplicateEntities:
         g._vector_store.embed_relationships = AsyncMock(return_value=0)
         g._vector_store.ensure_indices = AsyncMock(return_value={})
         await g.finalize()
-        assert seen["judge_llm"] is g.llm and seen["resolver"] is not None
+        # The resolver is opt-in now (resolve=True or an explicit resolver).
+        assert seen["judge_llm"] is g.llm and seen["resolver"] is None
         seen.clear()
         await g.finalize(resolve=False, judge=False)
         assert seen["judge_llm"] is None and seen["resolver"] is None
@@ -2732,7 +2735,7 @@ class TestDefaultResolver:
         graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
 
         result = await graphrag.finalize()
-        assert seen["judge_llm"] is graphrag.llm and seen["judge_vote"] is True
+        assert seen["judge_llm"] is graphrag.llm and seen["judge_vote"] is False
         assert result.entities_linked == 3 and result.judge_llm_calls == 4
         assert result.judge_stats == {"merged": 2, "linked": 3, "llm_calls": 4}
         # Dedup (with the judge) runs first, so a duplicate about to be removed
