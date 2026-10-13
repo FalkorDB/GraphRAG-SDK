@@ -298,17 +298,16 @@ class TestGraphRAGDeduplicateEntities:
         absorbed_result.result_set = [["e1"]]
         read_result = MagicMock()
         read_result.result_set = [[{}, {}, [], []]]  # both nodes exist, nothing to carry
-        g._graph_store.query_raw = AsyncMock(
-            side_effect=[
-                entity_result,
-                empty_result,  # pagination end
-                read_result,  # property read runs first: abort here means no writes
-                empty_result,  # remap: outgoing RELATES
-                empty_result,  # remap: incoming RELATES
-                empty_result,  # remap: MENTIONED_IN
-                absorbed_result,  # absorb + DETACH DELETE
-            ]
-        )
+        async def query_raw(q, params=None):
+            if "dedup_pending = true" in q:  # the new (unchecked) entities, one page
+                return entity_result if not (params or {}).get("last") else empty_result
+            if "properties(k), properties(d)" in q:  # property read before any write
+                return read_result
+            if "DETACH DELETE" in q:  # absorb, RETURNs the survivor's id
+                return absorbed_result
+            return empty_result  # edge remaps, nearest-name lookups, flag removal
+
+        g._graph_store.query_raw = AsyncMock(side_effect=query_raw)
 
         # Exact-name phase only; the judge phase has its own tests in
         # test_judge_dedup.py and is wired in TestDefaultResolver below.

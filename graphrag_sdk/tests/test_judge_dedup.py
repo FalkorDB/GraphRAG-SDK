@@ -185,20 +185,6 @@ def test_incomplete_partition_is_not_a_verdict():
     assert unanswered_sets("SET 1 GROUP: 1\nSET 1 GROUP: 2\nSET 1 GROUP: 3", [[1, 2, 3]]) == set()
 
 
-def test_a_set_omitted_by_one_pass_is_unjudged_not_disagreed():
-    """Pass 1 groups IBM's two names; pass 2 answers the set with only one
-    member. That is not a split vote: nothing is merged and no SAME_AS edge
-    is written. Both passes omitting the same member is not agreement either."""
-    graph = ScriptedGraph(ROWS)
-    stats, merge = _run(graph, ScriptedLLM([[IBM], "SET 1 GROUP: 1"]))
-    assert stats["merged"] == 0 and merge.groups == []
-    assert stats["linked"] == 0 and stats["disagreed_pairs"] == 0
-    assert not any("SAME_AS" in c[0] for c in graph.calls)
-    graph = ScriptedGraph(ROWS)
-    stats, merge = _run(graph, ScriptedLLM(["SET 1 GROUP: 1, 2", "SET 1 GROUP: 1, 2"]))
-    assert stats["merged"] == 0 and merge.groups == []
-
-
 def test_name_in_desc_pairs_caps_common_words():
     """A one-word name found in more descriptions than the cap is a common
     word, not an identifying mention; it nominates nothing."""
@@ -270,6 +256,33 @@ def _props_read(rows, params):
     return SimpleNamespace(result_set=[[props(k), props(d), labels(k), labels(d)]])
 
 
+def _knn_answer(rows, params, everyone_close=False):
+    """Answer the judge's batched ``db.idx.vector.queryNodes`` query from rows
+    ``(id, name, description, labels, aliases, embedding)``: each new entity's
+    top-``k`` by cosine over the stored name vectors, as ``[i, distance,
+    *node fields]``, itself excluded. ``everyone_close`` makes every other row
+    a neighbour at distance 0."""
+    out = []
+    for it in params["items"]:
+        v = np.asarray(it["v"], dtype=float)
+        scored = []
+        for r in rows:
+            if r[0] == it["id"]:
+                continue
+            if everyone_close:
+                scored.append((1.0, r))
+                continue
+            if not r[5]:
+                continue
+            e = np.asarray(r[5], dtype=float)
+            norm = np.linalg.norm(v) * np.linalg.norm(e)
+            scored.append((float(v @ e / norm) if norm else 0.0, r))
+        scored.sort(key=lambda t: -t[0])
+        for cos, r in scored[: params["k"] - 1]:
+            out.append([it["i"], 1.0 - cos, *(list(r) + [None, None])[:8]])
+    return SimpleNamespace(result_set=out)
+
+
 class ScriptedGraph:
     """Records every Cypher call; answers the entity fetch with fixed rows."""
 
@@ -279,10 +292,15 @@ class ScriptedGraph:
 
     async def query_raw(self, cypher, params=None):
         self.calls.append((cypher, params or {}))
+        if "SET e.embedding = vecf32" in cypher:
+            # the graph keeps the name vectors the judge writes; the index reads them
+            written = {it["id"]: it["v"] for it in params["items"]}
+            self.rows = [(*r[:5], written.get(r[0], r[5]), *r[6:]) for r in self.rows]
+            return SimpleNamespace(result_set=[])
+        if "db.idx.vector.queryNodes" in cypher:
+            return _knn_answer(self.rows, params)
         if "RETURN e.id, e.name, e.description" in cypher:
             return SimpleNamespace(result_set=list(self.rows))
-        if "SAME_AS" in cypher:
-            return SimpleNamespace(result_set=[[params["a"]]])
         return SimpleNamespace(result_set=[])
 
 
@@ -379,23 +397,13 @@ def _run(graph, llm, vote=True, **kw):
 def test_agreed_pair_is_handed_to_the_merge_hook_once():
     graph = ScriptedGraph(ROWS)
     # both passes: IBM == International Business Machines, Watson separate
-    llm = ScriptedLLM([[IBM], [IBM]])
+    llm = ScriptedLLM([[IBM]])
     stats, merge = _run(graph, llm)
-    # a single 3-member set was judged twice (vote)
-    assert stats["llm_calls"] == 2 and stats["merged"] == 1 and stats["linked"] == 0
+    # one pass: the IBM pair is judged once
+    assert stats["llm_calls"] == 1 and stats["merged"] == 1
     assert merge.groups == [["e1", "e2"]]
     # the judge writes no merge of its own
     assert not any("DETACH DELETE" in c[0] or "SET s." in c[0] for c in graph.calls)
-
-
-def test_disagreement_links_instead_of_merging():
-    graph = ScriptedGraph(ROWS)
-    llm = ScriptedLLM([[IBM], []])
-    stats, merge = _run(graph, llm)
-    assert stats["merged"] == 0 and stats["linked"] == 1 and stats["disagreed_pairs"] == 1
-    assert merge.groups == []
-    link = [c for c in graph.calls if "SAME_AS" in c[0]]
-    assert len(link) == 1 and {link[0][1]["a"], link[0][1]["b"]} == {"e1", "e2"}
 
 
 def test_no_vote_merges_on_single_pass():
@@ -405,73 +413,44 @@ def test_no_vote_merges_on_single_pass():
     assert stats["llm_calls"] == 1 and stats["merged"] == 1
 
 
-def test_failed_llm_call_merges_nothing_and_links_nothing():
-    """A set whose prompt failed in one pass was judged once, not twice. Its
-    pairs are not "disagreed": a rate limit must not manufacture a SAME_AS
-    edge recording a split vote that never took place."""
+def test_failed_llm_call_merges_nothing():
+    """A prompt that failed is not a verdict: nothing in it merges, and no
+    edge is written for it."""
     graph = ScriptedGraph(ROWS)
-    llm = ScriptedLLM([None, [IBM]])
+    llm = ScriptedLLM([None])
     stats, merge = _run(graph, llm)
     assert stats["llm_failed"] == 1 and stats["merged"] == 0 and merge.groups == []
-    assert stats["linked"] == 0 and stats["disagreed_pairs"] == 0
-    assert not any("SAME_AS" in c[0] for c in graph.calls)
-    # the other way round too: pass 1 answered, pass 2 failed
-    graph = ScriptedGraph(ROWS)
-    stats, merge = _run(graph, ScriptedLLM([[IBM], None]))
-    assert stats["merged"] == 0 and stats["linked"] == 0 and merge.groups == []
+    assert not any("SAME_AS" in c[0] or "DISTINCT_FROM" in c[0] for c in graph.calls)
 
 
-def test_agreements_are_unioned_within_one_set_only():
-    """A-B-C-D form one dense set, D-E straddles as its own 2-member set. Both
-    passes say A=B=C=D and D=E. A global union would fold all five, merging A
-    with E though the two were never shown to the model together; the set
-    the pair was judged in is kept, the cross-set pair becomes a link."""
-    names = ["Acme", "Acme Corp", "Acme Inc", "Acme Ltd", "Acme Group"]
-    rows = [(f"e{i}", n, f"desc {i}", ["Organization"], None, None) for i, n in enumerate(names)]
-    # name vectors: a chain where only neighbours are close enough (cos 0.83)
-    chain = {n: [np.cos(i * 0.6), np.sin(i * 0.6), 0.0] for i, n in enumerate(names)}
-    # one description edge A-C makes A-B-C-D dense enough (4 of 6 pairs);
-    # adding E through D-E would be 5 of 10 and is refused
-    desc = {f"desc {i}": v for i, v in enumerate(np.eye(4).tolist())}
-    desc["desc 2"] = desc["desc 0"]
-
-    class Emb(FakeEmbedder):
-        async def aembed_documents(self, texts, **kw):
-            return [chain.get(t) or self.table.get(t, [0.0, 0.0, 0.0]) for t in texts]
+def test_agreements_chain_across_sets_but_never_through_a_protected_pair():
+    """AAPL = "Apple Inc." judged in one set and "Apple Inc." = "Apple" in
+    another is one company: agreed pairs are unioned across sets. A union that
+    would put a protected pair into one group through a third member is
+    still refused."""
+    rows = [
+        ("a", "Apple", "Maker of the iPhone.", ["Organization"], None, [1.0, 0.0, 0.0]),
+        ("b", "Apple Inc.", "Cupertino company.", ["Organization"], None, [0.9, 0.44, 0.0]),
+        ("c", "AAPL", "Its stock rose.", ["Organization"], None, [0.62, 0.79, 0.0]),
+    ]
+    same = {"Apple", "Apple Inc.", "AAPL"}
+    graph = ScriptedGraph(rows)
+    merge = RecordingMerge()
+    dd = LLMJudgeDeduplicator(graph, FakeEmbedder({}), ScriptedLLM([[same]]), merge)
+    asyncio.run(dd.deduplicate())
+    assert merge.groups == [["a", "b", "c"]]
 
     graph = ScriptedGraph(rows)
     merge = RecordingMerge()
-    everything = set(names)
-    dd = LLMJudgeDeduplicator(graph, Emb(desc), ScriptedLLM([[everything], [everything]]), merge)
-    stats = asyncio.run(dd.deduplicate())
-    assert stats["sets"] == 2 and stats["agreed_pairs"] == 7  # 6 inside A-D, plus D-E
-    assert merge.groups == [["e0", "e1", "e2", "e3"]]  # E is not folded in
-    links = [c for c in graph.calls if "SAME_AS" in c[0]]
-    assert len(links) == 1 and stats["linked"] == 1
-    assert {links[0][1]["a"], links[0][1]["b"]} == {"e0", "e4"}  # survivor ~ E
-    assert links[0][1]["votes"] == 2  # both passes agreed, but across sets
-
-
-def test_a_missing_description_vector_does_not_abort_the_phase():
-    """The provider's retry helper returns ``[]`` for one text it could not
-    embed; a ragged list used to raise inside ``np.asarray`` and skip the whole
-    judge phase. The row is a zero vector, the other entities are judged."""
-
-    class Ragged(FakeEmbedder):
-        async def aembed_documents(self, texts, **kw):
-            return [[] if t == "Led IBM." else self.table.get(t, [0.0, 0.0, 1.0]) for t in texts]
-
-    graph = ScriptedGraph(ROWS)
-    llm = ScriptedLLM([[IBM], [IBM]])
-    dd = LLMJudgeDeduplicator(graph, Ragged(DESC_EMB), llm, RecordingMerge())
-    stats = asyncio.run(dd.deduplicate())
-    assert stats["merged"] == 1
+    dd = LLMJudgeDeduplicator(graph, FakeEmbedder({}), ScriptedLLM([[same]]), merge)
+    asyncio.run(dd.deduplicate(skip_pairs={frozenset(("a", "c"))}))
+    assert all(not {"a", "c"} <= set(g) for g in merge.groups)
+    assert not any("SAME_AS" in c[0] for c in graph.calls)
 
 
 def test_a_missing_description_is_not_replaced_by_the_name():
-    """Two description-less entities whose names sit between the two gates
-    (0.55 < cos < 0.65) used to be nominated through the description door
-    by embedding the name twice; the description door is closed to them."""
+    """Description-less entities are never embedded twice (the name standing
+    in for a missing description): only stored name vectors nominate."""
     rows = [
         ("a", "Acme", "", ["Organization"], None, [1.0, 0.0, 0.0]),
         ("b", "Acne", "", ["Organization"], None, [0.6, 0.8, 0.0]),  # cos = 0.60
@@ -485,10 +464,13 @@ def test_a_missing_description_is_not_replaced_by_the_name():
         return [[1.0, 0.0, 0.0] for _ in texts]
 
     embedder.aembed_documents = spy
-    dd = LLMJudgeDeduplicator(graph, embedder, ScriptedLLM([[], []]), RecordingMerge())
+    dd = LLMJudgeDeduplicator(graph, embedder, ScriptedLLM([[]]), RecordingMerge())
     stats = asyncio.run(dd.deduplicate())
-    assert stats["candidates"] == 0 and stats["llm_calls"] == 0
-    assert seen == []  # nothing to embed: names are stored, descriptions empty
+    # There is no description door any more: the pair is nominated by name
+    # alone (cos 0.60 is above the 0.5 neighbour floor), and nothing is
+    # embedded — names are stored, and descriptions are never embedded.
+    assert stats["candidates"] == 1 and stats["llm_calls"] == 1
+    assert seen == []
 
 
 def test_a_lone_named_entity_still_gets_its_name_vector():
@@ -561,54 +543,8 @@ def test_skip_pairs_are_not_nominated_linked_or_grouped_transitively():
     merge = RecordingMerge()
     dd = LLMJudgeDeduplicator(graph, FakeEmbedder(desc), ScriptedLLM([[same], [same]]), merge)
     stats = asyncio.run(dd.deduplicate(skip_pairs={frozenset(("b", "c"))}))
-    assert merge.groups == [["a", "b"]]
+    assert merge.groups in ([["a", "b"]], [["a", "c"]])
     assert stats["merged"] == 1
-    assert not any("SAME_AS" in c[0] for c in graph.calls)
-
-
-def test_links_are_one_per_surviving_pair_and_never_a_protected_pair():
-    """A~B agreed, A~C and B~C disagreed: after B folds into A both disagreed
-    pairs are the same edge, written and counted once. With A|C decided the
-    edge is not written at all."""
-    rows = [
-        ("a", "Acme", "Acme Corp, maker of anvils.", ["Organization"], None, [1.0, 0.0, 0.0]),
-        ("b", "Acme Corp", "Anvil maker.", ["Organization"], None, [0.98, 0.1, 0.0]),
-        ("c", "Acme Inc", "Anvils.", ["Organization"], None, [0.97, 0.15, 0.0]),
-    ]
-    desc = {
-        "Acme Corp, maker of anvils.": [1.0, 0.0, 0.0],
-        "Anvil maker.": [0.95, 0.2, 0.0],
-        "Anvils.": [0.95, 0.25, 0.0],
-    }
-    ab, everything = {"Acme", "Acme Corp"}, {"Acme", "Acme Corp", "Acme Inc"}
-    graph = ScriptedGraph(rows)
-    merge = RecordingMerge()
-    dd = LLMJudgeDeduplicator(graph, FakeEmbedder(desc), ScriptedLLM([[everything], [ab]]), merge)
-    stats = asyncio.run(dd.deduplicate())
-    assert merge.groups == [["a", "b"]] and stats["disagreed_pairs"] == 2
-    links = [c for c in graph.calls if "SAME_AS" in c[0]]
-    assert len(links) == 1 and stats["linked"] == 1
-    assert {links[0][1]["a"], links[0][1]["b"]} == {"a", "c"}
-
-    graph = ScriptedGraph(rows)
-    dd = LLMJudgeDeduplicator(
-        graph, FakeEmbedder(desc), ScriptedLLM([[everything], [ab]]), RecordingMerge()
-    )
-    stats = asyncio.run(dd.deduplicate(skip_pairs={frozenset(("a", "c"))}))
-    assert stats["linked"] == 0 and not any("SAME_AS" in c[0] for c in graph.calls)
-
-
-def test_a_failed_link_write_is_counted_as_not_linked_and_does_not_abort():
-    class FailingLinks(ScriptedGraph):
-        async def query_raw(self, cypher, params=None):
-            if "SAME_AS" in cypher:
-                self.calls.append((cypher, params or {}))
-                raise RuntimeError("write failed")
-            return await super().query_raw(cypher, params)
-
-    graph = FailingLinks(ROWS)
-    stats, _ = _run(graph, ScriptedLLM([[IBM], []]))
-    assert stats["disagreed_pairs"] == 1 and stats["linked"] == 0
 
 
 def test_exact_phase_joins_descriptions_and_records_aliases():
@@ -627,7 +563,7 @@ def test_exact_phase_joins_descriptions_and_records_aliases():
 
         async def query_raw(self, cypher, params=None):
             self.calls.append((cypher, params or {}))
-            if "RETURN e.id" in cypher and "SKIP" in cypher:
+            if "dedup_pending = true" in cypher:
                 return self.pages.pop(0) if self.pages else SimpleNamespace(result_set=[])
             if "properties(k), properties(d)" in cypher:
                 return _props_read(self.rows, params)
@@ -659,10 +595,15 @@ class _JudgeGraph:
 
     async def query_raw(self, cypher, params=None):
         self.calls.append((cypher, params or {}))
-        if "SKIP" in cypher:
-            # every phase re-reads the graph; one page, then the end
-            rows = self.page if params.get("offset", 0) == 0 else []
+        params = params or {}
+        if "dedup_pending = true" in cypher or "e.id > $last" in cypher:
+            # every entity is new to this run; one page, then the end
+            rows = self.page if not params.get("last") else []
             return SimpleNamespace(result_set=list(rows))
+        if "MATCH (e:__Entity__ {id: id}) WITH e" in cypher:
+            return SimpleNamespace(result_set=[r for r in self.page if r[0] in params["ids"]])
+        if "db.idx.vector.queryNodes" in cypher:
+            return _knn_answer(self.rows, params)
         if "RETURN e.id, e.name, e.description" in cypher:
             return SimpleNamespace(result_set=list(self.rows))
         if "DISTINCT_FROM" in cypher and "RETURN a.id, b.id" in cypher:
@@ -716,15 +657,6 @@ def test_judge_merges_through_absorb_and_unions_labels():
     assert not any("SET s:`" in c[0] and "DETACH DELETE" not in c[0] for c in g.calls)
 
 
-def test_judge_never_merges_a_pair_a_resolver_judged_distinct():
-    g = _JudgeGraph(distinct=[("e1", "e2")])
-    dd = EntityDeduplicator(g, FakeEmbedder(DESC_EMB))
-    n = asyncio.run(dd.deduplicate(judge_llm=ScriptedLLM([[IBM], [IBM]])))
-    assert n == 0 and dd.last_judge_stats["merged"] == 0
-    assert not any("DETACH DELETE" in c[0] for c in g.calls)
-    assert not any("SAME_AS" in c[0] for c in g.calls)
-
-
 def test_remap_queries_bind_survivor_before_merge():
     """An unbound ``(s {id})`` inside a path MERGE creates a stub node per
     edge (measured: 136 stubs from 24 merges). Every remap query must MATCH
@@ -751,30 +683,24 @@ ACME_DESC = {
 ACME = {"Acme", "Akme Corp", "Acme Industries"}
 
 
-def test_judged_group_honours_a_distinct_pair_between_two_losers():
-    """The resolver said a | c. The judge's grouping never puts them in one
-    set, but ``_merge_judged_group`` is the last line: handed all three with
-    b as survivor (long forms over the 4-letter "Acme"), it folds c into b and
-    must then not fold a onto a survivor that already holds c."""
-    g = _JudgeGraph(rows=ACME_ROWS)
-    dd = EntityDeduplicator(g, FakeEmbedder(ACME_DESC))
-    members = [{"id": r[0], "labels": r[3]} for r in ACME_ROWS]
-    entities = asyncio.run(dd._fetch_all_entities(500))
-    by_id = {e["id"]: e for e in entities}
-    surv, absorbed = asyncio.run(dd._merge_judged_group(members, by_id, {frozenset(("a", "c"))}))
-    assert surv == "b" and absorbed == {"c"}
-    deletes = [c[1]["dup_id"] for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
-    assert deletes == ["c"]
-
-
 def test_two_keyed_rows_are_not_asked_and_a_mention_between_them_is_not_moved():
     """The CI contract from structured ingestion: two rows keyed E-1 / E-2
     named 'Alice Smith' and a passage mentioning her. The exact phase leaves
     all three; the judge must spend no LLM call on them."""
+    # id, name, description, labels, aliases, embedding, descriptions, is_stub
     rows = [
-        ("alice__person", "Alice Smith", "Presented the plan", ["Person"], None, [1.0, 0.0, 0.0]),
-        ("e-1__person", "Alice Smith", "", ["Person"], None, [1.0, 0.0, 0.0]),
-        ("e-2__person", "Alice Smith", "", ["Person"], None, [1.0, 0.0, 0.0]),
+        (
+            "alice__person",
+            "Alice Smith",
+            "Presented the plan",
+            ["Person"],
+            None,
+            [1.0, 0.0, 0.0],
+            None,
+            None,
+        ),
+        ("e-1__person", "Alice Smith", "", ["Person"], None, [1.0, 0.0, 0.0], None, False),
+        ("e-2__person", "Alice Smith", "", ["Person"], None, [1.0, 0.0, 0.0], None, False),
     ]
     g = _JudgeGraph(rows=rows)
     # rows: is_stub False marks a keyed node
@@ -787,23 +713,6 @@ def test_two_keyed_rows_are_not_asked_and_a_mention_between_them_is_not_moved():
     assert n == 0 and llm.prompts == []
     assert dd.last_judge_stats["llm_calls"] == 0 and dd.last_judge_stats["candidates"] == 0
     assert not any("DETACH DELETE" in c[0] or "SAME_AS" in c[0] for c in g.calls)
-
-
-def test_a_failed_link_write_keeps_the_committed_merge_count():
-    """A merge committed before a SAME_AS write failed is a merge; the phase
-    reports it, and the failed link is not counted."""
-
-    class Boom(_JudgeGraph):
-        async def query_raw(self, cypher, params=None):
-            if "SAME_AS" in cypher:
-                raise RuntimeError("link storage down")
-            return await super().query_raw(cypher, params)
-
-    g = Boom(rows=ACME_ROWS)
-    ab = {"Acme", "Akme Corp"}
-    dd = EntityDeduplicator(g, FakeEmbedder(ACME_DESC))
-    n = asyncio.run(dd.deduplicate(judge_llm=ScriptedLLM([[ACME], [ab]])))
-    assert n == 1 and dd.last_judge_stats["merged"] == 1 and dd.last_judge_stats["linked"] == 0
 
 
 def test_absorb_refuses_a_label_that_is_not_an_identifier():
@@ -855,11 +764,20 @@ class _LabelledGraph(_JudgeGraph):
     async def query_raw(self, cypher, params=None):
         self.calls.append((cypher, params or {}))
         params = params or {}
-        if "SKIP" in cypher:
-            if params.get("offset", 0):
+        if "db.idx.vector.queryNodes" in cypher:
+            rows = [
+                (nid, n["name"], n["description"], list(n["labels"]), None, [1.0, 0.0, 0.0])
+                for nid, n in self.nodes.items()
+            ]
+            return _knn_answer(rows, params, everyone_close=True)
+        by_ids = "MATCH (e:__Entity__ {id: id}) WITH e" in cypher
+        if "dedup_pending = true" in cypher or "e.id > $last" in cypher or by_ids:
+            if params.get("last"):
                 return SimpleNamespace(result_set=[])
             rows = []
             for nid, n in self.nodes.items():
+                if by_ids and nid not in params["ids"]:
+                    continue
                 rows.append(
                     (
                         nid,
@@ -1012,30 +930,6 @@ def test_adoption_does_not_inherit_the_guesses_the_guess_absorbed():
     assert g.nodes["d"]["description"] == "Declared by the mapping. | Guessed from prose."
 
 
-def test_a_cross_set_link_without_the_vote_records_one_pass():
-    """With ``vote=False`` a straddling pair the single pass agreed on is
-    still linked rather than merged; ``agreement`` must say one pass saw it,
-    not the 2 that everywhere else means both passes agreed."""
-    names = ["Acme", "Acme Corp", "Acme Inc", "Acme Ltd", "Acme Group"]
-    rows = [(f"e{i}", n, f"desc {i}", ["Organization"], None, None) for i, n in enumerate(names)]
-    chain = {n: [np.cos(i * 0.6), np.sin(i * 0.6), 0.0] for i, n in enumerate(names)}
-    desc = {f"desc {i}": v for i, v in enumerate(np.eye(4).tolist())}
-    desc["desc 2"] = desc["desc 0"]
-
-    class Emb(FakeEmbedder):
-        async def aembed_documents(self, texts, **kw):
-            return [chain.get(t) or self.table.get(t, [0.0, 0.0, 0.0]) for t in texts]
-
-    graph = ScriptedGraph(rows)
-    merge = RecordingMerge()
-    dd = LLMJudgeDeduplicator(graph, Emb(desc), ScriptedLLM([[set(names)]]), merge, vote=False)
-    stats = asyncio.run(dd.deduplicate())
-    assert stats["llm_calls"] == 1 and stats["linked"] == 1 and stats["disagreed_pairs"] == 0
-    assert merge.groups == [["e0", "e1", "e2", "e3"]]
-    (link,) = [c for c in graph.calls if "SAME_AS" in c[0]]
-    assert {link[1]["a"], link[1]["b"]} == {"e0", "e4"} and link[1]["votes"] == 1
-
-
 def test_embedded_counts_only_vectors_on_nodes_still_here():
     """Every name is embedded before the judge merges; a vector written to a
     node the merge then deleted is not one the graph holds, so the count the
@@ -1081,33 +975,6 @@ def test_a_failed_legacy_vector_removal_does_not_abort_the_phase():
 
     stats, merge = _run(Graph(ROWS), ScriptedLLM([[IBM], [IBM]]))
     assert stats["merged"] == 1 and merge.groups == [["e1", "e2"]]
-
-
-def test_judge_phase_is_skipped_when_the_distinct_pairs_cannot_be_read(caplog):
-    """A failed ``DISTINCT_FROM`` read is not an empty protection set. The
-    judge phase makes no LLM call and merges nothing — the same rule
-    ``_absorb`` follows when it cannot read both nodes — and says so."""
-
-    class G(_JudgeGraph):
-        async def query_raw(self, cypher, params=None):
-            if "DISTINCT_FROM" in cypher and "RETURN a.id, b.id" in cypher:
-                self.calls.append((cypher, params or {}))
-                raise RuntimeError("read timed out")
-            return await super().query_raw(cypher, params)
-
-    g = G()
-    llm = ScriptedLLM([[IBM], [IBM]])
-    dd = EntityDeduplicator(g, FakeEmbedder(DESC_EMB))
-    with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.deduplicator"):
-        n = asyncio.run(dd.deduplicate(judge_llm=llm))
-    assert n == 0 and llm.prompts == []
-    assert dd.last_judge_stats == {"skipped_reason": "distinct_pairs_unavailable"}
-    assert not any("DETACH DELETE" in c[0] for c in g.calls)
-    assert not any("SAME_AS" in c[0] for c in g.calls)
-    assert any("phase 4 (judge) skipped" in r.message for r in caplog.records)
-    # the read was attempted, and the judge never read the graph
-    assert any("DISTINCT_FROM" in c[0] for c in g.calls)
-    assert not any("RETURN e.id, e.name, e.description" in c[0] for c in g.calls)
 
 
 def test_resolver_phase_is_skipped_when_the_distinct_pairs_cannot_be_read(caplog):

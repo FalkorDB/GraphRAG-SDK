@@ -435,9 +435,21 @@ class TestJudgeMergeSite:
 
         async def query_raw(self, cypher, params=None):
             self.calls.append((cypher, params or {}))
-            if "SKIP" in cypher:
-                rows = self.page if params.get("offset", 0) == 0 else []
+            if "dedup_pending = true" in cypher:
+                rows = self.page if not params.get("last") else []
                 return SimpleNamespace(result_set=list(rows))
+            if "MATCH (e:__Entity__ {id: id}) WITH e" in cypher:
+                return SimpleNamespace(result_set=[r for r in self.page if r[0] in params["ids"]])
+            if "db.idx.vector.queryNodes" in cypher:
+                # Every entity is every other's nearest neighbour (distance 0).
+                return SimpleNamespace(
+                    result_set=[
+                        [it["i"], 0.0, *row]
+                        for it in params["items"]
+                        for row in self.rows
+                        if row[0] != it["id"]
+                    ]
+                )
             if "RETURN e.id, e.name, e.description" in cypher:
                 return SimpleNamespace(result_set=list(self.rows))
             if "properties(k), properties(d)" in cypher:

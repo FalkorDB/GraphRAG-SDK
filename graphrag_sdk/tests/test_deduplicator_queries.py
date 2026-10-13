@@ -357,8 +357,8 @@ class TestMergePreservesDescriptions:
         graph = MagicMock()
 
         async def query_raw(q, params=None):
-            if "MATCH (e:__Entity__)" in q and "RETURN" in q and "SKIP" in q:
-                return _result(rows if params["offset"] == 0 else [])
+            if "MATCH (e:__Entity__)" in q and "RETURN" in q and "dedup_pending = true" in q:
+                return _result(rows if not params.get("last") else [])
             if "properties(k), properties(d)" in q:
                 return _props_read(rows, params, stored)
             if "DETACH DELETE" in q:
@@ -621,8 +621,8 @@ class TestFuzzyMerge:
         ]
 
         async def query_raw(q, params=None):
-            if "SKIP" in q:
-                return _result(rows if params["offset"] == 0 else [])
+            if "dedup_pending = true" in q or "e.id > $last" in q:
+                return _result(rows if not params.get("last") else [])
             if "properties(k), properties(d)" in q:
                 return _props_read(rows, params)
             if "DETACH DELETE" in q:
@@ -647,3 +647,57 @@ class TestFuzzyMerge:
             "aliases": ["J. Doe"],
         }
         assert "SET s.description = $desc, s.descriptions = $descs, s.aliases = $aliases" in q
+
+
+class TestPendingFlag:
+    """Only entities ingest flagged ``dedup_pending`` are read, and the flag is
+    removed from exactly those once the run ends."""
+
+    @staticmethod
+    def _graph(pending_rows, all_rows):
+        graph = MagicMock()
+
+        async def query_raw(q, params=None):
+            params = params or {}
+            if "dedup_pending = true" in q:
+                return _result(pending_rows if not params.get("last") else [])
+            if "WHERE e.id > $last" in q:
+                return _result(all_rows if not params.get("last") else [])
+            return _result([])
+
+        graph.query_raw = AsyncMock(side_effect=query_raw)
+        return graph
+
+    @staticmethod
+    def _clears(graph):
+        return [
+            c.args[1]["ids"]
+            for c in graph.query_raw.call_args_list
+            if "REMOVE e.dedup_pending" in c.args[0]
+        ]
+
+    async def test_only_the_flagged_entities_are_read_and_cleared(self):
+        graph = self._graph([["e2", "Beta", "", "Person"]], [])
+        dedup = EntityDeduplicator(graph, MagicMock())
+        await dedup.deduplicate()
+        assert self._clears(graph) == [["e2"]]
+        assert not any(
+            "WHERE e.id > $last" in c.args[0] and "pending" not in c.args[0]
+            for c in graph.query_raw.call_args_list
+        )
+
+    async def test_nothing_flagged_reads_nothing_more_and_writes_nothing(self):
+        graph = self._graph([], [["e1", "Alpha", "", "Person"]])
+        dedup = EntityDeduplicator(graph, MagicMock())
+        assert await dedup.deduplicate() == 0
+        assert self._clears(graph) == []
+        assert len(graph.query_raw.call_args_list) == 1  # the one pending read
+
+    async def test_dedup_all_reads_every_entity(self):
+        """A graph written before the flag existed has none; ``dedup_all``
+        checks every entity instead."""
+        rows = [["e1", "Alpha", "", "Person"], ["e2", "Beta", "", "Person"]]
+        graph = self._graph([], rows)
+        dedup = EntityDeduplicator(graph, MagicMock())
+        await dedup.deduplicate(dedup_all=True)
+        assert self._clears(graph) == [["e1", "e2"]]
