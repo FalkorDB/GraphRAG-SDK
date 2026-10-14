@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import SkillResult
-from graphrag_sdk.retrieval.graph_walk import score_path
+from graphrag_sdk.retrieval.graph_walk import gather_limited, score_path
 from graphrag_sdk.skills.base import ENTITY_PARAM, Skill, skill_parameters
 
 MAX_DEPTH = 5
 MAX_BEAM_WIDTH = 20
+#: Direct neighbours fetched for the entity itself (later hops keep the
+#: lookup's own default of the 50 strongest per entity).
+MAX_DIRECT_NEIGHBOURS = 1000
 
 
 class ImpactAnalysisSkill(Skill):
@@ -43,6 +45,14 @@ class ImpactAnalysisSkill(Skill):
         ["entity"],
     )
 
+    async def _neighbours(self, node: str, limit: int | None) -> list[tuple[str, float, str]]:
+        if limit is None:
+            return await self._graph.weighted_neighbors(node)
+        try:
+            return await self._graph.weighted_neighbors(node, limit=limit)
+        except TypeError:  # a graph store whose lookup takes no limit
+            return await self._graph.weighted_neighbors(node)
+
     async def run(self, ctx: Context | None = None, **params: Any) -> SkillResult:
         if not params.get("entity"):
             raise ValueError("impact_analysis requires 'entity'")
@@ -68,8 +78,12 @@ class ImpactAnalysisSkill(Skill):
                 break
             if ctx is not None:
                 ctx.ensure_budget(f"impact analysis hop {hop}")
-            fetched = await asyncio.gather(
-                *(self._graph.weighted_neighbors(nodes[-1]) for nodes, _ in frontier)
+            # The entity's own neighbours are fetched in full (up to
+            # MAX_DIRECT_NEIGHBOURS): they are the most directly impacted.
+            # Lookups run at most a few at a time (the connection pool).
+            limit = MAX_DIRECT_NEIGHBOURS if hop == 1 else None
+            fetched = await gather_limited(
+                [(lambda node=nodes[-1]: self._neighbours(node, limit)) for nodes, _ in frontier]
             )
             best: dict[str, tuple[float, list[str], list[float]]] = {}
             for (nodes, edge_weights), neighbours in zip(frontier, fetched):

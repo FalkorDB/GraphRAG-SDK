@@ -36,28 +36,48 @@ DEFAULT_MAX_UNCITED_CHARS = 280
 _MARKER_RE = re.compile(r"\[(\s*\d{1,3}(?:\s*[,;]\s*\d{1,3})*\s*)\]")
 _DIGIT_RE = re.compile(r"\d")
 #: Fenced code blocks (an unclosed fence runs to the end) and inline code.
-_CODE_RE = re.compile(r"```[\s\S]*?(?:```|\Z)|`[^`\n]*`")
+_CODE_RE = re.compile(r"```[\s\S]*?(?:```|\Z)|~~~[\s\S]*?(?:~~~|\Z)|`[^`\n]*`")
 #: Stands in for a removed marker until the whitespace around it is tidied.
 _REMOVED = "\x00"
-#: Words of a message that is only small talk (a greeting, thanks, an
-#: acknowledgement). Only such a message may get an uncited reply under the
-#: grounding gate; any other question needs evidence.
-_SMALL_TALK_WORDS = frozenset(
-    {
-        "hi", "hello", "hey", "hiya", "yo", "thanks", "thank", "thx", "ty", "you", "very",
-        "much", "so", "a", "lot", "ok", "okay", "k", "cool", "great", "nice", "good",
-        "morning", "afternoon", "evening", "night", "bye", "goodbye", "cheers", "yes",
-        "no", "sure", "please", "awesome", "perfect", "got", "it", "alright", "fine",
-        "welcome", "there", "again", "all", "right", "sounds", "that", "is",
-    }
+#: Whole small-talk phrases (greetings, thanks, acknowledgements, "how are
+#: you"). A message is small talk only when it is made of these phrases
+#: alone, so a question built from the same words ("Is that right?") is not.
+_SMALL_TALK_PHRASES = frozenset(
+    tuple(p.split())
+    for p in (
+        "hi", "hello", "hey", "hiya", "yo", "hi there", "hello there", "hey there",
+        "good morning", "good afternoon", "good evening", "good night",
+        "thanks", "thank you", "thx", "ty", "cheers", "many thanks",
+        "thanks a lot", "thanks so much", "thank you so much", "thank you very much",
+        "thanks again", "thank you again", "ok", "okay", "k", "cool", "great", "nice",
+        "awesome", "perfect", "fine", "alright", "all right", "got it", "sounds good",
+        "sounds great", "that is great", "that s great", "bye", "goodbye", "see you",
+        "you re welcome", "how are you", "how are you doing", "how is it going",
+        "how s it going", "what s up", "please",
+    )
 )  # fmt: skip
-_MAX_SMALL_TALK_WORDS = 6
+_MAX_SMALL_TALK_PHRASE = max(len(p) for p in _SMALL_TALK_PHRASES)
+_MAX_SMALL_TALK_WORDS = 8
 
 
 def is_small_talk(message: str) -> bool:
-    """Whether ``message`` is only a greeting, thanks or acknowledgement."""
-    words = re.findall(r"[a-z]+", (message or "").lower())
-    return 0 < len(words) <= _MAX_SMALL_TALK_WORDS and all(w in _SMALL_TALK_WORDS for w in words)
+    """Whether ``message`` is only greetings, thanks or acknowledgements.
+
+    The words must form whole phrases from the list ("thanks a lot, bye"),
+    not just appear in it.
+    """
+    words = re.findall(r"[a-z]+", (message or "").lower().replace("’", "'"))
+    if not 0 < len(words) <= _MAX_SMALL_TALK_WORDS:
+        return False
+    i = 0
+    while i < len(words):
+        for size in range(min(_MAX_SMALL_TALK_PHRASE, len(words) - i), 0, -1):
+            if tuple(words[i : i + size]) in _SMALL_TALK_PHRASES:
+                i += size
+                break
+        else:
+            return False
+    return True
 
 
 @dataclass

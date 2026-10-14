@@ -91,8 +91,9 @@ class GraphStore:
         # ``(label, property)`` pairs known to be range-indexed. Seeded from the
         # graph on first use, then extended as this instance creates indexes.
         self._indexed: set[tuple[str, str]] | None = None
-        # PageRank scores per (label, relationship type): (computed at, scores).
-        self._pagerank_cache: dict[tuple[str, str | None], tuple[float, dict[str, float]]] = {}
+        # PageRank scores per (label, relationship type):
+        # (computed at, connection topology version, scores).
+        self._pagerank_cache: dict[tuple[str, str | None], tuple[float, int, dict[str, float]]] = {}
 
     # ── Write Operations ─────────────────────────────────────────
 
@@ -909,9 +910,10 @@ class GraphStore:
             logger.warning(f"weighted_neighbors failed for {node_id}: {exc}")
             return []
 
-    #: Seconds a PageRank result is reused. The scores only rank walk
-    #: candidates, so a minute-old ranking is fine, and the whole-graph
-    #: computation is not repeated for every walk / impact analysis.
+    #: Seconds a PageRank result is reused while the graph keeps its shape. A
+    #: write through this store's connection that creates or deletes nodes or
+    #: relationships invalidates it at once; the age limit covers writers
+    #: elsewhere (another process). The scores only rank walk candidates.
     PAGERANK_CACHE_SECONDS = 60.0
 
     async def pagerank(
@@ -927,7 +929,8 @@ class GraphStore:
         procedure is unavailable (e.g. older FalkorDB) so callers can fall
         back to an unweighted walk. A result computed less than
         ``max_age_seconds`` ago (default :attr:`PAGERANK_CACHE_SECONDS`; ``0``
-        always recomputes) is reused; failures are not cached.
+        always recomputes) is reused when no node or relationship was created
+        or deleted through this connection since; failures are not cached.
         """
         if not entity_label.isidentifier():
             raise ValueError(f"Invalid entity_label for pagerank: {entity_label!r}")
@@ -940,9 +943,15 @@ class GraphStore:
         )
         max_age = self.PAGERANK_CACHE_SECONDS if max_age_seconds is None else max_age_seconds
         key = (entity_label, relationship_type)
+        version = getattr(self._conn, "topology_version", 0)
         cached = self._pagerank_cache.get(key)
-        if cached is not None and max_age > 0 and time.monotonic() - cached[0] < max_age:
-            return dict(cached[1])
+        if (
+            cached is not None
+            and max_age > 0
+            and cached[1] == version
+            and time.monotonic() - cached[0] < max_age
+        ):
+            return dict(cached[2])
         try:
             result = await self._conn.query(query)
             scores: dict[str, float] = {}
@@ -952,7 +961,7 @@ class GraphStore:
         except Exception as exc:
             logger.warning(f"pagerank unavailable: {exc}")
             return {}
-        self._pagerank_cache[key] = (time.monotonic(), scores)
+        self._pagerank_cache[key] = (time.monotonic(), version, scores)
         return dict(scores)
 
     # ── Statistics ────────────────────────────────────────────────

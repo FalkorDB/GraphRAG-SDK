@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from graphrag_sdk.core.connection import ConnectionConfig
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import RetrieverError
 from graphrag_sdk.core.models import (
@@ -395,3 +396,262 @@ async def test_pagerank_failure_is_not_cached():
     store = GraphStore(conn)
     assert await store.pagerank() == {}
     assert await store.pagerank() == {"a": 1.0}
+
+
+# ── Write keywords used as names are not writes ─────────────────
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        "MATCH (n) RETURN n.delete",
+        "MATCH (n {set: 1}) RETURN n.remove AS x",
+        "MATCH (n) RETURN n.`create`",
+        "MATCH (n) WHERE n.merge = $set RETURN n",
+        "MATCH (n) RETURN n.call",
+    ],
+)
+def test_write_keyword_as_a_name_is_read_only(cypher):
+    from graphrag_sdk.retrieval.agentic.cypher_guard import validate_read_query
+
+    assert validate_read_query(cypher) == [] and is_read_only_cypher(cypher)
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        "MATCH (n) SET n.x = 1 RETURN n",
+        "MATCH (n) SET n:Label RETURN n",
+        "MATCH (n)\nSET\nn.a = 1 RETURN n",
+        "MATCH (n) DETACH DELETE n RETURN 1",
+        "MATCH (n) REMOVE n:L RETURN n",
+        "MATCH (n) FOREACH (x IN [1] | SET n.a = 1) RETURN n",
+        "MATCH (n) CALL db.labels() YIELD label RETURN label",
+        "MATCH (n) WITH n MERGE (m:A) RETURN m",
+        "MATCH (n) // x\nCREATE (m) RETURN n",
+        'MATCH (n) LOAD CSV FROM "x" AS l RETURN l',
+    ],
+)
+def test_real_writes_are_still_refused(cypher):
+    from graphrag_sdk.retrieval.agentic.cypher_guard import validate_read_query
+
+    assert validate_read_query(cypher) and not is_read_only_cypher(cypher)
+
+
+# ── Third round ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Is that right?", False),
+        ("yes it is", False),
+        ("Is it fine?", False),
+        ("how are you?", True),
+        ("Thanks a lot, bye!", True),
+        ("Hi there, how’s it going?", True),
+        ("good morning", True),
+    ],
+)
+def test_small_talk_is_whole_phrases(message, expected):
+    assert is_small_talk(message) is expected
+
+
+def test_tilde_fenced_code_is_untouched():
+    g = ground_answer("Example [1]:\n~~~\nx = y[9]\n~~~", ledger(1), tools_called=True)
+    assert g.answer == "Example [1]:\n~~~\nx = y[9]\n~~~" and g.invalid == []
+
+
+async def test_budget_running_out_mid_run_says_so():
+    from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+
+    class OutOfTime(ScriptedLLM):
+        async def ainvoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+            if self._i == 1:
+                raise LatencyBudgetExceededError("out of time")
+            return await super().ainvoke(prompt, **kwargs)
+
+    llm = OutOfTime(['Action: search\nAction Input: {"query": "q"}'])
+    agent = AgenticRetrieval(llm, strategy=BigStrategy(10), mode="react")
+    md = (await agent.search("q", Context())).metadata
+    assert md["num_steps"] == 1  # a tool ran before the budget ran out
+    assert md["answer"] == DEFAULT_TIMEOUT_ANSWER
+    assert md["stop_reason"] == "budget_exceeded"
+
+
+async def test_timeout_answer_reports_budget_exceeded_as_stop_reason():
+    # The budget runs out just after the last allowed tool call: the loop
+    # stops on max_tool_calls with no answer; the reason must say why.
+    class Clock(Context):
+        calls = 0
+
+        @property
+        def budget_exceeded(self) -> bool:
+            return Clock.calls >= 1
+
+    class CountingStrategy(BigStrategy):
+        async def search(self, query, ctx, **kwargs):
+            Clock.calls += 1
+            return await super().search(query, ctx, **kwargs)
+
+    limits = AgentLimits(max_tool_calls=1)
+    llm = ToolCallingLLM([LLMResponse(content="", tool_calls=[call("search", query="q")])])
+    agent = AgenticRetrieval(llm, strategy=CountingStrategy(10), limits=limits)
+    md = (await agent.search("q", Clock())).metadata
+    assert md["answer"] == DEFAULT_TIMEOUT_ANSWER
+    assert md["stop_reason"] == "budget_exceeded"
+
+
+@pytest.mark.parametrize(
+    ("question", "entity"),
+    [
+        ("Amazon's revenue", True),
+        ("Amazon’s revenue", True),
+        ("OpenAI products", True),
+        ("who founded GitHub", True),
+        ("WHAT is weather?", False),
+        ("HOW many people?", False),
+    ],
+)
+async def test_router_entity_detection_round_three(question, entity):
+    plan = await HeuristicPathRouter().plan(question)
+    assert ({"entity_cypher", "entity_fulltext"} <= plan) is entity
+
+
+async def test_walk_limits_concurrent_lookups():
+    active = 0
+    peak = 0
+
+    async def neighbours(node: str):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.005)
+        active -= 1
+        return [(f"{node}.{i}", 1.0, "R") for i in range(40)] if node == "s" else []
+
+    walk = DynamicGraphWalk(neighbours, beam_width=40, max_depth=2, max_concurrency=5)
+    await walk.beam_search("s")
+    assert peak == 5
+
+
+async def test_impact_reports_more_than_fifty_direct_neighbours():
+    from graphrag_sdk.skills.impact_analysis import ImpactAnalysisSkill
+
+    class Store:
+        async def weighted_neighbors(self, node_id, *, limit=50):
+            hub = [(f"n{i:03d}", 1.0, "R") for i in range(120)]
+            return hub[:limit] if node_id == "root" else []
+
+        async def pagerank(self, **kwargs):
+            return {}
+
+    skill = ImpactAnalysisSkill(Store())
+
+    async def resolve(ref):
+        return ref
+
+    skill._resolve_entity = resolve  # type: ignore[method-assign]
+    skill._summarize = AsyncMockSummary()  # type: ignore[method-assign]
+    result = await skill.run(Context(), entity="root", max_depth=1)
+    assert result.data["num_impacted"] == 120
+
+
+class AsyncMockSummary:
+    async def __call__(self, ctx, prompt):
+        return ""
+
+
+async def test_pagerank_cache_is_dropped_when_the_graph_changes_shape():
+    from graphrag_sdk.core.connection import FalkorDBConnection
+
+    conn = FalkorDBConnection.__new__(FalkorDBConnection)
+    conn.topology_version = 0
+    calls = 0
+
+    async def query(cypher, params=None, **kwargs):
+        nonlocal calls
+        calls += 1
+        return MagicMock(result_set=[["a", 0.5]])
+
+    conn.query = query  # type: ignore[method-assign]
+    store = GraphStore(conn)
+    await store.pagerank()
+    await store.pagerank()
+    assert calls == 1
+    conn.topology_version += 1  # a write created or deleted nodes/edges
+    await store.pagerank()
+    assert calls == 2
+
+
+def test_connection_counts_topology_changes():
+    from graphrag_sdk.core.connection import _changes_topology
+
+    assert _changes_topology(
+        MagicMock(
+            nodes_created=1, nodes_deleted=0, relationships_created=0, relationships_deleted=0
+        )
+    )
+    assert _changes_topology(
+        MagicMock(
+            nodes_created=0, nodes_deleted=0, relationships_created=0, relationships_deleted=2
+        )
+    )
+    assert not _changes_topology(
+        MagicMock(
+            nodes_created=0, nodes_deleted=0, relationships_created=0, relationships_deleted=0
+        )
+    )
+
+
+async def test_queries_that_change_the_graph_shape_bump_the_version():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from graphrag_sdk.core.connection import FalkorDBConnection
+
+    def result(**stats):
+        base = dict.fromkeys(
+            ("nodes_created", "nodes_deleted", "relationships_created", "relationships_deleted"), 0
+        )
+        return MagicMock(**{**base, **stats})
+
+    conn = FalkorDBConnection(ConnectionConfig())
+    graph = MagicMock()
+    conn._graph = graph
+    conn._ensure_client = lambda: None  # type: ignore[method-assign]
+    conn.config = SimpleNamespace(query_timeout_ms=1000, retry_count=1, retry_delay=0)
+
+    graph.query = AsyncMock(return_value=result(nodes_created=2))
+    await conn.query("CREATE (:A)")
+    assert conn.topology_version == 1
+    graph.query = AsyncMock(return_value=result())  # SET / MATCH: shape unchanged
+    await conn.query("MATCH (n) SET n.x = 1")
+    assert conn.topology_version == 1
+    graph.ro_query = AsyncMock(return_value=result(nodes_created=5))
+    await conn.query("MATCH (n) RETURN n", read_only=True)
+    assert conn.topology_version == 1
+    graph.query = AsyncMock(return_value=result(relationships_deleted=1))
+    await conn.query("MATCH ()-[r]->() DELETE r")
+    assert conn.topology_version == 2
+
+
+async def test_impact_works_with_a_store_without_a_limit_argument():
+    from graphrag_sdk.skills.impact_analysis import ImpactAnalysisSkill
+
+    class Store:
+        async def weighted_neighbors(self, node_id):
+            return [("a", 1.0, "R")] if node_id == "root" else []
+
+        async def pagerank(self, **kwargs):
+            return {}
+
+    skill = ImpactAnalysisSkill(Store())
+
+    async def resolve(ref):
+        return ref
+
+    skill._resolve_entity = resolve  # type: ignore[method-assign]
+    skill._summarize = AsyncMockSummary()  # type: ignore[method-assign]
+    result = await skill.run(Context(), entity="root", max_depth=2)
+    assert result.data["num_impacted"] == 1

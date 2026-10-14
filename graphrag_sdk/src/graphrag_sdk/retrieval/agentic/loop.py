@@ -422,6 +422,7 @@ class AgenticRetrieval(RetrievalStrategy):
         ):
             # Out of time before any answer: say so rather than "not found".
             ctx.log("Agentic loop ended without an answer: latency budget exhausted")
+            trace.stop_reason = "budget_exceeded"
             grounded = GroundedAnswer(DEFAULT_TIMEOUT_ANSWER, "", False, "budget_exceeded")
         else:
             grounded = self._ground(trace.answer, tctx, trace, query)

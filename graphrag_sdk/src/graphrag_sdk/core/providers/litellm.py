@@ -276,8 +276,9 @@ class LiteLLM(LLMInterface):
         """``False`` only when LiteLLM's model map says the model has no
         function calling (``supports_function_calling: false``). A model the
         map does not know stays ``True``: many deployments (Azure, local
-        servers) are unmapped yet support tools, and the agent falls back to
-        ReAct when a model rejects the first native tool call.
+        servers) are unmapped yet support tools, and in ``mode="auto"`` the
+        agent falls back to ReAct when a model rejects its first native tool
+        call (``mode="native"`` raises).
         """
         try:
             import litellm

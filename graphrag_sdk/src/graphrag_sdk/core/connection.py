@@ -71,6 +71,22 @@ class ConnectionConfig:
         )
 
 
+def _changes_topology(result: Any) -> bool:
+    """Whether a query result reports nodes or relationships created or deleted."""
+    for stat in (
+        "nodes_created",
+        "nodes_deleted",
+        "relationships_created",
+        "relationships_deleted",
+    ):
+        try:
+            if int(getattr(result, stat, 0) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
 class FalkorDBConnection:
     """Async-only FalkorDB connection using the native async client.
 
@@ -94,6 +110,10 @@ class FalkorDBConnection:
         self._driver: Any | None = None
         self._graph: Any | None = None
         self._breaker = CircuitBreaker()
+        #: Bumped by every query through this connection that creates or
+        #: deletes nodes or relationships (and by ``delete_graph``), so
+        #: caches of graph-shape results (PageRank) know when they are stale.
+        self.topology_version = 0
 
     def _ensure_client(self) -> None:
         """Lazy-init the async FalkorDB driver and graph handle."""
@@ -209,6 +229,8 @@ class FalkorDBConnection:
                 run = self._graph.ro_query if read_only else self._graph.query
                 result = await run(cypher, params=params, timeout=effective_timeout)
                 await self._breaker.record_success()
+                if not read_only and _changes_topology(result):
+                    self.topology_version = getattr(self, "topology_version", 0) + 1
                 return result
             except Exception as exc:
                 last_exc = exc
@@ -350,6 +372,7 @@ class FalkorDBConnection:
         from redis.asyncio import Redis
 
         redis: Redis = Redis(connection_pool=self._pool)
+        self.topology_version = getattr(self, "topology_version", 0) + 1
         try:
             await redis.execute_command("GRAPH.DELETE", self.config.graph_name)
             logger.info("Deleted graph '%s' via GRAPH.DELETE", self.config.graph_name)

@@ -16,8 +16,13 @@ from graphrag_sdk.core.models import RESERVED_NODE_LABELS, Ontology
 
 logger = logging.getLogger(__name__)
 
+#: Write clauses and procedure calls. A keyword used as a name — after a
+#: ``.`` (``n.delete``), inside backticks, as a ``$parameter`` or as a map
+#: key (``{set: 1}``) — is not a clause; the database also runs these
+#: queries read-only (``GRAPH.RO_QUERY``).
 _WRITE_RE = re.compile(
-    r"\b(create|merge|delete|detach|set|remove|drop|foreach|call|load\s+csv)\b",
+    r"(?<![.\w`$])\b(create|merge|delete|detach|set|remove|drop|foreach|call|load\s+csv)\b"
+    r"(?![\w`]|\s*:)",
     re.IGNORECASE,
 )
 _READ_START = ("MATCH", "OPTIONAL MATCH", "UNWIND", "WITH", "RETURN")

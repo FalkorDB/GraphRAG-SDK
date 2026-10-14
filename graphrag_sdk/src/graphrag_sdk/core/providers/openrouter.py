@@ -263,8 +263,8 @@ class OpenRouterLLM(LLMInterface):
     @property
     def supports_tool_calling(self) -> bool:
         """Always ``True``: OpenRouter's per-model tool support is not known
-        locally. The agent falls back to ReAct when a model rejects the
-        first native tool call."""
+        locally. In ``mode="auto"`` the agent falls back to ReAct when a model
+        rejects its first native tool call; ``mode="native"`` raises."""
         return True
 
     async def ainvoke_with_tools(

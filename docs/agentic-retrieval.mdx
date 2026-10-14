@@ -78,7 +78,7 @@ Before an answer is declared ungrounded, the agent gets one **citation repair**:
 | `"annotate"` | kept, with `metadata["grounded"] = False` |
 | `"off"` | not checked |
 
-The gate checks that the answer rests on real evidence — one valid citation is enough — not that every sentence carries one. Short conversational replies to small talk ("hi", "thanks") that called no tools and state no figures ("Hello!", "You're welcome") pass without a citation; a factual question answered from memory without a tool call does not, and an empty answer never does. Bracketed numbers that are not citations, such as `[2024]` or `items[0]`, are left alone, as is anything inside inline code or a code block. A tool's "No results" message is not evidence and cannot be cited. The model's original text is always in `metadata["raw_answer"]`.
+The gate checks that the answer rests on real evidence — one valid citation is enough — not that every sentence carries one. Short conversational replies to small talk — a message made only of greetings, thanks or acknowledgements such as "hi", "thanks a lot", "how are you" — that called no tools and state no figures ("Hello!", "You're welcome") pass without a citation; a factual question answered from memory without a tool call does not, and an empty answer never does. Bracketed numbers that are not citations, such as `[2024]` or `items[0]`, are left alone, as is anything inside inline code or a code block. A tool's "No results" message is not evidence and cannot be cited. The model's original text is always in `metadata["raw_answer"]`.
 
 ## Limits
 
@@ -96,7 +96,7 @@ agent = rag.agentic_retrieval(limits=AgentLimits(max_steps=8, max_tool_calls=16,
 | `max_tool_calls` | 12 | tool calls in the whole run |
 | `max_calls_per_turn` | 4 | calls run from one model response |
 | `max_observation_chars` | 24000 | text of one tool result sent to the model (fits one search's passages) |
-| `max_total_observation_chars` | 96000 | text of all tool results the conversation carries; beyond it the oldest are shortened (the newest stays whole) |
+| `max_total_observation_chars` | 96000 | target for the text of all tool results the conversation carries: beyond it the oldest are shortened, each to at least 400 characters plus a truncation note, and the newest stays whole — so the total can end up somewhat above it |
 | `max_history_turns` | 5 | earlier exchanges kept |
 | `search_max_items` / `search_max_limit` | 40 / 50 | search results / retrieval-limit arguments |
 | `query_max_rows` / `query_timeout_ms` / `query_attempts` | 25 / 5000 / 3 | `query_graph` |

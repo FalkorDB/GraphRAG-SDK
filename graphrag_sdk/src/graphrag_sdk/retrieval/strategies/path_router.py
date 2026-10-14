@@ -58,7 +58,9 @@ _LEADING_WORDS = frozenset(
 _QUOTED_RE = re.compile(r"[\"“”]|(?<!\w)'[^'\n]+'(?!\w)")
 #: A name after the first word: Capitalized, ALL-CAPS (2+ chars) or mixed
 #: case (iPhone, eBay).
-_NAME_RE = re.compile(r"\b(?:[A-Z][a-z]+|[A-Z][A-Z0-9]+|[a-z]+[A-Z]\w*)\b")
+_NAME_RE = re.compile(r"\b(?:[A-Z][a-z]+[A-Z]\w*|[A-Z][a-z]+|[A-Z][A-Z0-9]+|[a-z]+[A-Z]\w*)\b")
+#: A trailing possessive: Amazon's, Amazon’s, the Smiths'.
+_POSSESSIVE_RE = re.compile(r"(?:['’]s|s['’])$")
 
 
 def _names_an_entity(text: str) -> bool:
@@ -68,15 +70,11 @@ def _names_an_entity(text: str) -> bool:
     parts = text.split(maxsplit=1)
     if not parts:
         return False
-    first = re.sub(r"\W+$", "", parts[0])
-    # The first word is capitalized by grammar: a Capitalized question or
-    # command word is not a name; any other name-shaped first word is.
-    sentence_cased = first[:1].isupper() and first[1:].islower()
-    if (
-        len(first) > 1
-        and _NAME_RE.fullmatch(first)
-        and not (sentence_cased and first.lower() in _LEADING_WORDS)
-    ):
+    first = _POSSESSIVE_RE.sub("", re.sub(r"\W+$", "", parts[0]))
+    # The first word is capitalized by grammar: a question or command word
+    # (Capitalized or ALL-CAPS) is not a name; any other name-shaped first
+    # word is.
+    if len(first) > 1 and _NAME_RE.fullmatch(first) and first.lower() not in _LEADING_WORDS:
         return True
     rest = parts[1] if len(parts) > 1 else ""
     return bool(_NAME_RE.search(rest))
