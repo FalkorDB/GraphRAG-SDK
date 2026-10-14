@@ -330,6 +330,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/*.md` to `docs/*.mdx`, navigation is declared in `docs/docs.json`, and
   `mkdocs.yml` plus the GitHub Pages deploy workflow were removed in favour of
   MDX/link validation in CI.
+- GraphRAG SDK now depends on `falkordb[hiredis]>=1.8.0`, which installs the
+  `hiredis` C reply parser. Retrieval reads each chunk's embedding back to
+  rerank, and parsing those replies in pure Python was most of the client's
+  CPU per question: about 48 ms down to 11 ms in our tests, so one process
+  serves more concurrent questions.
 
 ### Fixed
 - `delete_all()` forgot to reset the memo for the per-label `id` range
