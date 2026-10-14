@@ -539,29 +539,23 @@ After all documents have been ingested, run post-ingestion steps to deduplicate 
 
 ### `finalize()` -- All-In-One
 
-The recommended approach is to call `finalize()` after all ingestion is complete. It bundles four steps in order:
+The recommended approach is to call `finalize()` after all ingestion is complete. It bundles five steps in order:
 
-1. `deduplicate_entities()` -- global exact-name deduplication.
-2. `backfill_entity_embeddings()` -- embed entity names for vector search.
-3. `embed_relationships()` -- embed fact text on RELATES edges.
-4. `ensure_indices()` -- create all 5 standard indexes (idempotent).
+1. Remove NULL-name stub entities left by legacy writes (only nodes no mapping wrote).
+2. `deduplicate_entities()` -- incremental: entities added since the last `finalize()` get exact-name dedup, then one LLM judge pass over their nearest names in the whole graph. A second `finalize()` with nothing pending does no dedup work (an entity whose check failed stays pending and is retried, up to 3 runs); `finalize(dedup_all=True)` checks every entity (once, for a graph built before the `dedup_pending` flag existed).
+3. `backfill_entity_embeddings()` -- embed entity names for vector search.
+4. `embed_relationships()` -- embed fact text on RELATES edges.
+5. `ensure_indices()` -- create all 5 standard indexes (idempotent).
 
 ```python
 # After ingesting all documents:
-stats = await rag.finalize()
-print(stats)
-# {
-#     "entities_deduplicated": 142,
-#     "entities_embedded": 3200,
-#     "relationships_embedded": 8500,
-#     "indexes": {
-#         "vector_Chunk": True,
-#         "vector___Entity__": True,
-#         "vector_RELATES": True,
-#         "fulltext_Chunk": True,
-#         "fulltext___Entity__": True,
-#     },
-# }
+stats = await rag.finalize()  # a FinalizeResult model, not a dict
+print(stats.entities_deduplicated)   # 142
+print(stats.entities_embedded)       # 3200
+print(stats.relationships_embedded)  # 8500
+print(stats.indexes)
+# {"vector_Chunk": True, "vector___Entity__": True, "vector_RELATES": True,
+#  "fulltext_Chunk": True, "fulltext___Entity__": True}
 ```
 
 A synchronous convenience method is also available:
@@ -576,9 +570,9 @@ Call this when you need fine-grained control over deduplication.
 
 ```python
 merged_count = await rag.deduplicate_entities(
-    fuzzy=False,                  # True to also run embedding-based dedup
-    similarity_threshold=0.95,    # cosine threshold for fuzzy matching
     batch_size=500,               # entities per query batch
+    judge=False,                  # True to also run the LLM-judged phase
+    dedup_all=False,              # True to check every entity, not only new ones
 )
 ```
 
@@ -586,13 +580,16 @@ merged_count = await rag.deduplicate_entities(
 
 | Parameter              | Type    | Default | Description                                                         |
 |------------------------|---------|---------|---------------------------------------------------------------------|
-| `fuzzy`                | `bool`  | `False` | If `True`, runs a second fuzzy dedup phase using embedding similarity.|
-| `similarity_threshold` | `float` | `0.95`  | Cosine similarity threshold for fuzzy matching.                     |
 | `batch_size`           | `int`   | `500`   | Entities per query batch.                                           |
+| `judge`                | `bool`  | `False` | Run the LLM-judged phase (on by default in `finalize()`).           |
+| `judge_llm`            | `LLMInterface \| None` | `None` | Judge model; defaults to the instance's `llm`.        |
+| `dedup_all`            | `bool`  | `False` | Check every entity, not only those flagged since the last run.      |
 
-**Phase 1 (always runs): Exact name match.** Groups entities by canonical name (case, accents, punctuation and a leading English article folded; `A.I.` = `AI`; `Surname, Given` un-inverted; common abbreviations expanded; one trailing legal form such as `Ltd` or `Inc` dropped) and label to prevent cross-type merging. An acronym joins its long form when exactly one same-label entity spells its initials (`AIHS` / `Ashford Island Historical Society`). The survivor is the node whose id came from a declared table key, then a real node over a placeholder, then the long form over an acronym, then the best-connected entity (most RELATES and MENTIONED_IN edges), then the longest description. The duplicate's description is appended to the survivor's with `" | "`, its name is recorded in the survivor's `aliases`, its `source_chunk_ids` are unioned in, any property the survivor lacks is copied over, and its RELATES and MENTIONED_IN edges are remapped before it is deleted.
+Only entities flagged `dedup_pending` since the last run are checked (pass `dedup_all=True` to check every entity); the flag is removed when the run ends, except on an entity whose check did not complete (a failed lookup, judge call or merge write, an answer that was not a full partition, or no name vector), which the next run retries, up to 3 runs.
 
-**Phase 2 (optional, `fuzzy=True`): Embedding-based match.** Re-fetches all surviving entities, batch-embeds their names, computes pairwise cosine similarity in memory-efficient blocks (1000 entities per block), and merges near-duplicates above the threshold.
+**Phase 1 (always runs): Exact name match.** Groups the new entities and their nearest names from the vector index by canonical name (case, accents, punctuation and a leading English article folded; `A.I.` = `AI`; `Surname, Given` un-inverted; common abbreviations expanded; one trailing legal form such as `Ltd` or `Inc` dropped) and label to prevent cross-type merging. An acronym joins its long form when exactly one same-label entity spells its initials (`AIHS` / `Ashford Island Historical Society`). The survivor is the node whose id came from a declared table key, then a real node over a placeholder, then the long form over an acronym, then the best-connected entity (most RELATES and MENTIONED_IN edges), then the longest description, then the longest name. A group of extracted mentions only goes to the judge instead when it runs (`judge=True`, the `finalize()` default). The duplicate's description is appended to the survivor's with `" | "`, its name is recorded in the survivor's `aliases`, its `source_chunk_ids` are unioned in, any property the survivor lacks is copied over, and its RELATES and MENTIONED_IN edges are remapped before it is deleted.
+
+**Phase 2 (optional, `judge=True`): LLM-judged match.** Each new entity's nearest names from the vector index form small candidate sets; the judge model partitions each set once, and agreed groups merge by the Phase 1 rules. See [Storage](/storage).
 
 ### `backfill_entity_embeddings()` -- Entity Vector Backfill
 

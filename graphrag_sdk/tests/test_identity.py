@@ -1,8 +1,9 @@
 """Near-miss identity: finding the pairs exact matching cannot, and acting on them.
 
-The join between a table row and a prose mention is exact string equality on the
-display name. Real sources disagree about spelling, so the interesting failure is
-not a wrong merge — it is two nodes that should have been one, with no warning.
+The join between a table row and a prose mention is the canonical name. Real
+sources disagree about spelling in ways it cannot unify, so the interesting
+failure is not a wrong merge — it is two nodes that should have been one, with
+no warning.
 """
 
 from __future__ import annotations
@@ -176,6 +177,33 @@ class TestTheScanIsBlockedNotQuadratic:
 
 
 class TestFinalizeReports:
+    async def test_a_near_miss_with_an_entity_from_an_earlier_finalize_is_reported(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """ "M. Ellison" was finalized before the HR table arrived, so only the
+        row is new. It is no exact match for the row, but it is among the row's
+        nearest names, and that is enough to be reported."""
+        rag = real_falkordb_rag_factory(
+            llm=llm,
+            resolver=resolver,
+            ontology=Ontology(entities=[Entity(label="Person")], tables=[_HR]),
+        )
+        await rag.query(
+            "CREATE (:__Entity__:Person {id:'m_ellison__person', name:'M. Ellison', "
+            "description:'an engineer who led the remediation plan', dedup_pending: true})"
+        )
+        await rag.finalize(judge=False)
+        path = tmp_path / "hr.csv"
+        path.write_text("employee_id,full_name,age\nE-1,Maya Ellison,34\n")
+        await rag.ingest(str(path))
+
+        summary = await rag.finalize(judge=False)
+
+        assert any(
+            "Maya Ellison" in line and "M. Ellison" in line for line in summary.probable_duplicates
+        ), summary.probable_duplicates
+        await rag.close()
+
     async def test_a_near_miss_is_reported_and_not_merged(
         self, real_falkordb_rag_factory, llm, resolver, tmp_path, caplog
     ):
@@ -184,16 +212,18 @@ class TestFinalizeReports:
             resolver=resolver,
             ontology=Ontology(entities=[Entity(label="Person")], tables=[_HR]),
         )
+        # Written by hand, so flag it the way ingest flags a new entity.
         await rag.query(
             "CREATE (:__Entity__:Person {id:'m_ellison__person', name:'M. Ellison', "
-            "description:'an engineer who led the remediation plan'})"
+            "description:'an engineer who led the remediation plan', dedup_pending: true})"
         )
         path = tmp_path / "hr.csv"
         path.write_text("employee_id,full_name,age\nE-1,Maya Ellison,34\n")
         await rag.ingest(str(path))
 
+        # No judge: this is about what the name rule alone does with the pair.
         with caplog.at_level(logging.WARNING):
-            summary = await rag.finalize()
+            summary = await rag.finalize(judge=False)
 
         assert any(
             "Maya Ellison" in line and "M. Ellison" in line for line in summary.probable_duplicates
@@ -202,7 +232,7 @@ class TestFinalizeReports:
 
         # Reported, not merged. Two nodes are recoverable; a merge is not, and
         # a merge would not even hold — the next extraction recreates the node
-        # it deleted. The fix is the spelling in the source.
+        # it deleted. The fix is the spelling in the source, or the judge.
         people = await rag.query("MATCH (p:Person) RETURN count(p)")
         assert people[0][0] == 2
         await rag.close()
@@ -481,7 +511,8 @@ class TestTheJoinAgainstARealGraph:
         )
         await rag.query(
             "CREATE (:__Entity__:Organization {id:'globex_limited__organization', "
-            "name:'Globex Limited', description:'the grid operator named in the review'})"
+            "name:'Globex Limited', description:'the grid operator named in the review', "
+            "dedup_pending: true})"
         )
         path = tmp_path / "orgs.csv"
         path.write_text("org_id,org_name,employee_count\nG-1,Globex Ltd,240\n")

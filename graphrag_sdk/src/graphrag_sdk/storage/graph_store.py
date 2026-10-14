@@ -23,7 +23,7 @@ from graphrag_sdk.core.models import (
     GraphRelationship,
 )
 from graphrag_sdk.storage.deduplicator import _REMAP_QUERIES, properties_to_carry
-from graphrag_sdk.storage.judge_dedup import LEGACY_DESC_KEYS
+from graphrag_sdk.storage.judge_dedup import DEDUP_ATTEMPTS_KEY, DEDUP_PENDING_KEY
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 
@@ -221,6 +221,9 @@ class GraphStore:
                 query = f"UNWIND $batch AS item MERGE (n:`{safe_label}` {{id: item.id}}) "
                 if is_entity:
                     query += (
+                        # New to the graph: the next finalize checks it for
+                        # duplicates, then removes the flag.
+                        f"ON CREATE SET n.{DEDUP_PENDING_KEY} = true "
                         "WITH n, item, "
                         "     coalesce(n.source_chunk_ids, []) AS old, "
                         "     coalesce(item.properties.source_chunk_ids, []) AS contrib "
@@ -245,6 +248,7 @@ class GraphStore:
                         q = f"MERGE (n:`{safe_node_label}` {{id: $id}}) "
                         if is_entity:
                             q += (
+                                f"ON CREATE SET n.{DEDUP_PENDING_KEY} = true "
                                 "WITH n, $properties AS props, "
                                 "     coalesce(n.source_chunk_ids, []) AS old, "
                                 "     coalesce($properties.source_chunk_ids, []) AS contrib "
@@ -518,22 +522,33 @@ class GraphStore:
         if not (exists.result_set and exists.result_set[0][0]):
             # The embedding is of the old name; left on the node, vector search
             # kept finding the row under a name it no longer has. finalize()
-            # embeds every node without one.
+            # embeds every node without one. The new name is new to dedup too,
+            # so the node is flagged for the next finalize to check.
             await self.query_raw(
-                "MATCH (n:__Entity__ {id: $old}) SET n.id = $new REMOVE n.embedding",
+                "MATCH (n:__Entity__ {id: $old}) "
+                f"SET n.id = $new, n.{DEDUP_PENDING_KEY} = true REMOVE n.embedding",
                 {"old": old_id, "new": new_id},
             )
             return 1, 0
         # Something already sits at new_id — a prose mention of the same name,
-        # typically. Fold the old node into it.
+        # typically. Fold the old node into it, and flag the result: it now
+        # carries the row's identity, which no dedup run has seen with it.
         for query in _REMAP_QUERIES:
             await self.query_raw(query, {"dup_id": old_id, "survivor_id": new_id})
         await self._carry_then_delete(old_id, new_id)
+        await self.query_raw(
+            f"MATCH (n:__Entity__ {{id: $new}}) SET n.{DEDUP_PENDING_KEY} = true",
+            {"new": new_id},
+        )
         return 0, 1
 
     # The row about to be written sets ``is_stub`` itself; a placeholder's
-    # ``True`` must not land on the node first and then have to be undone.
-    _NEVER_CARRY_ON_RECONCILE = frozenset({"id", "embedding", "is_stub", *LEGACY_DESC_KEYS})
+    # ``True`` must not land on the node first and then have to be undone. The
+    # dedup flag and failure count belong to each node's own checks: the fold
+    # flags the survivor itself, and another node's count would cut its retries.
+    _NEVER_CARRY_ON_RECONCILE = frozenset(
+        {"id", "embedding", "is_stub", DEDUP_PENDING_KEY, DEDUP_ATTEMPTS_KEY}
+    )
 
     async def _carry_then_delete(self, old_id: str, new_id: str) -> None:
         """Copy what only the old node knew onto the new one, then delete the old.
@@ -624,7 +639,7 @@ class GraphStore:
                     f"UNWIND $batch AS item "
                     f"MERGE (n:`{safe_label}` {{id: item.id}}) "
                     f"ON CREATE SET n += item.properties, n.name = item.name, "
-                    f"n.is_stub = true "
+                    f"n.is_stub = true, n.{DEDUP_PENDING_KEY} = true "
                     f"ON MATCH SET n += item.claims, "
                     f"n.entity_key = coalesce(n.entity_key, item.properties.entity_key), "
                     f"n.is_stub = coalesce(n.is_stub, true) "
@@ -2190,10 +2205,13 @@ class GraphStore:
         - Lists: filter items to primitives only, strip control chars from strings.
         - Dicts: serialise to JSON string.
         - Other: convert to string and strip control characters.
+        - ``dedup_pending`` and ``dedup_attempts`` are dropped: the SDK owns
+          them, and an incoming value would overwrite the flag set when the
+          node is created.
         """
         cleaned: dict[str, Any] = {}
         for key, value in props.items():
-            if value is None:
+            if value is None or key in (DEDUP_PENDING_KEY, DEDUP_ATTEMPTS_KEY):
                 continue
             if isinstance(value, str | int | float | bool):
                 cleaned[key] = cls._sanitize_string(value) if isinstance(value, str) else value

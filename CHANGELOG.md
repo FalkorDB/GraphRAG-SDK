@@ -116,30 +116,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the extractor uses the real labels instead of guessing from a built-in list
   — which is what makes the order sources arrive in stop mattering.
 
-- **`finalize()` lets a resolver judge across sources.** The strategy that
-  decides within one document whether two mentions are one entity —
-  `LLMVerifiedResolution`: embed, then ask the model about the close pairs — now
-  runs inside `finalize()` over the whole graph, the only place a table's
-  "Priya Raman" and a note's "Ms. Raman" ever meet. By default it is built over
-  the instance's own `llm` and `embedder`, asking from cosine 0.6 rather than the
-  within-document 0.8 because names differ more across sources;
-  `finalize(resolver=...)` substitutes your own and `finalize(resolve=False)`
-  calls no model. The merge keeps the keyed node and every value it signed,
-  moves the mention's description and edges onto it, and never folds two rows of
-  one table into each other. A declared type beats a guessed one, so a `Concept`
-  the extractor guessed is absorbed by the `MitigationPractice` a mapping
-  declared, while two declared labels sharing a name stay apart. A NO is
-  remembered as a `DISTINCT_FROM` edge, so the pair is neither asked about nor
-  merged on a threshold again; the edge goes with either node, so a re-read
-  document is judged afresh. Everything found is on `FinalizeResult` —
-  `resolved_duplicates`, `rejected_duplicates`, `probable_duplicates`,
+- **`finalize()` reports what it found.** A declared type beats a guessed one,
+  so a `Concept` the extractor guessed is absorbed by the `MitigationPractice` a
+  mapping declared, while two declared labels sharing a name stay apart.
+  Everything else found is on `FinalizeResult` — `probable_duplicates`,
   `unmerged_name_collisions`, `property_conflicts`, `unresolved_references`,
   `entities_without_a_name`, `proposed_mappings`, `mapping_changed`,
   `stale_signed_properties` — and reported at WARNING, since nothing is resolved
-  for you. The hand-off to a custom strategy is four documented `ctx.metadata`
-  keys on `ResolutionStrategy` (`RESOLUTION_SKIP_PAIRS`,
-  `RESOLUTION_DISTINCT_IDS`, `RESOLUTION_ASK_PAIRS`,
-  `RESOLUTION_REJECTED_PAIRS`); a strategy that ignores them still works.
+  for you.
 
 - **`GraphRAG(enable_cypher=True)`** turns on text-to-Cypher retrieval, which
   answers the questions no passage contains — counts, averages, "how many of
@@ -173,6 +157,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`finalize()` deduplicates incrementally, with one judge pass.** Ingest now
+  sets `dedup_pending = true` on every entity node it *creates*, and
+  `finalize()` checks only those entities — against the whole graph, through
+  the `__Entity__` vector index, never by reading every entity — then removes
+  the flag. A `finalize()` with nothing pending does no dedup work, and once
+  every check has completed the graph carries no dedup data. Measured: +1,000 new entities on a
+  ~39k-entity graph finalize in 4.5 s (fake LLM), where the previous flow spent
+  about 256 s of dedup and 5,982 LLM calls on every call; on a labeled set of
+  277 entities (138 true pairs, gpt-4.1, 3 runs) precision rose from 0.81 to
+  0.92–0.93 and F1 from 0.71–0.73 to 0.83–0.84, with 5 LLM calls instead of 14.
+  - Candidates come from each new entity's nearest names in the vector index
+    (one name embedding per entity, also used by search); descriptions are no
+    longer embedded, but the judge still reads them.
+  - The judge runs **once** per set and names each merged group (the survivor
+    takes that name; its old name moves to `aliases`; a table row keeps its
+    declared name). It also sees each entity's existing aliases. Agreed pairs
+    chain across sets.
+  - Extracted mentions with the same spelling are judged rather than merged on
+    the name alone (Paris, France and Paris, Texas); a table row still absorbs
+    a same-named mention by rule.
+  - A "different" answer writes nothing to the graph; the pair is judged
+    again only if a later new entity brings it into a set. An entity whose
+    check did not complete (a failed lookup, judge call or merge write, an
+    answer that was not a full partition, or no name vector) keeps its flag and is retried by the next `finalize()`, up to
+    3 runs; after that it is released and named in a warning. When all of a
+    new entity's 10 nearest names are exact-phase matches, the lookup widens
+    (up to 1,000) to find matches beyond the tenth. A table
+    re-sync that renames a row flags it, so it is checked under its new
+    name. When
+    the judge renames a merged node, its name vector is replaced too.
+  - **Deprecated:** the fuzzy name-embedding phase is removed. For one
+    release `deduplicate_entities()` still accepts `fuzzy=False` and
+    `similarity_threshold=` (ignored, with a `DeprecationWarning`);
+    `fuzzy=True` raises `ValueError`. Finalize dedup is the exact phase plus
+    the judge. Ingest-time resolvers
+    (`ingest(resolver=...)`) are unchanged.
+  - **Upgrading:** a graph built before this change has no flags. Run
+    `finalize(dedup_all=True)` once to check every entity; after that, a
+    plain `finalize()` is enough.
 - **CI runs the FalkorDB-backed tests.** The integration job used to run one
   file (`tests/test_integration.py`); the whole suite now runs with
   `RUN_INTEGRATION=1`, so every test that needs a live graph is exercised on
@@ -186,70 +209,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`drop_entity()` refuses a label a table maps rows to or links to**, naming
   the table and pointing at `drop_table()`: the mapping would re-register the
   label on the next load, so the drop could only be undone.
-- **`finalize()` calls the model by default.** It used to deduplicate on exact
-  names only. It now also runs `LLMVerifiedResolution` over the whole graph —
-  one embedding pass, then one model call per close pair, each pair asked once —
-  unless `finalize(resolve=False)` is passed, which restores the previous
-  behaviour. A resolver that fails, because no model is reachable, is logged and
-  `finalize()` completes without it.
-
 - **`finalize()` now also runs an LLM-judged cross-document dedup phase**
   (`storage/judge_dedup.py`, `finalize(judge=True)` — the default) after the
-  exact-name phase and the resolver pass. Ingest keeps `ExactMatchResolution`
-  as its default: a resolver at ingest only ever sees one document, so the
-  cross-document duplicates that matter (`Airbus` in one file, `Airbus SE` in
-  another) are unreachable there by construction. At finalize: every entity's
-  name is embedded first (and stored on the node for retrieval), descriptions
-  are embedded, and three LLM-free doors nominate candidate pairs — top-10
-  name neighbours ≥ 0.65, top-10 description neighbours ≥ 0.55, and "A's name
-  appears in B's description"; candidates are grouped into dense sets of at
-  most 8 and packed into ≤ 3,000-token prompts; the judge LLM partitions each
-  set; a second pass over shuffled sets must agree. Agreed pairs are
-  **merged** through the same absorb path as every other finalize merge —
-  survivor by the same rank (a table's row over a mention), every member's
-  description kept in `descriptions` and joined with `" | "`, other names kept
-  in `aliases`, provenance and missing properties carried, edges remapped
-  before the loser is deleted — and the survivor additionally gains every
-  member's label; disagreements become **`SAME_AS` edges**
-  (`source='llm_judge'`) instead — nothing is lost. Two keyed rows, a mention
-  two rows could own, and any pair a resolver remembered as `DISTINCT_FROM`
-  are never put to the judge, never grouped with each other through a third
-  member, and never linked. `FinalizeResult` gains `entities_linked`,
-  `judge_llm_calls`, `judge_stats`. Use a gpt-4.1-class `judge_llm` (defaults
-  to the instance's `llm`): on the benchmark corpus it made 9 wrong merges
-  where gpt-4o-mini made 51; the two-pass vote (`judge_vote=True`) cut wrong
-  merges by two thirds at 2× judge cost. `finalize(judge=False)` skips the
-  phase (the resolver pass still runs); `finalize(resolve=False,
-  judge=False)` keeps finalize LLM-free. On the standalone
-  `deduplicate_entities()` the judge is opt-in (`judge=True`), so a caller
-  running it after every batch keeps making no LLM calls. `finalize()` now
-  deduplicates *before* embedding entity names, so a duplicate the merge
-  removes is not embedded first; the judge stores the name vectors it
-  computes, and `FinalizeResult.entities_embedded` counts both. Absorbed
-  labels are recorded in `merged_labels` as well as set as Cypher labels, so
-  a survivor's later merge carries them on and its primary label stays the
-  one it was written as; label validity follows `sanitize_cypher_label`.
-  Agreements are unioned within one set only — so a genuine duplicate pair
-  that reached the judge as a straddling 2-member set beside a dense set
-  (a chain A–B–C–D–E arrives as `[A,B,C,D]` and `[D,E]`) is linked, never
-  merged, once its endpoint has merged inside the dense set: a deliberate
-  trade of recall for the chain guarantee. A set whose prompt failed in one
-  pass is left unjudged rather than counted as a disagreement, and the
-  entity text in the judge prompt is flattened, quoted and declared
-  untrusted. `SAME_AS.agreement` is the number of passes that said SAME, so
-  a cross-set link written without the vote carries `1`, never `2`.
-  Description vectors are computed each run and never written to the
-  graph. Where an earlier build left `description_embedding` and
-  `description_embedding_hash` on entity nodes, the next judge run removes
-  both, and no merge copies them onto another node in the meantime. The judge's `embedded`
-  count leaves out a node its own merges then deleted. If the
-  `DISTINCT_FROM` pairs cannot be read, the fuzzy, resolver and judge
-  phases are skipped with a warning (`last_judge_stats["skipped_reason"]`)
-  instead of running as if none existed. A label holding `|` — the
-  separator of the `merged_labels` record — is refused by a mapping and by
-  a merge, and the record is split on the exact `" | "`.
-  `deduplicate_entities(judge_llm=...)` without `judge=True` warns that the
-  judge did not run. An adoption into a declared label drops the labels the
+  exact-name phase; see the incremental-dedup entry under Changed for how it
+  picks candidates. Ingest keeps `ExactMatchResolution` as its default: a
+  resolver at ingest only ever sees one document, so the cross-document
+  duplicates that matter (`Airbus` in one file, `Airbus SE` in another) are
+  unreachable there by construction. Agreed pairs are **merged** through the
+  same absorb path as the exact phase — survivor by the same rank (a table's
+  row over a mention), every member's description kept in `descriptions` and
+  joined with `" | "`, other names kept in `aliases`, provenance and missing
+  properties carried, edges remapped before the loser is deleted — and the
+  survivor additionally gains every member's label, recorded in
+  `merged_labels` as well as set as Cypher labels. Two keyed rows and a
+  mention two rows could own are never put to the judge. `FinalizeResult`
+  gains `judge_llm_calls` and `judge_stats`. Use a gpt-4.1-class `judge_llm`
+  (defaults to the instance's `llm`): on the benchmark corpus it made 9 wrong
+  merges where gpt-4o-mini made 51. `finalize(judge=False)` keeps finalize
+  LLM-free. On the standalone `deduplicate_entities()` the judge is opt-in
+  (`judge=True`), and `judge_llm=...` without it warns that the judge did not
+  run. `finalize()` deduplicates *before* embedding entity names, so a
+  duplicate the merge removes is not embedded first. The entity text in the
+  judge prompt is flattened, quoted and declared untrusted. A label holding
+  `|` — the separator of the `merged_labels` record — is refused by a mapping
+  and by a merge. An adoption into a declared label drops the labels the
   adopted guess had itself absorbed, not only its primary.
 
 - `GraphExtraction`'s verification prompt now tells the model that entity
@@ -271,9 +254,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   punctuation, apostrophes and `&`, `Surname, Given` inversion, common
   abbreviations (`Corp.` → `corporation`) and one trailing legal form
   (`Ltd`, `Inc`, `GmbH`) are normalised, word order is not — `Morgan Stanley`
-  and `Stanley Morgan` stay apart. Spellings the rule deliberately declines to
-  join (`M. Ellison` / `Maya Ellison`, a pure reordering) are listed in
-  `FinalizeResult.probable_duplicates` with the reason, never merged.
+  and `Stanley Morgan` stay apart. A group holding a table row merges by rule;
+  with the judge on, a group of extracted mentions only goes to the judge.
+  Spellings the rule deliberately declines to join (`M. Ellison` / `Maya
+  Ellison`, a pure reordering) are never merged by the rule; the judge may
+  merge them, and a pair it leaves apart is listed in
+  `FinalizeResult.probable_duplicates` with the reason.
 
 - **`ingest()` of a tabular file returns a `StructuredIngestionResult`.** It
   is not an `IngestionResult`: a row is not a chunk, so it reports `records`,
@@ -291,10 +277,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run. For a corpus with no structured sources only the degree and tie-break
   steps are new.
 
-- `EntityDeduplicator.deduplicate()` and `GraphRAG.deduplicate_entities()`
-  default `similarity_threshold` raised from `0.9` to `0.95`: at `0.9` the
-  name-embedding tier merged 2 of 33 deliberate hard-negative pairs for no
-  added recall.
 - `GraphExtraction` now ships a default relation vocabulary,
   `DEFAULT_RELATION_TYPES` (31 UPPER_SNAKE_CASE labels: `LOCATED_IN`,
   `PART_OF`, `EMPLOYED_AT`, `AUTHORED`, ...), the counterpart of
@@ -385,7 +367,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block are compared — the same pairs, under a second at 5k.
 - A merge kept the survivor's description even when the deleted node's was
   the longer one (the paragraph from the PDF, lost to the row's template
-  line). The longer description is carried.
+  line). Both descriptions are kept.
 - Re-ingesting the same file no longer duplicates its chunks. Chunk ids are
   now derived from document id + position + text instead of a fresh
   `uuid4()`, so `MERGE` finds the existing node (17 → 17 → 17 chunks across
@@ -483,13 +465,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Alice Smith` in the rows and `Alice Smith` as a manager reference no longer
   fall back to key-derived ids and split. When two keyed rows do share a name, a
   prose mention of it is left unmerged by `finalize()` and reported in
-  `probable_duplicates` rather than handed to whichever row was listed first.
-  That held for `finalize(resolve=False)` only: the resolver's own exact-name
-  pass merged the mention into a row regardless. The undecidable mention/row
-  pairs are now passed to the resolver as settled (`RESOLUTION_SKIP_PAIRS`),
-  `LLMVerifiedResolution` keeps hinted nodes out of its name-merge phase, and
-  the merge loop refuses such a pair from a resolver that ignores hints — so
-  the default `finalize()` keeps the three nodes too.
+  `probable_duplicates` rather than handed to whichever row was listed first,
+  and the judge never merges such a pair either.
 
 - **A name collision is looked for on the id the rows would get.** Node ids
   lower-case the name *and* turn spaces into underscores, but the collision
@@ -577,8 +554,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A merge no longer discards the duplicate's properties.** The deduplicator
   remapped edges only, so `DETACH DELETE` took the duplicate's properties with
-  it — its description, which entity vector search embeds, and every value only
-  it knew. Properties are now carried onto the survivor in the same statement
+  it — its description and every value only it knew. Properties are now carried onto the survivor in the same statement
   that deletes the duplicate, with a value already on the survivor always
   winning; the two descriptions are joined with `" | "` and the duplicate's
   name is recorded in the survivor's `aliases`. The same policy applies when a
@@ -617,8 +593,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that holds the same key; the lookup used to match on the bare `entity_key`,
   so `hr.csv` row `7` claimed `payroll.csv` row `7` when both wrote `Person`.
   It now matches only a placeholder or a node carrying the table's *own* signed
-  key, and the fuzzy phase of `finalize()` leaves two keyed rows apart without
-  asking the model — the keys already say they are different people.
+  key, and `finalize()`'s judge leaves two keyed rows apart without asking the
+  model — the keys already say they are different people.
 
 - **A row the export dropped, but still points at, becomes a placeholder.** A
   manager whose own row left `staff.csv` while a report still named her stayed

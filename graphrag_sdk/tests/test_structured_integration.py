@@ -1565,7 +1565,9 @@ class TestIngestOrderMustNotDecideTheGraph:
     ):
         """The guard that matters stays. Neither label is declared by a mapping,
         so there is nothing authoritative to prefer, and "Apple" the company must
-        not become "Apple" the fruit."""
+        not become "Apple" the fruit by the name rule. (The judge is asked here,
+        but the scripted model has no answer left for it and the call fails, so
+        this checks the rule alone.)"""
         llm = scripted_llm(
             [
                 ("Apple", "Organization", "A technology company"),
@@ -1599,8 +1601,8 @@ class TestIngestOrderMustNotDecideTheGraph:
 class TestAdoptionMovesEverythingItShould:
     """The adoption pass deletes a node, so what was on it must survive.
 
-    Merging across labels is the one place the resolver crosses a line it
-    otherwise holds, and it does so by deleting the guessed node. Anything the
+    Adoption is one of two places a merge crosses labels (the judge is the
+    other), and it does so by deleting the guessed node. Anything the
     document contributed has to arrive on the survivor first.
     """
 
@@ -1636,7 +1638,8 @@ class TestAdoptionMovesEverythingItShould:
         # A guessed twin of the declared node, with an edge each way.
         await rag.query(
             "MERGE (g:Concept {id:'carbon_farming__concept'}) "
-            "SET g.name = 'Carbon Farming', g.description = 'from prose' "
+            "SET g.name = 'Carbon Farming', g.description = 'from prose', "
+            "g.dedup_pending = true "
             "SET g:__Entity__ "
             "MERGE (o:Location {id:'kenya__location'}) SET o.name = 'Kenya' SET o:__Entity__ "
             "MERGE (g)-[:RELATES {rel_type:'PRACTISED_IN'}]->(o) "
@@ -1737,7 +1740,7 @@ class TestAdoptionOnlyCorrectsAGuessTheExtractorCouldNotAvoid:
         )
         await rag.query(
             "CREATE (:__Entity__:Product {id:'apple__product', name:'Apple', "
-            "description:'a fruit grown in orchards'})"
+            "description:'a fruit grown in orchards', dedup_pending: true})"
         )
         await rag.ingest(str(suppliers))
         summary = await rag.finalize()
@@ -1773,7 +1776,7 @@ class TestAdoptionOnlyCorrectsAGuessTheExtractorCouldNotAvoid:
         )
         await rag.query(
             "CREATE (:__Entity__:Concept {id:'carbon_farming__concept', name:'Carbon Farming', "
-            "description:'a soil practice'})"
+            "description:'a soil practice', dedup_pending: true})"
         )
         await rag.ingest(str(practices))
         await rag.finalize()

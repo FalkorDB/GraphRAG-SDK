@@ -1,41 +1,35 @@
 # GraphRAG SDK — Storage: Entity Deduplicator
-# Entity deduplication over the whole graph: exact name match, optional fuzzy
-# embedding, optionally the caller's resolution strategy — the one ingest()
-# runs within a document — judging pairs across documents and tables, and the
-# LLM-judged cross-document phase (``judge_dedup.LLMJudgeDeduplicator``:
-# similarity nominates, the LLM decides, a second shuffled pass must agree).
-# Preserves label-aware grouping to prevent cross-type merging.
+# Incremental entity deduplication: each run checks only the entities ingest
+# flagged ``dedup_pending`` since the last one, against the whole graph reached
+# through the entity vector index — never by reading every entity — and clears
+# the flag once the check completes, so a fully checked graph carries no dedup
+# data. Phases: exact name match and the LLM-judged cross-document phase
+# (``judge_dedup.LLMJudgeDeduplicator``: the vector index nominates, the LLM
+# decides in one pass). Preserves label-aware grouping to prevent cross-type
+# merging.
 
 from __future__ import annotations
 
 import logging
 import re
 import unicodedata
+from collections import defaultdict
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.models import RESERVED_NODE_LABELS, GraphData, GraphNode, GraphRelationship
+from graphrag_sdk.core.models import RESERVED_NODE_LABELS
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import DEFAULT_ENTITY_TYPES
-from graphrag_sdk.ingestion.resolution_strategies.base import (
-    RESOLUTION_ASK_PAIRS,
-    RESOLUTION_DISTINCT_IDS,
-    RESOLUTION_REJECTED_PAIRS,
-    RESOLUTION_SKIP_PAIRS,
-    description_list,
-)
+from graphrag_sdk.ingestion.resolution_strategies.base import description_list
 from graphrag_sdk.storage.identity import NearMiss, canonical_key, find_near_misses
-from graphrag_sdk.storage.judge_dedup import LEGACY_DESC_KEYS, LLMJudgeDeduplicator
+from graphrag_sdk.storage.judge_dedup import (
+    DEDUP_ATTEMPTS_KEY,
+    DEDUP_PENDING_KEY,
+    MAX_DEDUP_ATTEMPTS,
+    LLMJudgeDeduplicator,
+    NameNeighbourIndex,
+)
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
-
-if TYPE_CHECKING:
-    from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
-
-#: Edge between two entities a resolver judged to be two things. Read back on the
-#: next run so the pair is neither asked about again nor merged by a threshold,
-#: and dropped with either node, so a re-extracted entity is judged afresh.
-DISTINCT_FROM = "DISTINCT_FROM"
 
 #: Labels every extractor always has. A declared label in this set can never have
 #: been a guess the extractor was missing, so it is never a target for adoption.
@@ -150,24 +144,6 @@ def _expansion_key(normalized: str) -> str | None:
     if len(words) < 2:
         return None
     return "".join(w[0] for w in words)
-
-
-def is_acronym_of(short: str, long: str) -> bool:
-    """Is ``short`` a plausible acronym of the multi-word ``long``?
-
-    This is the only rule that can see ``AIHS`` = ``Ashford Island Historical
-    Society``: their character similarity is 0.11 and their embedding similarity
-    sits below every threshold worth using, so neither fuzzy matching nor
-    vectors recover that pair.
-
-    Kept strict on purpose (3-6 ASCII letters; the long form must have at
-    least two significant words). A looser version merges arbitrary unrelated
-    short strings.
-    """
-    key = _acronym_key(normalize_entity_name(short))
-    if key is None:
-        return False
-    return key == _expansion_key(normalize_entity_name(long))
 
 
 def _merge_description_members(current: list[str], absorbed: list[str]) -> list[str]:
@@ -304,8 +280,8 @@ _REMAP_QUERIES = [
 
 # Folds the duplicate into the survivor and deletes it in ONE statement, so a
 # failed write cannot leave the survivor un-updated with the duplicate already
-# gone. Binding the survivor first also closes a race: ``_fetch_all_entities``
-# snapshots the entity list up front, and a concurrent ``delete_document()``
+# gone. Binding the survivor first also closes a race: the run snapshots its
+# entities up front, and a concurrent ``delete_document()``
 # can remove a survivor mid-loop. The remap queries then match nothing, and a
 # bare ``DETACH DELETE dup`` would destroy every edge the duplicate still
 # holds. Here a missing survivor yields zero rows, nothing is deleted, and the
@@ -425,7 +401,7 @@ def _mentions_two_rows_could_own(
     length or id -- none of which say which row the passage meant. Measured as a
     note about one Alice Smith attaching to the other, key and columns included.
     An extracted node in that group stays its own node and is reported, paired
-    with each row it could be, for a resolver or the user to decide.
+    with each row it could be, for the user to decide.
 
     Empty when fewer than two distinct keyed ids are in the group: with one row
     the mention has exactly one place to go, which is the join the exact phase
@@ -450,37 +426,6 @@ def _mentions_two_rows_could_own(
         if mention.get("is_stub") is None
         for row in rows.values()
     ]
-
-
-def _clusters(
-    remap: dict[str, str], by_id: dict[str, dict[str, Any]]
-) -> list[list[dict[str, Any]]]:
-    """Groups of entities a resolver's remap says are one thing, one label each.
-
-    ``remap`` is ``duplicate id -> survivor id`` and may chain (``a -> b``,
-    ``b -> c``), so ids are followed to their root. A group is then split by
-    label: a resolver may merge "Apple" the company into "Apple" the fruit, and
-    this class never does — phase 1 reports such a pair instead. Ids the graph
-    does not hold are ignored.
-    """
-
-    def root(entity_id: str) -> str:
-        seen = {entity_id}
-        while entity_id in remap and remap[entity_id] != entity_id:
-            entity_id = remap[entity_id]
-            if entity_id in seen:
-                break
-            seen.add(entity_id)
-        return entity_id
-
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for entity_id in set(remap) | set(remap.values()):
-        entity = by_id.get(entity_id)
-        if entity is None:
-            continue
-        key = (root(entity_id), (entity.get("label") or "").strip().lower())
-        grouped.setdefault(key, []).append(entity)
-    return [members for members in grouped.values() if len(members) > 1]
 
 
 def _survivor_rank(entity: dict[str, Any]) -> tuple[int, int, int, int, int, int, str]:
@@ -540,42 +485,73 @@ def _survivor_rank(entity: dict[str, Any]) -> tuple[int, int, int, int, int, int
 
 
 # Edges that count toward a node's degree when picking a merge survivor: the
-# ones a question can reach it by. ``DISTINCT_FROM`` is bookkeeping, not reach.
+# ones a question can reach it by.
 _DEGREE_EXPR = "size((e)-[:RELATES]-()) + size((e)-[:MENTIONED_IN]->())"
+
+#: Nearest names (vector index) each new entity's exact-name match is looked
+#: for among: identical and canonical spellings embed as each other's nearest
+#: neighbours, so no lookup key has to be stored on the graph.
+_EXACT_NEIGHBOUR_K = 10
+#: How far that lookup widens for a new entity whose nearest names are all
+#: exact-phase matches (twenty rows called "John Smith"): the k-th neighbour
+#: being a match says the next one may be too, so k grows tenfold up to this.
+_EXACT_NEIGHBOUR_K_MAX = 1000
+
+# The projection every entity read uses, applied to a bound ``e``.
+_ENTITY_RETURN = (
+    "RETURN e.id AS id, e.name AS name, e.description AS desc, "
+    "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
+    f"e.aliases AS aliases, e.is_stub AS is_stub, {_DEGREE_EXPR} AS degree, "
+    "[l IN labels(e) WHERE l <> '__Entity__'] AS labels, "
+    f"e.{MERGED_LABELS_KEY} AS merged_labels"
+)
+
+
+def _entity_from_row(row: list[Any]) -> dict[str, Any]:
+    """One ``_ENTITY_RETURN`` row as the dict every phase works on."""
+    aliases = row[4] if len(row) > 4 and isinstance(row[4], list) else []
+    labels = _string_list(row[7]) if len(row) > 7 else []
+    absorbed = split_merged_labels(row[8]) if len(row) > 8 else []
+    label = row[3] if len(row) > 3 and row[3] else ""
+    if labels:
+        # Every label on record as absorbed leaves no primary to
+        # prefer; the smallest is at least the same one every run.
+        label = next((lab for lab in labels if lab not in absorbed), min(labels))
+    return {
+        "id": row[0],
+        "name": row[1] if len(row) > 1 and row[1] else str(row[0]),
+        "description": row[2] if len(row) > 2 and row[2] else "",
+        "label": label,
+        "labels": labels or ([label] if label else []),
+        "aliases": [a for a in aliases if isinstance(a, str)],
+        # Only a table write sets is_stub (False for a row, True
+        # for a placeholder), so its presence marks a keyed node.
+        "is_stub": row[5] if len(row) > 5 else None,
+        "degree": row[6] if len(row) > 6 else 0,
+    }
 
 
 class EntityDeduplicator:
-    """Entity deduplication engine over the whole graph.
+    """Incremental deduplication of the entities flagged ``dedup_pending``,
+    against the rest of the graph reached through the entity vector index.
 
     Phase 1 (always): Exact name match — groups entities by
     ``(canonical_name, label)`` to prevent cross-type merging, folds an
     acronym into its unique same-label long form, keeps the survivor
     :func:`_survivor_rank` picks (a table row over a mention, the long form
     over an acronym, then the best-connected and best-described), remaps all
-    RELATES and MENTIONED_IN edges, deletes duplicates.
+    RELATES and MENTIONED_IN edges, deletes duplicates. With a judge, a group
+    of extracted mentions only (and an acronym that spells several long
+    forms) is handed to it instead of merged on the name.
 
-    Phase 2 (optional): Fuzzy embedding match — embeds entity
-    names, finds near-duplicates by cosine similarity, merges
-    those too.
-
-    Phase 3 (optional): The caller's resolution strategy — the same
-    one ``ingest()`` runs within a document — is shown the whole graph
-    and asked which surviving entities are one thing. It decides
-    identity; the merge follows this class's rules, so a table row
-    always survives a mention of it. See :meth:`_deduplicate_with_resolver`.
-
-    Phase 4 (optional, ``judge_llm``): LLM-judged cross-document dedup over
-    **every** entity in the graph at once — the ingest-time resolver only
-    ever sees one document, so ``Airbus`` in one file and ``Airbus SE`` in
-    another can never meet there; here they do. Name and description
-    embeddings plus "A's name appears in B's description" nominate candidate
-    pairs; candidates form small dense sets; the judge LLM partitions each
-    set; a second pass over shuffled sets must agree. Agreed groups are
-    merged by :meth:`_absorb` under the same rules as every other phase, and
-    the survivor additionally gains every member's label; disagreements are
-    written as ``SAME_AS`` edges instead. Pairs a resolver judged distinct
-    (``DISTINCT_FROM``) are never asked again. See
-    :meth:`_deduplicate_with_judge`.
+    Phase 2 (optional, ``judge_llm``): LLM-judged cross-document dedup of
+    the new entities — the ingest-time resolver only ever sees one document,
+    so ``Airbus`` in one file and ``Airbus SE`` in another can never meet
+    there; here they do. Each new entity's nearest names come from the entity
+    vector index; candidates form small dense sets; the judge LLM partitions
+    each set in one pass. Agreed groups are merged by :meth:`_absorb` under
+    the same rules as the exact phase, and the survivor additionally gains
+    every member's label. See :meth:`_deduplicate_with_judge`.
 
     Every merge preserves what the duplicate carried: its description is
     joined onto the survivor's with ``" | "`` (and kept as a member of the
@@ -586,7 +562,7 @@ class EntityDeduplicator:
 
     Args:
         graph_store: Graph data access object with ``query_raw()`` method.
-        embedder: Embedding provider for fuzzy dedup.
+        embedder: Embedding provider for entity names.
     """
 
     def __init__(self, graph_store: Any, embedder: Embedder) -> None:
@@ -602,30 +578,37 @@ class EntityDeduplicator:
         # sharing their name. Folded into near_misses by _report_near_misses, and
         # held apart through the later phases (see _undecidable_pairs).
         self._ambiguous_mentions: list[NearMiss] = []
-        # Merges the resolver decided on the last run, as "label 'dup' -> 'survivor'".
-        self.resolved_pairs: list[str] = []
-        # Pairs the resolver judged distinct on the last run, as "label 'a' | 'b'".
-        self.rejected_pairs: list[str] = []
         # Stats of the last LLM-judged phase (see LLMJudgeDeduplicator.deduplicate);
         # {"skipped_reason": ...} when the phase was asked for and did not run.
         self.last_judge_stats: dict[str, int | str] = {}
+        # Entities flagged dedup_pending when this run started (its query
+        # points), and every entity this run looked at (them plus their nearest
+        # names).
+        self._pending_ids: list[str] = []
+        self._run_entity_ids: list[str] = []
+        # Every nearest name the index returned for them, whether or not the
+        # exact phase could group it: the near-miss report reads these too.
+        self._near_ids: list[str] = []
+        # Check every entity, not only the flagged ones (see deduplicate()).
+        self._dedup_all = False
+        # Same-name pairs the exact phase handed to the judge instead of merging.
+        self._judge_pairs: list[tuple[str, str]] = []
+        # Name vectors this run wrote while looking up nearest names.
+        self.names_embedded = 0
+        self._name_embedded_ids: set[str] = set()
+        # New entities whose check did not complete (a failed lookup, judge
+        # call or merge write, an answer that was not a full partition, or no
+        # name vector); they keep dedup_pending so the next run checks them
+        # again, up to MAX_DEDUP_ATTEMPTS runs.
+        self._unchecked_ids: set[str] = set()
 
     async def deduplicate(
         self,
         *,
-        fuzzy: bool = False,
-        # 0.95, not 0.9. Measured on the benchmark corpus: at 0.90 name-embedding
-        # matching drops precision to 0.739 and wrongly merges 2 of 33
-        # deliberate hard-negative pairs, for no recall the cheap tiers do not
-        # already reach. At 0.95 precision is 0.938 with zero hard negatives
-        # merged. The old 0.9 was an unswept guess, and it also disagreed with
-        # the 0.95 used by LLMVerifiedResolution for the same job.
-        similarity_threshold: float = 0.95,
         batch_size: int = 500,
         declared_labels: set[str] | None = None,
-        resolver: ResolutionStrategy | None = None,
         judge_llm: LLMInterface | None = None,
-        judge_vote: bool = True,
+        dedup_all: bool = False,
     ) -> int:
         """Run deduplication and return total number of duplicates merged.
 
@@ -633,34 +616,56 @@ class EntityDeduplicator:
         treated as authoritative about type, which lets the one safe kind of
         cross-label merge happen: see :meth:`_adopt_into_declared_labels`.
 
-        ``resolver`` is a resolution strategy to judge the pairs no rule can:
-        the same kind ``ingest()`` accepts, here applied across the whole graph.
-        Without one, only spelling variants merge and the rest is reported.
+        ``judge_llm``, when given, runs the LLM-judged cross-document phase
+        after the exact phase (see class docstring). Stats of the last run are
+        in ``self.last_judge_stats``. Without it, only spelling variants merge
+        and the rest is reported.
 
-        ``judge_llm``, when given, runs the LLM-judged cross-document phase after
-        the resolver (see class docstring). Stats of the last run are in
-        ``self.last_judge_stats``. ``judge_vote`` requires the second-pass
-        agreement (default); ``False`` halves LLM cost at roughly 3x the
-        wrong-merge rate.
+        Only entities flagged ``dedup_pending`` at ingest are query points;
+        the flag is removed at the end (kept on any whose check did not
+        complete, up to ``MAX_DEDUP_ATTEMPTS`` runs, then released with a
+        warning), so running this again with nothing pending does no work.
+        ``dedup_all=True`` checks every entity instead — for a graph written
+        before the flag existed, which has none.
         """
         self._declared_labels = {label.strip().lower() for label in (declared_labels or set())}
-        self.resolved_pairs = []
-        self.rejected_pairs = []
         self._ambiguous_mentions = []
         self.last_judge_stats = {}
-        total = await self._deduplicate_exact(batch_size)
-
-        if fuzzy:
-            total += await self._deduplicate_fuzzy(batch_size, similarity_threshold)
-
-        if resolver is not None:
-            total += await self._deduplicate_with_resolver(resolver, batch_size)
+        self._pending_ids = []
+        self._run_entity_ids = []
+        self._near_ids = []
+        self._dedup_all = dedup_all
+        self.names_embedded = 0
+        self._name_embedded_ids = set()
+        self._unchecked_ids = set()
+        # With a judge, names that only *look* the same (Paris, France and
+        # Paris, Texas) are put to it instead of being merged on spelling.
+        self._judge_pairs = []
+        total = await self._deduplicate_exact(batch_size, defer_to_judge=judge_llm is not None)
 
         if judge_llm is not None:
-            total += await self._deduplicate_with_judge(judge_llm, batch_size, judge_vote)
+            total += await self._deduplicate_with_judge(judge_llm, batch_size)
 
         # What is left over that probably should not be. Reported, never merged.
         await self._report_near_misses(batch_size)
+        await self._count_names_embedded()
+
+        # Checked: the next run queries only what is added after this one. An
+        # entity whose check did not complete stays flagged and is retried, up
+        # to MAX_DEDUP_ATTEMPTS runs.
+        unchecked = [eid for eid in self._pending_ids if eid in self._unchecked_ids]
+        given_up = await self._record_failed_checks(unchecked, batch_size)
+        checked = [
+            eid for eid in self._pending_ids if eid not in self._unchecked_ids or eid in given_up
+        ]
+        if len(unchecked) > len(given_up):
+            logger.warning(
+                "%d new entities were not fully checked (a failed lookup, judge call "
+                "or merge write, an answer that was not a full partition, or no name "
+                "vector); they stay pending for the next run",
+                len(unchecked) - len(given_up),
+            )
+        await self._clear_pending(checked, batch_size)
 
         logger.info(f"EntityDeduplicator total: {total} duplicates merged")
         return total
@@ -670,51 +675,49 @@ class EntityDeduplicator:
         """``(mention, row)`` pairs the exact phase found no way to decide.
 
         A mention whose name two keyed rows share fits both equally, and the
-        later phases would otherwise settle it on the one evidence phase 1 had
-        already rejected: identical names embed identically, so a cosine cut or
-        a resolver's hard-merge band folds the mention into whichever row ranks
-        higher. Measured as default ``finalize()`` attaching a passage's facts
-        and provenance to one of two Alice Smiths that ``resolve=False`` had
-        correctly left alone. These pairs are skipped in every phase and
-        reported instead; a name shared by two rows is not disambiguated by
-        looking at the name harder.
+        judge would otherwise settle it on the one evidence phase 1 had already
+        rejected, folding the mention into whichever row ranks higher. These
+        pairs are kept out of the judge phase and reported instead; a name
+        shared by two rows is not disambiguated by looking at the name harder.
         """
         return {frozenset((miss.id_a, miss.id_b)) for miss in self._ambiguous_mentions}
 
     async def _report_near_misses(self, batch_size: int) -> None:
         """Record surviving entities that probably denote one thing.
 
-        The merge is exact string equality on the display name, so two sources
-        spelling a name differently leave two nodes and nothing says so: an HR
+        Grouping is by canonical name, so two sources spelling a name in ways
+        it does not unify leave two nodes, unless the judge merges them: an HR
         export's "Maya Ellison" and a board review's "M. Ellison" end up as two
         people, one holding her age and the other what she did, and every question
         needing both comes back wrong while looking answered.
 
         Found here and **not** merged. Merging on a guess is destructive and
         irreversible; two nodes are recoverable, and a user told which pairs look
-        wrong can fix the source, which fixes it for good. Deciding a pair needs
-        judgement this class does not have — it holds no LLM — so it reports,
-        and a pair a resolver has already decided against is not a guess any
-        more and is left out.
+        wrong can fix the source, which fixes it for good. A pair the exact
+        phase cannot decide and the judge did not merge is reported.
         """
         try:
-            survivors = await self._fetch_all_entities(batch_size)
-            # A report merges nothing, so an unreadable set leaves nothing out.
-            decided = await self._fetch_distinct_pairs() or set()
+            # The entities this run looked at and every nearest name the index
+            # returned for them (an existing "Maya Ellison" beside a new
+            # "M. Ellison" is no exact match, but is a near miss), as they are
+            # now. A pair of two old entities was reported by the run that
+            # checked them, so only pairs touching a new entity are kept.
+            ids = list(dict.fromkeys(self._run_entity_ids + self._near_ids))
+            survivors = list((await self._fetch_entities_by_ids(ids, batch_size)).values())
             alive = {ent["id"] for ent in survivors}
             # A mention left between two rows first: it is an exact name match
-            # that did not merge, which is the finding most worth a look. One a
-            # later phase (the resolver) did settle is no longer open.
+            # that did not merge, which is the finding most worth a look. One the
+            # judge did settle is no longer open.
             open_mentions = [
                 miss
                 for miss in self._ambiguous_mentions
                 if miss.id_a in alive and miss.id_b in alive
             ]
-            self.near_misses = [
-                miss
-                for miss in open_mentions + find_near_misses(survivors)
-                if frozenset((miss.id_a, miss.id_b)) not in decided
-            ]
+            found = find_near_misses(survivors)
+            if not self._dedup_all:
+                new = set(self._pending_ids)
+                found = [m for m in found if m.id_a in new or m.id_b in new]
+            self.near_misses = open_mentions + found
         except Exception:
             # A report is never worth failing a finalize over.
             logger.debug("Near-miss detection failed", exc_info=True)
@@ -734,8 +737,22 @@ class EntityDeduplicator:
 
     # ── Phase 1: Exact name match ──
 
-    async def _deduplicate_exact(self, batch_size: int) -> int:
-        entities = await self._fetch_all_entities(batch_size)
+    async def _deduplicate_exact(self, batch_size: int, defer_to_judge: bool = False) -> int:
+        # The new entities, plus their nearest names already in the graph
+        # (vector index), which is where an existing spelling of the same name
+        # is. Two old entities were folded (or left apart) by an earlier run.
+        if self._dedup_all:
+            pending = await self._fetch_all_entities(batch_size)
+        else:
+            pending = await self._fetch_pending_entities(batch_size)
+        self._pending_ids = [ent["id"] for ent in pending]
+        if not pending:
+            logger.info("EntityDeduplicator: no new entities since the last run")
+            return 0
+        entities = list(pending)
+        if not self._dedup_all:
+            entities += await self._fetch_name_neighbours(pending, batch_size)
+        self._run_entity_ids = [ent["id"] for ent in entities]
         if len(entities) < 2:
             logger.info("EntityDeduplicator: fewer than 2 entities, nothing to dedup")
             return 0
@@ -755,12 +772,32 @@ class EntityDeduplicator:
             groups.setdefault((key, label), []).append(ent)
 
         # An acronym and its unique same-label long form are one group too.
-        merged_groups = self._merge_acronym_groups(list(groups.values()))
+        ambiguous_acronyms: list[tuple[list[dict], list[dict]]] = []
+        merged_groups = self._merge_acronym_groups(
+            list(groups.values()), ambiguous_out=ambiguous_acronyms
+        )
+        if defer_to_judge:
+            # An acronym that spells several long forms is not folded on its
+            # own; the judge, which sees descriptions, can still decide it.
+            for short, long_ in ambiguous_acronyms:
+                self._judge_pairs.extend(
+                    (a["id"], b["id"])
+                    for a in short
+                    for b in long_
+                    if a.get("is_stub") is None and b.get("is_stub") is None
+                )
 
         merged = 0
         deleted: set[str] = set()
         for group in merged_groups:
             if len(group) < 2:
+                continue
+            if defer_to_judge and all(ent.get("is_stub") is None for ent in group):
+                # Extracted mentions only: the same spelling is evidence, not
+                # proof. The judge sees their descriptions and decides; a table
+                # row (keyed) still absorbs its mentions here by the rules below.
+                ids = [ent["id"] for ent in group]
+                self._judge_pairs.extend((a, b) for i, a in enumerate(ids) for b in ids[i + 1 :])
                 continue
 
             group.sort(key=_survivor_rank, reverse=True)
@@ -852,10 +889,12 @@ class EntityDeduplicator:
             logger.warning(
                 f"Skipping merge of {dup['id']} into {survivor['id']} — could not read both nodes"
             )
+            self._merge_failed(survivor, dup)
             return False
 
         if not await self._remap_entity_edges(dup["id"], survivor["id"]):
             logger.warning(f"Skipping deletion of {dup['id']} — edge remap incomplete")
+            self._merge_failed(survivor, dup)
             return False
 
         # The graph is the truth about what each node holds; the fetched row
@@ -964,6 +1003,7 @@ class EntityDeduplicator:
             logger.warning(
                 f"Failed to merge duplicate entity {dup['id']} into {survivor['id']}: {exc}"
             )
+            self._merge_failed(survivor, dup)
             return False
         if not (getattr(result, "result_set", None) or []):
             logger.warning(
@@ -971,6 +1011,7 @@ class EntityDeduplicator:
                 survivor["id"],
                 dup["id"],
             )
+            self._merge_failed(survivor, dup)
             return False
 
         survivor["description"] = description
@@ -981,6 +1022,12 @@ class EntityDeduplicator:
         if labels:
             survivor["labels"] = [*(survivor.get("labels") or []), *labels]
         return True
+
+    def _merge_failed(self, survivor: dict[str, Any], dup: dict[str, Any]) -> None:
+        """A merge that was decided but not written (a failed read, remap or
+        write) is not a check that completed: both ends stay pending, so the
+        next run decides the pair again."""
+        self._unchecked_ids |= {survivor["id"], dup["id"]}
 
     async def _read_properties(
         self, survivor_id: str, dup_id: str
@@ -1015,7 +1062,7 @@ class EntityDeduplicator:
         """The survivor's aliases plus the duplicate's name and aliases.
 
         A name that normalises to the survivor's own is a spelling variant,
-        not an alias worth keeping; an acronym or a fuzzy-matched variant is.
+        not an alias worth keeping; an acronym or a judged variant is.
         """
         survivor_norm = survivor.get("norm") or normalize_entity_name(survivor.get("name") or "")
         aliases = _string_list(survivor.get("aliases"))
@@ -1028,7 +1075,10 @@ class EntityDeduplicator:
         return aliases
 
     @staticmethod
-    def _merge_acronym_groups(groups: list[list[dict]]) -> list[list[dict]]:
+    def _merge_acronym_groups(
+        groups: list[list[dict]],
+        ambiguous_out: list[tuple[list[dict], list[dict]]] | None = None,
+    ) -> list[list[dict]]:
         """Union groups where one name is an acronym of another.
 
         Runs on the ``(normalised name, label)`` groups so an acronym attaches to
@@ -1046,7 +1096,8 @@ class EntityDeduplicator:
         that spells the initials of two or more long forms (``ABC`` = ``American
         Broadcasting Company`` = ``Australian Broadcasting Corporation``) is
         left alone rather than used as a hub that collapses unrelated entities.
-        Ambiguous cases are the LLM judge's job.
+        Ambiguous cases are the LLM judge's job: with ``ambiguous_out`` they are
+        appended there as ``(short-form group, long-form group)`` pairs.
         """
         parent = list(range(len(groups)))
 
@@ -1079,6 +1130,8 @@ class EntityDeduplicator:
             if len(matches) == 1:
                 union(i, matches[0])
             elif len(matches) > 1:
+                if ambiguous_out is not None:
+                    ambiguous_out.extend((groups[i], groups[j]) for j in matches)
                 logger.info(
                     "Acronym %r matches %d long forms (%s); leaving unmerged",
                     names[i],
@@ -1091,203 +1144,19 @@ class EntityDeduplicator:
             combined.setdefault(find(i), []).extend(g)
         return list(combined.values())
 
-    # ── Phase 2: Fuzzy embedding match ──
-
-    async def _deduplicate_fuzzy(self, batch_size: int, similarity_threshold: float) -> int:
-        import numpy as np
-
-        # Re-fetch surviving entities (with labels for the cross-type guard).
-        entities = await self._fetch_all_entities(batch_size)
-        if len(entities) < 2:
-            return 0
-
-        # The same refusals the exact phase makes. Two keyed nodes are two rows
-        # whatever their names embed like, a pair the resolver already judged
-        # distinct is not re-decided by a cosine score, and a mention two rows
-        # could own is not handed to either by one.
-        keyed = {ent["id"] for ent in entities if ent.get("is_stub") is not None}
-        distinct = await self._fetch_distinct_pairs()
-        if distinct is None:
-            self._protection_unavailable("phase 2 (fuzzy)")
-            return 0
-        decided = distinct | self._undecidable_pairs
-
-        raw_vectors = await self._embedder.aembed_documents([e["name"] for e in entities])
-        valid = [(ent, vec) for ent, vec in zip(entities, raw_vectors) if vec]
-        if len(valid) < 2:
-            return 0
-
-        v_entities = [ent for ent, _ in valid]
-        v_ids = [ent["id"] for ent in v_entities]
-        v_labels = [ent["label"] for ent in v_entities]
-        vectors = [vec for _, vec in valid]
-
-        mat = np.array(vectors, dtype=np.float32)
-        norms_arr = np.linalg.norm(mat, axis=1, keepdims=True)
-        norms_arr[norms_arr == 0] = 1.0
-        mat_normed = mat / norms_arr
-
-        # Find pairs above threshold (block-wise to avoid OOM)
-        BLOCK_SIZE = 1000
-        n = len(v_ids)
-        merged_set: set[str] = set()
-        merged_count = 0
-
-        for i_start in range(0, n, BLOCK_SIZE):
-            block = mat_normed[i_start : min(i_start + BLOCK_SIZE, n)]
-            remaining = mat_normed[i_start:]
-            sim_block = block @ remaining.T
-            local_rows, local_cols = np.where(sim_block >= similarity_threshold)
-            for lr, lc in zip(local_rows.tolist(), local_cols.tolist()):
-                gi = i_start + lr
-                gj = i_start + lc
-                if (
-                    gj > gi
-                    and v_ids[gi] not in merged_set
-                    and v_ids[gj] not in merged_set
-                    and v_labels[gi] == v_labels[gj]  # prevent cross-type merging
-                    and not (v_ids[gi] in keyed and v_ids[gj] in keyed)
-                    and frozenset((v_ids[gi], v_ids[gj])) not in decided
-                ):
-                    survivor, dup = v_entities[gi], v_entities[gj]
-                    # Array order is arbitrary here, so apply the same rule as
-                    # the exact phase rather than keeping whichever came first.
-                    if _survivor_rank(dup) > _survivor_rank(survivor):
-                        survivor, dup = dup, survivor
-                    merged_set.add(dup["id"])
-                    if await self._absorb(survivor, dup):
-                        merged_count += 1
-
-        logger.info(
-            f"EntityDeduplicator phase 2 (fuzzy): merged {merged_count} additional duplicates"
-        )
-        return merged_count
-
-    # ── Phase 3: The caller's resolver, over the whole graph ──
-
-    async def _deduplicate_with_resolver(
-        self, resolver: ResolutionStrategy, batch_size: int
-    ) -> int:
-        """Let the ingest-time resolver judge the whole graph, then merge by our rules.
-
-        A resolution strategy sees the entities of one document at a time, so
-        the pair it was built to decide — "Ms. Raman" in a market note against
-        "Priya Raman" in the HR export — is one it never meets: the two arrive in
-        different calls, and by the time both exist nothing asks. This presents
-        every surviving entity to the same strategy as one ``GraphData``, with
-        the RELATES edges between them, so a resolver that reads neighbours reads
-        the whole graph's.
-
-        The split of responsibilities is deliberate. The resolver decides
-        *identity*: which ids denote one thing. This class decides *how to
-        merge*, with the rules that make a table's row the anchor of its entity:
-
-        - :func:`_survivor_rank` keeps the node whose id came from a declared
-          key, so the merged entity is the one the next re-sync of the table
-          finds again;
-        - :func:`_keep_declared_identities_apart` refuses to merge two rows of a
-          table into each other, whatever they are called — a mapping with a key
-          has already said they are two things;
-        - :meth:`_absorb` keeps every value the survivor holds, so a typed
-          value a table supplied is never overwritten by what prose said;
-        - labels never merge: the resolver's own cross-label merges are dropped,
-          as phase 1 already reports those rather than deciding them.
-
-        A structured node has no ``description``; its evidence is the typed
-        values the table signed onto it, which are rendered as one so the
-        resolver has something to judge against the document's sentence.
-        """
-        # Nothing without a name can be judged to be anything, so a nameless
-        # entity — a fact row keyed on a reading id — is not shown to the resolver.
-        entities = [e for e in await self._fetch_all_entities(batch_size) if e.get("name")]
-        if len(entities) < 2:
-            return 0
-        by_id = {entity["id"]: entity for entity in entities}
-        await self._describe_structured_entities(by_id)
-
-        nodes = []
-        for entity in entities:
-            properties: dict[str, Any] = {"name": entity["name"]}
-            if entity.get("description"):
-                properties["description"] = entity["description"]
-            label = entity["label"] or "__Entity__"
-            nodes.append(GraphNode(id=entity["id"], label=label, properties=properties))
-        relationships = await self._fetch_relates_edges(batch_size)
-        graph_data = GraphData(nodes=nodes, relationships=relationships)
-
-        # What this class knows and the resolver cannot: the pairs a previous run
-        # already decided against, the pairs phase 1 found undecidable, and the
-        # pairs a name rule says look like one thing — "M. Ellison" beside "Maya
-        # Ellison" — which an embedding cut tuned for one document's spellings
-        # would not surface.
-        decided = await self._fetch_distinct_pairs()
-        if decided is None:
-            self._protection_unavailable("phase 3 (resolver)")
-            return 0
-        undecidable = self._undecidable_pairs
-        # Two keyed nodes are two rows, and :func:`_keep_declared_identities_apart`
-        # would refuse the merge anyway; saying so up front saves the resolver a
-        # call per pair, and for a table of n rows that is most of the calls.
-        keyed = {e["id"] for e in entities if e.get("is_stub") is not None}
-        near = {
-            frozenset((miss.id_a, miss.id_b))
-            for miss in find_near_misses(entities)
-            if frozenset((miss.id_a, miss.id_b)) not in decided
-            and frozenset((miss.id_a, miss.id_b)) not in undecidable
-            and not {miss.id_a, miss.id_b} <= keyed
-        }
-        ctx = Context(
-            metadata={
-                RESOLUTION_SKIP_PAIRS: decided | undecidable,
-                RESOLUTION_DISTINCT_IDS: keyed,
-                RESOLUTION_ASK_PAIRS: near,
-            }
-        )
-
-        try:
-            result = await resolver.resolve(graph_data, ctx)
-        except Exception as exc:
-            logger.warning("Resolver %s failed over the graph: %s", type(resolver).__name__, exc)
-            return 0
-
-        rejected = set(ctx.metadata.get(RESOLUTION_REJECTED_PAIRS) or ()) - decided
-        await self._remember_distinct(rejected, by_id, type(resolver).__name__)
-
-        if not result.remap:
-            logger.info("EntityDeduplicator phase 3 (resolver): nothing to merge")
-            return 0
-
-        merged = 0
-        for members in _clusters(result.remap, by_id):
-            members.sort(key=_survivor_rank, reverse=True)
-            survivor = members[0]
-            duplicates = _keep_declared_identities_apart(survivor, members[1:])
-            duplicates = self._keep_undecidable_mentions_apart(survivor, duplicates, members)
-            for dup in duplicates:
-                if not await self._absorb(survivor, dup):
-                    continue
-                merged += 1
-                pair = f"{survivor['label']} {dup['name']!r} -> {survivor['name']!r}"
-                self.resolved_pairs.append(pair)
-                logger.info("Resolver merged %s", pair)
-
-        logger.info(f"EntityDeduplicator phase 3 (resolver): merged {merged} duplicates")
-        return merged
-
     def _keep_undecidable_mentions_apart(
         self,
         survivor: dict[str, Any],
         duplicates: list[dict[str, Any]],
         members: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Drop mentions the resolver put on a row without saying which row.
+        """Drop mentions the judge put on a row without saying which row.
 
-        The hints in ``ctx.metadata`` are advisory, and a strategy is free to
-        ignore them; the refusal has to hold here too. A mention is kept apart
-        when phase 1 found it between two rows, or when the cluster itself holds
-        two keyed rows and the mention — the same ambiguity, found by a resolver
-        that clustered all three. What remains is a mention the resolver paired
-        with exactly one row, which is a decision, not a coin toss.
+        A mention is kept apart when phase 1 found it between two rows, or when
+        the group itself holds two keyed rows and the mention — the same
+        ambiguity, reached by a judge that grouped all three. What remains is a
+        mention paired with exactly one row, which is a decision, not a coin
+        toss.
         """
         undecidable = self._undecidable_pairs
         if not undecidable and len({m["id"] for m in members if m.get("is_stub") is not None}) < 2:
@@ -1307,56 +1176,49 @@ class EntityDeduplicator:
             kept.append(dup)
         return kept
 
-    # ── Phase 4: LLM-judged cross-document dedup ──
+    # ── Phase 2: LLM-judged cross-document dedup ──
 
-    async def _deduplicate_with_judge(
-        self, judge_llm: LLMInterface, batch_size: int, vote: bool
-    ) -> int:
-        """Let the judge decide identity across the whole graph, then merge by our rules.
+    async def _deduplicate_with_judge(self, judge_llm: LLMInterface, batch_size: int) -> int:
+        """Let the judge decide identity for the new entities, then merge by our rules.
 
-        The judge (:class:`LLMJudgeDeduplicator`) nominates candidate pairs by
-        name and description similarity, has the model partition small sets
-        twice and keeps only the pairs both passes agree on. What it hands back
-        is *identity*; *how to merge* stays here, through the same
-        :meth:`_absorb` path as every other phase — the survivor is the one
-        :func:`_survivor_rank` picks, two keyed rows never fold into each other,
-        a mention two rows could own stays apart, and pairs a resolver already
-        judged distinct are neither asked nor merged. What the judge adds on top
-        of :meth:`_absorb` is the label union: an ``Organization`` in one file
-        and the same ``Company`` in another end up as one node carrying both.
-
-        The protection set is read first: if it cannot be, the phase does not
-        run (no model is called, nothing merges) and ``last_judge_stats`` says
-        so in ``skipped_reason``.
+        The judge (:class:`LLMJudgeDeduplicator`) nominates each new entity's
+        nearest names through the vector index and has the model partition
+        small sets once. What it hands back is *identity*; *how to merge* stays
+        here, through the same :meth:`_absorb` path as every other phase — the
+        survivor is the one :func:`_survivor_rank` picks, two keyed rows never
+        fold into each other, and a mention two rows could own stays apart.
+        What the judge adds on top of :meth:`_absorb` is the label union: an
+        ``Organization`` in one file and the same ``Company`` in another end up
+        as one node carrying both.
         """
-        decided = await self._fetch_distinct_pairs()
-        if decided is None:
-            self._protection_unavailable("phase 4 (judge)")
-            self.last_judge_stats = {"skipped_reason": "distinct_pairs_unavailable"}
-            return 0
-        entities = await self._fetch_all_entities(batch_size)
-        by_id = {entity["id"]: entity for entity in entities}
-        skip = decided | self._undecidable_pairs
-        # Two keyed nodes are two rows: _keep_declared_identities_apart would
-        # refuse the merge, so the judge is not asked — the same hint the
-        # resolver phase gets as RESOLUTION_DISTINCT_IDS.
-        keyed = {e["id"] for e in entities if e.get("is_stub") is not None}
+        skip = self._undecidable_pairs
 
-        async def merge_group(members: list[dict[str, Any]]) -> tuple[str, set[str]]:
-            return await self._merge_judged_group(members, by_id, skip)
+        async def merge_group(
+            members: list[dict[str, Any]], preferred_name: str | None = None
+        ) -> tuple[str, set[str]]:
+            # Fresh rows: an earlier group of this run may have changed them.
+            by_id = await self._fetch_entities_by_ids(m["id"] for m in members)
+            return await self._merge_judged_group(
+                members, by_id, skip, preferred_name=preferred_name
+            )
 
-        judge = LLMJudgeDeduplicator(self._graph, self._embedder, judge_llm, merge_group, vote=vote)
+        judge = LLMJudgeDeduplicator(self._graph, self._embedder, judge_llm, merge_group)
         try:
             self.last_judge_stats = await judge.deduplicate(
-                batch_size, skip_pairs=skip, distinct_ids=keyed
+                batch_size,
+                pending_ids=self._pending_ids,
+                skip_pairs=skip,
+                extra_pairs=self._judge_pairs,
             )
         except Exception as exc:
             logger.warning("LLM judge failed over the graph: %s", exc)
             # Merges committed before the failure are real; report them.
             self.last_judge_stats = dict(judge.last_stats)
+            self._unchecked_ids |= set(self._pending_ids)
             return int(self.last_judge_stats.get("merged", 0) or 0)
+        self._unchecked_ids |= judge.unjudged_ids
         merged = int(self.last_judge_stats.get("merged", 0) or 0)
-        logger.info(f"EntityDeduplicator phase 4 (judge): merged {merged} duplicates")
+        logger.info(f"EntityDeduplicator phase 2 (judge): merged {merged} duplicates")
         return merged
 
     async def _merge_judged_group(
@@ -1364,12 +1226,20 @@ class EntityDeduplicator:
         members: list[dict[str, Any]],
         by_id: dict[str, dict[str, Any]],
         skip: set[frozenset[str]],
+        preferred_name: str | None = None,
     ) -> tuple[str, set[str]]:
         """Merge one group the judge agreed on; ``(survivor id, ids absorbed)``.
 
+        ``preferred_name`` is the judge's best name for the group (one of its
+        members' names or aliases). The survivor is still picked by
+        :func:`_survivor_rank` — that decides which node, edges and id remain —
+        but it takes this name, and its own moves into ``aliases``: "AAPL" can
+        win on connections and still read "Apple Inc.". A table row keeps the
+        name its table declared.
+
         ``members`` are the judge's rows (they carry every label of each node);
-        the merge ranks and folds the rows :meth:`_fetch_all_entities` read, so
-        a table's row survives a mention by the same rule as phase 1 and 3.
+        the merge ranks and folds the rows :meth:`_fetch_entities_by_ids` read,
+        so a table's row survives a mention by the same rule as phase 1.
         The loser's labels go onto the survivor in the same statement that
         deletes it, so a failed write cannot leave a label behind with the node.
         """
@@ -1386,11 +1256,11 @@ class EntityDeduplicator:
         absorbed: set[str] = set()
         for dup in duplicates:
             # Transitivity can put a pair the model never saw as a candidate into
-            # one group; a NO remembered on the graph still holds — against the
-            # survivor and against everything already folded into it.
+            # one group; a pair phase 1 found undecidable still holds — against
+            # the survivor and against everything already folded into it.
             if any(frozenset((dup["id"], other)) in skip for other in (survivor["id"], *absorbed)):
                 logger.info(
-                    "Not merging %s into %s: the pair was already decided distinct",
+                    "Not merging %s into %s: the pair was already found undecidable",
                     dup["id"],
                     survivor["id"],
                 )
@@ -1403,137 +1273,44 @@ class EntityDeduplicator:
             logger.info(
                 "Judge merged %s %r -> %r", survivor["label"], dup["name"], survivor["name"]
             )
+        if (
+            absorbed
+            and preferred_name
+            and survivor.get("is_stub") is None
+            and preferred_name.strip() != str(survivor.get("name") or "").strip()
+        ):
+            await self._rename_survivor(survivor, preferred_name.strip())
         return survivor["id"], absorbed
 
-    async def _describe_structured_entities(self, by_id: dict[str, dict[str, Any]]) -> None:
-        """Give each structured entity a description made of its signed values.
+    async def _rename_survivor(self, survivor: dict[str, Any], name: str) -> None:
+        """Give a merged node the judge's best name; the old one becomes an
+        alias, and the new one leaves the alias list. The id does not change.
 
-        ``employees__employee_id: E-3, employees__age: 39``
-        becomes ``employees: employee_id E-3, age 39`` — the
-        table named, because that is where the facts came from, and readable
-        enough for a resolver's prompt to set beside a sentence of prose.
-        Entities that already have a description, and every extracted entity,
-        are left as they are.
-        """
-        wanted = [
-            eid
-            for eid, entity in by_id.items()
-            if entity.get("is_stub") is not None and not entity.get("description")
-        ]
-        if not wanted:
-            return
+        The name vector is the old name's, so it is replaced with the new
+        name's; if that cannot be embedded it is removed, and the embedding
+        backfill writes it."""
         try:
-            result = await self._graph.query_raw(
-                "MATCH (e:__Entity__) WHERE e.id IN $ids RETURN e.id, properties(e)",
-                {"ids": wanted},
-            )
+            vector = list((await self._embedder.aembed_documents([name]))[0] or [])
         except Exception:
-            logger.debug("Could not read structured entity properties", exc_info=True)
-            return
-        for row in result.result_set or []:
-            props = row[1] or {}
-            by_table: dict[str, list[str]] = {}
-            for key, value in props.items():
-                table, sep, prop = key.partition("__")
-                if not sep or not prop or value in (None, "", []):
-                    continue
-                by_table.setdefault(table, []).append(f"{prop} {value}")
-            if by_table:
-                by_id[row[0]]["description"] = "; ".join(
-                    f"{table}: {', '.join(facts)}" for table, facts in sorted(by_table.items())
-                )
-
-    async def _fetch_relates_edges(self, batch_size: int) -> list[GraphRelationship]:
-        """Every RELATES edge between entities, as the resolver's neighbourhood."""
-        offset = 0
-        edges: list[GraphRelationship] = []
-        for _ in range(_MAX_PAGINATION_ITERATIONS):
-            result = await self._graph.query_raw(
-                "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
-                "RETURN a.id, b.id, coalesce(r.rel_type, 'RELATES') "
-                "SKIP $offset LIMIT $limit",
-                {"offset": offset, "limit": batch_size},
-            )
-            if not result.result_set:
-                break
-            for start, end, rel_type in result.result_set:
-                edges.append(GraphRelationship(start_node_id=start, end_node_id=end, type=rel_type))
-            offset += batch_size
-        else:
-            logger.error(
-                "Pagination exceeded %d iterations in _fetch_relates_edges — aborting",
-                _MAX_PAGINATION_ITERATIONS,
-            )
-        return edges
-
-    async def _fetch_distinct_pairs(self) -> set[frozenset[str]] | None:
-        """Pairs a resolver judged to be two things on an earlier run.
-
-        ``None`` when the read fails: an unavailable protection set is not an
-        empty one. Every phase that merges (fuzzy, resolver, judge) skips its
-        run on ``None`` — the same rule :meth:`_absorb` follows when it cannot
-        read both nodes — because proceeding blind could ``DETACH DELETE`` a
-        node someone already decided is a different thing. Only the near-miss
-        report, which merges nothing, treats ``None`` as nothing to leave out.
-        """
-        try:
-            result = await self._graph.query_raw(
-                f"MATCH (a:__Entity__)-[:{DISTINCT_FROM}]-(b:__Entity__) RETURN a.id, b.id"
-            )
-        except Exception as exc:
-            logger.warning("Could not read %s edges: %s", DISTINCT_FROM, exc)
-            logger.debug("Could not read %s edges", DISTINCT_FROM, exc_info=True)
-            return None
-        return {frozenset((a, b)) for a, b in result.result_set or [] if a != b}
-
-    @staticmethod
-    def _protection_unavailable(phase: str) -> None:
-        logger.warning(
-            "EntityDeduplicator %s skipped: the %s pairs could not be read, and a merge "
-            "that cannot see which pairs were already judged distinct is not safe to make",
-            phase,
-            DISTINCT_FROM,
-        )
-
-    async def _remember_distinct(
-        self, pairs: set[frozenset[str]], by_id: dict[str, dict[str, Any]], decided_by: str
-    ) -> None:
-        """Write the resolver's NO answers to the graph, so they are not asked again.
-
-        An edge rather than a property: it goes when either node goes, which is
-        exactly when the answer stops applying — a document deleted, or re-read
-        so its entity is extracted afresh — and it is never copied onto a
-        survivor by a merge, where it would name a node that no longer exists.
-        """
-        rows = []
-        for pair in pairs:
-            ids = sorted(pair)
-            if len(ids) == 2 and all(node_id in by_id for node_id in ids):
-                rows.append({"a": ids[0], "b": ids[1]})
-                label = by_id[ids[0]].get("label") or ""
-                self.rejected_pairs.append(
-                    f"{label} {by_id[ids[0]]['name']!r} | {by_id[ids[1]]['name']!r}"
-                )
-        if not rows:
-            return
+            logger.debug("Could not embed renamed survivor %s", survivor["id"], exc_info=True)
+            vector = []
+        set_vector = "s.embedding = vecf32($v)" if vector else None
         try:
             await self._graph.query_raw(
-                "UNWIND $rows AS row "
-                "MATCH (a:__Entity__ {id: row.a}), (b:__Entity__ {id: row.b}) "
-                f"MERGE (a)-[d:{DISTINCT_FROM}]->(b) SET d.decided_by = $decided_by",
-                {"rows": rows, "decided_by": decided_by},
+                "MATCH (s:__Entity__ {id: $id}) "
+                "WITH s, coalesce(s.aliases, []) + [s.name] AS names "
+                "SET s.name = $name, "
+                "s.aliases = reduce(acc = [], a IN names | "
+                "CASE WHEN a = $name OR a IN acc THEN acc ELSE acc + [a] END)"
+                + (f", {set_vector}" if set_vector else " REMOVE s.embedding"),
+                {"id": survivor["id"], "name": name, "v": vector},
             )
-        except Exception:
-            logger.warning(
-                "Could not record %d %s pair(s)", len(rows), DISTINCT_FROM, exc_info=True
-            )
-            self.rejected_pairs = []
-            return
-        logger.info(
-            "Resolver %s judged %d pair(s) distinct; remembered so they are not asked again",
-            decided_by,
-            len(rows),
-        )
+            if vector:
+                self._name_embedded_ids.add(survivor["id"])
+            logger.info("Judge named merged %s %r -> %r", survivor["label"], survivor["name"], name)
+        except Exception as exc:
+            # The merge stands; only the display name was not changed.
+            logger.warning("Could not rename %s to %r: %s", survivor["id"], name, exc)
 
     # ── Helpers ──
 
@@ -1687,50 +1464,26 @@ class EntityDeduplicator:
         does not promise the order ``labels(e)`` returns them in; taking the
         first would let an ``Organization`` that absorbed a ``Company`` report
         either on a later run, and the label is a grouping key in the exact
-        phase, the cross-type guard in the fuzzy phase and what a resolver is
-        shown. The primary label is the first one *not* recorded in
+        phase. The primary label is the first one *not* recorded in
         ``merged_labels`` — the ones a merge added — so it stays what the node
         was written as.
         """
-        offset = 0
+        # Keyset paging (ORDER BY id, WHERE id > last), with the degree computed
+        # only for the page: SKIP re-walked and re-counted every skipped row,
+        # which made a full read quadratic in the number of entities.
+        last = ""
         entities: list[dict[str, Any]] = []
         for _ in range(_MAX_PAGINATION_ITERATIONS):
             result = await self._graph.query_raw(
-                "MATCH (e:__Entity__) "
-                "RETURN e.id AS id, e.name AS name, e.description AS desc, "
-                "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
-                f"e.aliases AS aliases, e.is_stub AS is_stub, {_DEGREE_EXPR} AS degree, "
-                "[l IN labels(e) WHERE l <> '__Entity__'] AS labels, "
-                f"e.{MERGED_LABELS_KEY} AS merged_labels "
-                "SKIP $offset LIMIT $limit",
-                {"offset": offset, "limit": batch_size},
+                "MATCH (e:__Entity__) WHERE e.id > $last "
+                f"WITH e ORDER BY e.id LIMIT $limit {_ENTITY_RETURN}",
+                {"last": last, "limit": batch_size},
             )
-            if not result.result_set:
+            rows = result.result_set or []
+            entities.extend(_entity_from_row(row) for row in rows)
+            if len(rows) < batch_size:
                 break
-            for row in result.result_set:
-                aliases = row[4] if len(row) > 4 and isinstance(row[4], list) else []
-                labels = _string_list(row[7]) if len(row) > 7 else []
-                absorbed = split_merged_labels(row[8]) if len(row) > 8 else []
-                label = row[3] if len(row) > 3 and row[3] else ""
-                if labels:
-                    # Every label on record as absorbed leaves no primary to
-                    # prefer; the smallest is at least the same one every run.
-                    label = next((lab for lab in labels if lab not in absorbed), min(labels))
-                entities.append(
-                    {
-                        "id": row[0],
-                        "name": row[1] if len(row) > 1 and row[1] else str(row[0]),
-                        "description": row[2] if len(row) > 2 and row[2] else "",
-                        "label": label,
-                        "labels": labels or ([label] if label else []),
-                        "aliases": [a for a in aliases if isinstance(a, str)],
-                        # Only a table write sets is_stub (False for a row, True
-                        # for a placeholder), so its presence marks a keyed node.
-                        "is_stub": row[5] if len(row) > 5 else None,
-                        "degree": row[6] if len(row) > 6 else 0,
-                    }
-                )
-            offset += batch_size
+            last = rows[-1][0]
         else:
             logger.error(
                 "Pagination exceeded %d iterations in _fetch_all_entities — aborting",
@@ -1738,8 +1491,199 @@ class EntityDeduplicator:
             )
         return entities
 
-    # Written by the system, never carried across from a duplicate.
-    _NEVER_CARRY = frozenset({"id", "embedding", *LEGACY_DESC_KEYS})
+    async def _fetch_pending_entities(self, batch_size: int) -> list[dict[str, Any]]:
+        """Entities ingest flagged ``dedup_pending`` that no finalize has
+        checked yet.
+
+        These are the only query points of a dedup run; everything else is
+        reached from them through the vector index, so a run costs what was
+        added since the last one, not the size of the graph.
+        """
+        last = ""
+        entities: list[dict[str, Any]] = []
+        while True:
+            result = await self._graph.query_raw(
+                f"MATCH (e:__Entity__) WHERE e.{DEDUP_PENDING_KEY} = true AND e.id > $last "
+                f"WITH e ORDER BY e.id LIMIT $limit {_ENTITY_RETURN}",
+                {"last": last, "limit": batch_size},
+            )
+            rows = result.result_set or []
+            entities.extend(_entity_from_row(row) for row in rows)
+            if len(rows) < batch_size:
+                return entities
+            last = rows[-1][0]
+
+    async def _fetch_entities_by_ids(
+        self, ids: Iterable[str], batch_size: int = 500
+    ) -> dict[str, dict[str, Any]]:
+        """The current rows of ``ids`` that still exist, by id."""
+        wanted = list(dict.fromkeys(ids))
+        out: dict[str, dict[str, Any]] = {}
+        for k in range(0, len(wanted), batch_size):
+            result = await self._graph.query_raw(
+                f"UNWIND $ids AS id MATCH (e:__Entity__ {{id: id}}) WITH e {_ENTITY_RETURN}",
+                {"ids": wanted[k : k + batch_size]},
+            )
+            for row in result.result_set or []:
+                ent = _entity_from_row(row)
+                out[ent["id"]] = ent
+        return out
+
+    async def _fetch_name_neighbours(
+        self, pending: list[dict[str, Any]], batch_size: int
+    ) -> list[dict[str, Any]]:
+        """Entities already in the graph nearest by name to ``pending``, read
+        through the ``__Entity__.embedding`` vector index (the name vectors
+        missing on the new entities are embedded and stored first — they are
+        the retrieval vectors, written once). A failed lookup is not fatal:
+        the new entities are then matched among themselves only."""
+        # Only a neighbour the exact phase could group with a new entity is
+        # read in full: the same canonical name, or an acronym / long-form
+        # pair. The rest are the judge's business, which reads its own.
+        keys: set[str] = set()
+        acronyms: set[str] = set()
+        initials: set[str] = set()
+        for ent in pending:
+            norm = normalize_entity_name(ent["name"])
+            keys.add(canonical_key(ent["name"]) or ent["name"].strip().lower())
+            if (acr := _acronym_key(norm)) is not None:
+                acronyms.add(acr)
+            if (exp := _expansion_key(norm)) is not None:
+                initials.add(exp)
+
+        def could_group(name: str) -> bool:
+            norm = normalize_entity_name(name)
+            return (
+                (canonical_key(name) or name.strip().lower()) in keys
+                or _acronym_key(norm) in initials
+                or _expansion_key(norm) in acronyms
+            )
+
+        index = NameNeighbourIndex(self._graph, self._embedder)
+        try:
+            rows = await index.fetch_by_ids([ent["id"] for ent in pending], batch_size)
+            vecs = await index.name_vectors(rows)
+            self._name_embedded_ids |= index._embedded_ids
+            # An entity the embedder returned no vector for gets no neighbour
+            # lookup: it stays pending, like one whose lookup failed.
+            self._unchecked_ids |= {row["id"] for row in rows if not row["embedding"]}
+            if not rows or vecs.shape[1] == 0:
+                return []
+            await index.ensure_vector_index(vecs.shape[1])
+            k = _EXACT_NEIGHBOUR_K
+            hits = await index.neighbours(rows, k, 0.0)
+            # A new entity whose k nearest names are all matches may have more
+            # beyond them: ask again, wider, for those entities only.
+            while k < _EXACT_NEIGHBOUR_K_MAX:
+                found: dict[int, list[dict[str, Any]]] = defaultdict(list)
+                for pi, ent, _ in hits:
+                    found[pi].append(ent)
+                full = [
+                    pi
+                    for pi, ents in found.items()
+                    if len(ents) >= k and all(could_group(e["name"]) for e in ents)
+                ]
+                if not full:
+                    break
+                k = min(k * 10, _EXACT_NEIGHBOUR_K_MAX)
+                wider = await index.neighbours([rows[pi] for pi in full], k, 0.0)
+                widened = set(full)
+                hits = [h for h in hits if h[0] not in widened] + [
+                    (full[i], ent, sim) for i, ent, sim in wider
+                ]
+        except Exception as exc:
+            logger.warning(
+                "Exact phase: nearest-name lookup failed (%s); matching the new "
+                "entities among themselves only",
+                exc,
+            )
+            self._unchecked_ids |= {ent["id"] for ent in pending}
+            return []
+        pending_ids = {ent["id"] for ent in pending}
+        self._near_ids = list(
+            dict.fromkeys(ent["id"] for _, ent, _ in hits if ent["id"] not in pending_ids)
+        )
+        ids = [
+            ent["id"]
+            for _, ent, _ in hits
+            if ent["id"] not in pending_ids and could_group(ent["name"])
+        ]
+        return list((await self._fetch_entities_by_ids(ids, batch_size)).values())
+
+    async def _count_names_embedded(self) -> None:
+        """Name vectors this run wrote that are still in the graph: a vector
+        written to a node a merge then deleted is not one the graph holds."""
+        ids = list(self._name_embedded_ids)
+        if not ids:
+            return
+        try:
+            result = await self._graph.query_raw(
+                "UNWIND $ids AS id MATCH (e:__Entity__ {id: id}) RETURN count(e)", {"ids": ids}
+            )
+            self.names_embedded = int((result.result_set or [[0]])[0][0] or 0)
+        except Exception:
+            logger.debug("Could not count the name vectors written", exc_info=True)
+            self.names_embedded = len(ids)
+
+    async def _record_failed_checks(self, ids: list[str], batch_size: int) -> set[str]:
+        """Count one more failed check on ``ids`` and keep them flagged (a
+        ``dedup_all`` run reads entities that had no flag, and they need one to
+        be retried). Returns the ids that have now failed ``MAX_DEDUP_ATTEMPTS``
+        times: retrying them every run would cost the same calls forever, so
+        they are cleared with the rest and named in a warning."""
+        given_up: dict[str, str] = {}
+        for k in range(0, len(ids), batch_size):
+            try:
+                result = await self._graph.query_raw(
+                    "UNWIND $ids AS id MATCH (e:__Entity__ {id: id}) "
+                    f"SET e.{DEDUP_PENDING_KEY} = true, "
+                    f"e.{DEDUP_ATTEMPTS_KEY} = coalesce(e.{DEDUP_ATTEMPTS_KEY}, 0) + 1 "
+                    f"RETURN e.id, e.name, e.{DEDUP_ATTEMPTS_KEY}",
+                    {"ids": ids[k : k + batch_size]},
+                )
+                for eid, name, attempts in result.result_set or []:
+                    if int(attempts or 0) >= MAX_DEDUP_ATTEMPTS:
+                        given_up[eid] = str(name or eid)
+            except Exception:
+                # Still flagged: the count is only for giving up, never for retrying.
+                logger.debug("Could not record failed dedup checks", exc_info=True)
+        if given_up:
+            logger.warning(
+                "%d entities could not be checked for duplicates in %d runs and are no "
+                "longer retried: %s",
+                len(given_up),
+                MAX_DEDUP_ATTEMPTS,
+                ", ".join(sorted(given_up.values())[:10]),
+            )
+        return set(given_up)
+
+    async def _clear_pending(self, ids: list[str], batch_size: int) -> None:
+        """Remove the ``dedup_pending`` flag from ``ids`` — only the ones this
+        run read, so an entity ingested while it ran stays flagged for the next.
+        Ids a merge deleted simply match nothing."""
+        for k in range(0, len(ids), batch_size):
+            try:
+                # One property per statement: on FalkorDB 4.18 a REMOVE (or SET
+                # to null) of two properties on a node holding a vector removed
+                # the wrong ones, the name embedding among them. The counter
+                # goes first: if the second statement fails, the node is still
+                # flagged, and no stale count is left on a node without the flag.
+                # Only nodes that carry the property: a no-op REMOVE is a write.
+                for key in (DEDUP_ATTEMPTS_KEY, DEDUP_PENDING_KEY):
+                    await self._graph.query_raw(
+                        "UNWIND $ids AS id MATCH (e:__Entity__ {id: id}) "
+                        f"WHERE e.{key} IS NOT NULL REMOVE e.{key}",
+                        {"ids": ids[k : k + batch_size]},
+                    )
+            except Exception:
+                # Still flagged: simply checked again next time.
+                logger.warning(
+                    "Could not clear dedup_pending on %d entities", len(ids[k : k + batch_size])
+                )
+
+    # Written by the system, never carried across from a duplicate. The dedup
+    # flag too: a survivor's own state decides whether it is still pending.
+    _NEVER_CARRY = frozenset({"id", "embedding", DEDUP_PENDING_KEY, DEDUP_ATTEMPTS_KEY})
 
     async def _remap_entity_edges(self, dup_id: str, survivor_id: str) -> bool:
         """Remap all RELATES and MENTIONED_IN edges from duplicate to survivor.

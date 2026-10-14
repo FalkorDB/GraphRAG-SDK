@@ -225,7 +225,7 @@ for entry in result.modified:
 
 `apply_changes()` does not itself touch the graph — it dispatches to the primitives documented above and aggregates their results. Two whole-batch consequences worth knowing:
 
-- **No automatic `finalize()`.** Cross-document deduplication is O(graph size), so the batch deliberately leaves it to the caller. Call `finalize()` once after the batch, not once per file.
+- **No automatic `finalize()`.** Call `finalize()` once after the batch, not once per file. Its dedup checks only the entities the batch added (flagged `dedup_pending` at ingest), so one call covers the whole batch and a second call with nothing pending does no dedup work (an entity whose check failed stays pending and is retried, up to 3 runs). A graph built before `dedup_pending` existed has no flags: run `finalize(dedup_all=True)` once.
 - **Peak entity cardinality is minimised** because deletes run first — orphan candidates are gone before adds can re-introduce overlapping ids.
 
 ### Canonical CI usage
@@ -261,21 +261,25 @@ result = await rag.finalize()
 FinalizeResult(
     null_stubs_removed:     int,
     entities_deduplicated:  int,
+    judge_llm_calls:        int,
+    judge_stats:            dict[str, int | str],
     entities_embedded:      int,
     relationships_embedded: int,
     indexes:                dict[str, bool],
+    # plus the report lists: probable_duplicates, unmerged_name_collisions,
+    # property_conflicts, ... — see the API reference
 )
 ```
 
 ### What it does (in order)
 
 1. Removes NULL-name stub entities (legacy cleanup).
-2. `deduplicate_entities()` — global exact-name dedup across all documents.
+2. `deduplicate_entities()` — incremental: entities added since the last `finalize()` are checked against the whole graph (exact-name and acronym match, then one LLM judge pass over their nearest names).
 3. `backfill_entity_embeddings()` — embeds entity names that have no embedding yet (incremental-safe).
 4. `embed_relationships()` — embeds fact text on `RELATES` edges.
 5. `ensure_indices()` — rebuilds/verifies all indexes.
 
-Steps 2 and 3 are why `apply_changes()` does not call it automatically: they scan the whole graph and would re-run on every file in a batch.
+`apply_changes()` does not call it automatically: one `finalize()` after the batch judges all of the batch's new entities together, in fewer LLM calls than one per file.
 
 ---
 

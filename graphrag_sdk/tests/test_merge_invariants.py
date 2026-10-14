@@ -435,17 +435,27 @@ class TestJudgeMergeSite:
 
         async def query_raw(self, cypher, params=None):
             self.calls.append((cypher, params or {}))
-            if "SKIP" in cypher:
-                rows = self.page if params.get("offset", 0) == 0 else []
+            if "WHERE e.dedup_pending = true" in cypher:
+                rows = self.page if not params.get("last") else []
                 return SimpleNamespace(result_set=list(rows))
+            if "MATCH (e:__Entity__ {id: id}) WITH e" in cypher:
+                return SimpleNamespace(result_set=[r for r in self.page if r[0] in params["ids"]])
+            if "db.idx.vector.queryNodes" in cypher:
+                # Every entity is every other's nearest neighbour (distance 0).
+                return SimpleNamespace(
+                    result_set=[
+                        [it["i"], 0.0, *row]
+                        for it in params["items"]
+                        for row in self.rows
+                        if row[0] != it["id"]
+                    ]
+                )
             if "RETURN e.id, e.name, e.description" in cypher:
                 return SimpleNamespace(result_set=list(self.rows))
             if "properties(k), properties(d)" in cypher:
                 return _props_read(self.page, params)
             if "DETACH DELETE dup RETURN s.id" in cypher:
                 return SimpleNamespace(result_set=[[params["survivor_id"]]])
-            if "SAME_AS" in cypher:
-                return SimpleNamespace(result_set=[[params["a"]]])
             return SimpleNamespace(result_set=[])
 
     class _Emb:
@@ -468,7 +478,7 @@ class TestJudgeMergeSite:
         ]
         g = self._Graph(rows)
         dd = EntityDeduplicator(g, self._Emb())
-        merged = asyncio.run(dd.deduplicate(judge_llm=self._LLM(), judge_vote=False))
+        merged = asyncio.run(dd.deduplicate(judge_llm=self._LLM()))
         assert merged == 1 and dd.last_judge_stats["merged"] == 1
         (upd,) = [c for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
         # rule 1: list (survivor = longest description "Toulouse group" first) + join

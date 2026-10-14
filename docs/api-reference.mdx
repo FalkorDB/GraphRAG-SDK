@@ -82,7 +82,7 @@ async def ingest(
 
 Build a knowledge graph from one or more sources. Auto-detects loader from file extension. When a list of sources is provided, documents are ingested in parallel with bounded concurrency.
 
-A `.csv`, `.tsv`, `.psv` or `.tab` is read as **records, not prose**: its mapping is looked up in the ontology by filename (see [Structured Ingestion](#structured-ingestion)), no model is called, and a `StructuredIngestionResult` is returned. A table may not appear in a list — each is written on its own — and `chunker`/`extractor`/`resolver` are rejected for one; identity across sources is judged by `finalize(resolver=...)`. Pass `loader=TextLoader()` to read a CSV as prose anyway.
+A `.csv`, `.tsv`, `.psv` or `.tab` is read as **records, not prose**: its mapping is looked up in the ontology by filename (see [Structured Ingestion](#structured-ingestion)), no model is called, and a `StructuredIngestionResult` is returned. A table may not appear in a list — each is written on its own — and `chunker`/`extractor`/`resolver` are rejected for one; identity across sources is judged by `finalize()`. Pass `loader=TextLoader()` to read a CSV as prose anyway.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -94,7 +94,7 @@ A `.csv`, `.tsv`, `.psv` or `.tab` is read as **records, not prose**: its mappin
 | `loader` | `LoaderStrategy \| None` | `None` | Custom loader (auto-detect if None) |
 | `chunker` | `ChunkingStrategy \| None` | `None` | Custom chunker (`SentenceTokenCapChunking()` if None). Rejected for a table. |
 | `extractor` | `ExtractionStrategy \| None` | `None` | Custom extractor (GraphExtraction if None). Rejected for a table. |
-| `resolver` | `ResolutionStrategy \| None` | `None` | Custom resolver (ExactMatchResolution if None; cross-document dedup is `finalize()`'s resolver and judge phases) |
+| `resolver` | `ResolutionStrategy \| None` | `None` | Custom resolver (ExactMatchResolution if None; cross-document dedup is `finalize()`'s exact-name and judge phases) |
 | `max_concurrency` | `int` | `3` | Max parallel ingestions (list input only) |
 | `ctx` | `Context \| None` | `None` | Execution context |
 
@@ -211,22 +211,21 @@ Take a table out of the graph: its Document and record chunks (and any entity on
 ```python
 async def deduplicate_entities(
     *,
-    fuzzy: bool = False,
-    similarity_threshold: float = 0.95,
     batch_size: int = 500,
-    resolver: ResolutionStrategy | None = None,
     judge: bool = False,
     judge_llm: LLMInterface | None = None,
-    judge_vote: bool = True,
+    dedup_all: bool = False,
+    fuzzy: bool | None = None,                # deprecated: False is ignored, True raises
+    similarity_threshold: float | None = None,  # deprecated and ignored
 ) -> int
 ```
 
 Post-ingestion entity deduplication across all documents. The LLM-judged phase is **opt-in** here (`judge=False`); `finalize()` runs it by default (`judge=True`).
 
-- **Phase 1** (always): Canonical name match — case, accents, punctuation, inner dots (`A.I.` = `AI`), a leading English article, `Surname, Given` inversion, common abbreviations and one trailing legal form (`Ltd`, `Inc`) are normalised; word order is not. An acronym joins its unique same-label long form. Keeps the survivor ranked by declared key, real-over-placeholder, long form over acronym, degree, then description length; merges the duplicate's description (`" | "`-joined, members kept in `descriptions`), `aliases`, `source_chunk_ids` and any property the survivor lacks into it; remaps RELATES and MENTIONED_IN edges; deletes duplicates.
-- **Phase 2** (optional, `fuzzy=True`): Embedding-based -- embeds entity names, finds near-duplicates by cosine similarity.
-- **Phase 3** (optional, `resolver=`): A `ResolutionStrategy` judges the remaining pairs across documents and tables. `finalize()` passes one by default.
-- **Phase 4** (opt-in here with `judge=True`; on by default in `finalize()`): LLM-judged cross-document dedup -- name/description embeddings and name-in-description nominate candidate pairs, dense sets of ≤ 8 (more than half of a set's pairs must be nominated, so a chain A–B–C–D cannot form), the judge partitions each set; with `judge_vote=True` (default) a second shuffled pass must agree, and pairs only one pass grouped become `SAME_AS` edges (`agreement=1`); with `judge_vote=False` the single pass decides and nothing is linked for disagreement — only a pair that reached across two sets is linked rather than merged, stamped with the number of passes that saw it (`agreement=2` with the vote, `1` without). Agreed pairs merge by the same rules as every other phase (the survivor additionally gains every member's label, recorded in `merged_labels`); pairs a resolver remembered as `DISTINCT_FROM`, two keyed rows of a table, and a mention two such rows could own are never asked. Agreements are unioned within one set only, so two sets sharing a member never chain into one merge. Description vectors are computed each run and never written to the graph (any vectors an earlier build left on entity nodes are removed). If the `DISTINCT_FROM` pairs cannot be read, the phase is skipped with a warning and `last_judge_stats` holds `skipped_reason` instead of counts. `judge_llm` defaults to the GraphRAG LLM (gpt-4.1-class recommended); given without `judge=True` it is ignored, with a warning. Without a `resolver` and with `judge` off — the defaults of this method — no model is called. Stats in `_deduplicator.last_judge_stats`.
+It is **incremental**: ingest flags every entity node it creates with `dedup_pending = true`, and only flagged entities are checked — against the whole graph, through the `__Entity__` vector index, never by reading every entity. The flag is removed when the run ends (kept on an entity whose check did not complete — a failed lookup, judge call or merge write, an answer that was not a full partition, or no name vector — so the next run retries it, up to 3 runs), so a second call with nothing pending does no work. `dedup_all=True` checks every entity instead; run it once on a graph built before the flag existed.
+
+- **Phase 1** (always): Canonical name match between the flagged entities and their nearest names from the vector index — case, accents, punctuation, inner dots (`A.I.` = `AI`), a leading English article, `Surname, Given` inversion, common abbreviations and one trailing legal form (`Ltd`, `Inc`) are normalised; word order is not. An acronym joins its unique same-label long form. A group holding a table row merges here, by rule; a group of extracted mentions only goes to the judge when it runs (Phase 2). Keeps the survivor ranked by declared key, real-over-placeholder, long form over acronym, degree, description length, then name length; merges the duplicate's description (`" | "`-joined, members kept in `descriptions`), `aliases`, `source_chunk_ids` and any property the survivor lacks into it; remaps RELATES and MENTIONED_IN edges; deletes duplicates.
+- **Phase 2** (opt-in here with `judge=True`; on by default in `finalize()`): LLM-judged cross-document dedup -- each new entity's 5 nearest names from the vector index (cosine ≥ 0.5) and Phase 1's same-spelling mention pairs and ambiguous acronym/long-form pairs nominate candidates, dense sets of ≤ 8 (more than half of a set's pairs must be nominated, so a chain A–B–C–D cannot form one set; agreements in separate sets still chain, see below), and the judge partitions each set **once**, reading names, labels, existing aliases and descriptions, and names each merged group. Agreed pairs merge by the same rules as Phase 1 (the survivor additionally gains every member's label, recorded in `merged_labels`, and takes the judge's name when it is one of the members' names or aliases, except a table row, which keeps its declared name); agreements chain across sets. A "different" answer writes nothing. Two keyed rows of a table, and a mention two such rows could own, are never asked. Descriptions are not embedded. `judge_llm` defaults to the GraphRAG LLM (gpt-4.1-class recommended); given without `judge=True` it is ignored, with a warning. With `judge` off — the default of this method — no model is called. Stats in `_deduplicator.last_judge_stats`.
 
 Call once after all documents are ingested.
 
@@ -237,30 +236,27 @@ Call once after all documents are ingested.
 ```python
 async def finalize(
     *,
-    resolver: ResolutionStrategy | None = None,
-    resolve: bool = True,
     judge: bool = True,
     judge_llm: LLMInterface | None = None,
-    judge_vote: bool = True,
+    dedup_all: bool = False,
 ) -> FinalizeResult
 ```
 
 Run all post-ingestion steps after all documents and tables are ingested. Bundles:
-1. `deduplicate_entities(resolver=..., judge=..., judge_llm=..., judge_vote=...)` -- canonical-name dedup, then the resolver across sources, then the LLM-judged cross-document phase (which embeds and stores the names it reads)
-2. `backfill_entity_embeddings()` -- name embeddings on every entity still missing one, after dedup so a duplicate about to be removed is not embedded first; `entities_embedded` counts this step's vectors plus the judge's
-3. `embed_relationships()` -- fact text embeddings on RELATES edges
-4. `ensure_indices()` -- all indexes
-5. A consistency report over the whole graph
+1. Remove NULL-name stub entities left by legacy writes (only nodes no mapping wrote)
+2. `deduplicate_entities(judge=..., judge_llm=..., dedup_all=...)` -- incremental: the entities still flagged `dedup_pending` (added since the last dedup run, `finalize()` or `deduplicate_entities()`) get canonical-name and acronym dedup, then one LLM judge pass over their nearest names (it embeds and stores the names it reads)
+3. `backfill_entity_embeddings()` -- name embeddings on every entity still missing one, after dedup so a duplicate about to be removed is not embedded first; `entities_embedded` counts this step's vectors plus dedup's
+4. `embed_relationships()` -- fact text embeddings on RELATES edges
+5. `ensure_indices()` -- all indexes
+6. A consistency report over the whole graph
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `resolver` | `ResolutionStrategy \| None` | `None` | Judges whether two entities from different sources are one. Defaults to `LLMVerifiedResolution` over the instance's `llm` and `embedder`, asking the model about pairs from cosine 0.6 — the only place a table's "Priya Raman" and a note's "Ms. Raman" meet. Each pair is asked once; a NO is remembered as a `DISTINCT_FROM` edge. |
-| `resolve` | `bool` | `True` | `False` skips the resolver entirely. |
-| `judge` | `bool` | `True` | Run the LLM-judged cross-document phase after the resolver: similarity nominates candidate sets, the judge model partitions them (twice with `judge_vote`), only agreed pairs merge, disagreements become `SAME_AS` edges. `False` skips it but the resolver still runs over the GraphRAG LLM; `resolve=False, judge=False` calls no model at all. |
+| `judge` | `bool` | `True` | Run the LLM-judged cross-document phase over the entities added since the last `finalize()`: the vector index nominates candidate sets, the judge model partitions them once, agreed pairs merge, nothing is written for the rest. `False` is exact-name dedup only, no model called. |
 | `judge_llm` | `LLMInterface \| None` | `None` | Judge model; defaults to the instance's `llm`. A gpt-4.1-class model is recommended (9 wrong merges vs 51 for gpt-4o-mini on the benchmark corpus). |
-| `judge_vote` | `bool` | `True` | Require the second shuffled pass to agree before merging. `False` halves judge LLM cost at ~3x the wrong-merge rate. |
+| `dedup_all` | `bool` | `False` | Check every entity instead of only those ingested since the last `finalize()`. Run it once on a graph built before the `dedup_pending` flag existed. |
 
-**Returns:** `FinalizeResult` — counts `entities_deduplicated`, `entities_linked` (judge `SAME_AS` edges), `judge_llm_calls`, `judge_stats`, `entities_embedded`, `relationships_embedded`, `null_stubs_removed`, `indexes`, and the report: `resolved_duplicates`, `rejected_duplicates`, `probable_duplicates` (spellings the canonical rule declined to merge, with the reason), `unmerged_name_collisions` (one name under two declared labels), `property_conflicts` (a property two tables both supply, with how many entities hold differing values; every value is kept, none resolved for you), `unresolved_references` (placeholders whose owning table has not arrived), `entities_without_a_name`, `proposed_mappings` (tables loaded on a proposed, not declared, mapping), `mapping_changed`, `stale_signed_properties`. Everything non-empty is also logged at WARNING.
+**Returns:** `FinalizeResult` — counts `entities_deduplicated`, `judge_llm_calls`, `judge_stats`, `entities_embedded`, `relationships_embedded`, `null_stubs_removed`, `indexes`, and the report: `probable_duplicates` (spellings the canonical rule declined to merge and the judge did not, plus mentions two keyed rows could own, with the reason; pairs involving the entities this run checked), `unmerged_name_collisions` (a name under more than one label), `property_conflicts` (a property two tables both supply, with how many entities hold differing values; every value is kept, none resolved for you), `unresolved_references` (placeholders whose owning table has not arrived), `entities_without_a_name`, `proposed_mappings` (tables loaded on a proposed, not declared, mapping), `mapping_changed`, `stale_signed_properties`. Everything non-empty is also logged at WARNING.
 
 ### Sync Wrappers
 
@@ -268,7 +264,7 @@ Run all post-ingestion steps after all documents and tables are ingested. Bundle
 def retrieve_sync(question: str, **kwargs) -> RetrieverResult
 def completion_sync(question: str, **kwargs) -> RagResult
 def ingest_sync(source: str | list[str], **kwargs) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult
-def finalize_sync(*, resolver=None, resolve=True, judge=True, judge_llm=None, judge_vote=True) -> FinalizeResult
+def finalize_sync(*, judge=True, judge_llm=None, dedup_all=False) -> FinalizeResult
 def query_sync(cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]
 def drop_table_sync(source: str) -> Ontology
 ```

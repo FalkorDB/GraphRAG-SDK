@@ -103,9 +103,16 @@ def test_relates_remaps_preserve_provenance() -> None:
 # ── Name grouping ───────────────────────────────────────────────
 
 from graphrag_sdk.storage.deduplicator import (  # noqa: E402
-    is_acronym_of,
+    _acronym_key,
+    _expansion_key,
     normalize_entity_name,
 )
+
+
+def is_acronym_of(short: str, long: str) -> bool:
+    """The rule the exact phase's acronym fold applies to one pair."""
+    key = _acronym_key(normalize_entity_name(short))
+    return key is not None and key == _expansion_key(normalize_entity_name(long))
 
 
 class TestNormalizeEntityName:
@@ -215,8 +222,8 @@ class TestNameGrouping:
         """Finalize-time exact match keys on (name, label).
 
         ``Paris``/Location and ``Paris``/Person are homographs, not duplicates.
-        Deciding otherwise needs context, which is the ingest-time LLM
-        resolver's job -- this pass deletes nodes without one.
+        Deciding otherwise needs context, which is the LLM judge's job at
+        finalize() -- this pass deletes nodes without one.
         """
         groups = {
             ("paris", "location"): [_ent("1", "Paris", "Location")],
@@ -357,8 +364,12 @@ class TestMergePreservesDescriptions:
         graph = MagicMock()
 
         async def query_raw(q, params=None):
-            if "MATCH (e:__Entity__)" in q and "RETURN" in q and "SKIP" in q:
-                return _result(rows if params["offset"] == 0 else [])
+            if (
+                "MATCH (e:__Entity__)" in q
+                and "RETURN" in q
+                and "WHERE e.dedup_pending = true" in q
+            ):
+                return _result(rows if not params.get("last") else [])
             if "properties(k), properties(d)" in q:
                 return _props_read(rows, params, stored)
             if "DETACH DELETE" in q:
@@ -611,39 +622,55 @@ class TestAcronymMerge:
         assert delete.args[1]["aliases"] == ["A.I.H.S.", "AIHS", "Ashford Society"]
 
 
-class TestFuzzyMerge:
-    async def test_fuzzy_merge_goes_through_the_same_absorb_path(self):
-        """Fuzzy merges preserve description, aliases and provenance too."""
+class TestPendingFlag:
+    """Only entities ingest flagged ``dedup_pending`` are read, and the flag is
+    removed from exactly those once the run ends."""
+
+    @staticmethod
+    def _graph(pending_rows, all_rows):
         graph = MagicMock()
-        rows = [
-            ["e1", "Jane Doe", "a physicist", "Person"],
-            ["e2", "J. Doe", "born in Leeds", "Person"],
-        ]
 
         async def query_raw(q, params=None):
-            if "SKIP" in q:
-                return _result(rows if params["offset"] == 0 else [])
-            if "properties(k), properties(d)" in q:
-                return _props_read(rows, params)
-            if "DETACH DELETE" in q:
-                return _result([[params["survivor_id"]]])
+            params = params or {}
+            if "WHERE e.dedup_pending = true" in q:
+                return _result(pending_rows if not params.get("last") else [])
+            if "WHERE e.id > $last" in q:
+                return _result(all_rows if not params.get("last") else [])
             return _result([])
 
         graph.query_raw = AsyncMock(side_effect=query_raw)
-        embedder = MagicMock()
-        embedder.aembed_documents = AsyncMock(return_value=[[1.0, 0.0], [0.99, 0.1]])
-        dedup = EntityDeduplicator(graph, embedder)
+        return graph
 
-        merged = await dedup.deduplicate(fuzzy=True, similarity_threshold=0.9)
-        assert merged == 1
-        deletes = [c for c in graph.query_raw.call_args_list if "DETACH DELETE" in c.args[0]]
-        assert len(deletes) == 1
-        q, params = deletes[0].args
-        assert params == {
-            "survivor_id": "e1",
-            "dup_id": "e2",
-            "desc": "a physicist | born in Leeds",
-            "descs": ["a physicist", "born in Leeds"],
-            "aliases": ["J. Doe"],
-        }
-        assert "SET s.description = $desc, s.descriptions = $descs, s.aliases = $aliases" in q
+    @staticmethod
+    def _clears(graph):
+        return [
+            c.args[1]["ids"]
+            for c in graph.query_raw.call_args_list
+            if "REMOVE e.dedup_pending" in c.args[0]
+        ]
+
+    async def test_only_the_flagged_entities_are_read_and_cleared(self):
+        graph = self._graph([["e2", "Beta", "", "Person"]], [])
+        dedup = EntityDeduplicator(graph, MagicMock())
+        await dedup.deduplicate()
+        assert self._clears(graph) == [["e2"]]
+        assert not any(
+            "WHERE e.id > $last" in c.args[0] and "pending" not in c.args[0]
+            for c in graph.query_raw.call_args_list
+        )
+
+    async def test_nothing_flagged_reads_nothing_more_and_writes_nothing(self):
+        graph = self._graph([], [["e1", "Alpha", "", "Person"]])
+        dedup = EntityDeduplicator(graph, MagicMock())
+        assert await dedup.deduplicate() == 0
+        assert self._clears(graph) == []
+        assert len(graph.query_raw.call_args_list) == 1  # the one pending read
+
+    async def test_dedup_all_reads_every_entity(self):
+        """A graph written before the flag existed has none; ``dedup_all``
+        checks every entity instead."""
+        rows = [["e1", "Alpha", "", "Person"], ["e2", "Beta", "", "Person"]]
+        graph = self._graph([], rows)
+        dedup = EntityDeduplicator(graph, MagicMock())
+        await dedup.deduplicate(dedup_all=True)
+        assert self._clears(graph) == [["e1", "e2"]]

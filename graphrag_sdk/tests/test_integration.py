@@ -936,7 +936,9 @@ class TestIncrementalUpdateInvariants:
         )
 
         dedup = EntityDeduplicator(rag._graph_store, embedder)
-        merged = await dedup.deduplicate(fuzzy=False)
+        # Hand-written nodes carry no dedup_pending flag (they bypassed
+        # ingest), so check every entity, as for a graph built before it.
+        merged = await dedup.deduplicate(dedup_all=True)
         assert merged >= 1, "test setup: dedup should have merged alice-1/alice-2"
 
         # Survivor edge should carry BOTH chunk ids — the union.
@@ -1081,7 +1083,9 @@ class TestIncrementalUpdateInvariants:
         )
 
         dedup = EntityDeduplicator(rag._graph_store, embedder)
-        merged = await dedup.deduplicate(fuzzy=False)
+        # Hand-written nodes carry no dedup_pending flag (they bypassed
+        # ingest), so check every entity, as for a graph built before it.
+        merged = await dedup.deduplicate(dedup_all=True)
         assert merged >= 1, "test setup: dedup should have merged alice-1/alice-2"
 
         # Which Alice survives is the ranking's call (the better-connected one);
@@ -1160,7 +1164,9 @@ class TestIncrementalUpdateInvariants:
         )
 
         dedup = EntityDeduplicator(rag._graph_store, embedder)
-        merged = await dedup.deduplicate(fuzzy=False)
+        # Hand-written nodes carry no dedup_pending flag (they bypassed
+        # ingest), so check every entity, as for a graph built before it.
+        merged = await dedup.deduplicate(dedup_all=True)
         assert merged >= 1, "test setup: dedup should have merged alice-1/alice-2"
 
         result = await conn.query(
@@ -1221,7 +1227,9 @@ class TestIncrementalUpdateInvariants:
         )
 
         dedup = EntityDeduplicator(rag._graph_store, embedder)
-        merged = await dedup.deduplicate(fuzzy=False)
+        # Hand-written nodes carry no dedup_pending flag (they bypassed
+        # ingest), so check every entity, as for a graph built before it.
+        merged = await dedup.deduplicate(dedup_all=True)
         assert merged >= 1, (
             "an untyped RELATES edge must not abort the remap — the duplicate "
             "was left un-merged, which is how a null-keyed MERGE fails."

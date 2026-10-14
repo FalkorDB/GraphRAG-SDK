@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import warnings
 from collections.abc import Sequence
 from typing import Any, Literal, overload
 from uuid import uuid4
@@ -92,9 +93,6 @@ from graphrag_sdk.ingestion.mapping_proposal import (
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
-from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
-    LLMVerifiedResolution,
-)
 from graphrag_sdk.ingestion.structured_pipeline import (
     StructuredIngestionPipeline,
     StructuredIngestionResult,
@@ -168,13 +166,6 @@ _RAG_PROMPT = "<context>\n{context}\n</context>\n\nQuestion: {question}\n\nAnswe
 # tolerant) so a chunk containing the closing delimiter cannot escape the
 # context block in the default template.
 _CONTEXT_CLOSE_RE = re.compile(r"</\s*context\s*>", re.IGNORECASE)
-
-# Cosine at which ``finalize()``'s default resolver starts asking the model about
-# a pair. Lower than ``LLMVerifiedResolution``'s within-document 0.80 because the
-# pairs that only meet here — a row's name against a document's — differ more.
-# Measured: "Ms. Raman" / "Priya Raman" 0.70, "transmission agreement" /
-# "Nordic transmission agreement" 0.66 (text-embedding-3-small, 256 dims).
-_CROSS_SOURCE_SOFT_THRESHOLD = 0.6
 
 
 def _neutralize_context_close_tag(text: str) -> str:
@@ -1870,8 +1861,8 @@ class GraphRAG:
         - Resolver: ExactMatchResolution — zero LLM cost; same name + same
           label within the document, descriptions kept as a list, edges
           re-pointed to the survivor. Cross-document duplicates are merged
-          once, in :meth:`finalize` — by its resolver pass and the LLM-judged
-          dedup phase. Pass ``resolver=LLMVerifiedResolution(...)`` to also
+          once, in :meth:`finalize` — by its exact-name and LLM-judged dedup
+          phases. Pass ``resolver=LLMVerifiedResolution(...)`` to also
           resolve per document at ingest.
 
         Args:
@@ -1944,7 +1935,7 @@ class GraphRAG:
                 raise ValueError(
                     "'resolver' does not apply to a structured source: a row is "
                     "matched on its declared key, and identity across sources is "
-                    "judged by finalize(resolver=...)."
+                    "judged by finalize()."
                 )
             mapping = await self._mapping_for(
                 source, document_id=document_id, record_loader=record_loader, ctx=ctx
@@ -2915,12 +2906,14 @@ class GraphRAG:
         correct and ~4 wrong merges per run for ~90 extra LLM calls, and QA
         moved by less than one question.
 
-        Cross-document dedup runs **once, in** :meth:`finalize`: the resolver
-        pass and the LLM-judged phase (``storage/judge_dedup.py``) see every
-        entity of every document. Ingest stays zero-LLM-cost for resolution: no
-        ``llm`` is passed, so ``ExactMatchResolution`` neither summarises merged
+        Cross-document dedup runs **once, in** :meth:`finalize`: exact-name and
+        acronym matching, then the LLM judge (``storage/judge_dedup.py``), over
+        the entities added since the last run against their nearest names in
+        the whole graph. Ingest stays zero-LLM-cost for resolution: no ``llm``
+        is passed, so ``ExactMatchResolution`` neither summarises merged
         descriptions (they are kept as a list and joined with ``" | "``) nor
-        merges same-name nodes of different labels — both are finalize's job.
+        merges same-name nodes of different labels — cross-label merges are
+        left to finalize's judge and declared-label adoption.
         Pass a resolver to ``ingest()`` to change this per call.
         """
         return ExactMatchResolution(llm=None, cross_label_merge=False)
@@ -2944,9 +2937,9 @@ class GraphRAG:
     # source path in file mode). ``apply_changes()`` is a CI-friendly
     # batch wrapper that dispatches to the right primitive per file.
     #
-    # All three are intentionally separate from ``finalize()``: dedup is
-    # O(graph size) and should be amortized across a whole batch, not
-    # paid per file. See CHANGELOG 1.1.0 cost-model note.
+    # All three are intentionally separate from ``finalize()``: dedup should
+    # run once per batch, so its LLM calls cover the batch's new entities
+    # together rather than once per file. See CHANGELOG 1.1.0 cost-model note.
 
     async def _run_post_cutover_cleanup(self, document_id: str, ctx: Context) -> tuple[int, int]:
         """Read persisted cleanup state from a Document and execute it.
@@ -3904,9 +3897,9 @@ class GraphRAG:
         future entity-budget enforcement may rely on. Callers should
         not assume reordering is safe.
 
-        **This method does NOT call ``finalize()``.** Cross-document
-        deduplication is O(graph size); call ``finalize()`` once after
-        the whole batch (e.g. once per CI run, not once per file).
+        **This method does NOT call ``finalize()``.** Call ``finalize()``
+        once after the whole batch (e.g. once per CI run, not once per file),
+        so its dedup judges the batch's new entities together.
 
         Canonical CI usage::
 
@@ -4519,65 +4512,55 @@ class GraphRAG:
     async def deduplicate_entities(
         self,
         *,
-        fuzzy: bool = False,
-        # Kept in step with EntityDeduplicator.deduplicate: at 0.90 the
-        # name-embedding tier merges 2 of 33 hard-negative pairs and drops
-        # precision to 0.739, buying no recall the exact tiers miss.
-        similarity_threshold: float = 0.95,
         batch_size: int = 500,
-        resolver: ResolutionStrategy | None = None,
         judge: bool = False,
         judge_llm: LLMInterface | None = None,
-        judge_vote: bool = True,
+        dedup_all: bool = False,
+        fuzzy: bool | None = None,
+        similarity_threshold: float | None = None,
     ) -> int:
-        """Global entity deduplication across all ingested documents.
+        """Incremental cross-document entity deduplication.
 
-        Phase 1 (always): Exact name match — groups entities by normalized
-        name and label, keeps the survivor the merge rules pick (a table row
-        over a mention, then the best-connected and best-described), keeps
-        every member's description in the ``descriptions`` list (joined with
-        ``" | "`` in ``description``), remaps all RELATES and MENTIONED_IN
-        edges, deletes duplicates.
+        Phase 1 (always): Exact name match — groups entities by canonical
+        name and label (an acronym joins its unique same-label long form),
+        keeps the survivor the merge rules pick (a table row over a mention,
+        then the best-connected and best-described), keeps every member's
+        description in the ``descriptions`` list (joined with ``" | "`` in
+        ``description``), remaps all RELATES and MENTIONED_IN edges, deletes
+        duplicates. With ``judge=True``, a group of extracted mentions only is
+        handed to the judge instead of merged on the name.
 
-        Phase 2 (optional): Fuzzy embedding match — embeds entity names,
-        finds near-duplicates by cosine similarity, merges those too.
-
-        Phase 3 (optional): ``resolver`` — the same kind of strategy
-        :meth:`ingest` takes — is shown every entity in the graph at once and
-        decides which are one thing, the way it does within a single document.
-        This is how a person a table wrote and a person a document mentioned
-        become one node when they are not spelled the same: the resolver judges
-        the pair, and the merge keeps the table's node and its typed values.
-
-        Phase 4 (opt-in here, ``judge=True``; on by default in
-        :meth:`finalize`): LLM-judged cross-document dedup. Name and
-        description embeddings nominate candidate pairs (plus "A's name
-        appears in B's description"); candidates form small dense sets; the
-        judge LLM partitions each set; with ``judge_vote`` a second pass over
-        shuffled sets must agree. Agreed pairs are merged by the same rules as
-        every other phase (survivor rank, descriptions list, aliases,
-        provenance), and the survivor additionally gains every member's label;
-        disagreements are written as ``SAME_AS`` edges instead of merged.
-        Pairs a resolver already judged distinct (``DISTINCT_FROM``), two rows
+        Phase 2 (opt-in here, ``judge=True``; on by default in
+        :meth:`finalize`): LLM-judged cross-document dedup of the entities
+        added since the last run. Each new entity's nearest names are read from
+        the entity vector index; candidates form small dense sets; the judge
+        LLM partitions each set in one pass, seeing names, labels and
+        descriptions. Agreed pairs are merged by the same rules as every other
+        phase (survivor rank, descriptions list, aliases, provenance), and the
+        survivor additionally gains every member's label; anything else is left
+        alone — nothing else is written to the graph. Two rows
         written from a declared key, and a mention two such rows could equally
-        own are never put to the judge. With ``judge=True`` every named entity
-        ends up with a name embedding in ``e.embedding`` (the judge writes the
-        missing ones); ``judge=False`` leaves that to
-        :meth:`backfill_entity_embeddings`, which :meth:`finalize` runs.
+        own, are never put to the judge.
 
-        Without ``resolver`` and with ``judge`` off — the defaults here — this
-        method calls no model, as it always did; :meth:`finalize` is where
-        both LLM phases are on by default.
+        Both phases are incremental: only entities flagged ``dedup_pending`` at
+        ingest are query points, compared with the rest of the graph through
+        the entity vector index, and the flag is removed when the run ends
+        (kept on an entity whose check did not complete — a failed lookup,
+        judge call or merge write, an answer that was not a full partition,
+        or no name vector — so the next run retries it, up to 3 runs) — a
+        second call with nothing pending does no work, and once every check
+        has completed the graph keeps no dedup data. A
+        graph written before the flag existed has none: pass
+        ``dedup_all=True`` once to check every entity. The new entities'
+        name embeddings (``e.embedding``) are written by this call.
+
+        With ``judge`` off — the default here — this method calls no model;
+        :meth:`finalize` is where the judge is on by default.
 
         Call after all documents are ingested.
 
         Args:
-            fuzzy: If True, also perform fuzzy embedding-based dedup.
-            similarity_threshold: Cosine similarity threshold for fuzzy dedup.
             batch_size: Entities per query batch.
-            resolver: Resolution strategy to judge pairs across documents and
-                tables, e.g. ``LLMVerifiedResolution(llm, embedder)``. None here
-                skips the phase; :meth:`finalize` supplies one by default.
             judge: run the LLM-judged phase (default False here; ``True`` in
                 :meth:`finalize`). ``False`` = no judge LLM calls.
             judge_llm: Judge model; defaults to this instance's ``llm``.
@@ -4586,14 +4569,33 @@ class GraphRAG:
                 A gpt-4.1-class model is strongly recommended — on the
                 benchmark corpus it made 9 wrong merges where gpt-4o-mini
                 made 51.
-            judge_vote: Require second-pass agreement before merging
-                (default). ``False`` halves LLM cost, ~3x wrong merges.
+            fuzzy: Deprecated; the fuzzy name-embedding phase was removed.
+                ``False`` is accepted with a ``DeprecationWarning``; ``True``
+                raises ``ValueError``. Use ``judge=True`` instead.
+            similarity_threshold: Deprecated and ignored, with a
+                ``DeprecationWarning``.
+            dedup_all: Check every entity, not only the ones flagged
+                ``dedup_pending`` since the last run. Needed once for a graph
+                written before the flag existed.
 
         Returns:
             Total number of duplicate entities merged (all phases). Judge-phase
-            details (calls, agreed/disagreed pairs, links) are in
+            details (calls, candidates, agreed pairs, merges) are in
             ``self._deduplicator.last_judge_stats``.
         """
+        if fuzzy:
+            raise ValueError(
+                "deduplicate_entities(fuzzy=True) is no longer supported: the fuzzy "
+                "name-embedding phase was removed. Use judge=True, which compares each "
+                "new entity with its nearest names and lets the model decide."
+            )
+        if fuzzy is not None or similarity_threshold is not None:
+            warnings.warn(
+                "deduplicate_entities(fuzzy=..., similarity_threshold=...) is deprecated "
+                "and ignored; the arguments will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         await self._ensure_ontology_initialized()
         if judge_llm is not None and not judge:
             logger.warning(
@@ -4601,15 +4603,12 @@ class GraphRAG:
                 "phase does not run; pass judge=True to use it (finalize() runs it by default)"
             )
         merged = await self._deduplicator.deduplicate(
-            fuzzy=fuzzy,
-            similarity_threshold=similarity_threshold,
             batch_size=batch_size,
             declared_labels=self._mapping_declared_labels(),
-            resolver=resolver,
             judge_llm=(judge_llm or self.llm) if judge else None,
-            judge_vote=judge_vote,
+            dedup_all=dedup_all,
         )
-        # The graph has now been swept globally, so the pending-dedup reminder
+        # Dedup has run over what was pending, so the pending-dedup reminder
         # no longer applies. Reset here rather than in finalize() so a caller
         # who runs dedup directly is also covered.
         self._docs_since_dedup = 0
@@ -4655,37 +4654,12 @@ class GraphRAG:
             if any(prop.structured for prop in entity.properties)
         }
 
-    def _default_finalize_resolver(self) -> ResolutionStrategy:
-        """The strategy :meth:`finalize` judges the whole graph with when given none.
-
-        Names differ more across sources than within one document: a table's
-        "Priya Raman" against a note's "Ms. Raman" embeds at 0.70 with
-        ``text-embedding-3-small``, under the within-document default of 0.80.
-        So the model is asked about closer-than-usual pairs here. Each is asked
-        once — a NO is remembered on the graph and two rows of one table are
-        never a question — which is what makes this affordable as a default.
-        """
-        # Set on BOTH floors. LLMVerifiedResolution reads soft_threshold only
-        # when unified_stage is off, and that now defaults to ON — so passing
-        # soft_threshold alone left finalize() silently running the 0.65 unified
-        # default and dropping exactly the 0.60-0.65 band this method exists to
-        # reach ("Ms. Raman" against "Priya Raman" at 0.70 is the easy case; the
-        # band below it is where cross-source pairs actually sit).
-        return LLMVerifiedResolution(
-            self.llm,
-            self.embedder,
-            soft_threshold=_CROSS_SOURCE_SOFT_THRESHOLD,
-            unified_threshold=_CROSS_SOURCE_SOFT_THRESHOLD,
-        )
-
     async def finalize(
         self,
         *,
-        resolver: ResolutionStrategy | None = None,
-        resolve: bool = True,
         judge: bool = True,
         judge_llm: LLMInterface | None = None,
-        judge_vote: bool = True,
+        dedup_all: bool = False,
     ) -> FinalizeResult:
         """Run all post-ingestion steps after all documents are ingested.
 
@@ -4695,36 +4669,29 @@ class GraphRAG:
 
         Bundles:
         1. Remove NULL-name stub entities (legacy cleanup)
-        2. ``deduplicate_entities()`` — global exact-name dedup, then the
-           resolver judges the pairs across documents and tables, then
-           (``judge``) the LLM-judged cross-document phase; see
-           :meth:`deduplicate_entities` for what merges and what links. The
-           judge embeds the names it reads and stores them on the nodes.
+        2. ``deduplicate_entities()`` — incremental: only entities added since
+           the last finalize are checked, against the whole graph through
+           indexes. Exact-name / acronym dedup, then (``judge``) one LLM pass
+           over each new entity and its nearest names from the vector index;
+           see :meth:`deduplicate_entities`. Dedup embeds the names it reads
+           and stores them on the nodes. Calling ``finalize()`` again with
+           nothing pending does no dedup work.
         3. ``backfill_entity_embeddings()`` — name embeddings on every entity
            still missing one. After dedup, so a duplicate the merge removes
            is not embedded first; ``FinalizeResult.entities_embedded`` counts
-           the vectors written by this step and by the judge.
+           the vectors written by this step and by dedup.
         4. ``embed_relationships()`` — fact text embeddings on RELATES edges
         5. ``ensure_indices()`` — all indexes
 
         Args:
-            resolver: The strategy that judges the whole graph: a table's
-                "Priya Raman" against a document's "Ms. Raman". By default an
-                ``LLMVerifiedResolution`` over this instance's ``llm`` and
-                ``embedder``, tuned for names that differ across sources — see
-                :meth:`_default_finalize_resolver`. Pass your own to replace it.
-            resolve: ``False`` skips the resolver pass: no model is called by
-                it, and the pairs it would have judged are left to the judge
-                phase (below) or, with ``judge=False`` too, reported in
-                ``FinalizeResult.probable_duplicates`` and left alone.
-            judge: run the LLM-judged dedup phase (default True). It costs
-                roughly two LLM calls per ~3000 prompt tokens of candidate
-                sets; set ``False`` to skip it. ``judge=False`` alone still
-                runs the resolver over this instance's ``llm``; only
-                ``resolve=False, judge=False`` is exact-name dedup alone, with
-                no LLM calls at all.
+            judge: run the LLM-judged dedup phase (default True): one LLM call
+                per ~3000 prompt tokens of candidate sets, over new entities
+                only. ``judge=False`` is exact-name dedup alone, with no LLM
+                calls at all.
             judge_llm: judge model, defaults to this instance's ``llm``.
-            judge_vote: require second-pass agreement (default True).
+            dedup_all: check every entity instead of only those ingested since
+                the last finalize. Run it once on a graph built before the
+                ``dedup_pending`` flag existed.
 
         Returns:
             ``FinalizeResult`` — typed counts from each step.
@@ -4757,13 +4724,11 @@ class GraphRAG:
         if null_cleaned:
             ctx_log(f"finalize: removed {null_cleaned} NULL-name stub entities")
 
-        # Step 2: Global dedup (exact, resolver, then LLM-judged)
-        if not resolve:
-            resolver = None
-        elif resolver is None:
-            resolver = self._default_finalize_resolver()
+        # Step 2: Incremental dedup (exact, then LLM-judged)
         dedup_count = await self.deduplicate_entities(
-            resolver=resolver, judge=judge, judge_llm=judge_llm, judge_vote=judge_vote
+            judge=judge,
+            judge_llm=judge_llm,
+            dedup_all=dedup_all,
         )
         judge_stats = dict(getattr(self._deduplicator, "last_judge_stats", {}) or {})
         if not judge:
@@ -4777,15 +4742,8 @@ class GraphRAG:
         # vector written this call to a node still here.
         entity_count = await self._vector_store.backfill_entity_embeddings()
         entity_count += int(judge_stats.get("embedded", 0) or 0)
+        entity_count += int(getattr(self._deduplicator, "names_embedded", 0) or 0)
         ctx_log(f"finalize: embedded {entity_count} entities")
-        resolved = list(getattr(self._deduplicator, "resolved_pairs", []) or [])
-        rejected = list(getattr(self._deduplicator, "rejected_pairs", []) or [])
-        if resolved or rejected:
-            ctx_log(
-                f"finalize: {type(resolver).__name__} merged {len(resolved)} pair(s) across "
-                f"documents and tables and judged {len(rejected)} distinct. See "
-                "FinalizeResult.resolved_duplicates / rejected_duplicates"
-            )
 
         # Step 4: Relationship embeddings (fact text on RELATES edges)
         rel_count = await self._vector_store.embed_relationships()
@@ -4915,13 +4873,10 @@ class GraphRAG:
         return FinalizeResult(
             null_stubs_removed=null_cleaned,
             entities_deduplicated=dedup_count,
-            entities_linked=judge_stats.get("linked", 0),
             judge_llm_calls=judge_stats.get("llm_calls", 0),
             judge_stats=judge_stats,
             unmerged_name_collisions=collisions,
             probable_duplicates=[str(m) for m in near_misses],
-            resolved_duplicates=resolved,
-            rejected_duplicates=rejected,
             stale_signed_properties=stale,
             property_conflicts=property_conflicts,
             unresolved_references=unresolved,
@@ -5058,11 +5013,9 @@ class GraphRAG:
     def finalize_sync(
         self,
         *,
-        resolver: ResolutionStrategy | None = None,
-        resolve: bool = True,
         judge: bool = True,
         judge_llm: LLMInterface | None = None,
-        judge_vote: bool = True,
+        dedup_all: bool = False,
     ) -> FinalizeResult:
         """Synchronous finalize convenience method.
 
@@ -5070,11 +5023,9 @@ class GraphRAG:
         """
         return asyncio.run(
             self.finalize(
-                resolver=resolver,
-                resolve=resolve,
                 judge=judge,
                 judge_llm=judge_llm,
-                judge_vote=judge_vote,
+                dedup_all=dedup_all,
             )
         )
 

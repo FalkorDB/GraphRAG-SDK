@@ -162,7 +162,7 @@ async with GraphRAG(connection=ConnectionConfig(...), llm=..., embedder=...) as 
         modified=["docs/api.md"],
         deleted=["docs/removed_page.md"],
     )
-    await graph.finalize()  # once per batch — finalize is O(graph size)
+    await graph.finalize()  # once per batch — dedup cost follows the change size
 
     # Per-file outcomes are wrapped in BatchEntry — the batch never raises.
     for entry in result.added + result.modified + result.deleted:
@@ -182,14 +182,16 @@ In file mode, `document_id` defaults to `os.path.normpath(source)` so
 `update("docs/x.md")` matches the original `ingest("docs/x.md")` with
 no extra plumbing. See [`examples/07_incremental_updates.py`](graphrag_sdk/examples/07_incremental_updates.py).
 
-**Cost model.** `finalize()` runs cross-document deduplication, which
-scans the full entity table — its cost is **O(graph size)**, not
-O(change size). Embedding backfill within `finalize()` is O(change
-size) (only nodes/edges missing embeddings get touched). For CI use
-cases, batch all PR changes through `apply_changes` and call
-`finalize` **once** at the end of the run, not per file — per-file
-`finalize` multiplies the dedup constant by the number of files
-touched.
+**Cost model.** `finalize()` deduplicates only the entities ingested
+since the last `finalize()` (flagged `dedup_pending` at ingest), reaching
+the rest of the graph through the vector index — its LLM calls,
+embeddings and merges follow the **change size**, not the graph size.
+Finding the flagged entities and the ones missing an embedding is one
+label scan each (about 0.1 s on a 44k-entity graph), so a `finalize()`
+with nothing pending does no dedup work. For CI
+use cases, batch all PR changes through `apply_changes` and call
+`finalize` **once** at the end of the run: one call judges the whole
+batch's new entities together, in fewer LLM calls than one per file.
 
 **Crash safety.** `update()` uses an idempotent rollforward cutover:
 the new content is written to a `__pending__` Document, then a single
@@ -215,7 +217,8 @@ guards the default.
 | Area | Step | Cost |
 | --- | --- | --- |
 | Ingestion | Extract entities & relations | LLM |
-| Ingestion | Resolve & deduplicate entities | LLM |
+| Ingestion | Resolve entities within a document (exact match) | — |
+| Finalize | Deduplicate new entities across documents (LLM judge) | LLM |
 | Ingestion | Embed & index | LLM |
 | Retrieval | Vector search | DB |
 | Retrieval | Full-text search | DB |
