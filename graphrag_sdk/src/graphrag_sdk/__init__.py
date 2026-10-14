@@ -23,8 +23,11 @@ from graphrag_sdk.core.exceptions import (
     DocumentNotFoundError,
     GraphRAGError,
     LatencyBudgetExceededError,
+    ToolCallingNotSupportedError,
 )
 from graphrag_sdk.core.models import (
+    AgentStep,
+    AgentTrace,
     ApplyChangesResult,
     Attribute,
     BatchEntry,
@@ -46,9 +49,13 @@ from graphrag_sdk.core.models import (
     ResolutionResult,
     RetrieverResult,
     RetrieverResultItem,
+    ScoredPath,
     SearchType,
+    SkillResult,
     TextChunk,
     TextChunks,
+    ToolCall,
+    ToolSpec,
     UpdateResult,
 )
 from graphrag_sdk.core.providers import (
@@ -122,12 +129,35 @@ from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
+from graphrag_sdk.retrieval.agentic import AgenticRetrieval, AgentLimits, ToolRegistry
+from graphrag_sdk.retrieval.graph_walk import (
+    DynamicGraphWalk,
+    GraphWalkRetrieval,
+    score_path,
+)
 
 # ── Retrieval Strategies ────────────────────────────────────────
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.reranking_strategies.cosine import CosineReranker
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+from graphrag_sdk.retrieval.strategies.path_router import (
+    RETRIEVAL_PATHS,
+    HeuristicPathRouter,
+    LLMPathRouter,
+)
+
+# ── Skills ──────────────────────────────────────────────────────
+from graphrag_sdk.skills import (
+    SKILL_REGISTRY,
+    ContradictionDetectionSkill,
+    EntityComparisonSkill,
+    GapAnalysisSkill,
+    ImpactAnalysisSkill,
+    Skill,
+    TimelineReconstructionSkill,
+    build_skill,
+)
 
 # ── Storage ─────────────────────────────────────────────────────
 from graphrag_sdk.storage.graph_store import GraphStore
@@ -146,6 +176,8 @@ __all__ = [
     "GraphRAG",
     # Core
     "ApplyChangesResult",
+    "AgentStep",
+    "AgentTrace",
     "BatchEntry",
     "ChatMessage",
     "ConnectionConfig",
@@ -168,6 +200,9 @@ __all__ = [
     "Ontology",
     "IngestionResult",
     "LatencyBudgetExceededError",
+    "ToolCall",
+    "ToolCallingNotSupportedError",
+    "ToolSpec",
     "LLMBatchItem",
     "LLMInterface",
     "LiteLLM",
@@ -179,7 +214,9 @@ __all__ = [
     "ResolutionResult",
     "RetrieverResult",
     "RetrieverResultItem",
+    "ScoredPath",
     "SearchType",
+    "SkillResult",
     "TextChunk",
     "TextChunks",
     "UpdateResult",
@@ -214,10 +251,28 @@ __all__ = [
     "ExactMatchResolution",
     "LLMVerifiedResolution",
     # Retrieval
+    "AgenticRetrieval",
     "CosineReranker",
+    "DynamicGraphWalk",
+    "GraphWalkRetrieval",
+    "HeuristicPathRouter",
+    "LLMPathRouter",
     "MultiPathRetrieval",
+    "RETRIEVAL_PATHS",
     "RerankingStrategy",
     "RetrievalStrategy",
+    "ToolRegistry",
+    "AgentLimits",
+    "score_path",
+    # Skills
+    "Skill",
+    "SKILL_REGISTRY",
+    "build_skill",
+    "ContradictionDetectionSkill",
+    "EntityComparisonSkill",
+    "GapAnalysisSkill",
+    "ImpactAnalysisSkill",
+    "TimelineReconstructionSkill",
     # Storage
     "GraphStore",
     "OntologyContradictionError",

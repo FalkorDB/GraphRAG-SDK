@@ -71,6 +71,22 @@ class ConnectionConfig:
         )
 
 
+def _changes_topology(result: Any) -> bool:
+    """Whether a query result reports nodes or relationships created or deleted."""
+    for stat in (
+        "nodes_created",
+        "nodes_deleted",
+        "relationships_created",
+        "relationships_deleted",
+    ):
+        try:
+            if int(getattr(result, stat, 0) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
 class FalkorDBConnection:
     """Async-only FalkorDB connection using the native async client.
 
@@ -94,6 +110,10 @@ class FalkorDBConnection:
         self._driver: Any | None = None
         self._graph: Any | None = None
         self._breaker = CircuitBreaker()
+        #: Bumped by every query through this connection that creates or
+        #: deletes nodes or relationships (and by ``delete_graph``), so
+        #: caches of graph-shape results (PageRank) know when they are stale.
+        self.topology_version = 0
 
     def _ensure_client(self) -> None:
         """Lazy-init the async FalkorDB driver and graph handle."""
@@ -163,6 +183,7 @@ class FalkorDBConnection:
         *,
         timeout: int | None = None,
         expected_errors: tuple[str, ...] = (),
+        read_only: bool = False,
     ) -> Any:
         """Execute a Cypher query with retry logic.
 
@@ -170,6 +191,9 @@ class FalkorDBConnection:
             cypher: The Cypher query string.
             params: Optional query parameters.
             timeout: Optional per-query timeout (ms) forwarded to FalkorDB.
+            read_only: Run the query with ``GRAPH.RO_QUERY``, which FalkorDB
+                rejects if the query would write. Use it for any query whose
+                text came from a model or a user.
             expected_errors: Lower-case substrings identifying non-transient
                 failures the caller anticipates and handles itself (e.g.
                 ``"already indexed"`` for an idempotent ``CREATE INDEX``). Such
@@ -202,11 +226,28 @@ class FalkorDBConnection:
         last_exc: Exception | None = None
         for attempt in range(self.config.retry_count):
             try:
-                result = await self._graph.query(cypher, params=params, timeout=effective_timeout)
+                run = self._graph.ro_query if read_only else self._graph.query
+                result = await run(cypher, params=params, timeout=effective_timeout)
                 await self._breaker.record_success()
+                if not read_only and _changes_topology(result):
+                    self.topology_version = getattr(self, "topology_version", 0) + 1
                 return result
             except Exception as exc:
                 last_exc = exc
+                # A read-only query's text came from a model or a user. When the
+                # server answers it with an error (unknown variable, bad type,
+                # a write under RO_QUERY, its own timeout), the query is wrong,
+                # not the database: fail once, without retrying and without
+                # counting it against the circuit breaker, so bad generated
+                # Cypher can never take the connection down for everyone.
+                if read_only and self._is_server_rejection(exc):
+                    logger.debug("Read-only query rejected by FalkorDB: %s", exc)
+                    # The server answered, so it is reachable: close the
+                    # breaker. Without this a rejected query that happens to
+                    # be the half-open probe leaves the breaker HALF_OPEN for
+                    # good and every later query is refused.
+                    await self._breaker.record_success()
+                    raise DatabaseError(f"FalkorDB query failed: {exc}") from exc
                 # Don't retry non-transient errors (e.g. schema/index conflicts)
                 if self._is_non_transient(exc):
                     msg = str(exc).lower()
@@ -264,6 +305,33 @@ class FalkorDBConnection:
     )
 
     @classmethod
+    def _is_server_rejection(cls, exc: Exception) -> bool:
+        """True when FalkorDB rejected the query itself (not a network or cluster fault).
+
+        Cluster / failover replies (``TRYAGAIN``, ``MOVED``, ``CLUSTERDOWN``,
+        a read-only replica, ...) are also ``ResponseError`` subclasses but
+        are transient, so they are not counted as a rejection.
+        """
+        try:
+            from redis import exceptions as rx
+        except ImportError:  # pragma: no cover - redis ships with falkordb
+            return False
+        transient = tuple(
+            getattr(rx, name)
+            for name in (
+                "AskError",
+                "ClusterDownError",
+                "MasterDownError",
+                "MovedError",
+                "TryAgainError",
+                "ReadOnlyError",
+                "OutOfMemoryError",
+            )
+            if hasattr(rx, name)
+        )
+        return isinstance(exc, rx.ResponseError) and not isinstance(exc, transient)
+
+    @classmethod
     def _is_non_transient(cls, exc: Exception) -> bool:
         msg = str(exc).lower()
         return any(marker in msg for marker in cls._NON_TRANSIENT_MARKERS)
@@ -304,6 +372,7 @@ class FalkorDBConnection:
         from redis.asyncio import Redis
 
         redis: Redis = Redis(connection_pool=self._pool)
+        self.topology_version = getattr(self, "topology_version", 0) + 1
         try:
             await redis.execute_command("GRAPH.DELETE", self.config.graph_name)
             logger.info("Deleted graph '%s' via GRAPH.DELETE", self.config.graph_name)
