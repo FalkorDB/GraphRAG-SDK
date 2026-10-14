@@ -22,13 +22,27 @@ _WRITE_RE = re.compile(
 )
 _READ_START = ("MATCH", "OPTIONAL MATCH", "UNWIND", "WITH", "RETURN")
 _LIMIT_RE = re.compile(r"(?i)\bLIMIT\s+(\d+)")
+# Clause keywords. FalkorDB accepts keywords as names too (``p.union``,
+# ``{match: 1}``, ``AS limit``), so a keyword after a ``.``, inside a
+# backtick name or used as a map key is not a clause.
+_KW = r"(?i)(?<![.\w`])"
+_NOT_KEY = r"(?![\w`]|\s*:)"
+#: ``UNION`` / ``UNION ALL`` followed by the next part's first clause.
+_UNION_RE = re.compile(
+    _KW + r"UNION(?:\s+ALL)?(?=\s+(?:OPTIONAL\s+MATCH|MATCH|WITH|UNWIND|RETURN|CALL)\b)"
+)
+_RETURN_RE = re.compile(_KW + r"RETURN" + _NOT_KEY)
+#: The clause keyword that a position belongs to (the last one before it).
+_CLAUSE_RE = re.compile(
+    _KW + r"(OPTIONAL\s+MATCH|MATCH|WITH|RETURN|WHERE|UNWIND|ORDER\s+BY)" + _NOT_KEY
+)
 _EMBEDDING_RE = re.compile(r"\b\w*embedding\w*\b", re.IGNORECASE)
 _INTERNAL_LABEL_RE = re.compile(r"__[A-Za-z0-9]+__")
 # ``:Name`` plus any ``|Other`` alternatives (``[r:A|B]``). An alternative
 # followed by ``.`` is a variable in a list comprehension, not a type.
 _LABEL_RE = re.compile(r":\s*`?([A-Za-z_]\w*)`?((?:\s*\|\s*:?\s*`?[A-Za-z_]\w*\b`?(?!\s*\.))*)")
 _ALT_NAME_RE = re.compile(r"\|\s*:?\s*`?([A-Za-z_]\w*)`?")
-_SHORTEST_PATH_RE = re.compile(r"\b(allShortestPaths|shortestPath)\s*\(", re.IGNORECASE)
+_SHORTEST_PATH_RE = re.compile(r"\bshortestPath\s*\(", re.IGNORECASE)
 
 #: Labels that are never a legitimate analytical target (SDK bookkeeping).
 INTERNAL_NODE_DENYLIST = ("__GraphRAGConfig__",)
@@ -233,6 +247,15 @@ def validate_read_query(cypher: str, schema: GraphSchema | None = None) -> list[
         errors.append("the query must have a RETURN clause")
     if _EMBEDDING_RE.search(blank):
         errors.append("embedding properties may not be read")
+    for match in _SHORTEST_PATH_RE.finditer(blank):
+        clauses = _CLAUSE_RE.findall(blank, 0, match.start())
+        if clauses and clauses[-1].upper().endswith("MATCH"):
+            errors.append(
+                "shortestPath is only supported in WITH or RETURN, directed: "
+                "MATCH (a {name: 'X'}), (b {name: 'Y'}) "
+                "WITH shortestPath((a)-[*]->(b)) AS p RETURN length(p)"
+            )
+            break
     dynamic = _dynamic_subscripts(_strip_maps(blank))
     if dynamic:
         errors.append(
@@ -297,9 +320,9 @@ def enforce_row_cap(cypher: str, cap: int) -> str:
     Every real ``LIMIT n`` clause is rewritten to ``min(n, cap)``, not just
     the last, so an inner ``WITH ... LIMIT 100000`` cannot build a huge
     intermediate set; ``LIMIT`` inside a string or a comment is not a
-    clause and is left alone (comments are dropped). A query without a
-    ``LIMIT`` gets one. ``shortestPath`` wrappers are removed (FalkorDB does
-    not support them in this form).
+    clause and is left alone (comments are dropped). The final ``RETURN``
+    of the query, and of each ``UNION`` part, gets a ``LIMIT`` when it has
+    none, so an inner ``WITH ... LIMIT 5`` cannot stand in for the cap.
     """
     if cap < 1:
         raise ValueError("cap must be >= 1")
@@ -309,18 +332,31 @@ def enforce_row_cap(cypher: str, cap: int) -> str:
     code, blank = scanned.code, scanned.blank
     pieces: list[str] = []
     last = 0
-    found = 0
     for match in _LIMIT_RE.finditer(blank):
-        found += 1
         pieces.append(code[last : match.start()])
         pieces.append(f"LIMIT {min(int(match.group(1)), cap)}")
         last = match.end()
     pieces.append(code[last:])
     capped = "".join(pieces).strip().rstrip(";").rstrip()
-    capped = _SHORTEST_PATH_RE.sub("(", capped)
-    if found == 0:
-        return f"{capped}\nLIMIT {cap}"
-    return capped
+    # Each part's final RETURN gets its own LIMIT when it has none.
+    rescanned = _scan(capped)
+    if rescanned.error:  # cannot happen for a query that scanned once
+        raise ValueError(rescanned.error)
+    blank = rescanned.blank
+    bounds = [0, *(m.start() for m in _UNION_RE.finditer(blank)), len(blank)]
+    out: list[str] = []
+    for start, end in zip(bounds, bounds[1:]):
+        part, part_blank = capped[start:end], blank[start:end]
+        returns = list(_RETURN_RE.finditer(part_blank))
+        tail = part_blank[returns[-1].end() :] if returns else ""
+        if returns and not _LIMIT_RE.search(tail):
+            stripped = part.rstrip()
+            if end == len(blank):
+                part = f"{stripped}\nLIMIT {cap}"
+            else:
+                part = f"{stripped} LIMIT {cap}{part[len(stripped) :]}"
+        out.append(part)
+    return "".join(out)
 
 
 def mask_internal_labels(text: str) -> str:

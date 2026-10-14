@@ -356,6 +356,7 @@ class TestCitationRepair:
         led = EvidenceLedger()
         led.add(tool="search", kind="passage", content="text", source="s" * 5000)
         line = render_repair_evidence(led.items)
+        assert line.startswith("[1] (source: " + "s" * 200 + "…[truncated 4800 characters]) ")
         assert len(line) < 300 and line.endswith(" text")
 
     def test_repair_evidence_respects_the_budget(self):

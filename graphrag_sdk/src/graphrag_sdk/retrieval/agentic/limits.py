@@ -25,6 +25,10 @@ class AgentLimits:
             model (the evidence keeps the full text). Sized so one search's
             source passages (15 by default, ~1,500 characters each) reach
             the model, as they do in a normal completion.
+        max_total_observation_chars: Characters of all tool results the
+            conversation carries. Every turn resends the earlier results, so
+            when they add up to more than this the oldest are shortened
+            (the newest is kept whole; the evidence keeps every full text).
         max_history_turns: Earlier user/assistant exchanges kept.
         max_trace_chars: Characters kept per trace step (observation and
             JSON-encoded arguments).
@@ -44,6 +48,7 @@ class AgentLimits:
     max_tool_calls: int = 12
     max_calls_per_turn: int = 4
     max_observation_chars: int = 24_000
+    max_total_observation_chars: int = 96_000
     max_history_turns: int = 5
     max_trace_chars: int = 2000
 

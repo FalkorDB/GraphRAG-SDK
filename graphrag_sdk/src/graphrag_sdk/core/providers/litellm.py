@@ -273,7 +273,19 @@ class LiteLLM(LLMInterface):
 
     @property
     def supports_tool_calling(self) -> bool:
-        return True
+        """``False`` only when LiteLLM's model map says the model has no
+        function calling (``supports_function_calling: false``). A model the
+        map does not know stays ``True``: many deployments (Azure, local
+        servers) are unmapped yet support tools, and the agent falls back to
+        ReAct when a model rejects the first native tool call.
+        """
+        try:
+            import litellm
+
+            info = litellm.get_model_info(self.model_name)
+            return info.get("supports_function_calling") is not False
+        except Exception:  # noqa: BLE001 - unknown model or litellm missing
+            return True
 
     async def ainvoke_with_tools(
         self,

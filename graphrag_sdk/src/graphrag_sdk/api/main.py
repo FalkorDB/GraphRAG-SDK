@@ -5278,7 +5278,11 @@ class GraphRAG:
         """
         options.setdefault("strategy", self._retrieval_strategy)
         options.setdefault("graph_store", self._graph_store)
-        options.setdefault("ontology", self._global_ontology)
+        if "ontology" not in options:
+            # Read the facade's ontology on every use, not a copy taken now:
+            # this is often called before the stored ontology is loaded, and
+            # ingests can evolve it afterwards.
+            options.setdefault("ontology_getter", lambda: self._global_ontology)
         return AgenticRetrieval(self.llm, **options)
 
     async def run_skill(
@@ -5318,6 +5322,7 @@ class GraphRAG:
         *,
         strategy: RetrievalStrategy | None = None,
         reranker: RerankingStrategy | None = None,
+        history: Sequence[ChatMessage | dict[str, str]] | None = None,
         ctx: Context | None = None,
     ) -> RetrieverResult:
         """Synchronous retrieve convenience method.
@@ -5329,6 +5334,7 @@ class GraphRAG:
                 question,
                 strategy=strategy,
                 reranker=reranker,
+                history=history,
                 ctx=ctx,
             )
         )
