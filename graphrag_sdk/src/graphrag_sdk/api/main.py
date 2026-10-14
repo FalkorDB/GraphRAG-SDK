@@ -46,7 +46,7 @@ from graphrag_sdk.core.models import (
     stable_document_id,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
-from graphrag_sdk.core.tables import TableMapping
+from graphrag_sdk.core.tables import RelationshipMapping, TableMapping
 from graphrag_sdk.discovery import SchemaExtensionProposal, suggest_extensions
 from graphrag_sdk.ingestion.backfill import (
     BackfillExecutor,
@@ -83,7 +83,12 @@ from graphrag_sdk.ingestion.loaders.record_loader import (
     RecordLoaderStrategy,
 )
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
-from graphrag_sdk.ingestion.mapping import MappingError, ontology_for, record_mapping_for
+from graphrag_sdk.ingestion.mapping import (
+    MappingError,
+    ontology_for,
+    ontology_for_relationship,
+    record_mapping_for,
+)
 from graphrag_sdk.ingestion.mapping_proposal import (
     count_entities_per_label,
     natural_mapping,
@@ -96,6 +101,8 @@ from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import
     LLMVerifiedResolution,
 )
 from graphrag_sdk.ingestion.structured_pipeline import (
+    RelationshipIngestionPipeline,
+    RelationshipIngestionResult,
     StructuredIngestionPipeline,
     StructuredIngestionResult,
     records_content_hash,
@@ -539,15 +546,23 @@ class GraphRAG:
         # diff compare a mapping against itself, so a dropped column reports as
         # no change and its property stays on every node it was written to.
         declared_tables = list(self.ontology.tables) or list(loaded.tables)
+        declared_relationship_tables = list(self.ontology.relationship_tables) or list(
+            loaded.relationship_tables
+        )
         # ``tables`` counts on both sides. A user ontology carrying only mappings
         # would otherwise read as empty and fall through to seeding the defaults,
         # discarding every mapping; and a graph holding only mappings would be
         # re-seeded on the next open.
-        if self.ontology.entities or self.ontology.relations or self.ontology.tables:
+        if (
+            self.ontology.entities
+            or self.ontology.relations
+            or self.ontology.tables
+            or self.ontology.relationship_tables
+        ):
             self._global_ontology = await self._ontology_store.register(
-                self.ontology.model_copy(update={"tables": []})
+                self.ontology.model_copy(update={"tables": [], "relationship_tables": []})
             )
-        elif loaded.entities or loaded.relations or loaded.tables:
+        elif loaded.entities or loaded.relations or loaded.tables or loaded.relationship_tables:
             self._global_ontology = loaded
         else:
             default_schema = Ontology(
@@ -571,6 +586,10 @@ class GraphRAG:
         for mapping in declared_tables:
             self._global_ontology = await self._register_structured_ontology_locked(
                 ontology_for(mapping)
+            )
+        for relationship_mapping in declared_relationship_tables:
+            self._global_ontology = await self._register_structured_ontology_locked(
+                ontology_for_relationship(relationship_mapping)
             )
 
         self._ontology_initialized = True
@@ -1099,26 +1118,71 @@ class GraphRAG:
 
         The label the table used stays in the ontology, because a document or
         another table may be using it; ``drop_entity()`` removes a label that
-        nothing else does. ``source`` is matched the way ``ingest()`` matches it,
-        on the basename, so any spelling of the path names the same table.
+        nothing else does. ``drop_table()`` matches ``source`` by exact stored
+        path first, then by basename when no exact match exists. Unlike this
+        deletion lookup, ``ingest()`` selects declared mappings by basename.
 
         Raises:
             ValueError: No table with that name is in the ontology.
         """
         await self._ensure_ontology_initialized()
         wanted = os.path.basename(os.path.normpath(source))
-        mapping = next(
+        exact = os.path.normpath(source)
+        exact_relationship = next(
             (
                 m
-                for m in self._global_ontology.tables
-                if os.path.basename(os.path.normpath(m.source)) == wanted
+                for m in self._global_ontology.relationship_tables
+                if os.path.normpath(m.source) == exact
             ),
             None,
         )
+        mapping = next(
+            (m for m in self._global_ontology.tables if os.path.normpath(m.source) == exact), None
+        )
+        if mapping is None and exact_relationship is None:
+            mapping = next(
+                (
+                    m
+                    for m in self._global_ontology.tables
+                    if os.path.basename(os.path.normpath(m.source)) == wanted
+                ),
+                None,
+            )
         if mapping is None:
+            relationship_mapping = exact_relationship or next(
+                (
+                    item
+                    for item in self._global_ontology.relationship_tables
+                    if os.path.basename(os.path.normpath(item.source)) == wanted
+                ),
+                None,
+            )
+            if relationship_mapping is not None:
+                properties_by_relation = {
+                    (relation.label, prop.name)
+                    for relation in self._global_ontology.relations
+                    for prop in relation.properties
+                    if prop.name.startswith(f"{relationship_mapping.signature}__")
+                }
+                signed_properties = sorted({name for _, name in properties_by_relation})
+                await self._graph_store.drop_relationship_source(
+                    relationship_mapping.signature, signed_properties
+                )
+                for relationship_type, property_name in properties_by_relation:
+                    await self._ontology_store.drop_relation_property(
+                        relationship_type, property_name
+                    )
+                await self._ontology_store.drop_relationship_mapping(relationship_mapping.source)
+                return await self._refresh_global_ontology()
             raise ValueError(
                 f"No table named {wanted!r} is in the ontology. Tables: "
-                + (", ".join(m.source for m in self._global_ontology.tables) or "none")
+                + (
+                    ", ".join(
+                        [m.source for m in self._global_ontology.tables]
+                        + [m.source for m in self._global_ontology.relationship_tables]
+                    )
+                    or "none"
+                )
             )
         # Every Document stamped with this table's signature, whatever id it was
         # loaded under, plus the two ids a Document written before the stamp
@@ -1789,7 +1853,7 @@ class GraphRAG:
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
         ctx: Context | None = None,
-    ) -> IngestionResult | StructuredIngestionResult: ...
+    ) -> IngestionResult | StructuredIngestionResult | RelationshipIngestionResult: ...
 
     @overload
     async def ingest(
@@ -1818,7 +1882,12 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         max_concurrency: int = 3,
         ctx: Context | None = None,
-    ) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult:
+    ) -> (
+        IngestionResult
+        | list[IngestionResult | Exception]
+        | StructuredIngestionResult
+        | RelationshipIngestionResult
+    ):
         """Build a knowledge graph from one or more sources.
 
         Two input modes, mutually exclusive:
@@ -1909,7 +1978,8 @@ class GraphRAG:
 
         Returns:
             ``IngestionResult`` for a single document,
-            ``StructuredIngestionResult`` for a table. For a list of sources,
+            ``StructuredIngestionResult`` for an entity-anchored table, or
+            ``RelationshipIngestionResult`` for a relationship-only table. For a list of sources,
             ``list[IngestionResult | Exception]`` aligned by index — each slot
             is either a result (success) or the exception captured for that
             source (failure). One bad source does not abort the whole batch;
@@ -1949,6 +2019,14 @@ class GraphRAG:
             mapping = await self._mapping_for(
                 source, document_id=document_id, record_loader=record_loader, ctx=ctx
             )
+            if isinstance(mapping, RelationshipMapping):
+                return await self._write_relationship_source(
+                    source,
+                    mapping,
+                    record_loader=record_loader,
+                    strict=strict_mapping,
+                    ctx=ctx,
+                )
             return await self._ingest_structured(
                 source,
                 mapping,
@@ -2123,6 +2201,23 @@ class GraphRAG:
         rather than silently retyping a property.
         """
         existing = await self._ontology_store.load()
+        available_endpoint_properties: dict[str, dict[str, str]] = {
+            entity.label: {prop.name: prop.type for prop in entity.properties}
+            for entity in existing.entities
+        }
+        for entity in incoming.entities:
+            available_endpoint_properties.setdefault(entity.label, {}).update(
+                {prop.name: prop.type for prop in entity.properties}
+            )
+        for relationship_mapping in incoming.relationship_tables:
+            endpoint_problems = self._relationship_endpoint_schema_problems(
+                relationship_mapping, available_endpoint_properties
+            )
+            if endpoint_problems:
+                raise MappingError(
+                    f"relationship mapping for {relationship_mapping.source!r} is invalid:\n  "
+                    + "\n  ".join(endpoint_problems)
+                )
         # Refused before anything is written. The checks used to sit after the
         # mapping was stored and the columns it dropped were retracted, so a
         # declaration that retyped one column and dropped another was rejected
@@ -2165,7 +2260,7 @@ class GraphRAG:
         declare_relations = [
             relation for relation in incoming.relations if relation.label not in known_relations
         ]
-        if declare_entities or declare_relations:
+        if declare_entities or declare_relations or incoming.relationship_tables:
             await self._ontology_store.register(
                 Ontology(
                     entities=declare_entities,
@@ -2176,6 +2271,7 @@ class GraphRAG:
                     # them and dropping them here would persist a schema that
                     # describes the columns but not where they came from.
                     tables=list(incoming.tables),
+                    relationship_tables=list(incoming.relationship_tables),
                 )
             )
 
@@ -2227,6 +2323,30 @@ class GraphRAG:
                     await self._ontology_store.add_relation_property(relation.label, prop)
 
         return await self._ontology_store.load()
+
+    @staticmethod
+    def _relationship_endpoint_schema_problems(
+        mapping: RelationshipMapping, properties_by_entity: dict[str, dict[str, str]]
+    ) -> list[str]:
+        problems: list[str] = []
+        for endpoint_name, endpoint in (("start", mapping.start), ("end", mapping.end)):
+            properties = properties_by_entity.get(endpoint.entity)
+            if properties is None:
+                problems.append(
+                    f"{endpoint_name} endpoint entity {endpoint.entity!r} is not "
+                    "declared in the ontology"
+                )
+            elif endpoint.key not in properties:
+                problems.append(
+                    f"{endpoint_name} endpoint key {endpoint.entity}.{endpoint.key} "
+                    "is not a declared ontology property"
+                )
+            elif properties[endpoint.key] != "STRING":
+                problems.append(
+                    f"{endpoint_name} endpoint key {endpoint.entity}.{endpoint.key} "
+                    "must be declared STRING; non-string endpoint keys are not supported"
+                )
+        return problems
 
     @staticmethod
     def _refuse_a_contradicting_declaration(incoming: Ontology, existing: Ontology) -> None:
@@ -2550,6 +2670,85 @@ class GraphRAG:
             )
         return result
 
+    async def _write_relationship_source(
+        self,
+        source: str,
+        mapping: RelationshipMapping,
+        *,
+        record_loader: RecordLoaderStrategy | None = None,
+        strict: bool = False,
+        ctx: Context | None = None,
+    ) -> RelationshipIngestionResult:
+        """Ingest an edge-only source after registering and validating its schema."""
+        ctx = ctx or Context()
+        await self._validate_graph_config()
+        await self._ensure_ontology_initialized()
+        previous = next(
+            (
+                item
+                for item in self._global_ontology.relationship_tables
+                if item.source == mapping.source
+            ),
+            None,
+        )
+        properties_by_entity = {
+            entity.label: {prop.name: prop.type for prop in entity.properties}
+            for entity in self._global_ontology.entities
+        }
+        endpoint_problems = self._relationship_endpoint_schema_problems(
+            mapping, properties_by_entity
+        )
+        if endpoint_problems:
+            raise MappingError(
+                f"relationship mapping for {mapping.source!r} is invalid:\n  "
+                + "\n  ".join(endpoint_problems)
+            )
+        self._global_ontology = await self._register_structured_ontology(
+            ontology_for_relationship(mapping)
+        )
+        await self._vector_store.create_id_range_indices()
+        pipeline = RelationshipIngestionPipeline(
+            loader=record_loader or CsvRecordLoader(),
+            graph_store=self._graph_store,
+        )
+        # Relation declarations retain old signed properties until a successful
+        # snapshot reconciles them, even if initialization replaced the mapping.
+        # This persisted schema is the retry journal across SDK instances.
+        old_properties = [
+            (relation.label, prop.name)
+            for relation in self._global_ontology.relations
+            for prop in relation.properties
+            if prop.name.startswith(f"{mapping.signature}__")
+        ]
+        stale_properties = {name for _, name in old_properties}
+        stale_properties.update(mapping.signed_name(prop) for prop in mapping.typed_properties)
+        if previous is not None:
+            stale_properties.update(
+                previous.signed_name(prop) for prop in previous.typed_properties
+            )
+        result = await pipeline.run(
+            source,
+            mapping,
+            ctx,
+            strict=strict,
+            stale_properties=sorted(stale_properties),
+        )
+        if not result.incomplete_writes:
+            current_relation_properties = {
+                (relationship_type, mapping.signed_name(prop))
+                for relationship_type in mapping.relationship_types
+                for prop in mapping.typed_properties
+            }
+            for relationship_type, property_name in old_properties:
+                if (relationship_type, property_name) not in current_relation_properties:
+                    await self._graph_store.clear_relationship_source_property(
+                        mapping.signature, relationship_type, property_name
+                    )
+                    await self._ontology_store.drop_relation_property(
+                        relationship_type, property_name
+                    )
+        return result
+
     # Suffixes the record loader can read. One of these means the source is
     # records, so it is routed to the deterministic write path and its mapping is
     # looked up in the ontology. A file that really is prose living in columns —
@@ -2567,7 +2766,7 @@ class GraphRAG:
         document_id: str | None = None,
         record_loader: RecordLoaderStrategy | None = None,
         ctx: Context | None = None,
-    ) -> TableMapping:
+    ) -> TableMapping | RelationshipMapping:
         """The mapping for ``source``: the declared one, else a proposed one.
 
         Matched on a basename — the explicit ``document_id`` first, then the
@@ -2602,6 +2801,9 @@ class GraphRAG:
             for declared in self._global_ontology.tables:
                 if os.path.basename(os.path.normpath(declared.source)) == candidate:
                     return declared
+            for relationship_mapping in self._global_ontology.relationship_tables:
+                if os.path.basename(os.path.normpath(relationship_mapping.source)) == candidate:
+                    return relationship_mapping
 
         # Memoized: resolving is idempotent, but proposing a mapping reads and
         # profiles the whole file and asks the model, and the warning below
@@ -3319,7 +3521,7 @@ class GraphRAG:
         # mapping comes from the ontology. There is no mapping argument here
         # either, so a re-sync cannot be handed a declaration that disagrees with
         # the one the source was originally written under.
-        mapping: TableMapping | None = None
+        mapping: TableMapping | RelationshipMapping | None = None
         if isinstance(source, str) and self._is_tabular(source, loader):
             for name, value in (("chunker", chunker), ("extractor", extractor)):
                 if value is not None:
@@ -3347,6 +3549,12 @@ class GraphRAG:
 
         if ctx is None:
             ctx = Context()
+
+        if isinstance(mapping, RelationshipMapping):
+            raise ValueError(
+                "update() is document-oriented and does not apply to relationship-only "
+                "tables. Call ingest() again; relationship writes are idempotent upserts."
+            )
 
         if mapping is not None and document_id is None:
             # Same default ingest() gives a table, so update("hr.csv") and
@@ -3997,7 +4205,35 @@ class GraphRAG:
         delete_results: list[BatchEntry[DeleteDocumentResult]] = []
         for doc_id in deleted:
             try:
-                delete_results.append(BatchEntry.ok(await self.delete_document(doc_id)))
+                await self._ensure_ontology_initialized()
+                wanted = os.path.basename(os.path.normpath(doc_id))
+                exact = os.path.normpath(doc_id)
+                relationship_mapping = next(
+                    (
+                        mapping
+                        for mapping in self._global_ontology.relationship_tables
+                        if os.path.normpath(mapping.source) == exact
+                    ),
+                    None,
+                )
+                exact_entity = any(
+                    os.path.normpath(mapping.source) == exact
+                    for mapping in self._global_ontology.tables
+                )
+                if relationship_mapping is None and not exact_entity:
+                    relationship_mapping = next(
+                        (
+                            mapping
+                            for mapping in self._global_ontology.relationship_tables
+                            if os.path.basename(os.path.normpath(mapping.source)) == wanted
+                        ),
+                        None,
+                    )
+                if relationship_mapping is not None:
+                    await self.drop_table(relationship_mapping.source)
+                    delete_results.append(BatchEntry.ok(DeleteDocumentResult(document_uid=doc_id)))
+                else:
+                    delete_results.append(BatchEntry.ok(await self.delete_document(doc_id)))
             except Exception as exc:
                 logger.warning(
                     "apply_changes: delete failed for %r: %s: %s",
@@ -4018,6 +4254,17 @@ class GraphRAG:
             async with update_sem:
                 try:
                     if self._is_tabular(path, loader):
+                        mapping = await self._mapping_for(path, ctx=ctx.child())
+                        if isinstance(mapping, RelationshipMapping):
+                            relationships = await self.ingest(path, ctx=ctx.child())
+                            assert isinstance(relationships, RelationshipIngestionResult)
+                            return BatchEntry.ok(
+                                UpdateResult(
+                                    document_info=DocumentInfo(uid=relationships.source, path=path),
+                                    relationships_created=relationships.relationships_written,
+                                    metadata=relationships.as_dict(),
+                                )
+                            )
                         # The chunker, extractor, resolver and chunk cache are
                         # for the prose in this batch; records have no use for
                         # them, and update() refuses them on a table.
@@ -4090,6 +4337,15 @@ class GraphRAG:
                     )
                     added_results[i] = BatchEntry.fail(exc)
                     continue
+            if isinstance(structured, RelationshipIngestionResult):
+                added_results[i] = BatchEntry.ok(
+                    IngestionResult(
+                        document_info=DocumentInfo(uid=structured.source, path=path),
+                        relationships_created=structured.relationships_written,
+                        metadata=structured.as_dict(),
+                    )
+                )
+                continue
             assert isinstance(structured, StructuredIngestionResult)
             added_results[i] = BatchEntry.ok(
                 # Same shape a table takes in ``modified``: the counts a
@@ -5005,7 +5261,7 @@ class GraphRAG:
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
         ctx: Context | None = None,
-    ) -> IngestionResult | StructuredIngestionResult: ...
+    ) -> IngestionResult | StructuredIngestionResult | RelationshipIngestionResult: ...
 
     @overload
     def ingest_sync(
@@ -5034,7 +5290,12 @@ class GraphRAG:
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
         ctx: Context | None = None,
-    ) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult:
+    ) -> (
+        IngestionResult
+        | list[IngestionResult | Exception]
+        | StructuredIngestionResult
+        | RelationshipIngestionResult
+    ):
         """Synchronous ingest convenience method.
 
         Keep in sync with :meth:`ingest`.

@@ -19,7 +19,7 @@ import re
 from collections.abc import Container
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
@@ -629,3 +629,184 @@ class TableMapping:
                 for spec in link.properties.values()
             )
         return used
+
+
+EndpointPolicy = Literal["error", "skip"]
+RelationshipDirection = Literal["OUTGOING", "INCOMING"]
+
+
+@dataclass(frozen=True)
+class EndpointMapping:
+    """How one relationship endpoint is resolved to an existing entity.
+
+    ``key`` is the exact graph property to match. It is deliberately not an
+    entity identity alias: two declared key spaces on one label remain distinct,
+    and this mapping never merges them through the shared ``entity_key`` slot.
+    """
+
+    entity: str
+    key: str
+    column: str
+
+    def __post_init__(self) -> None:
+        if not self.entity or not self.entity.strip():
+            raise MappingError("EndpointMapping.entity must be non-empty")
+        if not self.key or not self.key.strip():
+            raise MappingError("EndpointMapping.key must be non-empty")
+        if not self.column or not self.column.strip():
+            raise MappingError("EndpointMapping.column must be non-empty")
+        _check_label(self.entity)
+        if not _IDENTIFIER.match(self.key):
+            raise MappingError(
+                f"endpoint key property {self.key!r} is not a usable graph property name"
+            )
+
+
+@dataclass
+class RelationshipMapping:
+    """How an edge-only table connects existing entities.
+
+    Unlike :class:`TableMapping`, no row becomes an entity or a record chunk.
+    Both endpoints must already exist and are resolved by the exact declared
+    graph property. The semantic relationship type is either fixed with
+    ``type`` or read from ``type_column`` and constrained by ``allowed_types``.
+    """
+
+    source: str
+    start: EndpointMapping
+    end: EndpointMapping
+    type: str | None = None
+    type_column: str | None = None
+    allowed_types: list[str] = field(default_factory=list)
+    properties: dict[str, Column | str] = field(default_factory=dict)
+    direction: RelationshipDirection = "OUTGOING"
+    missing_endpoint: EndpointPolicy = "error"
+    ambiguous_endpoint: EndpointPolicy = "error"
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.source or not self.source.strip():
+            raise MappingError("RelationshipMapping.source must be non-empty")
+        if not isinstance(self.start, EndpointMapping) or not isinstance(self.end, EndpointMapping):
+            raise MappingError("RelationshipMapping.start and .end must be EndpointMapping objects")
+        fixed = bool(self.type and self.type.strip())
+        dynamic = bool(self.type_column and self.type_column.strip())
+        if fixed == dynamic:
+            raise MappingError(
+                "RelationshipMapping must declare exactly one of type= or type_column="
+            )
+        if fixed:
+            assert self.type is not None
+            _check_identifier("relationship type", self.type)
+            if self.allowed_types:
+                raise MappingError(
+                    "allowed_types applies only with type_column=; "
+                    "a fixed type is already validated"
+                )
+        else:
+            if not self.allowed_types:
+                raise MappingError(
+                    "RelationshipMapping with type_column= must declare allowed_types"
+                )
+            duplicate_types = {
+                value for value in self.allowed_types if self.allowed_types.count(value) > 1
+            }
+            if duplicate_types:
+                raise MappingError(
+                    f"RelationshipMapping.allowed_types contains duplicates: "
+                    f"{sorted(duplicate_types)}"
+                )
+            for value in self.allowed_types:
+                _check_identifier("relationship type", value)
+        if self.direction not in ("OUTGOING", "INCOMING"):
+            raise MappingError("RelationshipMapping.direction must be 'OUTGOING' or 'INCOMING'")
+        for field_name, policy in (
+            ("missing_endpoint", self.missing_endpoint),
+            ("ambiguous_endpoint", self.ambiguous_endpoint),
+        ):
+            if policy not in ("error", "skip"):
+                raise MappingError(f"RelationshipMapping.{field_name} must be 'error' or 'skip'")
+        self.properties = dict(_as_columns(self.properties))
+
+    @property
+    def signature(self) -> str:
+        return signature_for(self.source)
+
+    @property
+    def relationship_types(self) -> list[str]:
+        return [self.type] if self.type is not None else list(self.allowed_types)
+
+    def type_for(self, record: dict[str, Any]) -> str:
+        if self.type is not None:
+            return self.type
+        assert self.type_column is not None
+        raw = record.get(self.type_column)
+        value = "" if raw is None else str(raw).strip()
+        if not value:
+            raise MappingError(f"relationship type column {self.type_column!r} is empty")
+        if value not in self.allowed_types:
+            raise MappingError(
+                f"relationship type column {self.type_column!r} holds {value!r}; "
+                f"expected one of {', '.join(sorted(self.allowed_types))}"
+            )
+        return value
+
+    def signed_name(self, prop: str) -> str:
+        return f"{self.signature}__{prop}"
+
+    @property
+    def typed_properties(self) -> dict[str, Column]:
+        return {
+            name: spec if isinstance(spec, Column) else Column(str(spec))
+            for name, spec in self.properties.items()
+        }
+
+    @property
+    def columns(self) -> set[str]:
+        used = {self.start.column, self.end.column}
+        if self.type_column:
+            used.add(self.type_column)
+        used.update(column.name for column in self.typed_properties.values())
+        return used
+
+    def validate_against(self, columns: list[str], *, strict: bool = False) -> list[str]:
+        available = set(columns)
+        problems: list[str] = []
+        for endpoint_name, endpoint in (("start", self.start), ("end", self.end)):
+            if endpoint.column not in available:
+                problems.append(
+                    f"{endpoint_name} endpoint reads missing column {endpoint.column!r}"
+                )
+        if self.type_column and self.type_column not in available:
+            problems.append(f"relationship type reads missing column {self.type_column!r}")
+        for prop, column in self.typed_properties.items():
+            if column.name not in available:
+                problems.append(
+                    f"relationship property {prop!r} reads missing column {column.name!r}"
+                )
+        if strict:
+            unused = sorted(available - self.columns)
+            if unused:
+                problems.append("these columns are not mapped anywhere: " + ", ".join(unused))
+        return problems
+
+    @property
+    def fingerprint_of_declaration(self) -> str:
+        parts = [
+            self.start.entity,
+            self.start.key,
+            self.start.column,
+            self.end.entity,
+            self.end.key,
+            self.end.column,
+            self.type or "",
+            self.type_column or "",
+            ",".join(sorted(self.allowed_types)),
+            self.direction,
+            self.missing_endpoint,
+            self.ambiguous_endpoint,
+        ]
+        parts += sorted(
+            f"{name}={column.name}:{column.type}" for name, column in self.typed_properties.items()
+        )
+        return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()

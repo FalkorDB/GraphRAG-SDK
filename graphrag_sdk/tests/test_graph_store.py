@@ -439,6 +439,43 @@ class TestGraphStoreUpsertRelationships:
         assert params["batch"][0]["end_id"] == "b"
         assert params["batch"][0]["properties"]["note"] == "ABC"
 
+    async def test_relationship_source_ownership_is_unioned(self, graph_store, mock_connection):
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={
+                        "rel_type": "CONSUMED_BATCH",
+                        "structured_sources": ["consumed_batch"],
+                    },
+                )
+            ]
+        )
+        cypher = upsert_calls(mock_connection)[0][0][0]
+        assert "coalesce(r.structured_sources, []) AS old_sources" in cypher
+        assert "WHERE NOT s IN old_sources" in cypher
+
+    async def test_null_signed_relationship_property_is_removed(
+        self, graph_store, mock_connection
+    ):
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={
+                        "rel_type": "CONSUMED_BATCH",
+                        "consumed_batch__consumed_on": None,
+                    },
+                )
+            ]
+        )
+        cypher = upsert_calls(mock_connection)[0][0][0]
+        assert "REMOVE r.`consumed_batch__consumed_on`" in cypher
+
     async def test_upsert_drops_rels_with_empty_sanitized_ids(self, graph_store, mock_connection):
         rels = [
             GraphRelationship(start_node_id="\x00", end_node_id="valid", type="R"),
@@ -478,6 +515,42 @@ class TestGraphStoreUpsertRelationships:
         result = await graph_store.upsert_relationships(rels)
         assert result == 1  # only R2 batch succeeded
 
+
+class TestRelationshipEndpointResolution:
+    async def test_property_lookup_is_batched(self, graph_store, mock_connection):
+        keys = [f"K-{index}" for index in range(1001)]
+        await graph_store.resolve_by_property("Unit", "units__unit_id", keys)
+        lookups = [
+            call
+            for call in mock_connection.query.call_args_list
+            if "UNWIND $keys AS k" in call[0][0]
+        ]
+        assert [len(call[0][1]["keys"]) for call in lookups] == [500, 500, 1]
+
+    async def test_snapshot_cleanup_removes_only_one_sources_contribution(
+        self, graph_store, mock_connection
+    ):
+        mock_connection.query = AsyncMock(
+            side_effect=[
+                MagicMock(),
+                MagicMock(result_set=[[2]]),
+                MagicMock(),
+                MagicMock(),
+            ]
+        )
+        deleted = await graph_store.finalize_relationship_snapshot(
+            "consumed_batch",
+            "relationship_mapping_consumed_batch",
+            "snapshot",
+            ["consumed_batch__consumed_on"],
+        )
+        assert deleted == 2
+        calls = mock_connection.query.call_args_list
+        assert "REMOVE r.`consumed_batch__consumed_on`" in calls[0][0][0]
+        assert "[s IN r.structured_sources WHERE s <> $signature]" in calls[1][0][0]
+        assert "relationship_cleanup_consumed_batch" in calls[2][0][0]
+        assert "size(coalesce(r.source_chunk_ids, [])) = 0" in calls[2][0][0]
+        assert "REMOVE r.`relationship_cleanup_consumed_batch`" in calls[3][0][0]
 
 class TestGraphStoreGetConnectedEntities:
     async def test_get_entities(self, graph_store, mock_connection):
