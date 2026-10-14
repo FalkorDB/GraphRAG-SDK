@@ -77,6 +77,7 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     _coerce_attribute_value,
 )
 from graphrag_sdk.ingestion.ingestion_planner import (
+    IngestionPlan,
     IngestionPlanner,
     LLMIngestionPlanner,
     build_chunker,
@@ -97,7 +98,7 @@ from graphrag_sdk.ingestion.mapping_proposal import (
     natural_mapping,
     propose_mapping,
 )
-from graphrag_sdk.ingestion.pipeline import IngestionPipeline
+from graphrag_sdk.ingestion.pipeline import IngestionPipeline, content_hash
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
@@ -1935,8 +1936,8 @@ class GraphRAG:
             auto: Enable agentic per-document strategy selection for any
                 strategy left unspecified.
             planner: Optional planner instance (``LLMIngestionPlanner`` /
-                ``HeuristicIngestionPlanner``). Defaults to an LLM planner when
-                ``auto=True``. Ignored when ``auto=False``.
+                ``HeuristicIngestionPlanner``). Passing one turns ``auto``
+                on. Defaults to an LLM planner when ``auto=True``.
             max_concurrency: Max parallel ingestions (list source only).
             ctx: Execution context.
 
@@ -1950,6 +1951,11 @@ class GraphRAG:
             WARNING. A list may not contain a table: each table is written on
             its own, so ``ValueError`` is raised before anything is ingested.
         """
+        # A planner given is a request to plan: it turns ``auto`` on rather
+        # than being silently ignored.
+        if planner is not None:
+            auto = True
+
         # ── Structured mode ──
         # The source itself says which path it takes: a .csv is records, not
         # prose. Its mapping is looked up in the ontology, where the user declared
@@ -2769,6 +2775,7 @@ class GraphRAG:
         plan_report: dict[str, Any] | None = None
         needs_plan = auto and (chunker is None or extractor is None or resolver is None)
         unchanged = False
+        load_failed = False
         if needs_plan and existing is not None and existing.content_hash:
             # Re-ingest of content the graph already holds is a no-op in the
             # pipeline (no provider calls), so check it before planning: the
@@ -2783,12 +2790,23 @@ class GraphRAG:
                 except LatencyBudgetExceededError:
                     raise
                 except Exception as exc:  # noqa: BLE001
+                    # The pipeline's own load reports the error; planning a
+                    # document that cannot be loaded would only add a load
+                    # and an LLM call before it.
                     logger.debug("Unchanged-content pre-check load failed (%s)", exc)
                     current_text = None
+                    load_failed = True
             if current_text is not None:
-                digest = hashlib.sha256(current_text.encode("utf-8")).hexdigest()
-                unchanged = digest == existing.content_hash
-        if needs_plan and not unchanged:
+                unchanged = content_hash(current_text) == existing.content_hash
+        if load_failed:
+            given = {"chunker": chunker, "extractor": extractor, "resolver": resolver}
+            plan_report = {
+                "planner": None,
+                "plan": None,
+                "slots": {k: "caller" if v is not None else "default" for k, v in given.items()},
+                "notes": ["the document could not be loaded, so the planner did not run"],
+            }
+        elif needs_plan and not unchanged:
             plan_report = {}
             (
                 chunker,
@@ -2821,7 +2839,10 @@ class GraphRAG:
         # Reuse the planner's file-mode content sample instead of loading the
         # source a second time (the planner already loaded it in full to
         # build that sample) — matters most for expensive loaders (PDFs).
-        if preloaded_document is not None and text is None:
+        # In text mode a preloaded document carries the Markdown elements the
+        # planner parsed from the text for a structural plan; its text is the
+        # caller's text, so identity and content hash are unchanged.
+        if preloaded_document is not None:
             result = await pipeline.run(
                 source, ctx, document_info=doc_info, loaded_document=preloaded_document
             )
@@ -3010,12 +3031,15 @@ class GraphRAG:
             seed=seed,
         )
 
+    def _ontology_entity_types(self) -> list[str] | None:
+        """Entity labels the extractors are given (``None``: no ontology)."""
+        return [e.label for e in self.ontology.entities] if self.ontology.entities else None
+
     def _default_extractor(self) -> ExtractionStrategy:
         """Return default GraphExtraction with ontology entity types if available."""
-        entity_types = [e.label for e in self.ontology.entities] if self.ontology.entities else None
         return GraphExtraction(
             llm=self.llm,
-            entity_types=entity_types,
+            entity_types=self._ontology_entity_types(),
         )
 
     async def _plan_ingestion_strategies(
@@ -3066,6 +3090,7 @@ class GraphRAG:
         # the source a second time via the pipeline.
         sample_text = text
         preloaded_document: DocumentOutput | None = None
+        load_error: Exception | None = None
         if sample_text is None and loaded_document is not None:
             # Already loaded by the caller: plan from it, load nothing.
             sample_text = loaded_document.text
@@ -3078,7 +3103,7 @@ class GraphRAG:
             except LatencyBudgetExceededError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                logger.debug("Planner content-sample load failed (%s); planning from path", exc)
+                load_error = exc
 
         active = planner or LLMIngestionPlanner(self.llm)
         info: dict[str, Any] = report if report is not None else {}
@@ -3089,10 +3114,21 @@ class GraphRAG:
             slots={k: "caller" if v is not None else "default" for k, v in given.items()},
             notes=[],
         )
+        if load_error is not None:
+            # The pipeline loads it again and reports the error; a planner
+            # call for a document that cannot be loaded is wasted.
+            logger.debug("Planner content-sample load failed (%s); not planning", load_error)
+            info["planner"] = None
+            info["notes"].append("the document could not be loaded, so the planner did not run")
+            return chunker, extractor, resolver, None
         try:
             plan = await active.plan(sample_text, source=source, ctx=ctx)
             if plan is None:
                 raise ValueError("planner returned no plan")
+            if not isinstance(plan, IngestionPlan):
+                # A custom planner is only a Protocol; a dict or another
+                # object falls back to the defaults instead of crashing.
+                raise TypeError(f"planner returned {type(plan).__name__}, expected IngestionPlan")
         except LatencyBudgetExceededError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -3100,18 +3136,26 @@ class GraphRAG:
             info["notes"].append(f"planner failed: {exc}")
             return chunker, extractor, resolver, preloaded_document
 
-        # "structural" groups a loaded document's elements; without them
-        # (text mode, or a loader that produced none) it only delegates to the
-        # sentence chunker, so say so instead of reporting a structural plan.
+        # "structural" groups a loaded document's elements. Only the Markdown
+        # loader produces them, so for Markdown-looking text loaded without
+        # elements (a .txt of headings, text mode) they are parsed here; with
+        # none to be had, structural would only delegate to the sentence
+        # chunker, so say so instead of reporting a structural plan.
         if plan.chunker == "structural" and chunker is None:
-            no_elements = text is not None or (
-                preloaded_document is not None and not preloaded_document.elements
-            )
-            if no_elements:
-                plan = dataclasses.replace(plan, chunker="sentence")
-                info["notes"].append(
-                    "structural -> sentence: the document has no structural elements"
-                )
+            has_elements = preloaded_document is not None and bool(preloaded_document.elements)
+            if not has_elements:
+                parsed = self._markdown_elements(sample_text, source)
+                if parsed:
+                    base = preloaded_document or DocumentOutput(
+                        text=sample_text or "", document_info=DocumentInfo(path=source)
+                    )
+                    preloaded_document = base.model_copy(update={"elements": parsed})
+                    info["notes"].append("structural: Markdown structure parsed from the text")
+                else:
+                    plan = dataclasses.replace(plan, chunker="sentence")
+                    info["notes"].append(
+                        "structural -> sentence: the document has no structural elements"
+                    )
         info["plan"] = {
             "chunker": plan.chunker,
             "extractor": plan.extractor,
@@ -3123,9 +3167,9 @@ class GraphRAG:
         }
 
         # Build only the slots the caller left unset, each on its own: one slot
-        # that cannot be built (e.g. GLiNER not installed) falls back to its
-        # default without discarding the rest of the plan.
-        entity_types = [e.label for e in self.ontology.entities] if self.ontology.entities else None
+        # that cannot be built (e.g. contextual chunking without an llm) falls
+        # back to its default without discarding the rest of the plan.
+        entity_types = self._ontology_entity_types()
         builders = {
             "chunker": lambda: build_chunker(
                 plan.chunker, llm=self.llm, params=plan.chunker_params
@@ -3160,6 +3204,26 @@ class GraphRAG:
                 )
 
         return slots["chunker"], slots["extractor"], slots["resolver"], preloaded_document
+
+    @staticmethod
+    def _markdown_elements(text: str | None, source: str | None) -> list[Any]:
+        """Markdown elements parsed from ``text`` when it looks like Markdown.
+
+        Empty when there is no text, it does not look structured (and is not
+        a ``.md``/``.markdown`` file), or the Markdown parser is unavailable.
+        """
+        from graphrag_sdk.ingestion.ingestion_planner import _looks_structured
+
+        if not text:
+            return []
+        is_md_file = str(source or "").lower().endswith((".md", ".markdown"))
+        if not (is_md_file or _looks_structured(text)):
+            return []
+        try:
+            return MarkdownLoader()._parse_markdown(text)
+        except Exception as exc:  # noqa: BLE001 - parser missing or failed: no elements
+            logger.debug("Markdown structure could not be parsed (%s)", exc)
+            return []
 
     def _default_ingest_resolver(self) -> ResolutionStrategy:
         """Return the default ingest-time resolver: ``ExactMatchResolution``.
@@ -3646,7 +3710,7 @@ class GraphRAG:
         elif text is not None:
             loaded_text = text
             doc_path = resolved_id
-            new_hash = hashlib.sha256(loaded_text.encode("utf-8")).hexdigest()
+            new_hash = content_hash(loaded_text)
         else:
             assert source is not None  # guaranteed by validation above
             active_loader = loader or self._default_loader_for(source)
@@ -3655,7 +3719,7 @@ class GraphRAG:
             loaded_text = loaded.text
             doc_path = source
             loaded_metadata = dict(loaded.document_info.metadata or {})
-            new_hash = hashlib.sha256(loaded_text.encode("utf-8")).hexdigest()
+            new_hash = content_hash(loaded_text)
 
         existing = await self._graph_store.get_document_record(resolved_id)
         if existing is None:

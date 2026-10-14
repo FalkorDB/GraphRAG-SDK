@@ -271,9 +271,9 @@ By default `ingest()` uses fixed strategies (see [Configuration Quick Reference]
 # LLM planner (default): one small call decides the strategies per document
 await rag.ingest(source="handbook.md", auto=True)
 
-# Zero-cost heuristic planner instead of an LLM call
+# Zero-cost heuristic planner instead of an LLM call (passing a planner turns auto on)
 from graphrag_sdk import HeuristicIngestionPlanner
-await rag.ingest(source="handbook.md", auto=True, planner=HeuristicIngestionPlanner())
+await rag.ingest(source="handbook.md", planner=HeuristicIngestionPlanner())
 
 # Explicit strategies always win — the planner only fills the rest
 from graphrag_sdk import ExactMatchResolution
@@ -288,7 +288,9 @@ await rag.ingest(source="handbook.md", auto=True, resolver=ExactMatchResolution(
 | Extractor backend | `gliner` (default), `llm` |
 | Resolver | `exact` (default), `llm_verified` |
 
-The planner may also tune parameters inside the chosen strategy (e.g. `max_tokens`, the `llm` extractor's `threshold`; GLiNER's threshold is model-specific and is not tuned); all values are coerced and clamped to safe ranges, so the model can never produce an unsafe config.
+The planner may also tune parameters inside the chosen strategy (e.g. `max_tokens`, the `llm` extractor's `threshold`; GLiNER's threshold is model-specific and is not tuned); all values are coerced and clamped to safe ranges, so the model can never produce an unsafe config. The ranges also bound cost: every chunk costs an extraction LLM call, so chunk sizes have floors (256 tokens for the sentence-based chunkers, with at most 4 sentences of overlap; 500 characters for `fixed`, with overlap at most a quarter of the size), and `llm_verified`'s `hard_threshold` stays at 0.8 or above so pairs below it are still checked by the LLM.
+
+`structural` needs the document's structure: `.md` files carry it, and Markdown-looking text (headings and lists in a `.txt`, or text mode) is parsed for it when the planner picks `structural`. Anything else falls back to `sentence`, and a note says so.
 
 **Safety guarantees:**
 
@@ -297,7 +299,7 @@ The planner may also tune parameters inside the chosen strategy (e.g. `max_token
 - **Opt-in** — `auto=False` is the default; nothing changes unless you enable it.
 - **Bounded blast radius on malicious content** — the `LLMIngestionPlanner` prompt includes a sample of the document itself, so adversarial document content could in principle try to steer the planner's choice. The worst case is still one of the options you allow (below) with clamped parameters (see `PARAM_SPECS`) — never an arbitrary strategy or an out-of-range value.
 
-**Cost ceiling.** By default the LLM planner may pick any option above, and the `llm_verified` pair budget it sets is capped at 500 (the resolver's default). To make sure document text can never add strategy-dependent LLM cost, allow only the cheap options (the planner itself still makes its one LLM call per document; use `HeuristicIngestionPlanner` for none):
+**Cost ceiling.** By default the LLM planner may pick any option above, and the `llm_verified` pair budget it sets is capped at 500 (the resolver's default). To keep document text from choosing the strategies that add LLM calls, allow only the cheap options, and pass `tune_params=False` so chunk sizes stay at their defaults:
 
 ```python
 from graphrag_sdk import LLMIngestionPlanner
@@ -307,11 +309,12 @@ cheap = LLMIngestionPlanner(
     chunkers=("sentence", "fixed", "structural"),
     extractors=("gliner",),
     resolvers=("exact",),
+    tune_params=False,
 )
-await rag.ingest(source="upload.pdf", auto=True, planner=cheap)
+await rag.ingest(source="upload.pdf", planner=cheap)
 ```
 
-A choice outside the allowed options falls back to the default (or the first allowed option) and is never built; the prompt only lists the allowed options. `max_llm_pairs=` lowers the pair cap further.
+The planner itself still makes its one LLM call per document (`HeuristicIngestionPlanner` makes none), and the number of chunks — one extraction LLM call each — still depends on the document and on the chunker chosen (`structural` keeps sections apart). A choice outside the allowed options falls back to the default (or the first allowed option) and is never built; the prompt only lists the allowed options. `max_llm_pairs=` lowers the pair cap further, and `max_llm_pairs=0` disallows `llm_verified`.
 
 Two planners ship in the SDK:
 
@@ -333,7 +336,9 @@ result.metadata["plan"]
 #  "notes": []}
 ```
 
-`slots` says where each strategy came from: `"caller"` (you passed it), `"planner"` (built from the returned plan) or `"default"` (the planner raised or returned no plan, or that strategy could not be built — the other slots still follow the plan). `LLMIngestionPlanner` does not raise when its LLM call fails or its reply is not a plan: it returns the default plan, so the slots read `"planner"` and `plan.reason` starts with `default:`. Re-ingesting unchanged content skips the planner as well (a note says so). `notes` explains any fallback or adjustment, e.g. `structural` becoming `sentence` when the document has no structural elements (text mode). Planner failures are also logged at WARNING. Structured sources (`.csv`, `.tsv`, …) never run the planner: no chunker, extractor or resolver applies to them.
+`slots` says where each strategy came from: `"caller"` (you passed it), `"planner"` (built from the returned plan) or `"default"` (the planner raised or returned no plan, or that strategy could not be built — the other slots still follow the plan). `LLMIngestionPlanner` does not raise when its LLM call fails or its reply is not a plan: it returns the default plan, so the slots read `"planner"` and `plan.reason` starts with `default:`. Re-ingesting unchanged content skips the planner as well (a note says so). `notes` explains any fallback or adjustment, e.g. `structural` becoming `sentence` when the document has no structural elements (text mode). Planner failures are also logged at WARNING. Structured sources (`.csv`, `.tsv`, …) never run the planner: no chunker, extractor or resolver applies to them. A document that cannot be loaded is not planned either; its load error is raised as usual.
+
+**Limitation: `update()` does not re-plan.** The chosen strategies are recorded only in the ingest result's `metadata["plan"]`; they are not stored on the Document. `update()` has no `auto` and re-ingests changed content with the strategies you pass (or the defaults), so a document ingested as `structural` + `llm` is re-chunked with `sentence` + `gliner` unless you pass those strategies to `update()` yourself.
 
 **Code:** [`ingestion_planner.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/ingestion_planner.py) · wired into `GraphRAG.ingest()` in [`api/main.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/api/main.py).
 

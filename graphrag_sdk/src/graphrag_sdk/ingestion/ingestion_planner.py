@@ -19,6 +19,7 @@ import json
 import logging
 import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -85,23 +86,30 @@ DEFAULT_RESOLVER = "exact"
 # model-specific (see GLiNERExtractor — 0.75 suits gliner_medium-v2.1 but a
 # bi-encoder returns almost nothing at it), and the planner does not know
 # which model is loaded, so it must not pick one.
+#
+# Every chunk costs an extraction LLM call (and contextual one more), so the
+# chunk-size floors bound how many chunks a plan can make — measured at
+# about 1.8x the default for the sentence chunkers (256 vs 384 tokens, at
+# most 4 sentences of overlap) and 2.4x for fixed (500 vs 1000 characters,
+# overlap at most a quarter of the size, so each window advances by 3/4 of
+# it). Before the floors a plan could make ~30x (sentence) and ~900x (fixed).
 PARAM_SPECS: dict[str, dict[str, dict[str, tuple[str, float, float, float]]]] = {
     "chunker": {
         "sentence": {
-            "max_tokens": ("int", 64, 2048, 384),
-            "overlap_sentences": ("int", 0, 10, 2),
+            "max_tokens": ("int", 256, 2048, 384),
+            "overlap_sentences": ("int", 0, 4, 2),
         },
         "structural": {
-            "max_tokens": ("int", 64, 2048, 384),
-            "overlap_sentences": ("int", 0, 10, 2),
+            "max_tokens": ("int", 256, 2048, 384),
+            "overlap_sentences": ("int", 0, 4, 2),
         },
         "contextual": {
-            "max_tokens": ("int", 64, 2048, 384),
-            "overlap_sentences": ("int", 0, 10, 2),
+            "max_tokens": ("int", 256, 2048, 384),
+            "overlap_sentences": ("int", 0, 4, 2),
         },
         "fixed": {
-            "chunk_size": ("int", 100, 8000, 1000),
-            "chunk_overlap": ("int", 0, 2000, 100),
+            "chunk_size": ("int", 500, 8000, 1000),
+            "chunk_overlap": ("int", 0, 1000, 100),
         },
     },
     "extractor": {
@@ -110,9 +118,12 @@ PARAM_SPECS: dict[str, dict[str, dict[str, tuple[str, float, float, float]]]] = 
     },
     "resolver": {
         "exact": {},
+        # The resolver's default unified stage takes candidates from cosine
+        # 0.65 (``unified_threshold``) and merges without asking the LLM from
+        # ``hard_threshold`` up, so the floor keeps an LLM-verified band;
+        # ``soft_threshold`` is not read by that stage and is not offered.
         "llm_verified": {
-            "hard_threshold": ("float", 0.5, 0.999, 0.95),
-            "soft_threshold": ("float", 0.3, 0.98, 0.65),
+            "hard_threshold": ("float", 0.8, 0.999, 0.95),
             "ann_top_k": ("int", 5, 200, 50),
             "max_llm_pairs": ("int", 10, 5000, 500),
         },
@@ -128,15 +139,12 @@ def clamp_params(component: str, strategy: str, raw: dict[str, Any] | None) -> d
     dropped (the constructor default then applies). Cross-field constraints are
     enforced so the resulting kwargs can never make a constructor raise:
 
-    - fixed chunker: ``chunk_overlap`` is forced below ``chunk_size``; a lone
-      small ``chunk_size`` also gets an overlap that fits (the constructor's
-      default overlap of 100 would otherwise make it raise).
-    - llm_verified resolver: ``hard_threshold`` must stay above
-      ``soft_threshold``; if the pair inverts (a lone key is checked against
-      the other's default), both are dropped to defaults.
+    - fixed chunker: ``chunk_overlap`` is at most a quarter of ``chunk_size``
+      (checked against the default size when only the overlap is given), so
+      each window moves forward by at least 3/4 of its size.
     """
     spec = PARAM_SPECS.get(component, {}).get(strategy, {})
-    if not spec or not isinstance(raw, dict):
+    if not spec or not isinstance(raw, Mapping):
         return {}
     out: dict[str, Any] = {}
     for key, (kind, lo, hi, _default) in spec.items():
@@ -154,23 +162,14 @@ def clamp_params(component: str, strategy: str, raw: dict[str, Any] | None) -> d
         num = max(lo, min(hi, num))
         out[key] = int(num) if kind == "int" else num
 
-    # Cross-field guards.
+    # Cross-field guard: the window must advance by most of its size. An
+    # overlap near the size (``size - 1``) made a 1-character step, so a
+    # 100 KB document became ~100k chunks, each an extraction LLM call.
     if strategy == "fixed" and ("chunk_overlap" in out or "chunk_size" in out):
         size = int(out.get("chunk_size", spec["chunk_size"][3]))
-        if "chunk_overlap" in out:
-            if out["chunk_overlap"] >= size:
-                out["chunk_overlap"] = max(0, size - 1)
-        elif spec["chunk_overlap"][3] >= size:
-            out["chunk_overlap"] = size // 10
-    if strategy == "llm_verified" and ("hard_threshold" in out or "soft_threshold" in out):
-        # A lone key is compared against the other's constructor default, so a
-        # planner-picked hard_threshold=0.6 (vs default soft 0.65) can't make
-        # the constructor raise and discard the whole plan.
-        hard = out.get("hard_threshold", spec["hard_threshold"][3])
-        soft = out.get("soft_threshold", spec["soft_threshold"][3])
-        if hard <= soft:
-            out.pop("hard_threshold", None)
-            out.pop("soft_threshold", None)
+        overlap = int(out.get("chunk_overlap", spec["chunk_overlap"][3]))
+        if overlap > size // 4:
+            out["chunk_overlap"] = size // 4
     return out
 
 
@@ -182,7 +181,7 @@ _OPTION_TEXT: dict[str, dict[str, str]] = {
         "sentence": "sentence-aware, token-capped. Safe default for prose.",
         "fixed": "fixed-size character windows. Use for uniform/unstructured text.",
         "structural": "respect document structure (headings/lists/sections).\n"
-        "    Use for Markdown / HTML / clearly structured documents.",
+        "    Use for Markdown or other clearly structured documents.",
         "contextual": "sentence chunks + an LLM-written context prefix per chunk.\n"
         "    Best recall on dense/technical docs, but costs extra LLM calls.",
     },
@@ -202,13 +201,14 @@ _COMPONENT_TEXT = {
     "resolver": "resolver — how duplicate entities are merged:",
 }
 _PARAM_TEXT: dict[str, str] = {
-    "sentence": "max_tokens (64-2048, def 384), overlap_sentences (0-10, def 2).\n"
+    "sentence": "max_tokens (256-2048, def 384), overlap_sentences (0-4, def 2).\n"
     "    Smaller chunks for dense facts; larger for narrative.",
-    "fixed": "chunk_size (100-8000, def 1000), chunk_overlap (0-2000, def 100).",
+    "fixed": "chunk_size (500-8000, def 1000), chunk_overlap (0-1000, def 100,\n"
+    "    at most a quarter of chunk_size).",
     "llm": "threshold (0.1-0.95, def 0.75). Lower = more recall/noise;\n"
     "    higher = more precision.",
-    "llm_verified": "hard_threshold (0.5-0.999, def 0.95), soft_threshold\n"
-    "    (0.3-0.98, def 0.65, must stay below hard), ann_top_k (5-200, def 50),\n"
+    "llm_verified": "hard_threshold (0.8-0.999, def 0.95; pairs below it are\n"
+    "    checked by the LLM), ann_top_k (5-200, def 50),\n"
     "    max_llm_pairs (10-{max_llm_pairs}, def {default_pairs}).",
 }
 
@@ -219,6 +219,7 @@ def _guide(
     resolvers: tuple[str, ...] = RESOLVERS,
     *,
     max_llm_pairs: int = 500,
+    tune_params: bool = True,
 ) -> str:
     """Render the option guide for the allowed options only."""
     lines: list[str] = []
@@ -246,7 +247,7 @@ def _guide(
                 max_llm_pairs=max_llm_pairs, default_pairs=default_pairs
             )
         )
-    if tunable:
+    if tunable and tune_params:
         lines.append("")
         lines.append(
             "You MAY also tune parameters inside each chosen strategy (omit to keep the\n"
@@ -274,6 +275,23 @@ class IngestionPlan:
     chunker_params: dict[str, Any] = field(default_factory=dict)
     extractor_params: dict[str, Any] = field(default_factory=dict)
     resolver_params: dict[str, Any] = field(default_factory=dict)
+
+    def __hash__(self) -> int:
+        # The generated hash would hash the param dicts and raise; hash
+        # what equality compares (``reason`` is excluded from both). The
+        # dicts stay plain (JSON-friendly); the builders clamp them again, so
+        # an edit after construction still cannot reach a constructor
+        # unclamped.
+        return hash(
+            (
+                self.chunker,
+                self.extractor,
+                self.resolver,
+                tuple(sorted(self.chunker_params.items())),
+                tuple(sorted(self.extractor_params.items())),
+                tuple(sorted(self.resolver_params.items())),
+            )
+        )
 
     def __post_init__(self) -> None:
         if self.chunker not in _CHUNKER_SET:
@@ -314,6 +332,17 @@ def _check_allowed(component: str, allowed: Any, known: tuple[str, ...]) -> tupl
     return out
 
 
+def _check_max_llm_pairs(value: Any) -> int:
+    """``0`` (no llm_verified) or a pair budget within the resolver's range."""
+    lo, hi = PARAM_SPECS["resolver"]["llm_verified"]["max_llm_pairs"][1:3]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value):
+        raise ValueError("max_llm_pairs must be a whole number")
+    value = int(value)
+    if value != 0 and not (lo <= value <= hi):
+        raise ValueError(f"max_llm_pairs must be 0 (no llm_verified) or in [{int(lo)}, {int(hi)}]")
+    return value
+
+
 def restrict_plan(
     plan: IngestionPlan,
     *,
@@ -321,12 +350,16 @@ def restrict_plan(
     extractors: tuple[str, ...] = EXTRACTORS,
     resolvers: tuple[str, ...] = RESOLVERS,
     max_llm_pairs: int | None = None,
+    tune_params: bool = True,
 ) -> IngestionPlan:
     """Keep ``plan`` inside the caller's cost ceiling.
 
     A choice outside the allowed options is replaced with the default (or, when
     the default itself is not allowed, the first allowed option) and its params
-    are dropped. ``max_llm_pairs`` caps the llm_verified resolver's pair budget.
+    are dropped. ``max_llm_pairs`` caps the llm_verified resolver's pair budget:
+    ``0`` disallows ``llm_verified`` altogether, otherwise it must be within
+    the resolver's own range (10-5000). With ``tune_params=False`` every
+    parameter the plan set is dropped (each strategy keeps its defaults).
     The document sample is part of the planner's prompt, so this is what keeps
     document text from steering ingestion into the expensive strategies.
     """
@@ -335,6 +368,11 @@ def restrict_plan(
         if value in allowed:
             return value
         return default if default in allowed else allowed[0]
+
+    if max_llm_pairs is not None:
+        max_llm_pairs = _check_max_llm_pairs(max_llm_pairs)
+        if max_llm_pairs == 0:
+            resolvers = tuple(r for r in resolvers if r != "llm_verified") or (DEFAULT_RESOLVER,)
 
     chunker = pick(plan.chunker, chunkers, DEFAULT_CHUNKER)
     extractor = pick(plan.extractor, extractors, DEFAULT_EXTRACTOR)
@@ -350,6 +388,8 @@ def restrict_plan(
     if changed:
         note = "restricted to the allowed options"
         reason = f"{reason} ({note})" if reason else note
+    if not tune_params:
+        return IngestionPlan(chunker=chunker, extractor=extractor, resolver=resolver, reason=reason)
     return IngestionPlan(
         chunker=chunker,
         extractor=extractor,
@@ -378,22 +418,35 @@ def parse_plan(text: str) -> IngestionPlan | None:
     params: dict[str, dict[str, Any]] = {}
 
     # First try strict JSON (possibly wrapped in ```json fences). Decode one
-    # object from the first "{" so trailing prose (even with braces) is ignored.
+    # object at each "{" in turn, so prose before it ("options {a, b}") or
+    # after it (even with braces) is ignored; the first object naming a
+    # strategy wins, else the first object at all.
+    obj: Any = None
+    decoder = json.JSONDecoder()
     start = raw.find("{")
-    if start != -1:
+    while start != -1:
         try:
-            obj, _end = json.JSONDecoder().raw_decode(raw, start)
-            if isinstance(obj, dict):
-                for k in ("chunker", "extractor", "resolver", "reason"):
-                    v = obj.get(k)
-                    if isinstance(v, str):
-                        fields[k] = v.strip().lower() if k != "reason" else v.strip()
-                for k in ("chunker_params", "extractor_params", "resolver_params"):
-                    v = obj.get(k)
-                    if isinstance(v, dict):
-                        params[k] = v
+            found, _end = decoder.raw_decode(raw, start)
         except (ValueError, TypeError):
-            logger.debug("Planner output was not valid JSON; falling back to key:value parsing")
+            found = None
+        if isinstance(found, dict):
+            if obj is None:
+                obj = found
+            if {"chunker", "extractor", "resolver"} & found.keys():
+                obj = found
+                break
+        start = raw.find("{", start + 1)
+    if obj is None and "{" in raw:
+        logger.debug("Planner output was not valid JSON; falling back to key:value parsing")
+    if obj is not None:
+        for k in ("chunker", "extractor", "resolver", "reason"):
+            v = obj.get(k)
+            if isinstance(v, str):
+                fields[k] = v.strip().lower() if k != "reason" else v.strip()
+        for k in ("chunker_params", "extractor_params", "resolver_params"):
+            v = obj.get(k)
+            if isinstance(v, dict):
+                params[k] = v
 
     # Fall back to / augment with key:value scraping.
     if not {"chunker", "extractor", "resolver"} & fields.keys():
@@ -495,7 +548,11 @@ class HeuristicIngestionPlanner:
     ) -> IngestionPlan:
         chunker = DEFAULT_CHUNKER
         src = (source or "").lower()
-        looks_structured = src.endswith((".md", ".markdown", ".html", ".htm"))
+        # Markdown only: structural chunking needs structural elements, which
+        # come from Markdown (the Markdown loader, or Markdown-looking text
+        # parsed at planning time). HTML has no parser here, so a structural
+        # pick for it would always fall back to sentence.
+        looks_structured = src.endswith((".md", ".markdown"))
         if not looks_structured and text:
             looks_structured = _looks_structured(text)
         if looks_structured:
@@ -512,10 +569,14 @@ class LLMIngestionPlanner:
     """LLM-backed planner: one small call selects the ingestion strategies.
 
     The prompt carries a sample of the document, so document text can try to
-    steer the choice. Bound what it can pick with the allow-lists below — for a
-    planner that never adds LLM cost, allow only ``chunkers=("sentence",
-    "fixed", "structural")``, ``extractors=("gliner",)`` and
-    ``resolvers=("exact",)``.
+    steer the choice. Bound what it can pick with the allow-lists below: to
+    keep out the strategies that add LLM calls, allow only
+    ``chunkers=("sentence", "fixed", "structural")``,
+    ``extractors=("gliner",)`` and ``resolvers=("exact",)``, and pass
+    ``tune_params=False`` so chunk sizes stay at their defaults. The number
+    of chunks (one extraction call each) still depends on the document and
+    the chunker; the parameter floors in ``PARAM_SPECS`` bound it when
+    tuning is allowed.
 
     Args:
         llm: provider exposing ``ainvoke(prompt, timeout=...)`` and returning
@@ -525,7 +586,10 @@ class LLMIngestionPlanner:
             (default: all). A choice outside them falls back to the default
             (or the first allowed option) and is never built.
         max_llm_pairs: upper bound on the llm_verified resolver's LLM pair
-            budget the plan may set (default 500, the resolver's own default).
+            budget the plan may set (default 500, the resolver's own default);
+            ``0`` disallows ``llm_verified``.
+        tune_params: let the plan set parameters inside the chosen
+            strategies (default ``True``); ``False`` keeps every default.
     """
 
     def __init__(
@@ -536,15 +600,21 @@ class LLMIngestionPlanner:
         extractors: tuple[str, ...] | list[str] = EXTRACTORS,
         resolvers: tuple[str, ...] | list[str] = RESOLVERS,
         max_llm_pairs: int = 500,
+        tune_params: bool = True,
     ) -> None:
         self._llm = llm
         self.chunkers = _check_allowed("chunker", chunkers, CHUNKERS)
         self.extractors = _check_allowed("extractor", extractors, EXTRACTORS)
+        self.max_llm_pairs = _check_max_llm_pairs(max_llm_pairs)
+        if self.max_llm_pairs == 0:
+            resolvers = tuple(r for r in _check_allowed("resolver", resolvers, RESOLVERS))
+            resolvers = tuple(r for r in resolvers if r != "llm_verified")
+            if not resolvers:
+                raise ValueError(
+                    "max_llm_pairs=0 disallows llm_verified, the only resolver allowed"
+                )
         self.resolvers = _check_allowed("resolver", resolvers, RESOLVERS)
-        lo, hi = PARAM_SPECS["resolver"]["llm_verified"]["max_llm_pairs"][1:3]
-        if not (lo <= max_llm_pairs <= hi):
-            raise ValueError(f"max_llm_pairs must be in [{int(lo)}, {int(hi)}]")
-        self.max_llm_pairs = int(max_llm_pairs)
+        self.tune_params = bool(tune_params)
 
     def _restrict(self, plan: IngestionPlan) -> IngestionPlan:
         return restrict_plan(
@@ -553,6 +623,7 @@ class LLMIngestionPlanner:
             extractors=self.extractors,
             resolvers=self.resolvers,
             max_llm_pairs=self.max_llm_pairs,
+            tune_params=self.tune_params,
         )
 
     async def plan(
@@ -564,7 +635,11 @@ class LLMIngestionPlanner:
     ) -> IngestionPlan:
         ctx = ctx or Context()
         guide = _guide(
-            self.chunkers, self.extractors, self.resolvers, max_llm_pairs=self.max_llm_pairs
+            self.chunkers,
+            self.extractors,
+            self.resolvers,
+            max_llm_pairs=self.max_llm_pairs,
+            tune_params=self.tune_params,
         )
         prompt = (
             "You are an ingestion planner for a knowledge-graph RAG system. "

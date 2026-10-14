@@ -245,11 +245,14 @@ class TestBuilders:
 
 
 def _fake_rag(llm, *, entities=None):
-    return SimpleNamespace(
+    rag = SimpleNamespace(
         llm=llm,
         embedder=MockEmbedder(),
         ontology=SimpleNamespace(entities=entities or []),
+        _markdown_elements=GraphRAG._markdown_elements,
     )
+    rag._ontology_entity_types = lambda: GraphRAG._ontology_entity_types(rag)
+    return rag
 
 
 class TestPlanIngestionStrategiesMerge:
@@ -296,7 +299,8 @@ class TestPlanIngestionStrategiesMerge:
 
     async def test_custom_heuristic_planner_used(self):
         rag = _fake_rag(MockLLM())
-        chunker, _, _, _ = await GraphRAG._plan_ingestion_strategies(
+        report: dict = {}
+        chunker, _, _, doc = await GraphRAG._plan_ingestion_strategies(
             rag,
             text="# Title\n- a\n- b",
             source="notes.md",
@@ -305,10 +309,34 @@ class TestPlanIngestionStrategiesMerge:
             resolver=None,
             planner=HeuristicIngestionPlanner(),
             ctx=None,
+            report=report,
         )
-        # Text mode has no document elements, so "structural" would only
-        # delegate to the sentence chunker; the plan says so.
-        assert isinstance(chunker, SentenceTokenCapChunking)
+        # Markdown text has no loaded elements: they are parsed from the text,
+        # so "structural" takes effect instead of delegating to sentence.
+        assert isinstance(chunker, StructuralChunking)
+        assert doc is not None and doc.elements and doc.text == "# Title\n- a\n- b"
+        assert "parsed from the text" in report["notes"][0]
+
+    async def test_structural_without_structure_falls_back_to_sentence(self):
+        class Structural:
+            async def plan(self, text, *, source=None, ctx=None):
+                return IngestionPlan(chunker="structural")
+
+        rag = _fake_rag(MockLLM())
+        report: dict = {}
+        chunker, _, _, doc = await GraphRAG._plan_ingestion_strategies(
+            rag,
+            text="Plain prose without any headings at all.",
+            source="x.txt",
+            chunker=None,
+            extractor=None,
+            resolver=None,
+            planner=Structural(),
+            ctx=None,
+            report=report,
+        )
+        assert isinstance(chunker, SentenceTokenCapChunking) and doc is None
+        assert "structural -> sentence" in report["notes"][0]
 
     async def test_planner_failure_leaves_slots_none(self):
         class BoomPlanner:
@@ -399,16 +427,16 @@ class TestPlanIngestionStrategiesMerge:
         out = clamp_params("chunker", "fixed", {"chunk_size": 200, "chunk_overlap": 500})
         assert out["chunk_overlap"] < out["chunk_size"]
 
-    def test_llm_verified_inverted_thresholds_dropped(self):
+    def test_llm_verified_hard_threshold_keeps_an_llm_band(self):
+        # The default unified stage takes candidates from cosine 0.65 and
+        # merges from hard_threshold up without the LLM: a hard threshold at
+        # or below 0.65 would merge every candidate unverified.
         out = clamp_params(
-            "resolver", "llm_verified", {"hard_threshold": 0.6, "soft_threshold": 0.9}
+            "resolver", "llm_verified", {"hard_threshold": 0.6, "soft_threshold": 0.5}
         )
-        assert "hard_threshold" not in out and "soft_threshold" not in out
-
-    def test_llm_verified_lone_hard_below_default_soft_dropped(self):
-        # hard=0.6 vs constructor default soft=0.65 would make the resolver raise.
-        out = clamp_params("resolver", "llm_verified", {"hard_threshold": 0.6})
-        assert "hard_threshold" not in out
+        assert out == {"hard_threshold": 0.8}
+        r = build_resolver("llm_verified", llm=MockLLM(), embedder=MockEmbedder(), params=out)
+        assert r.unified_stage and r.hard_threshold > r.unified_threshold
 
     def test_llm_verified_lone_soft_above_default_hard_dropped(self):
         # soft=0.97 vs constructor default hard=0.95 would make the resolver raise.
@@ -457,20 +485,25 @@ class TestPlanIngestionStrategiesMerge:
 
 
 class TestClampEdgeCases:
-    def test_lone_small_chunk_size_gets_a_fitting_overlap(self):
-        # The constructor's default overlap (100) would make chunk_size=100 raise,
-        # which used to discard the whole plan.
-        out = clamp_params("chunker", "fixed", {"chunk_size": 100})
-        assert out == {"chunk_size": 100, "chunk_overlap": 10}
+    def test_lone_small_chunk_size_keeps_a_fitting_overlap(self):
+        # The floor (500) leaves the default overlap (100) within a quarter.
+        assert clamp_params("chunker", "fixed", {"chunk_size": 100}) == {"chunk_size": 500}
         c = build_chunker("fixed", params={"chunk_size": 50})
-        assert (c.chunk_size, c.chunk_overlap) == (100, 10)
+        assert (c.chunk_size, c.chunk_overlap) == (500, 100)
+
+    def test_overlap_is_at_most_a_quarter_of_the_size(self):
+        # size - 1 used to be allowed: a 1-character step, ~100k chunks per 100 KB.
+        out = clamp_params("chunker", "fixed", {"chunk_size": 100, "chunk_overlap": 2000})
+        assert out == {"chunk_size": 500, "chunk_overlap": 125}
+        c = build_chunker("fixed", params=out)
+        assert c.chunk_size - c.chunk_overlap >= c.chunk_size * 3 // 4
 
     def test_lone_large_chunk_size_keeps_default_overlap(self):
         assert clamp_params("chunker", "fixed", {"chunk_size": 1500}) == {"chunk_size": 1500}
 
     def test_lone_overlap_checked_against_default_size(self):
         out = clamp_params("chunker", "fixed", {"chunk_overlap": 1500})
-        assert out == {"chunk_overlap": 999}
+        assert out == {"chunk_overlap": 250}
 
     def test_int_too_large_for_float_dropped(self):
         assert clamp_params("chunker", "fixed", {"chunk_size": 10**400}) == {}
@@ -506,14 +539,13 @@ class TestClampEdgeCases:
         r = LLMVerifiedResolution(llm=MockLLM(), embedder=MockEmbedder())
         spec = PARAM_SPECS["resolver"]["llm_verified"]
         assert spec["hard_threshold"][3] == r.hard_threshold
-        assert spec["soft_threshold"][3] == r.soft_threshold
+        assert "soft_threshold" not in spec  # not read by the default unified stage
         assert spec["ann_top_k"][3] == r.ann_top_k
         assert spec["max_llm_pairs"][3] == r.max_llm_pairs
 
-    def test_lone_hard_threshold_uses_real_soft_default(self):
-        # 0.7 is above the resolver's real soft default (0.65), so it is valid.
-        assert clamp_params("resolver", "llm_verified", {"hard_threshold": 0.7}) == {
-            "hard_threshold": 0.7
+    def test_hard_threshold_in_range_is_kept(self):
+        assert clamp_params("resolver", "llm_verified", {"hard_threshold": 0.9}) == {
+            "hard_threshold": 0.9
         }
 
 
