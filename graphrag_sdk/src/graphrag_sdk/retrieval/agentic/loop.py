@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 from graphrag_sdk.core.context import Context
@@ -25,6 +25,7 @@ from graphrag_sdk.core.models import (
     ToolCall,
 )
 from graphrag_sdk.retrieval.agentic.citations import (
+    DEFAULT_TIMEOUT_ANSWER,
     DEFAULT_UNGROUNDED_ANSWER,
     GroundedAnswer,
     GroundingPolicy,
@@ -69,6 +70,32 @@ REPAIR_MAX_EVIDENCE_CHARS = 24_000
 REPAIR_MAX_ITEM_CHARS = 4_000
 #: Characters kept of an evidence item's source name.
 REPAIR_MAX_SOURCE_CHARS = 200
+#: Characters an older tool result keeps when the conversation's results are
+#: shortened to ``AgentLimits.max_total_observation_chars`` (its first
+#: numbered lines stay readable).
+MIN_KEPT_OBSERVATION_CHARS = 400
+
+
+def compact_observations(entries: Sequence[dict[str, Any]], budget: int) -> list[int]:
+    """Shorten the oldest results until all fit in ``budget`` characters.
+
+    Each entry holds a result's ``full`` text and the ``content`` currently
+    sent. The newest entry is never shortened, and none goes below
+    ``MIN_KEPT_OBSERVATION_CHARS``. Returns the indexes that changed.
+    """
+    changed: list[int] = []
+    total = sum(len(e["content"]) for e in entries)
+    for i, entry in enumerate(entries[:-1]):
+        if total <= budget:
+            break
+        current = len(entry["content"])
+        keep = max(MIN_KEPT_OBSERVATION_CHARS, current - (total - budget))
+        shortened = truncate(entry["full"], keep)
+        if len(shortened) < current:
+            entry["content"] = shortened
+            total -= current - len(shortened)
+            changed.append(i)
+    return changed
 
 
 def _normalize_query(text: str) -> str:
@@ -226,7 +253,11 @@ class AgenticRetrieval(RetrievalStrategy):
             prepend to it (react mode, which needs the format instructions).
         history_turns: Shortcut for ``limits.max_history_turns``.
         ontology: Ontology the ``query_graph`` tool writes Cypher against.
-            The facade keeps it current through :meth:`set_ontology`.
+        ontology_getter: Returns the current ontology on every use instead of
+            a fixed one; :meth:`GraphRAG.agentic_retrieval` passes the
+            facade's, so a kept agent sees the loaded ontology and later
+            evolutions. A non-``None`` result takes precedence over
+            ``ontology``; :meth:`set_ontology` replaces both.
         grounding: How the answer's ``[N]`` citations are enforced:
             ``"strict"`` (default) replaces an answer that cites no real tool
             result with ``ungrounded_answer``; ``"annotate"`` keeps it and
@@ -271,6 +302,7 @@ class AgenticRetrieval(RetrievalStrategy):
         system_prompt: str | None = None,
         history_turns: int | None = None,
         ontology: Ontology | None = None,
+        ontology_getter: Callable[[], Ontology | None] | None = None,
         grounding: GroundingPolicy = "strict",
         ungrounded_answer: str = DEFAULT_UNGROUNDED_ANSWER,
         repair_citations: bool = True,
@@ -300,7 +332,8 @@ class AgenticRetrieval(RetrievalStrategy):
         self._grounding: GroundingPolicy = grounding
         self._ungrounded_answer = ungrounded_answer
         self._repair_citations = repair_citations
-        self._ontology = ontology
+        self._fixed_ontology = ontology
+        self._ontology_getter = ontology_getter
         self._strategy = strategy
         self._registry = (
             registry
@@ -314,9 +347,26 @@ class AgenticRetrieval(RetrievalStrategy):
             )
         )
 
+    @property
+    def _ontology(self) -> Ontology | None:
+        """The ontology ``query_graph`` uses now (read on every call)."""
+        if self._ontology_getter is not None:
+            current = self._ontology_getter()
+            if current is not None:
+                return current
+        return self._fixed_ontology
+
+    @_ontology.setter
+    def _ontology(self, ontology: Ontology | None) -> None:
+        # The facade assigns ``strategy._ontology`` directly on reload; an
+        # assigned ontology replaces the getter, like :meth:`set_ontology`.
+        self._fixed_ontology = ontology
+        self._ontology_getter = None
+
     def set_ontology(self, ontology: Any) -> None:
         """Adopt the current ontology (for ``query_graph``) and pass it on."""
-        self._ontology = ontology
+        self._fixed_ontology = ontology
+        self._ontology_getter = None
         inner = getattr(self._strategy, "set_ontology", None)
         if callable(inner):
             inner(ontology)
@@ -346,11 +396,35 @@ class AgenticRetrieval(RetrievalStrategy):
         trace = AgentTrace(mode=mode)
         observations: list[str] = []
         if mode == "native":
-            await self._run_native(query, history, ctx, tctx, trace, observations)
+            try:
+                await self._run_native(query, history, ctx, tctx, trace, observations)
+            except Exception as exc:
+                # ``auto`` chose native tool calling from the provider's flag,
+                # which cannot know every model. A first turn the provider
+                # rejects (a model without function calling) falls back to
+                # ReAct; a failure after tools ran, or a mode the caller
+                # forced, is a real error.
+                if self._mode != "auto" or trace.steps or trace.answer:
+                    raise
+                logger.warning(
+                    "Native tool calling failed on the first turn (%s); falling back to ReAct",
+                    exc,
+                )
+                mode = "react"
+                trace = AgentTrace(mode=mode)
+                tctx = ToolContext(ctx=ctx)
+                await self._run_react(query, history, ctx, tctx, trace, observations)
         else:
             await self._run_react(query, history, ctx, tctx, trace, observations)
 
-        grounded = self._ground(trace.answer, tctx, trace)
+        if not trace.answer.strip() and (
+            trace.stop_reason == "budget_exceeded" or ctx.budget_exceeded
+        ):
+            # Out of time before any answer: say so rather than "not found".
+            ctx.log("Agentic loop ended without an answer: latency budget exhausted")
+            grounded = GroundedAnswer(DEFAULT_TIMEOUT_ANSWER, "", False, "budget_exceeded")
+        else:
+            grounded = self._ground(trace.answer, tctx, trace, query)
         repair: dict[str, Any] = {"attempted": False}
         if self._should_repair(grounded, ctx, trace):
             grounded, repair = await self._repair(query, grounded, ctx, tctx, trace, observations)
@@ -381,13 +455,16 @@ class AgenticRetrieval(RetrievalStrategy):
 
     # ── Grounding and citation repair ─────────────────────────────
 
-    def _ground(self, answer: str, tctx: ToolContext, trace: AgentTrace) -> GroundedAnswer:
+    def _ground(
+        self, answer: str, tctx: ToolContext, trace: AgentTrace, query: str
+    ) -> GroundedAnswer:
         return ground_answer(
             answer,
             tctx.evidence,
             tools_called=bool(trace.steps),
             policy=self._grounding,
             ungrounded_answer=self._ungrounded_answer,
+            question=query,
         )
 
     def _should_repair(self, grounded: GroundedAnswer, ctx: Context, trace: AgentTrace) -> bool:
@@ -466,7 +543,7 @@ class AgenticRetrieval(RetrievalStrategy):
             info["error"] = f"{type(exc).__name__}: {exc}"[:300]
             return grounded, info
 
-        repaired = self._ground((response.content or "").strip(), tctx, trace)
+        repaired = self._ground((response.content or "").strip(), tctx, trace, query)
         info["grounded"] = repaired.grounded
         if repaired.grounded:
             ctx.log("Agentic answer grounded after citation repair")
@@ -498,10 +575,13 @@ class AgenticRetrieval(RetrievalStrategy):
         tool = self._registry.get(name)
         # A tool that does not number its own output (a custom tool, a skill)
         # gets one evidence number for the whole result, so it can be cited.
+        # A tool that does (it reports ``data["evidence"]``) is left alone even
+        # when it numbered nothing: "No results" is not a source.
         if (
             result.status == "ok"
             and tool is not None
             and tool.citable
+            and "evidence" not in (result.data or {})
             and len(tctx.evidence) == before
             and result.content.strip()
         ):
@@ -562,12 +642,22 @@ class AgenticRetrieval(RetrievalStrategy):
         ]
         specs = self._registry.specs()
         step = 0
+        # Tool results in ``messages``: index, full text and the text sent.
+        sent: list[dict[str, Any]] = []
+
+        def compact() -> None:
+            budget = self._limits.max_total_observation_chars
+            for i in compact_observations(sent, budget):
+                at = sent[i]["at"]
+                messages[at] = messages[at].model_copy(update={"content": sent[i]["content"]})
+
         try:
             for turn in range(self._max_steps):
                 if ctx.budget_exceeded:
                     trace.stop_reason = "budget_exceeded"
                     ctx.log("Agentic loop stopped: latency budget exhausted")
                     return
+                compact()
                 response = await self._llm.ainvoke_with_tools(
                     messages,
                     specs,
@@ -607,6 +697,9 @@ class AgenticRetrieval(RetrievalStrategy):
                         call_id=call.id,
                     )
                     step += 1
+                    sent.append(
+                        {"at": len(messages), "full": result.content, "content": result.content}
+                    )
                     messages.append(
                         ChatMessage(role="tool", content=result.content, tool_call_id=call.id)
                     )
@@ -620,6 +713,7 @@ class AgenticRetrieval(RetrievalStrategy):
             if ctx.budget_exceeded:
                 return
             messages.append(ChatMessage(role="user", content=FINAL_ANSWER_NUDGE))
+            compact()
             response = await self._llm.ainvoke_with_tools(
                 messages,
                 specs,
@@ -654,9 +748,20 @@ class AgenticRetrieval(RetrievalStrategy):
         if self._system_prompt:
             system = f"{self._system_prompt}\n\n{system}"
         conversation = "".join(f"{m.role.capitalize()}: {m.content}\n" for m in history)
-        scratchpad = (f"Conversation so far:\n{conversation}\n" if conversation else "") + (
-            f"Question: {query}\n"
-        )
+        # The scratchpad as parts: plain text, or a tool result (a dict with
+        # its full text and the text sent) that may be shortened later.
+        parts: list[str | dict[str, Any]] = [
+            (f"Conversation so far:\n{conversation}\n" if conversation else "")
+            + f"Question: {query}\n"
+        ]
+
+        def scratchpad() -> str:
+            results = [p for p in parts if isinstance(p, dict)]
+            compact_observations(results, self._limits.max_total_observation_chars)
+            return "".join(
+                p if isinstance(p, str) else f"Observation: {p['content']}\n" for p in parts
+            )
+
         reminded = False
         step = 0
         try:
@@ -665,7 +770,7 @@ class AgenticRetrieval(RetrievalStrategy):
                     trace.stop_reason = "budget_exceeded"
                     ctx.log("Agentic loop stopped: latency budget exhausted")
                     return
-                prompt = f"{system}\n\n{scratchpad}\nThought:"
+                prompt = f"{system}\n\n{scratchpad()}\nThought:"
                 response = await self._llm.ainvoke(
                     prompt, timeout=ctx.provider_timeout_seconds(f"agentic step {turn}")
                 )
@@ -686,7 +791,7 @@ class AgenticRetrieval(RetrievalStrategy):
                     # One malformed reply gets a reminder of the format
                     # before the run gives up.
                     reminded = True
-                    scratchpad += f"{REACT_FORMAT_REMINDER}\n"
+                    parts.append(f"{REACT_FORMAT_REMINDER}\n")
                     continue
 
                 action_input = parsed.get("action_input", {})
@@ -701,12 +806,12 @@ class AgenticRetrieval(RetrievalStrategy):
                     result=result,
                 )
                 step += 1
-                scratchpad += (
+                parts.append(
                     f"Thought: {parsed.get('thought', '')}\n"
                     f"Action: {action}\n"
                     f"Action Input: {json.dumps(action_input)}\n"
-                    f"Observation: {result.content}\n"
                 )
+                parts.append({"full": result.content, "content": result.content})
                 if self._calls_exhausted(tctx):
                     trace.stop_reason = "max_tool_calls"
                     break
@@ -714,7 +819,7 @@ class AgenticRetrieval(RetrievalStrategy):
                 trace.stop_reason = "max_steps"
             if ctx.budget_exceeded:
                 return
-            prompt = f"{system}\n\n{scratchpad}\n{FINAL_ANSWER_NUDGE}\nFinal Answer:"
+            prompt = f"{system}\n\n{scratchpad()}\n{FINAL_ANSWER_NUDGE}\nFinal Answer:"
             response = await self._llm.ainvoke(
                 prompt, timeout=ctx.provider_timeout_seconds("agentic final answer")
             )

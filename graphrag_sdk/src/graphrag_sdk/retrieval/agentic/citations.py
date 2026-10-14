@@ -17,17 +17,47 @@ GroundingPolicy = Literal["strict", "annotate", "off"]
 #: Replaces an ungrounded answer under the ``strict`` policy.
 DEFAULT_UNGROUNDED_ANSWER = "I couldn't find information about that in the knowledge graph."
 
+#: Shown when the latency budget ran out before the model answered: the
+#: question went unanswered for lack of time, not for lack of information.
+DEFAULT_TIMEOUT_ANSWER = (
+    "I ran out of time before finding an answer in the knowledge graph. Please try again."
+)
+
 #: An uncited answer this short, given without any tool call and stating no
 #: figures, is treated as conversation ("Hello!", "You're welcome") rather
 #: than an unsupported claim.
 DEFAULT_MAX_UNCITED_CHARS = 280
 
-#: A citation marker: ``[3]``, ``[1, 4]``, also glued to a word (``plant[1]``)
-#: or chained (``[1][2]``). Not one after a digit or ``)`` (``f(x)[1]``), when
+#: A citation marker: ``[3]``, ``[1, 4]``, also glued to a word or a figure
+#: (``plant[1]``, ``1998[2]``, ``(CEO)[3]``) or chained (``[1][2]``). Not when
 #: a number has four or more digits (``[2024]`` is a year), or for ``[0]``
-#: (evidence is numbered from 1, so ``items[0]`` is code).
-_MARKER_RE = re.compile(r"(?<![\d)])\[(\s*\d{1,3}(?:\s*[,;]\s*\d{1,3})*\s*)\]")
+#: (evidence is numbered from 1, so ``items[0]`` is code). Markers inside
+#: inline code or a fenced code block are code and never touched.
+_MARKER_RE = re.compile(r"\[(\s*\d{1,3}(?:\s*[,;]\s*\d{1,3})*\s*)\]")
 _DIGIT_RE = re.compile(r"\d")
+#: Fenced code blocks (an unclosed fence runs to the end) and inline code.
+_CODE_RE = re.compile(r"```[\s\S]*?(?:```|\Z)|`[^`\n]*`")
+#: Stands in for a removed marker until the whitespace around it is tidied.
+_REMOVED = "\x00"
+#: Words of a message that is only small talk (a greeting, thanks, an
+#: acknowledgement). Only such a message may get an uncited reply under the
+#: grounding gate; any other question needs evidence.
+_SMALL_TALK_WORDS = frozenset(
+    {
+        "hi", "hello", "hey", "hiya", "yo", "thanks", "thank", "thx", "ty", "you", "very",
+        "much", "so", "a", "lot", "ok", "okay", "k", "cool", "great", "nice", "good",
+        "morning", "afternoon", "evening", "night", "bye", "goodbye", "cheers", "yes",
+        "no", "sure", "please", "awesome", "perfect", "got", "it", "alright", "fine",
+        "welcome", "there", "again", "all", "right", "sounds", "that", "is",
+    }
+)  # fmt: skip
+_MAX_SMALL_TALK_WORDS = 6
+
+
+def is_small_talk(message: str) -> bool:
+    """Whether ``message`` is only a greeting, thanks or acknowledgement."""
+    words = re.findall(r"[a-z]+", (message or "").lower())
+    return 0 < len(words) <= _MAX_SMALL_TALK_WORDS and all(w in _SMALL_TALK_WORDS for w in words)
 
 
 @dataclass
@@ -73,13 +103,29 @@ def _clean_markers(text: str, valid: set[int]) -> tuple[str, list[int], list[int
                     cited.append(n)
             elif n not in invalid:
                 invalid.append(n)
-        return f"[{', '.join(str(n) for n in keep)}]" if keep else ""
+        return f"[{', '.join(str(n) for n in keep)}]" if keep else _REMOVED
 
-    cleaned = _MARKER_RE.sub(replace, text)
-    # Removing a marker can leave "word ." or doubled spaces behind.
-    cleaned = re.sub(r"[ \t]+([.,;:!?])", r"\1", cleaned)
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
-    return cleaned, cited, invalid
+    # Code (fenced blocks, inline spans) is kept verbatim: odd pieces of the
+    # split are code, even pieces are prose.
+    pieces = _CODE_RE.split(text)
+    codes = _CODE_RE.findall(text)
+    out: list[str] = []
+    for i, prose in enumerate(pieces):
+        out.append(_MARKER_RE.sub(replace, prose.replace(_REMOVED, "")))
+        if i < len(codes):
+            out.append(codes[i])
+    cleaned = "".join(out)
+
+    # Tidy only where a marker was removed: "word [9]." -> "word.",
+    # "a [9] b" -> "a b". Whitespace anywhere else is left as written.
+    def tidy(match: re.Match[str]) -> str:
+        after = cleaned[match.end() : match.end() + 1]
+        if not after or after in ".,;:!?\n":
+            return ""  # the marker ended a clause or line: drop its spacing too
+        return " " if (match.group(1) or match.group(2)) else ""
+
+    cleaned = re.sub(rf"([ \t]*){_REMOVED}(?:[ \t]*{_REMOVED})*([ \t]*)", tidy, cleaned)
+    return cleaned.strip(), cited, invalid
 
 
 def ground_answer(
@@ -90,12 +136,16 @@ def ground_answer(
     policy: GroundingPolicy = "strict",
     ungrounded_answer: str = DEFAULT_UNGROUNDED_ANSWER,
     max_uncited_chars: int = DEFAULT_MAX_UNCITED_CHARS,
+    question: str | None = None,
 ) -> GroundedAnswer:
     """Check ``answer``'s ``[N]`` citations against ``ledger``.
 
     Markers that match no evidence are removed. The answer is grounded when
     it cites at least one real piece of evidence, or when it is short plain
-    conversation: no tool call, no citation and no figures. An empty answer
+    conversation: no tool call, no citation and no figures. With
+    ``question`` given, that exemption also needs the question itself to be
+    small talk (a greeting, thanks), so a factual question answered from
+    memory without a tool call is not passed as conversation. An empty answer
     is never grounded. Otherwise it is ungrounded: ``strict`` replaces it
     with ``ungrounded_answer``, ``annotate`` keeps it and only reports the
     verdict, ``off`` skips the check entirely.
@@ -120,6 +170,7 @@ def ground_answer(
         and len(cleaned) <= max_uncited_chars
         # ``[0]`` is kept as code (``items[0]``), not a figure.
         and not _DIGIT_RE.search(cleaned.replace("[0]", ""))
+        and (question is None or is_small_talk(question))
     ):
         return GroundedAnswer(cleaned, raw, True, "conversation", cited, invalid)
 

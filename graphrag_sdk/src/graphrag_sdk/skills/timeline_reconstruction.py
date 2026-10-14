@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import string
 from typing import Any
 
 from graphrag_sdk.core.context import Context
@@ -66,15 +67,27 @@ class TimelineReconstructionSkill(Skill):
         match = f"(e:`{sanitize_cypher_label(label)}`)" if label else "(e:__Entity__)"
         # Filter to entities with a date-like property *before* the LIMIT, so
         # undated entities cannot use up the scan and hide dated ones, and
-        # return only those properties (never the embedding vector).
+        # return only those properties (never the embedding vector). The key
+        # filter is a superset of ``_is_date_key`` (which then decides): any
+        # date word as a substring, or "on" as a word of its own — not
+        # inside a word like "description", but "startedOn", "published_on_day"
+        # or "ON_HOLD" (preceded and followed by no lowercase letter, or a
+        # capital "On").
         rows = await self._rows(
             f"MATCH {match} "
             "WITH e, [k IN keys(e) WHERE NOT toLower(k) CONTAINS 'embedding' "
-            "AND (any(w IN $words WHERE toLower(k) CONTAINS w) OR k ENDS WITH 'On' "
-            "OR toLower(k) ENDS WITH '_on') | [k, e[k]]] AS dated "
+            "AND (any(w IN $words WHERE toLower(k) CONTAINS w) "
+            "OR any(i IN range(0, size(k) - 2) WHERE toLower(substring(k, i, 2)) = 'on' "
+            "AND (i = 0 OR substring(k, i, 1) = 'O' OR NOT substring(k, i - 1, 1) IN $lower) "
+            "AND (i + 2 = size(k) OR NOT substring(k, i + 2, 1) IN $lower))) "
+            "| [k, e[k]]] AS dated "
             "WHERE size(dated) > 0 "
             "RETURN e.id AS id, e.name AS name, dated LIMIT $scan",
-            {"scan": scan, "words": sorted(_DATE_WORDS - {"on"})},
+            {
+                "scan": scan,
+                "words": sorted(_DATE_WORDS - {"on"}),
+                "lower": list(string.ascii_lowercase),
+            },
         )
 
         events: list[dict[str, Any]] = []

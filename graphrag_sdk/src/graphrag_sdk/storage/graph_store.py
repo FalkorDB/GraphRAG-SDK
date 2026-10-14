@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import unicodedata
 from collections.abc import Sequence
 from typing import Any, NamedTuple
@@ -90,6 +91,8 @@ class GraphStore:
         # ``(label, property)`` pairs known to be range-indexed. Seeded from the
         # graph on first use, then extended as this instance creates indexes.
         self._indexed: set[tuple[str, str]] | None = None
+        # PageRank scores per (label, relationship type): (computed at, scores).
+        self._pagerank_cache: dict[tuple[str, str | None], tuple[float, dict[str, float]]] = {}
 
     # ── Write Operations ─────────────────────────────────────────
 
@@ -906,17 +909,25 @@ class GraphStore:
             logger.warning(f"weighted_neighbors failed for {node_id}: {exc}")
             return []
 
+    #: Seconds a PageRank result is reused. The scores only rank walk
+    #: candidates, so a minute-old ranking is fine, and the whole-graph
+    #: computation is not repeated for every walk / impact analysis.
+    PAGERANK_CACHE_SECONDS = 60.0
+
     async def pagerank(
         self,
         *,
         entity_label: str = "__Entity__",
         relationship_type: str | None = None,
+        max_age_seconds: float | None = None,
     ) -> dict[str, float]:
         """Compute PageRank importance per entity via FalkorDB's algo procedure.
 
         Returns a ``{entity_id: score}`` map. Returns an empty map when the
         procedure is unavailable (e.g. older FalkorDB) so callers can fall
-        back to an unweighted walk.
+        back to an unweighted walk. A result computed less than
+        ``max_age_seconds`` ago (default :attr:`PAGERANK_CACHE_SECONDS`; ``0``
+        always recomputes) is reused; failures are not cached.
         """
         if not entity_label.isidentifier():
             raise ValueError(f"Invalid entity_label for pagerank: {entity_label!r}")
@@ -927,16 +938,22 @@ class GraphStore:
             f"CALL algo.pageRank('{entity_label}', {rel}) "
             "YIELD node, score RETURN node.id AS id, score AS score"
         )
+        max_age = self.PAGERANK_CACHE_SECONDS if max_age_seconds is None else max_age_seconds
+        key = (entity_label, relationship_type)
+        cached = self._pagerank_cache.get(key)
+        if cached is not None and max_age > 0 and time.monotonic() - cached[0] < max_age:
+            return dict(cached[1])
         try:
             result = await self._conn.query(query)
             scores: dict[str, float] = {}
             for row in result.result_set:
                 if row[0] is not None:
                     scores[row[0]] = float(row[1]) if row[1] is not None else 0.0
-            return scores
         except Exception as exc:
             logger.warning(f"pagerank unavailable: {exc}")
             return {}
+        self._pagerank_cache[key] = (time.monotonic(), scores)
+        return dict(scores)
 
     # ── Statistics ────────────────────────────────────────────────
 

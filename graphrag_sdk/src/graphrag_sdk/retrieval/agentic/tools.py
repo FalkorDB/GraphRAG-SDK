@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -25,20 +24,6 @@ ToolStatus = Literal["ok", "refused", "error"]
 #: What a refused call's text starts with. The trace and the model both read
 #: it: the call did not run, and the rest of the line says why.
 REFUSED_PREFIX = "Refused:"
-
-# Cypher write/DDL keywords rejected by the read-only cypher tool. Matched on
-# word boundaries so substrings of legitimate identifiers (e.g. "recall",
-# "asset") are not falsely flagged. ``call`` blocks every stored-procedure path
-# (algo.*, db.*, dbms.*, apoc.*) since procedures can mutate the graph.
-_WRITE_KEYWORD_RE = re.compile(
-    r"\b(create|merge|delete|set|remove|drop|detach|call|load\s+csv)\b",
-    re.IGNORECASE,
-)
-
-# String literals ('..'/".." with backslash escapes) and backtick-quoted
-# identifiers. Stripped before the keyword scan so data values like
-# 'call center' or names such as `delete_log` can't trip the write gate.
-_CYPHER_QUOTED_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`[^`]*`")
 
 
 class ToolRefusal(Exception):
@@ -307,13 +292,19 @@ class ToolRegistry:
 def is_read_only_cypher(cypher: str) -> bool:
     """Reject Cypher that mutates the graph (agent tools are read-only).
 
-    Quoted strings and backtick identifiers are stripped first, so write
-    keywords appearing only inside data values (``n.name = 'call center'``,
-    ``CONTAINS "delete"``) don't cause false rejections. An unterminated
-    quote leaves its remainder scanned conservatively (fail-safe).
+    Uses the same tokenizer and write-keyword list as
+    :func:`~graphrag_sdk.retrieval.agentic.cypher_guard.validate_read_query`:
+    comments are dropped and string literals / backtick identifiers blanked
+    before the scan, so a write keyword inside a data value (``n.name =
+    'call center'``) is not flagged and one hidden after a ``//`` comment
+    containing a quote is. An unterminated string, identifier or comment is
+    rejected (fail-safe). For the full check (one read statement, a RETURN,
+    no internal labels) use ``validate_read_query``.
     """
-    scannable = _CYPHER_QUOTED_RE.sub(" ", cypher)
-    return _WRITE_KEYWORD_RE.search(scannable) is None
+    from graphrag_sdk.retrieval.agentic.cypher_guard import _WRITE_RE, _scan
+
+    scanned = _scan(cypher)
+    return not scanned.error and _WRITE_RE.search(scanned.blank) is None
 
 
 # ── Skill tools ──────────────────────────────────────────────────

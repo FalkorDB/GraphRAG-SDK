@@ -37,6 +37,51 @@ _PATH_GUIDE = (
 )
 
 
+#: Sentence-initial words that are capitalized only because they start the
+#: question; a capitalized first word outside this list is taken as a name
+#: ("Microsoft acquired which companies?").
+_LEADING_WORDS = frozenset(
+    {
+        "what", "who", "whom", "whose", "which", "when", "where", "why", "how", "is",
+        "are", "was", "were", "do", "does", "did", "can", "could", "should", "would",
+        "will", "may", "might", "must", "has", "have", "had", "the", "a", "an", "in",
+        "on", "at", "of", "for", "to", "from", "by", "with", "about", "list", "name",
+        "give", "tell", "show", "find", "describe", "explain", "compare", "summarize",
+        "summarise", "please", "and", "but", "or", "if", "according", "between",
+        "among", "after", "before", "during", "since", "i", "we", "you", "they",
+        "it", "this", "that", "these", "those", "there", "any", "all", "each",
+        "every", "some", "count", "identify", "provide", "return", "get", "rank",
+    }
+)  # fmt: skip
+#: A quoted phrase: double or typographic quotes anywhere, or single quotes
+#: that open and close at word boundaries (not an apostrophe in "what's").
+_QUOTED_RE = re.compile(r"[\"“”]|(?<!\w)'[^'\n]+'(?!\w)")
+#: A name after the first word: Capitalized, ALL-CAPS (2+ chars) or mixed
+#: case (iPhone, eBay).
+_NAME_RE = re.compile(r"\b(?:[A-Z][a-z]+|[A-Z][A-Z0-9]+|[a-z]+[A-Z]\w*)\b")
+
+
+def _names_an_entity(text: str) -> bool:
+    """Whether the question appears to name a specific entity."""
+    if _QUOTED_RE.search(text):
+        return True
+    parts = text.split(maxsplit=1)
+    if not parts:
+        return False
+    first = re.sub(r"\W+$", "", parts[0])
+    # The first word is capitalized by grammar: a Capitalized question or
+    # command word is not a name; any other name-shaped first word is.
+    sentence_cased = first[:1].isupper() and first[1:].islower()
+    if (
+        len(first) > 1
+        and _NAME_RE.fullmatch(first)
+        and not (sentence_cased and first.lower() in _LEADING_WORDS)
+    ):
+        return True
+    rest = parts[1] if len(parts) > 1 else ""
+    return bool(_NAME_RE.search(rest))
+
+
 def all_paths() -> set[str]:
     """Return the full path set (the default, unrouted behavior)."""
     return set(RETRIEVAL_PATHS)
@@ -74,14 +119,12 @@ class HeuristicPathRouter:
         )
         if re.search(rel_pattern, q):
             plan |= {"expansion", "entity_cypher"}
-        # Quoted or capitalized proper nouns in the original query → name match.
-        # Ignore the sentence-cased leading word ("What", "Who", "How"...) —
-        # only a capitalized token *after* the first word signals a real name,
-        # otherwise the entity paths fire on virtually every question and the
-        # router never prunes.
-        parts = text.split(maxsplit=1)
-        rest = parts[1] if len(parts) > 1 else ""
-        if '"' in text or "'" in text or re.search(r"\b[A-Z][a-z]+\b", rest):
+        # A quoted phrase or a proper noun (Capitalized, ALL-CAPS, mixed case)
+        # → name match. A capitalized first word counts only when it is not a
+        # question/command word ("What", "Who", "List"...), otherwise the
+        # entity paths fire on virtually every question and the router never
+        # prunes; an apostrophe ("what's") is not a quote.
+        if _names_an_entity(text):
             plan |= {"entity_cypher", "entity_fulltext"}
         return plan & _PATH_SET or all_paths()
 

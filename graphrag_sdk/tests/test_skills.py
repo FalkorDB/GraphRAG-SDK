@@ -208,21 +208,44 @@ class TestImpactAnalysis:
         assert impacted.get("near") == 1
         assert impacted.get("far") == 2
 
-    async def test_bounds_are_clamped(self, ctx: Context, monkeypatch):
-        seen: dict[str, int] = {}
-
-        class Walk:
-            def __init__(self, fn, *, node_weights, beam_width, max_depth):
-                seen.update(beam_width=beam_width, max_depth=max_depth)
-
-            async def beam_search(self, start, ctx=None):
-                return []
-
-        monkeypatch.setattr("graphrag_sdk.skills.impact_analysis.DynamicGraphWalk", Walk)
-        await ImpactAnalysisSkill(FakeGraphStore(entities=PEOPLE)).run(
-            ctx, entity="root", max_depth=99, beam_width=10_000
+    async def test_bounds_are_clamped(self, ctx: Context):
+        # A 10-hop chain: max_depth=99 is clamped to 5 hops.
+        chain = {f"c{i}": [(f"c{i + 1}", 1.0, "R")] for i in range(10)}
+        chain["root"] = [("c0", 1.0, "R")]
+        result = await ImpactAnalysisSkill(FakeGraphStore(entities=PEOPLE, neighbors=chain)).run(
+            ctx, entity="root", max_depth=99
         )
-        assert seen == {"beam_width": 20, "max_depth": 5}
+        assert max(r["distance"] for r in result.data["impacted"]) == 5
+        # 30 direct neighbours, each with a child: beam_width=10_000 is
+        # clamped to 20, so 20 of them are expanded to the second hop.
+        wide = {"root": [(f"n{i:02d}", 1.0, "R") for i in range(30)]}
+        wide.update({f"n{i:02d}": [(f"n{i:02d}_x", 1.0, "R")] for i in range(30)})
+        result = await ImpactAnalysisSkill(FakeGraphStore(entities=PEOPLE, neighbors=wide)).run(
+            ctx, entity="root", max_depth=2, beam_width=10_000
+        )
+        by_hop = [r["distance"] for r in result.data["impacted"]]
+        assert by_hop.count(1) == 30 and by_hop.count(2) == 20
+
+    async def test_every_direct_neighbour_is_reported(self, ctx: Context):
+        wide = {"root": [(f"n{i:02d}", 1.0, "R") for i in range(30)]}
+        wide.update({f"n{i:02d}": [(f"n{i:02d}_x", 1.0, "R")] for i in range(30)})
+        result = await ImpactAnalysisSkill(FakeGraphStore(entities=PEOPLE, neighbors=wide)).run(
+            ctx, entity="root", max_depth=2, beam_width=8
+        )
+        ranked = result.data["impacted"]
+        assert [r["distance"] for r in ranked].count(1) == 30
+        assert [r["distance"] for r in ranked].count(2) == 8
+        # Closest first: every direct neighbour comes before any 2-hop entity.
+        assert [r["distance"] for r in ranked] == sorted(r["distance"] for r in ranked)
+
+    async def test_distance_score_and_via_come_from_one_path(self, ctx: Context):
+        store = FakeGraphStore(
+            entities=PEOPLE,
+            neighbors={"root": [("a", 1.0, "R"), ("b", 0.1, "R")], "a": [("b", 1.0, "R")]},
+        )
+        result = await ImpactAnalysisSkill(store).run(ctx, entity="root", max_depth=3)
+        b = next(r for r in result.data["impacted"] if r["entity"] == "b")
+        assert b["distance"] == 1 and b["via"] == ["root", "b"]
 
     async def test_bad_int_is_reported(self, ctx: Context):
         with pytest.raises(ValueError, match="'max_depth' must be an integer"):
@@ -337,6 +360,10 @@ class TestTimelineReconstruction:
         # they cannot use up the scan; embeddings are never read.
         assert cypher.index("WHERE size(dated) > 0") < cypher.index("LIMIT $scan")
         assert "properties(e)" not in cypher and "'embedding'" in cypher
+        # "on" as a word of its own (published_on_day, onHold) passes the
+        # prefilter; the letters around it are checked, not a suffix only.
+        assert "toLower(substring(k, i, 2)) = 'on'" in cypher
+        assert params["lower"] == list("abcdefghijklmnopqrstuvwxyz")
 
 
 class TestSkillAsTool:

@@ -31,9 +31,9 @@ question ─► model ──tool calls──► tools ──numbered results [N]
 ```
 
 - **Native tool calling** when the LLM supports it (`LiteLLM`, `OpenRouterLLM`): the model requests tools as structured calls via `llm.ainvoke_with_tools()`.
-- **ReAct fallback** for any other provider: the tools are described in the prompt and the reply (`Action:` / `Action Input:` / `Final Answer:`) is parsed. Pick explicitly with `mode="native"` or `mode="react"`.
+- **ReAct fallback** for any other provider: the tools are described in the prompt and the reply (`Action:` / `Action Input:` / `Final Answer:`) is parsed. With the default `mode="auto"`, a model that rejects the first native tool call (one without function calling) also falls back to ReAct. Pick explicitly with `mode="native"` or `mode="react"`.
 - A call the tool cannot run — unknown tool, bad arguments, a name that matches nothing — comes back to the model as `Refused: <tool> did not run: <why>`, so it can fix the call instead of the run failing.
-- When the step or tool-call limit is reached, the model is asked once more to answer **without** tools, so the run still ends with an answer. (If the latency budget runs out first, the run stops with what it has; the answer may be empty and is then reported as ungrounded.)
+- When the step or tool-call limit is reached, the model is asked once more to answer **without** tools, so the run still ends with an answer. (If the latency budget runs out first, the run stops with what it has; when no answer was written yet, the answer says the search ran out of time, with `grounding_reason="budget_exceeded"`.)
 
 ## Tools
 
@@ -78,7 +78,7 @@ Before an answer is declared ungrounded, the agent gets one **citation repair**:
 | `"annotate"` | kept, with `metadata["grounded"] = False` |
 | `"off"` | not checked |
 
-The gate checks that the answer rests on real evidence — one valid citation is enough — not that every sentence carries one. Short conversational replies that called no tools and state no figures ("Hello!", "You're welcome") pass without a citation; an empty answer never does. Bracketed numbers that are not citations, such as `[2024]` or `items[0]`, are left alone. The model's original text is always in `metadata["raw_answer"]`.
+The gate checks that the answer rests on real evidence — one valid citation is enough — not that every sentence carries one. Short conversational replies to small talk ("hi", "thanks") that called no tools and state no figures ("Hello!", "You're welcome") pass without a citation; a factual question answered from memory without a tool call does not, and an empty answer never does. Bracketed numbers that are not citations, such as `[2024]` or `items[0]`, are left alone, as is anything inside inline code or a code block. A tool's "No results" message is not evidence and cannot be cited. The model's original text is always in `metadata["raw_answer"]`.
 
 ## Limits
 
@@ -96,6 +96,7 @@ agent = rag.agentic_retrieval(limits=AgentLimits(max_steps=8, max_tool_calls=16,
 | `max_tool_calls` | 12 | tool calls in the whole run |
 | `max_calls_per_turn` | 4 | calls run from one model response |
 | `max_observation_chars` | 24000 | text of one tool result sent to the model (fits one search's passages) |
+| `max_total_observation_chars` | 96000 | text of all tool results the conversation carries; beyond it the oldest are shortened (the newest stays whole) |
 | `max_history_turns` | 5 | earlier exchanges kept |
 | `search_max_items` / `search_max_limit` | 40 / 50 | search results / retrieval-limit arguments |
 | `query_max_rows` / `query_timeout_ms` / `query_attempts` | 25 / 5000 / 3 | `query_graph` |
@@ -111,7 +112,7 @@ The run's `Context` latency budget still applies; if it runs out mid-run, the pa
 |---|---|
 | `answer`, `raw_answer` | the answer after / before the grounding check (`raw_answer` is the model's first answer, also when a citation repair rewrote it) |
 | `citation_repair` | `{"attempted": false}`, or whether a repair ran, searched, and grounded the answer |
-| `grounded`, `grounding_reason` | the verdict and why (`cited`, `conversation`, `no_citations`, `invalid_citations`, `empty`) |
+| `grounded`, `grounding_reason` | the verdict and why (`cited`, `conversation`, `no_citations`, `invalid_citations`, `empty`, `budget_exceeded`) |
 | `citations`, `evidence` | cited results / all results, each `{n, tool, kind, content, source}` |
 | `agent_trace` | every call: tool, arguments, result, status (`ok` / `refused` / `error`) |
 | `stop_reason` | `final_answer`, `max_steps`, `max_tool_calls`, `budget_exceeded`, `no_action` |

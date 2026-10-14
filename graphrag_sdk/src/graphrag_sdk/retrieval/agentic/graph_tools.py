@@ -232,7 +232,11 @@ def make_search_tool(strategy: Any, *, max_items: int = 40, max_limit: int = 50)
         result = await strategy.search(query, tctx.ctx, **overrides)
         entries = rank_search_entries(split_search_items(list(result.items)))[:max_items]
         if not entries:
-            return ToolResult("No results. Try different keywords or a narrower query.")
+            # ``evidence`` is reported (empty) so the loop does not number
+            # this message as a citable source.
+            return ToolResult(
+                "No results. Try different keywords or a narrower query.", data={"evidence": []}
+            )
         lines = []
         numbers = []
         for kind, text, source in entries:

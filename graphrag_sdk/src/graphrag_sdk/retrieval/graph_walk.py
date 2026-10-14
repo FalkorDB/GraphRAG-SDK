@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -104,7 +105,16 @@ class DynamicGraphWalk:
                 ctx.ensure_budget(f"graph walk depth {depth}")
             candidates: list[tuple[list[str], list[str], list[float]]] = []
             dead_ends: list[tuple[list[str], list[str], list[float]]] = []
-            for nodes, edges, e_weights in beam:
+            # One round's neighbour lookups run concurrently (they are
+            # independent reads); results are consumed in beam order, so the
+            # outcome is the same as fetching them one by one.
+            to_expand = [entry for entry in beam if goal is None or entry[0][-1] != goal]
+            fetched = await asyncio.gather(
+                *(self._neighbor_fn(nodes[-1]) for nodes, _, _ in to_expand)
+            )
+            neighbours = {id(entry): nbrs for entry, nbrs in zip(to_expand, fetched)}
+            for entry in beam:
+                nodes, edges, e_weights = entry
                 tail = nodes[-1]
                 if goal is not None and tail == goal:
                     completed.append(
@@ -121,7 +131,7 @@ class DynamicGraphWalk:
                     )
                     continue
                 extended = False
-                for nbr, weight, label in await self._neighbor_fn(tail):
+                for nbr, weight, label in neighbours[id(entry)]:
                     if nbr in nodes:
                         continue  # no cycles within a single path
                     candidates.append((nodes + [nbr], edges + [label], e_weights + [weight]))

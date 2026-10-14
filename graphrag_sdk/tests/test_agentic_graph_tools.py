@@ -149,11 +149,56 @@ class TestGuard:
             "MATCH (n) WITH n LIMIT 25 RETURN n LIMIT 5"
         )
         assert enforce_row_cap("MATCH (n) RETURN n;", 10) == "MATCH (n) RETURN n\nLIMIT 10"
-        assert "shortestPath" not in enforce_row_cap(
-            "MATCH p = shortestPath((a)-[*]-(b)) RETURN p", 5
-        )
         with pytest.raises(ValueError):
             enforce_row_cap("MATCH (n) RETURN n", 0)
+
+    def test_row_cap_bounds_the_final_return(self):
+        # An inner LIMIT does not stand in for the cap on the final RETURN.
+        assert enforce_row_cap("MATCH (n) WITH n LIMIT 5 MATCH (n)--(m) RETURN m.name", 25) == (
+            "MATCH (n) WITH n LIMIT 5 MATCH (n)--(m) RETURN m.name\nLIMIT 25"
+        )
+        assert enforce_row_cap("MATCH (n) WITH n LIMIT 5 RETURN n.name ORDER BY n.name", 25) == (
+            "MATCH (n) WITH n LIMIT 5 RETURN n.name ORDER BY n.name\nLIMIT 25"
+        )
+        # Each UNION part is bounded on its own.
+        assert enforce_row_cap(
+            "MATCH (n) RETURN n.name AS x UNION MATCH (m) RETURN m.name AS x", 9
+        ) == ("MATCH (n) RETURN n.name AS x LIMIT 9 UNION MATCH (m) RETURN m.name AS x\nLIMIT 9")
+        union = (
+            "MATCH (n) RETURN n.name AS x LIMIT {} UNION ALL MATCH (m) RETURN m.name AS x LIMIT 3"
+        )
+        assert enforce_row_cap(union.format(50), 9) == union.format(9)
+
+    def test_keywords_used_as_names_are_not_clauses(self):
+        # FalkorDB accepts keywords as property names, map keys and aliases.
+        for cypher in (
+            "MATCH (p) RETURN p.limit",
+            "MATCH (p {limit: 5}) RETURN p.skip AS s",
+            "MATCH (p) RETURN 1 AS `limit`",
+            "MATCH (a {name:'x'}),(b {name:'y'}) "
+            "WITH a, b, a.match AS m, shortestPath((a)-[*]->(b)) AS p RETURN length(p)",
+        ):
+            assert validate_read_query(cypher) == [], cypher
+        # A property named like a keyword never moves the row cap.
+        assert enforce_row_cap("MATCH (p:P) RETURN p.union AS union", 25) == (
+            "MATCH (p:P) RETURN p.union AS union\nLIMIT 25"
+        )
+        assert enforce_row_cap("MATCH (p) WITH p LIMIT 2 RETURN p.`return`", 25) == (
+            "MATCH (p) WITH p LIMIT 2 RETURN p.`return`\nLIMIT 25"
+        )
+
+    def test_shortest_path_in_match_is_rejected_not_rewritten(self):
+        ends = "MATCH (a {name:'x'}),(b {name:'y'}) "
+        bad = ends + "WITH a,b MATCH p = shortestPath((a)-[*]-(b)) RETURN length(p)"
+        errors = validate_read_query(bad)
+        assert any("WITH shortestPath((a)-[*]->(b)) AS p" in e for e in errors), errors
+        good = ends + "WITH shortestPath((a)-[*]->(b)) AS p RETURN length(p)"
+        assert validate_read_query(good) == []
+        # The cap never changes what the query means.
+        assert "shortestPath((a)-[*]->(b))" in enforce_row_cap(good, 5)
+        assert "allShortestPaths(" in enforce_row_cap(
+            "MATCH (a),(b) WITH a,b MATCH p = allShortestPaths((a)-[*]->(b)) RETURN length(p)", 5
+        )
 
     def test_mask_and_format(self):
         assert mask_internal_labels("(e:__Entity__)") == "(e:[internal])"
