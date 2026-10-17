@@ -40,6 +40,20 @@ logger = logging.getLogger(__name__)
 _PATTERN_MISMATCH_SAMPLE_SIZE = 3
 
 
+def content_hash(text: str) -> str:
+    """The content hash stored on a Document node (SHA-256 hex of the text).
+
+    The single definition: the unchanged-document short-circuit in
+    :meth:`IngestionPipeline.run` and the facade's pre-planning check both
+    compare against it, so they cannot drift apart.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+#: Alias used inside ``run``, where ``content_hash`` is a local variable.
+document_content_hash = content_hash
+
+
 def _has_explicit(info: DocumentInfo, field: str) -> bool:
     """True when the caller set ``field`` on ``info`` (and to a non-empty value).
 
@@ -307,7 +321,7 @@ class IngestionPipeline(LexicalGraphWriter):
             # (timestamps, randomized ordering, run-id watermarks, etc.)
             # will produce a different hash on every run and the no-op
             # short-circuit will never fire — correct, just not optimal.
-            content_hash = hashlib.sha256(document.text.encode("utf-8")).hexdigest()
+            content_hash = document_content_hash(document.text)
 
             # Unchanged re-ingest short-circuit — before chunking, so a
             # no-op costs one graph lookup and nothing else (contextual and
