@@ -337,6 +337,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves more concurrent questions.
 
 ### Fixed
+- Fulltext indexes were never created on FalkorDB 6.0.x (#344). The SDK used
+  the `db.idx.fulltext.createNodeIndex(label, prop, ...)` procedure, which 6.0.x
+  rejects ("Received 2 arguments to procedure ..."), so fulltext search returned
+  nothing. Each rejected call was also retried three times and opened the
+  circuit breaker, which then refused every query for the recovery timeout.
+  The fulltext indexes now use `CREATE FULLTEXT INDEX FOR (n:L) ON (n.p, ...)`,
+  which works on 4.x and 6.0.x, and a wrong-arity procedure call is no longer
+  retried.
+- `drop_*_vector_index()` dropped nothing on any engine version: it called
+  `db.idx.vector.drop`, which does not exist. It now uses `DROP VECTOR INDEX`,
+  and dropping an index that is not there is no longer retried.
+- Fulltext search ordered only by score, so tied results depended on the
+  engine's row order. Ties are now broken by `id`.
 - `delete_all()` forgot to reset the memo for the per-label `id` range
   indexes. The graph drop took the indexes with it, but in the same process
   `create_id_range_indices()` believed they still existed, so the next ingest

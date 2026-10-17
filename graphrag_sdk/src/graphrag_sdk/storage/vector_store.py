@@ -143,10 +143,15 @@ class VectorStore:
         )
         return await self._try_create_index(query, "[RELATES].embedding", "vector")
 
+    # Fulltext indexes use the ``CREATE FULLTEXT INDEX`` DDL form. FalkorDB
+    # 6.0.x rejects the older ``db.idx.fulltext.createNodeIndex(label, prop, ...)``
+    # procedure form ("Received 2 arguments to procedure ..."), while the DDL
+    # form works on 4.x and 6.0.x alike, the same as ``CREATE VECTOR INDEX``.
+
     async def create_chunk_fulltext_index(self) -> bool:
         """Create the fulltext index on ``Chunk.text``."""
         return await self._try_create_index(
-            "CALL db.idx.fulltext.createNodeIndex('Chunk', 'text')",
+            "CREATE FULLTEXT INDEX FOR (n:Chunk) ON (n.text)",
             "Chunk(text)",
             "fulltext",
         )
@@ -154,7 +159,7 @@ class VectorStore:
     async def create_entity_fulltext_index(self) -> bool:
         """Create the fulltext index on ``__Entity__(name, description)``."""
         return await self._try_create_index(
-            "CALL db.idx.fulltext.createNodeIndex('__Entity__', 'name', 'description')",
+            "CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.name, n.description)",
             "__Entity__(name, description)",
             "fulltext",
         )
@@ -162,7 +167,7 @@ class VectorStore:
     async def drop_chunk_vector_index(self) -> None:
         """Drop the ``Chunk`` vector index."""
         try:
-            await self._conn.query("CALL db.idx.vector.drop('Chunk')")
+            await self._conn.query("DROP VECTOR INDEX FOR (n:Chunk) ON (n.embedding)")
             logger.info("Dropped vector index on Chunk")
         except Exception as exc:
             logger.warning(f"Could not drop vector index on Chunk: {exc}")
@@ -170,7 +175,7 @@ class VectorStore:
     async def drop_entity_vector_index(self) -> None:
         """Drop the ``__Entity__`` vector index."""
         try:
-            await self._conn.query("CALL db.idx.vector.drop('__Entity__')")
+            await self._conn.query("DROP VECTOR INDEX FOR (n:__Entity__) ON (n.embedding)")
             logger.info("Dropped vector index on __Entity__")
         except Exception as exc:
             logger.warning(f"Could not drop vector index on __Entity__: {exc}")
@@ -178,7 +183,7 @@ class VectorStore:
     async def drop_relates_vector_index(self) -> None:
         """Drop the ``RELATES`` edge vector index."""
         try:
-            await self._conn.query("CALL db.idx.vector.drop('RELATES')")
+            await self._conn.query("DROP VECTOR INDEX FOR ()-[e:RELATES]->() ON (e.embedding)")
             logger.info("Dropped vector index on RELATES")
         except Exception as exc:
             logger.warning(f"Could not drop vector index on RELATES: {exc}")
@@ -530,7 +535,7 @@ class VectorStore:
             "CALL db.idx.fulltext.queryNodes('Chunk', $query_text) "
             "YIELD node, score "
             "RETURN node.id AS id, node.text AS text, score "
-            "ORDER BY score DESC LIMIT $top_k"
+            "ORDER BY score DESC, id ASC LIMIT $top_k"
         )
         try:
             result = await self._conn.query(
@@ -573,7 +578,7 @@ class VectorStore:
             "CALL db.idx.fulltext.queryNodes('__Entity__', $query_text) "
             "YIELD node, score "
             "RETURN node.id AS id, node.name AS text, score "
-            "ORDER BY score DESC LIMIT $top_k"
+            "ORDER BY score DESC, id ASC LIMIT $top_k"
         )
         try:
             result = await self._conn.query(

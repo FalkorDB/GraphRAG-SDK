@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
-from graphrag_sdk.core.exceptions import DatabaseError
+from graphrag_sdk.core.exceptions import DatabaseError, DatabaseUnavailableError
 
 
 class TestConnectionConfig:
@@ -133,6 +133,32 @@ class TestFalkorDBConnection:
             with pytest.raises(Exception, match="syntax error"):
                 await conn.query("MATCH (n RETURN n")
         assert "Non-transient FalkorDB query failure" in caplog.text
+        assert mock_graph.query.call_count == 1
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            # FalkorDB 6.0.x, procedure called with the wrong arity
+            "Received 2 arguments to procedure 'db.idx.fulltext.createNodeIndex', "
+            "expected at most 1",
+            # DROP ... INDEX on a missing index (4.x and 6.0.x)
+            "Unable to drop index on :Chunk(embedding): no such index.",
+        ],
+    )
+    async def test_server_rejections_are_not_retried(self, message):
+        """A rejected statement fails the same way on every attempt. Retrying it
+        burns the retry budget and feeds the circuit breaker, which then locks
+        out every other query for the recovery timeout."""
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.0))
+
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=Exception(message))
+        conn._graph = mock_graph
+        conn._driver = MagicMock()
+
+        with pytest.raises(DatabaseError) as exc_info:
+            await conn.query("CALL db.idx.fulltext.createNodeIndex('Chunk', 'text')")
+        assert not isinstance(exc_info.value, DatabaseUnavailableError)
         assert mock_graph.query.call_count == 1
 
     @pytest.mark.parametrize(
