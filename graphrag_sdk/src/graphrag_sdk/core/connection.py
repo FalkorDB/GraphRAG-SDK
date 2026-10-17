@@ -261,6 +261,13 @@ class FalkorDBConnection:
         "unknown function",
         "type mismatch",
         "procedure not found",
+        # FalkorDB 6.0.x wording for a procedure called with the wrong number
+        # of arguments: "Received 2 arguments to procedure '...', expected at
+        # most 1".
+        "arguments to procedure",
+        # DROP ... INDEX on an index that does not exist: "Unable to drop
+        # index on :Chunk(embedding): no such index."
+        "no such index",
     )
 
     @classmethod

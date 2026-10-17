@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
@@ -55,34 +57,44 @@ class TestVectorStoreIndex:
         assert "RELATES" in cypher
 
     async def test_create_chunk_fulltext_index(self, vector_store, mock_connection):
+        """DDL form: FalkorDB 6.0.x rejects db.idx.fulltext.createNodeIndex(label, prop)."""
         await vector_store.create_chunk_fulltext_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "fulltext.createNodeIndex" in cypher
-        assert "'Chunk'" in cypher
-        assert "'text'" in cypher
+        assert cypher == "CREATE FULLTEXT INDEX FOR (n:Chunk) ON (n.text)"
+        assert "createNodeIndex" not in cypher
 
     async def test_create_entity_fulltext_index(self, vector_store, mock_connection):
         await vector_store.create_entity_fulltext_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "'__Entity__'" in cypher
-        assert "'name'" in cypher
-        assert "'description'" in cypher
+        assert cypher == "CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.name, n.description)"
+
+    async def test_create_fulltext_index_declares_already_indexed_as_expected(
+        self, vector_store, mock_connection
+    ):
+        """Re-running the DDL on an indexed graph answers "Attribute 'text' is
+        already indexed"; ensure_indices() must keep treating that as success."""
+        mock_connection.query = AsyncMock(
+            side_effect=Exception("Attribute 'text' is already indexed")
+        )
+        assert await vector_store.create_chunk_fulltext_index() is True
+        kwargs = mock_connection.query.call_args.kwargs
+        assert "already indexed" in kwargs["expected_errors"]
 
     async def test_drop_chunk_vector_index(self, vector_store, mock_connection):
+        """DDL form: db.idx.vector.drop does not exist on 4.x or 6.0.x."""
         await vector_store.drop_chunk_vector_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "vector.drop" in cypher
-        assert "Chunk" in cypher
+        assert cypher == "DROP VECTOR INDEX FOR (n:Chunk) ON (n.embedding)"
 
     async def test_drop_entity_vector_index(self, vector_store, mock_connection):
         await vector_store.drop_entity_vector_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "__Entity__" in cypher
+        assert cypher == "DROP VECTOR INDEX FOR (n:__Entity__) ON (n.embedding)"
 
     async def test_drop_relates_vector_index(self, vector_store, mock_connection):
         await vector_store.drop_relates_vector_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "RELATES" in cypher
+        assert cypher == "DROP VECTOR INDEX FOR ()-[e:RELATES]->() ON (e.embedding)"
 
     async def test_create_index_error_handled(self, vector_store, mock_connection):
         mock_connection.query = AsyncMock(side_effect=Exception("index exists"))
@@ -269,6 +281,8 @@ class TestVectorStoreFulltextSearch:
         assert results[0]["text"] == "Match text"
         cypher = mock_connection.query.call_args[0][0]
         assert "'Chunk'" in cypher
+        # Tied scores must not depend on the engine's row order.
+        assert "ORDER BY score DESC, id ASC" in cypher
 
     async def test_fulltext_search_entities(self, vector_store, mock_connection):
         result_mock = MagicMock()
@@ -278,6 +292,7 @@ class TestVectorStoreFulltextSearch:
         assert results[0]["text"] == "Alice"
         cypher = mock_connection.query.call_args[0][0]
         assert "'__Entity__'" in cypher
+        assert "ORDER BY score DESC, id ASC" in cypher
 
     async def test_fulltext_search_chunks_error_returns_empty(self, vector_store, mock_connection):
         mock_connection.query = AsyncMock(side_effect=Exception("search failed"))
@@ -342,3 +357,79 @@ class TestEnsureIndicesSkip:
     async def test_ensure_indices_flag_starts_false(self, mock_connection, embedder):
         store = VectorStore(mock_connection, embedder=embedder)
         assert store._indices_ensured is False
+
+
+# ── Real FalkorDB (RUN_INTEGRATION=1) ────────────────────────────
+
+
+@pytest.fixture
+async def real_vector_store():
+    """A VectorStore on a fresh, uniquely named graph in a real FalkorDB."""
+    if not os.getenv("RUN_INTEGRATION"):
+        pytest.skip("Set RUN_INTEGRATION=1 to run real-FalkorDB integration tests")
+
+    from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
+
+    conn = FalkorDBConnection(
+        ConnectionConfig(
+            host=os.getenv("FALKOR_HOST", "localhost"),
+            port=int(os.getenv("FALKOR_PORT", "6379")),
+            username=os.getenv("FALKOR_USERNAME") or None,
+            password=os.getenv("FALKOR_PASSWORD") or None,
+            graph_name=f"test_{uuid4().hex[:8]}",
+        )
+    )
+    try:
+        yield conn, VectorStore(conn, embedding_dimension=8)
+    finally:
+        await conn.delete_graph()
+        await conn.close()
+
+
+async def _index_types(conn) -> dict[tuple[str, str], set[str]]:
+    result = await conn.query("CALL db.indexes() YIELD label, types RETURN label, types")
+    found: dict[tuple[str, str], set[str]] = {}
+    for label, types in result.result_set:
+        for prop, kinds in types.items():
+            found[(label, prop)] = set(kinds)
+    return found
+
+
+@pytest.mark.integration
+class TestVectorStoreIndicesRealFalkorDB:
+    """The index DDL must work on the engine itself (FalkorDB 4.x and 6.0.x)."""
+
+    async def test_ensure_indices_creates_fulltext_and_search_finds_rows(self, real_vector_store):
+        conn, store = real_vector_store
+        await conn.query("CREATE (:Chunk {id: 'c1', text: 'the quick brown fox'})")
+        await conn.query(
+            "CREATE (:__Entity__ {id: 'e1', name: 'Alice', description: 'an engineer'})"
+        )
+
+        results = await store.ensure_indices()
+        assert results == {key: True for key in results}, results
+
+        found = await _index_types(conn)
+        assert "FULLTEXT" in found[("Chunk", "text")]
+        assert "FULLTEXT" in found[("__Entity__", "name")]
+        assert "FULLTEXT" in found[("__Entity__", "description")]
+
+        assert [c["id"] for c in await store.fulltext_search_chunks("fox")] == ["c1"]
+        assert [e["id"] for e in await store.fulltext_search_entities("engineer")] == ["e1"]
+
+        # A second store on the same graph re-runs every CREATE and must see
+        # "already indexed" as success, not a failure that trips the breaker.
+        again = await VectorStore(conn, embedding_dimension=8).ensure_indices()
+        assert again == {key: True for key in again}, again
+
+    async def test_drop_vector_indices_removes_only_the_vector_indices(self, real_vector_store):
+        conn, store = real_vector_store
+        assert all((await store.ensure_indices()).values())
+
+        await store.drop_chunk_vector_index()
+        await store.drop_entity_vector_index()
+        await store.drop_relates_vector_index()
+
+        found = await _index_types(conn)
+        assert not any("VECTOR" in kinds for kinds in found.values()), found
+        assert "FULLTEXT" in found[("Chunk", "text")]
