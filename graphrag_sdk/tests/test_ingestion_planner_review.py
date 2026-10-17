@@ -102,10 +102,33 @@ def test_plan_is_hashable():
     assert len({a, b, IngestionPlan()}) == 2
 
 
-def test_an_edited_param_is_clamped_again_when_built():
+def test_plan_params_are_read_only_and_the_hash_is_stable():
+    import copy
+    import json
+    import pickle
+
     plan = IngestionPlan(chunker="fixed", chunker_params={"chunk_size": 1000})
-    plan.chunker_params["chunk_size"] = 10**9  # the dict stays plain
-    assert build_chunker(plan.chunker, params=plan.chunker_params).chunk_size == 8000
+    h = hash(plan)
+    for edit in (
+        lambda d: d.__setitem__("chunk_size", 10**9),
+        lambda d: d.update(chunk_size=1),
+        lambda d: d.pop("chunk_size"),
+        lambda d: d.clear(),
+        lambda d: d.setdefault("x", 1),
+    ):
+        with pytest.raises(TypeError):
+            edit(plan.chunker_params)
+    assert hash(plan) == h and plan in {plan}
+    # Still a plain dict for every reader: JSON, copies, pickling, replace.
+    assert json.dumps(plan.chunker_params) == '{"chunk_size": 1000}'
+    assert copy.deepcopy(plan) == plan and pickle.loads(pickle.dumps(plan)) == plan
+    editable = dict(plan.chunker_params)
+    editable["chunk_size"] = 2000
+    assert IngestionPlan(chunker="fixed", chunker_params=editable).chunker_params == {
+        "chunk_size": 2000
+    }
+    # The builders still clamp a hand-made params dict.
+    assert build_chunker("fixed", params={"chunk_size": 10**9}).chunk_size == 8000
 
 
 # ── parse_plan ──────────────────────────────────────────────────

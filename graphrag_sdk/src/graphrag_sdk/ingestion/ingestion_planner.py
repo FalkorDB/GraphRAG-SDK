@@ -207,8 +207,8 @@ _PARAM_TEXT: dict[str, str] = {
     "    at most a quarter of chunk_size).",
     "llm": "threshold (0.1-0.95, def 0.75). Lower = more recall/noise;\n"
     "    higher = more precision.",
-    "llm_verified": "hard_threshold (0.8-0.999, def 0.95; pairs below it are\n"
-    "    checked by the LLM), ann_top_k (5-200, def 50),\n"
+    "llm_verified": "hard_threshold (0.8-0.999, def 0.95; candidate pairs from\n"
+    "    0.65 up to it are checked by the LLM), ann_top_k (5-200, def 50),\n"
     "    max_llm_pairs (10-{max_llm_pairs}, def {default_pairs}).",
 }
 
@@ -257,6 +257,31 @@ def _guide(
     return "\n".join(lines) + "\n"
 
 
+class FrozenParams(dict):  # type: ignore[type-arg]
+    """A read-only ``dict`` of strategy parameters.
+
+    Still a real ``dict`` (JSON-serializable, ``dict(...)``-copyable,
+    picklable), but any change raises ``TypeError``: an
+    :class:`IngestionPlan` is frozen, and its hash covers these values.
+    """
+
+    def _read_only(self, *args: Any, **kwargs: Any) -> Any:
+        raise TypeError("IngestionPlan parameters are read-only; copy them with dict(...)")
+
+    __setitem__ = __delitem__ = _read_only
+    clear = pop = popitem = setdefault = update = _read_only  # type: ignore[assignment]
+    __ior__ = _read_only  # type: ignore[assignment]
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (FrozenParams, (dict(self),))
+
+    def __copy__(self) -> FrozenParams:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> FrozenParams:
+        return self
+
+
 @dataclass(frozen=True)
 class IngestionPlan:
     """A validated decision about which ingestion strategies to use.
@@ -279,9 +304,8 @@ class IngestionPlan:
     def __hash__(self) -> int:
         # The generated hash would hash the param dicts and raise; hash
         # what equality compares (``reason`` is excluded from both). The
-        # dicts stay plain (JSON-friendly); the builders clamp them again, so
-        # an edit after construction still cannot reach a constructor
-        # unclamped.
+        # param dicts are read-only (``FrozenParams``), so the hash cannot
+        # change after construction.
         return hash(
             (
                 self.chunker,
@@ -302,17 +326,12 @@ class IngestionPlan:
             raise ValueError(f"unknown resolver {self.resolver!r}")
         # Clamp any supplied params to safe ranges so a hand- or LLM-built plan
         # can never carry an out-of-range value into a constructor.
-        object.__setattr__(
-            self, "chunker_params", clamp_params("chunker", self.chunker, self.chunker_params)
-        )
-        object.__setattr__(
-            self,
-            "extractor_params",
-            clamp_params("extractor", self.extractor, self.extractor_params),
-        )
-        object.__setattr__(
-            self, "resolver_params", clamp_params("resolver", self.resolver, self.resolver_params)
-        )
+        # Stored read-only, so a plan cannot be edited past its clamping and
+        # its hash stays stable (copy with ``dict(...)`` to change values).
+        for component in ("chunker", "extractor", "resolver"):
+            attr = f"{component}_params"
+            clamped = clamp_params(component, getattr(self, component), getattr(self, attr))
+            object.__setattr__(self, attr, FrozenParams(clamped))
 
 
 def default_plan() -> IngestionPlan:
