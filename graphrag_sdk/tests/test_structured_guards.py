@@ -333,7 +333,12 @@ class TestDeleteAllTakesTheOntologyWithIt:
         await rag.ingest(str(path))
 
         companion = rag._conn.config.graph_name + "__ontology"
-        redis = Redis(host="localhost", port=6379)
+        # The server the test is configured for, not a fixed localhost:6379:
+        # with FALKOR_PORT pointing elsewhere this listed another server's graphs.
+        config = rag._conn.config
+        redis = Redis(
+            host=config.host, port=config.port, username=config.username, password=config.password
+        )
         try:
             listed = {key.decode() for key in await redis.execute_command("GRAPH.LIST")}
             assert companion in listed, "nothing to assert if it was never created"
