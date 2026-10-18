@@ -212,6 +212,30 @@ class TestOneKeyTwiceInOneCall:
         ]
         assert count == 3
 
+    async def test_rel_type_keys_compare_like_the_merge(self, graph_store, mock_connection):
+        """FalkorDB's MERGE treats 5 and 5.0 as one key but keeps true apart
+        from 1 and "5" apart from 5; the fold must agree or a batch still
+        carries one MERGE key twice."""
+
+        def rel(rel_type, chunk):
+            return GraphRelationship(
+                start_node_id="a",
+                end_node_id="b",
+                type="RELATES",
+                properties={"rel_type": rel_type, "source_chunk_ids": [chunk]},
+            )
+
+        await graph_store.upsert_relationships(
+            [rel(5, "c1"), rel(5.0, "c2"), rel(True, "c3"), rel(1, "c4"), rel("5", "c5")]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert [item["properties"]["source_chunk_ids"] for item in batch] == [
+            ["c1", "c2"],  # 5 and 5.0: one key
+            ["c3"],  # true
+            ["c4"],  # 1
+            ["c5"],  # "5"
+        ]
+
     async def test_other_edge_types_are_keyed_by_the_pair(self, graph_store, mock_connection):
         await graph_store.upsert_relationships(
             [

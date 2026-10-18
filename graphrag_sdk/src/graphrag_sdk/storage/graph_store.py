@@ -697,11 +697,11 @@ class GraphStore:
             # see _fold_properties. Each row keeps how many input relationships
             # it stands for, so the returned count is unchanged.
             is_relates = rel_type == "RELATES"
-            folded: dict[tuple[str, str, str], tuple[GraphRelationship, dict[str, Any], int]] = {}
+            folded: dict[tuple[str, str, Any], tuple[GraphRelationship, dict[str, Any], int]] = {}
             for rel, sid, eid in cleaned_group:
                 props = self._clean_properties(rel.properties)
-                # json keeps 5 and "5" apart, as the MERGE does.
-                key = (sid, eid, json.dumps(props.get("rel_type", "")) if is_relates else "")
+                rel_key = self._merge_key_value(props.get("rel_type", "")) if is_relates else ""
+                key = (sid, eid, rel_key)
                 if key in folded:
                     first, acc, weight = folded[key]
                     props = self._fold_properties(acc, props, union_provenance=is_relates)
@@ -2201,6 +2201,24 @@ class GraphStore:
     def _clean_identifier(cls, value: Any) -> str:
         """Normalise IDs used in Cypher params."""
         return cls._sanitize_string(str(value))
+
+    @staticmethod
+    def _merge_key_value(value: Any) -> Any:
+        """A MERGE key value, compared the way FalkorDB compares it.
+
+        Numbers are equal by value (``5`` and ``5.0`` are one key, as are
+        ``0`` and ``-0.0``), a boolean is never equal to a number, and a string
+        is never equal to either. Python's ``==`` and ``hash`` already treat
+        numbers that way, so tagging the kind keeps ``True`` apart from ``1``
+        and ``"5"`` apart from ``5`` without splitting ``5`` from ``5.0``.
+        """
+        if isinstance(value, bool):
+            return ("bool", value)
+        if isinstance(value, int | float):
+            return ("number", value)
+        if isinstance(value, str):
+            return ("string", value)
+        return ("other", json.dumps(value, sort_keys=True, default=str))
 
     @staticmethod
     def _fold_properties(
