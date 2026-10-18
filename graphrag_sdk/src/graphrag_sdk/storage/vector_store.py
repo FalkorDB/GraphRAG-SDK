@@ -547,7 +547,9 @@ class VectorStore:
             "CALL db.idx.fulltext.queryNodes('Chunk', $query_text) "
             "YIELD node, score "
             "RETURN node.id AS id, node.text AS text, score "
-            "ORDER BY score DESC LIMIT $top_k"
+            # The id breaks score ties; without it which chunks survive the
+            # LIMIT depends on the engine's row order.
+            "ORDER BY score DESC, id LIMIT $top_k"
         )
         try:
             result = await self._conn.query(
@@ -586,17 +588,34 @@ class VectorStore:
             List of dicts with id, text (name), score.
         """
         escaped_text = _escape_fulltext_query(query_text)
+        # The index covers name and description alike, so an entity named by the
+        # query scores no higher than every entity whose description mentions
+        # it — and a term most descriptions contain scores 0 for all of them.
+        # Ranking by score alone then returned whichever rows the engine listed
+        # first: "Northwind Robotics" found three dates whose descriptions name
+        # the company, and not the company. An exact name match ranks first, a
+        # name containing the query next; the score and then the id order the
+        # rest, so the result no longer depends on engine row order.
         query = (
             "CALL db.idx.fulltext.queryNodes('__Entity__', $query_text) "
             "YIELD node, score "
-            "RETURN node.id AS id, node.name AS text, score "
-            "ORDER BY score DESC LIMIT $top_k"
+            # toString() rejects a list or map name, and the C engine type-checks
+            # every CASE branch, so non-scalar names become null first.
+            "WITH node, score, CASE WHEN typeOf(node.name) IN "
+            "['String', 'Integer', 'Float', 'Boolean'] THEN node.name END AS raw "
+            "WITH node, score, toLower(coalesce(toString(raw), '')) AS name "
+            "WITH node, score, "
+            "CASE WHEN name = $name THEN 0 WHEN name CONTAINS $name THEN 1 ELSE 2 END "
+            "AS name_rank "
+            "ORDER BY name_rank, score DESC, node.id LIMIT $top_k "
+            "RETURN node.id AS id, node.name AS text, score"
         )
         try:
             result = await self._conn.query(
                 query,
                 {
                     "query_text": escaped_text,
+                    "name": query_text.strip().lower(),
                     "top_k": top_k,
                 },
             )

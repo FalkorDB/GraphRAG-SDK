@@ -305,6 +305,26 @@ class TestVectorStoreFulltextSearch:
         cypher = mock_connection.query.call_args[0][0]
         assert "'__Entity__'" in cypher
 
+    async def test_fulltext_search_entities_ranks_name_matches_first(
+        self, vector_store, mock_connection
+    ):
+        result_mock = MagicMock()
+        result_mock.result_set = []
+        mock_connection.query = AsyncMock(return_value=result_mock)
+        await vector_store.fulltext_search_entities("  Northwind Robotics ")
+        cypher, params = mock_connection.query.call_args[0][:2]
+        assert "ORDER BY name_rank, score DESC, node.id" in cypher
+        assert params["name"] == "northwind robotics"
+
+    async def test_fulltext_search_chunks_breaks_score_ties_by_id(
+        self, vector_store, mock_connection
+    ):
+        result_mock = MagicMock()
+        result_mock.result_set = []
+        mock_connection.query = AsyncMock(return_value=result_mock)
+        await vector_store.fulltext_search_chunks("fox")
+        assert "ORDER BY score DESC, id" in mock_connection.query.call_args[0][0]
+
     async def test_fulltext_search_chunks_error_returns_empty(self, vector_store, mock_connection):
         mock_connection.query = AsyncMock(side_effect=Exception("search failed"))
         results = await vector_store.fulltext_search_chunks("test")

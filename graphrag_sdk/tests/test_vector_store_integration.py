@@ -159,3 +159,42 @@ class TestRelationshipSearch:
         store = VectorStore(conn, embedding_dimension=3)
         assert await store.search_relationships([1.0, 0.0, 0.0]) == []
         assert await conn._breaker.allow_request()
+
+
+class TestEntityFulltextRanking:
+    async def test_the_named_entity_outranks_entities_that_only_mention_it(self, conn):
+        # Every description mentions the company, so the fulltext score cannot
+        # tell the company from the rest: it is 0 for all of them.
+        await conn.query(
+            "UNWIND range(2000, 2011) AS y "
+            "CREATE (:__Entity__ {id: toString(y) + '__date', name: toString(y), "
+            "description: 'The year Northwind Robotics did something'})"
+        )
+        await conn.query(
+            "CREATE (:__Entity__ {id: 'northwind_robotics__organization', "
+            "name: 'Northwind Robotics', description: 'A robotics company in Rotterdam'}), "
+            "(:__Entity__ {id: 'nw_lab__organization', name: 'Northwind Robotics Lab', "
+            "description: 'Research arm of Northwind Robotics'})"
+        )
+        store = VectorStore(conn, embedding_dimension=8)
+        await store.ensure_indices()
+
+        exact = await store.fulltext_search_entities("Northwind Robotics", top_k=3)
+        assert [r["id"] for r in exact][:2] == [
+            "northwind_robotics__organization",
+            "nw_lab__organization",
+        ]
+        lower = await store.fulltext_search_entities("northwind robotics", top_k=1)
+        assert lower[0]["id"] == "northwind_robotics__organization"
+        # A non-string name neither breaks the search nor matches.
+        await conn.query(
+            "CREATE (:__Entity__ {id: 'odd', name: ['Northwind Robotics'], "
+            "description: 'Northwind Robotics alias list'})"
+        )
+        assert (await store.fulltext_search_entities("Northwind Robotics", top_k=1))[0][
+            "id"
+        ] == "northwind_robotics__organization"
+        await conn.query("MATCH (n {id: 'odd'}) DELETE n")
+        # Entities that only mention it are ordered by score, then id.
+        rest = await store.fulltext_search_entities("Northwind Robotics", top_k=14)
+        assert [r["id"] for r in rest][2:] == [f"{y}__date" for y in range(2000, 2012)]
