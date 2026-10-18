@@ -726,7 +726,11 @@ class TestATableNobodyDeclaredGetsAProposedMapping:
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology())
         lower = tmp_path / "hr.csv"
         lower.write_text(ONE_ROW)
-        upper = tmp_path / "HR.csv"
+        # Its own folder: on a case-insensitive filesystem (macOS, Windows)
+        # HR.csv next to hr.csv is the same file and would overwrite it. A
+        # table is addressed by its file name, so the folder changes nothing.
+        (tmp_path / "other").mkdir()
+        upper = tmp_path / "other" / "HR.csv"
         upper.write_text("employee_id,full_name,age\nE-9,Lene Holm,29\n")
         await rag.ingest(str(lower))
 
