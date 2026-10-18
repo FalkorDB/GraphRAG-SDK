@@ -198,3 +198,30 @@ class TestEntityFulltextRanking:
         # Entities that only mention it are ordered by score, then id.
         rest = await store.fulltext_search_entities("Northwind Robotics", top_k=14)
         assert [r["id"] for r in rest][2:] == [f"{y}__date" for y in range(2000, 2012)]
+
+
+class TestVectorSearchTies:
+    async def test_equally_close_entities_are_cut_by_id(self, conn):
+        await conn.query(
+            "CREATE (:__Entity__ {id: 'p1', name: 'A', embedding: vecf32([1.0, 0.0, 0.0])}), "
+            "(:__Entity__ {id: 'p2', name: 'A', embedding: vecf32([1.0, 0.0, 0.0])}), "
+            "(:__Entity__ {id: 'p0', name: 'Far', embedding: vecf32([0.0, 1.0, 0.0])})"
+        )
+        store = VectorStore(conn, embedding_dimension=3)
+        assert await store.create_entity_vector_index()
+
+        top = await store.search_entities([1.0, 0.0, 0.0], top_k=1)
+        both = await store.search_entities([1.0, 0.0, 0.0], top_k=2)
+
+        assert [r["id"] for r in top] == ["p1"]
+        assert [r["id"] for r in both] == ["p1", "p2"]
+
+    async def test_equally_close_chunks_are_cut_by_id(self, conn):
+        await conn.query(
+            "CREATE (:Chunk {id: 'c2', text: 'b', embedding: vecf32([1.0, 0.0, 0.0])}), "
+            "(:Chunk {id: 'c1', text: 'a', embedding: vecf32([1.0, 0.0, 0.0])})"
+        )
+        store = VectorStore(conn, embedding_dimension=3)
+        assert await store.create_chunk_vector_index()
+
+        assert [r["id"] for r in await store.search_chunks([1.0, 0.0, 0.0], top_k=1)] == ["c1"]

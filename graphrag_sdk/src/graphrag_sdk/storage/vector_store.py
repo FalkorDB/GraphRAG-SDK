@@ -30,6 +30,16 @@ _INDEX_EXISTS_MARKERS = ("already indexed", "already exists")
 _REDISEARCH_SPECIAL = set(r""",./<>{}[]\"':;!@#$%^&*()-+=~|""")
 
 
+def _tie_safe_fetch(top_k: int) -> int:
+    """How many neighbours to ask the vector index for, to return ``top_k``.
+
+    The index decides which of several equally close nodes makes its top
+    ``k``, and FalkorDB 4.x and 6.0.x decide differently. Asking for twice as
+    many and ordering by score, then id, makes the cut ours.
+    """
+    return max(1, int(top_k)) * 2
+
+
 def _escape_fulltext_query(text: str) -> str:
     """Escape special characters for RediSearch fulltext queries.
 
@@ -376,16 +386,17 @@ class VectorStore:
             List of dicts with id, text, and similarity score (higher is closer).
         """
         query = (
-            "CALL db.idx.vector.queryNodes('Chunk', 'embedding', $top_k, vecf32($vector)) "
+            "CALL db.idx.vector.queryNodes('Chunk', 'embedding', $fetch_k, vecf32($vector)) "
             "YIELD node, score "
             "RETURN node.id AS id, node.text AS text, (1-score) AS score "
-            "ORDER BY score DESC"
+            "ORDER BY score DESC, id LIMIT $top_k"
         )
         try:
             result = await self._conn.query(
                 query,
                 {
                     "top_k": top_k,
+                    "fetch_k": _tie_safe_fetch(top_k),
                     "vector": query_vector,
                 },
             )
@@ -413,17 +424,18 @@ class VectorStore:
         Returned scores are similarities, so higher values indicate closer matches.
         """
         query = (
-            "CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $top_k, vecf32($vector)) "
+            "CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $fetch_k, vecf32($vector)) "
             "YIELD node, score "
             "RETURN node.id AS id, node.name AS name, node.description AS description, "
             "(1-score) AS score "
-            "ORDER BY score DESC"
+            "ORDER BY score DESC, id LIMIT $top_k"
         )
         try:
             result = await self._conn.query(
                 query,
                 {
                     "top_k": top_k,
+                    "fetch_k": _tie_safe_fetch(top_k),
                     "vector": query_vector,
                 },
             )
