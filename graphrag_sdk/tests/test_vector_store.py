@@ -57,16 +57,17 @@ class TestVectorStoreIndex:
     async def test_create_chunk_fulltext_index(self, vector_store, mock_connection):
         await vector_store.create_chunk_fulltext_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "fulltext.createNodeIndex" in cypher
-        assert "'Chunk'" in cypher
-        assert "'text'" in cypher
+        # The DDL form: FalkorDB 6.0.x rejects the multi-argument procedure.
+        assert cypher == "CREATE FULLTEXT INDEX FOR (n:Chunk) ON (n.text)"
 
     async def test_create_entity_fulltext_index(self, vector_store, mock_connection):
         await vector_store.create_entity_fulltext_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "'__Entity__'" in cypher
-        assert "'name'" in cypher
-        assert "'description'" in cypher
+        assert cypher == "CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.name, n.description)"
+
+    async def test_fulltext_index_already_existing_is_success(self, vector_store, mock_connection):
+        mock_connection.query.side_effect = Exception("Attribute 'text' is already indexed")
+        assert await vector_store.create_chunk_fulltext_index() is True
 
     async def test_drop_chunk_vector_index(self, vector_store, mock_connection):
         await vector_store.drop_chunk_vector_index()
