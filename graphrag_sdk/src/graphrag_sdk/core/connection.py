@@ -263,10 +263,54 @@ class FalkorDBConnection:
         "procedure not found",
     )
 
+    # A server reply (``ResponseError``) that says the server is temporarily
+    # unable to run the query, rather than that the query is wrong. FalkorDB
+    # 6.0.x reports its own query timeout this way ("Query timed out").
+    _TRANSIENT_REPLY_MARKERS = (
+        "timed out",
+        "timeout",
+        "max pending queries",
+        "busy",
+        "loading",
+        "try again",
+    )
+
     @classmethod
     def _is_non_transient(cls, exc: Exception) -> bool:
         msg = str(exc).lower()
-        return any(marker in msg for marker in cls._NON_TRANSIENT_MARKERS)
+        if any(marker in msg for marker in cls._NON_TRANSIENT_MARKERS):
+            return True
+        # Any other reply from the server is a rejection of the query itself —
+        # unknown variable, division by zero, a MERGE on a null key, a missing
+        # index, a procedure called with the wrong arity. The wording differs
+        # between the C engine (4.x) and the Rust engine (6.0.x), so a list of
+        # messages can never be complete. Retrying re-sends the same bytes and
+        # can only fail again, and counting it against the circuit breaker lets
+        # one bad statement lock every caller out. Cluster redirects, failover,
+        # read-only replicas and out-of-memory are ResponseError subclasses that
+        # can succeed later, so they stay transient.
+        try:
+            from redis import exceptions as rx
+        except ImportError:  # pragma: no cover - redis ships with falkordb
+            return False
+        if not isinstance(exc, rx.ResponseError):
+            return False
+        transient_types = tuple(
+            getattr(rx, name)
+            for name in (
+                "AskError",
+                "ClusterDownError",
+                "MasterDownError",
+                "MovedError",
+                "TryAgainError",
+                "ReadOnlyError",
+                "OutOfMemoryError",
+            )
+            if hasattr(rx, name)
+        )
+        if isinstance(exc, transient_types):
+            return False
+        return not any(marker in msg for marker in cls._TRANSIENT_REPLY_MARKERS)
 
     # ── Health & Admin ────────────────────────────────────────────
 

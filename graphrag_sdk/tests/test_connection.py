@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
-from graphrag_sdk.core.exceptions import DatabaseError
+from graphrag_sdk.core.exceptions import DatabaseError, DatabaseUnavailableError
 
 
 class TestConnectionConfig:
@@ -372,6 +372,69 @@ class TestDriverErrorsBecomeDatabaseError:
             await conn.query("CREATE INDEX ...")
 
         assert mock_graph.query.await_count == 1
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            # FalkorDB 6.0.x (Rust engine)
+            "Received 2 arguments to procedure 'db.idx.fulltext.createNodeIndex', "
+            "expected at most 1",
+            "Cannot merge a map with a non-map value",
+            # FalkorDB 4.x (C engine)
+            "Procedure `db.nope` is not registered",
+            "Unable to resolve filtered alias '(n)-[:R]->()'",
+            "Attempted to access undefined attribute",
+            # Both engines
+            "'zz' not defined",
+            "Division by zero",
+            "Unable to drop index on :Nope(x): no such index.",
+            "Cannot merge node using null property value for key 'id'",
+        ],
+    )
+    async def test_server_rejection_is_raised_once_and_spares_the_breaker(self, message):
+        """A query the server rejected fails the same way on every attempt.
+        Retrying it, and counting it against the breaker, turned one bad
+        statement into an outage for every caller."""
+        from redis.exceptions import ResponseError
+
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.001))
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=ResponseError(message))
+        conn._driver = MagicMock()
+        conn._graph = mock_graph
+
+        for _ in range(conn._breaker.failure_threshold + 1):
+            with pytest.raises(DatabaseError) as excinfo:
+                await conn.query("RETURN 1")
+            assert not isinstance(excinfo.value, DatabaseUnavailableError)
+
+        assert mock_graph.query.await_count == conn._breaker.failure_threshold + 1
+        assert await conn._breaker.allow_request()
+
+    @pytest.mark.parametrize(
+        ("error_type", "message"),
+        [
+            ("ResponseError", "Query timed out"),  # FalkorDB 6.0.x query timeout
+            ("ResponseError", "Max pending queries exceeded"),
+            ("TryAgainError", "TRYAGAIN"),
+            ("ReadOnlyError", "READONLY"),
+            ("OutOfMemoryError", "OOM"),
+        ],
+    )
+    async def test_temporary_server_replies_are_still_retried(self, error_type, message):
+        from redis import exceptions as rx
+
+        exc = getattr(rx, error_type)(message)
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.001))
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=exc)
+        conn._driver = MagicMock()
+        conn._graph = mock_graph
+
+        with pytest.raises(DatabaseUnavailableError):
+            await conn.query("RETURN 1")
+
+        assert mock_graph.query.await_count == 3
 
     async def test_wrapped_message_keeps_the_driver_text(self):
         """Index creation tolerates 'already indexed' by reading the message,

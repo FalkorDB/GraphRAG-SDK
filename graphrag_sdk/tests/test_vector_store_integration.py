@@ -74,3 +74,29 @@ class TestFulltextIndexes:
 
         assert all(again.values()), again
         assert await conn._breaker.allow_request()
+
+
+class TestServerRejections:
+    async def test_rejected_statements_fail_once_and_keep_the_breaker_closed(self, conn):
+        from graphrag_sdk.core.exceptions import DatabaseError, DatabaseUnavailableError
+
+        # Statements each engine rejects, with wording that differs between
+        # the C engine (4.x) and the Rust engine (6.0.x).
+        rejected = [
+            "CALL db.idx.fulltext.createNodeIndex('L', 'a', 'b')",  # 6.0.x arity
+            "CALL db.nope()",
+            "RETURN zz",
+            "RETURN 1 / 0",
+            "MERGE (n:L {id: null}) RETURN n",
+            "DROP INDEX FOR (n:Nope) ON (n.x)",
+        ]
+        for statement in rejected * 2:  # more failures than the breaker threshold
+            try:
+                await conn.query(statement)
+            except DatabaseUnavailableError as exc:
+                pytest.fail(f"{statement!r} was retried as an outage: {exc}")
+            except DatabaseError:
+                pass
+
+        assert await conn._breaker.allow_request()
+        assert (await conn.query("RETURN 1")).result_set == [[1]]
