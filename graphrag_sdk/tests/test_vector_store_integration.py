@@ -64,3 +64,13 @@ class TestFulltextIndexes:
         assert "FULLTEXT" in entity.get("description", [])
         assert [r["id"] for r in await store.fulltext_search_chunks("fox")] == ["c1"]
         assert [r["id"] for r in await store.fulltext_search_entities("Fox")] == ["e1"]
+
+    async def test_ensure_indices_is_idempotent(self, conn):
+        await VectorStore(conn, embedding_dimension=8).ensure_indices()
+
+        # A fresh store has not cached the "already ensured" flag, so it
+        # re-issues every CREATE and must read "already indexed" as success.
+        again = await VectorStore(conn, embedding_dimension=8).ensure_indices()
+
+        assert all(again.values()), again
+        assert await conn._breaker.allow_request()
