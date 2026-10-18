@@ -305,6 +305,36 @@ def mock_vector_store(embedder: MockEmbedder) -> MagicMock:
 # ── Real-FalkorDB integration helpers ───────────────────────────
 
 
+def pytest_report_header(config):
+    """Name the FalkorDB server and engine the integration tests run against.
+
+    FalkorDB 4.x (C engine) and 6.x (Rust engine) differ in index DDL, error
+    text and row order, so a result means little without knowing which ran.
+    """
+    if not os.getenv("RUN_INTEGRATION"):
+        return None
+    host = os.getenv("FALKOR_HOST", "localhost")
+    port = int(os.getenv("FALKOR_PORT", "6379"))
+    try:
+        from redis import Redis
+
+        client = Redis(
+            host=host,
+            port=port,
+            username=os.getenv("FALKOR_USERNAME") or None,
+            password=os.getenv("FALKOR_PASSWORD") or None,
+            socket_timeout=5,
+        )
+        modules = client.module_list()
+        client.close()
+        ver = int(next(m for m in modules if m[b"name"] == b"graph")[b"ver"])
+    except Exception as exc:  # the header must never stop the run
+        return f"falkordb: {host}:{port} not readable ({exc})"
+    version = f"{ver // 10000}.{ver // 100 % 100}.{ver % 100}"
+    engine = "C engine" if ver < 50000 else "Rust engine"
+    return f"falkordb: {host}:{port} — {version} ({engine})"
+
+
 def _scripted_extraction_llm(*per_doc_entities: list[tuple[str, str, str]]):
     """Build a MockLLM whose responses script the verify+relations step
     of ``GraphExtraction`` once per ingest/update call.
