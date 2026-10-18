@@ -157,6 +157,76 @@ class TestUpsertNodesKeepsProvenance:
         assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in fallback[0]
 
 
+class TestOneKeyTwiceInOneCall:
+    """A batch holding one key twice gave engine-dependent values and dropped
+    one write's chunks, so writes sharing a key are folded before sending."""
+
+    async def test_duplicate_entity_ids_become_one_row(self, graph_store, mock_connection):
+        count = await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="x", label="Person", properties={"name": "A", "source_chunk_ids": ["c1"]}
+                ),
+                GraphNode(id="y", label="Person", properties={"name": "Y"}),
+                GraphNode(
+                    id="x",
+                    label="Person",
+                    properties={"name": "B", "age": 3, "source_chunk_ids": ["c2", "c1"]},
+                ),
+                GraphNode(id="x", label="Person", properties={"source_chunk_ids": []}),
+            ]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert batch == [
+            {"id": "x", "properties": {"name": "B", "age": 3, "source_chunk_ids": ["c1", "c2"]}},
+            {"id": "y", "properties": {"name": "Y"}},
+        ]
+        assert count == 4
+
+    async def test_a_structural_label_keeps_the_last_list(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(id="c", label="Chunk", properties={"source_chunk_ids": ["a"]}),
+                GraphNode(id="c", label="Chunk", properties={"source_chunk_ids": ["b"]}),
+            ]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert batch == [{"id": "c", "properties": {"source_chunk_ids": ["b"]}}]
+
+    async def test_duplicate_relates_keys_become_one_row(self, graph_store, mock_connection):
+        def rel(rel_type, chunks, **extra):
+            return GraphRelationship(
+                start_node_id="a",
+                end_node_id="b",
+                type="RELATES",
+                properties={"rel_type": rel_type, "source_chunk_ids": chunks, **extra},
+            )
+
+        count = await graph_store.upsert_relationships(
+            [rel("KNOWS", ["c1"], w=1), rel("WORKS_AT", ["c9"]), rel("KNOWS", ["c2"], w=2)]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert [item["properties"] for item in batch] == [
+            {"rel_type": "KNOWS", "source_chunk_ids": ["c1", "c2"], "w": 2},
+            {"rel_type": "WORKS_AT", "source_chunk_ids": ["c9"]},
+        ]
+        assert count == 3
+
+    async def test_other_edge_types_are_keyed_by_the_pair(self, graph_store, mock_connection):
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a", end_node_id="b", type="LIKES", properties={"w": 1}
+                ),
+                GraphRelationship(
+                    start_node_id="a", end_node_id="b", type="LIKES", properties={"w": 2}
+                ),
+            ]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert batch == [{"start_id": "a", "end_id": "b", "properties": {"w": 2}}]
+
+
 class TestUpsertReferenceNodes:
     """A link's target is keyed always and named only ON CREATE."""
 

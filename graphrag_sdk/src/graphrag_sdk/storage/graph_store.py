@@ -208,16 +208,22 @@ class GraphStore:
                 promotable.extend(cleaned_group)
                 # Relationship writes MATCH endpoints as ``__Entity__ {id}``.
                 await self._ensure_label_id_index("__Entity__")
+            # One row per id: see _fold_properties. Each row keeps how many
+            # input nodes it stands for, so the returned count is unchanged.
+            folded: dict[str, tuple[GraphNode, dict[str, Any], int]] = {}
+            for n, cid in cleaned_group:
+                props = self._clean_properties(n.properties)
+                if cid in folded:
+                    first, acc, weight = folded[cid]
+                    props = self._fold_properties(acc, props, union_provenance=is_entity)
+                    folded[cid] = (first, props, weight + 1)
+                else:
+                    folded[cid] = (n, props, 1)
+            rows = [(n, cid, props, weight) for cid, (n, props, weight) in folded.items()]
             # Process in batches
-            for start in range(0, len(cleaned_group), self._BATCH_SIZE):
-                batch = cleaned_group[start : start + self._BATCH_SIZE]
-                batch_data = [
-                    {
-                        "id": cid,
-                        "properties": self._clean_properties(n.properties),
-                    }
-                    for n, cid in batch
-                ]
+            for start in range(0, len(rows), self._BATCH_SIZE):
+                batch = rows[start : start + self._BATCH_SIZE]
+                batch_data = [{"id": cid, "properties": props} for _, cid, props, _ in batch]
                 query = f"UNWIND $batch AS item MERGE (n:`{safe_label}` {{id: item.id}}) "
                 if is_entity:
                     query += (
@@ -232,7 +238,7 @@ class GraphStore:
                     query += "SET n += item.properties"
                 try:
                     await self._conn.query(query, {"batch": batch_data})
-                    count += len(batch)
+                    count += sum(weight for *_, weight in batch)
                 except Exception as exc:
                     logger.warning(
                         f"Batch upsert failed for {safe_label} ({len(batch)} nodes), "
@@ -240,7 +246,7 @@ class GraphStore:
                     )
                     # Per-item fallback, mirroring the batch query so a transient
                     # batch failure cannot regress to overwriting provenance.
-                    for node, cid in batch:
+                    for node, cid, props, weight in batch:
                         safe_node_label = sanitize_cypher_label(node.label)
                         q = f"MERGE (n:`{safe_node_label}` {{id: $id}}) "
                         if is_entity:
@@ -254,13 +260,10 @@ class GraphStore:
                             )
                         else:
                             q += "SET n += $properties"
-                        params = {
-                            "id": cid,
-                            "properties": self._clean_properties(node.properties),
-                        }
+                        params = {"id": cid, "properties": props}
                         try:
                             await self._conn.query(q, params)
-                            count += 1
+                            count += weight
                         except Exception as inner_exc:
                             logger.warning(
                                 f"Failed to upsert node {cid} "
@@ -690,15 +693,30 @@ class GraphStore:
             hint_src, hint_tgt = self._REL_LABEL_HINTS.get(rel_type, ("__Entity__", "__Entity__"))
             await self._ensure_label_id_index(hint_src)
             await self._ensure_label_id_index(hint_tgt)
-            for start in range(0, len(cleaned_group), self._BATCH_SIZE):
-                batch = cleaned_group[start : start + self._BATCH_SIZE]
+            # One row per MERGE key — the pair, plus ``rel_type`` for RELATES —
+            # see _fold_properties. Each row keeps how many input relationships
+            # it stands for, so the returned count is unchanged.
+            is_relates = rel_type == "RELATES"
+            folded: dict[tuple[str, str, str], tuple[GraphRelationship, dict[str, Any], int]] = {}
+            for rel, sid, eid in cleaned_group:
+                props = self._clean_properties(rel.properties)
+                # json keeps 5 and "5" apart, as the MERGE does.
+                key = (sid, eid, json.dumps(props.get("rel_type", "")) if is_relates else "")
+                if key in folded:
+                    first, acc, weight = folded[key]
+                    props = self._fold_properties(acc, props, union_provenance=is_relates)
+                    folded[key] = (first, props, weight + 1)
+                else:
+                    folded[key] = (rel, props, 1)
+            rows = [
+                (rel, sid, eid, props, weight)
+                for (sid, eid, _), (rel, props, weight) in folded.items()
+            ]
+            for start in range(0, len(rows), self._BATCH_SIZE):
+                batch = rows[start : start + self._BATCH_SIZE]
                 batch_data = [
-                    {
-                        "start_id": sid,
-                        "end_id": eid,
-                        "properties": self._clean_properties(r.properties),
-                    }
-                    for r, sid, eid in batch
+                    {"start_id": sid, "end_id": eid, "properties": props}
+                    for _, sid, eid, props, _ in batch
                 ]
                 src_label, tgt_label = self._REL_LABEL_HINTS.get(
                     rel_type, ("__Entity__", "__Entity__")
@@ -744,7 +762,7 @@ class GraphStore:
                     )
                 try:
                     await self._conn.query(query, {"batch": batch_data})
-                    count += len(batch)
+                    count += sum(weight for *_, weight in batch)
                 except Exception as exc:
                     logger.warning(
                         f"Batch upsert failed for [{safe_rel_type}] "
@@ -752,7 +770,7 @@ class GraphStore:
                         f"falling back to individual: {exc}"
                     )
                     # Per-item fallback
-                    for rel, sid, eid in batch:
+                    for rel, sid, eid, props, weight in batch:
                         fb_src, fb_tgt = self._REL_LABEL_HINTS.get(
                             rel.type, ("__Entity__", "__Entity__")
                         )
@@ -782,14 +800,10 @@ class GraphStore:
                                 f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
                                 f"SET r += $properties"
                             )
-                        params = {
-                            "start_id": sid,
-                            "end_id": eid,
-                            "properties": self._clean_properties(rel.properties),
-                        }
+                        params = {"start_id": sid, "end_id": eid, "properties": props}
                         try:
                             await self._conn.query(q, params)
-                            count += 1
+                            count += weight
                         except Exception as inner_exc:
                             logger.warning(
                                 f"Failed to upsert relationship "
@@ -2187,6 +2201,33 @@ class GraphStore:
     def _clean_identifier(cls, value: Any) -> str:
         """Normalise IDs used in Cypher params."""
         return cls._sanitize_string(str(value))
+
+    @staticmethod
+    def _fold_properties(
+        acc: dict[str, Any], props: dict[str, Any], *, union_provenance: bool
+    ) -> dict[str, Any]:
+        """Apply a later write of the same key on top of an earlier one.
+
+        Mirrors what the MERGE ... SET statements do row by row: later
+        properties win, and where the statement unions ``source_chunk_ids``
+        an empty contribution keeps the existing list.
+
+        Writes sharing a key are folded before the batch is sent because the
+        engines disagree when one ``UNWIND ... MERGE`` batch holds the same key
+        twice: the C engine (4.x) keeps the first row's values, the Rust
+        engine (6.0.x) the last; and on both, each row reads
+        ``source_chunk_ids`` before any row's SET, so the union kept one row's
+        chunks and dropped the others'.
+        """
+        merged = {**acc, **props}
+        old = acc.get("source_chunk_ids")
+        contrib = props.get("source_chunk_ids")
+        if union_provenance and isinstance(old, list):
+            if not contrib:
+                merged["source_chunk_ids"] = old
+            elif isinstance(contrib, list):
+                merged["source_chunk_ids"] = old + [c for c in contrib if c not in old]
+        return merged
 
     @classmethod
     def _clean_properties(cls, props: dict[str, Any]) -> dict[str, Any]:
