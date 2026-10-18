@@ -100,3 +100,27 @@ class TestServerRejections:
 
         assert await conn._breaker.allow_request()
         assert (await conn.query("RETURN 1")).result_set == [[1]]
+
+
+class TestDropVectorIndexes:
+    async def test_drop_removes_each_vector_index_and_keeps_fulltext(self, conn):
+        await conn.query(
+            "CREATE (:Chunk {id: 'c1', text: 'the quick brown fox'})"
+            "-[:RELATES]->(:__Entity__ {id: 'e1', name: 'Fox'})"
+        )
+        store = VectorStore(conn, embedding_dimension=8)
+        await store.ensure_indices()
+
+        await store.drop_chunk_vector_index()
+        await store.drop_entity_vector_index()
+        await store.drop_relates_vector_index()
+
+        assert (await _index_types(conn, "Chunk")).get("embedding") is None
+        assert (await _index_types(conn, "__Entity__")).get("embedding") is None
+        assert (await _index_types(conn, "RELATES")).get("embedding") is None
+        assert "FULLTEXT" in (await _index_types(conn, "Chunk")).get("text", [])
+
+        # The same store recreates them.
+        result = await store.ensure_indices()
+        assert result["vector_Chunk"] and result["vector_Entity"] and result["vector_RELATES"]
+        assert "VECTOR" in (await _index_types(conn, "Chunk")).get("embedding", [])

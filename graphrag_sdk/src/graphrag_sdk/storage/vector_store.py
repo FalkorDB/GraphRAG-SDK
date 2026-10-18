@@ -165,29 +165,34 @@ class VectorStore:
             "fulltext",
         )
 
+    # There is no ``db.idx.vector.drop`` procedure on any FalkorDB version; the
+    # DDL is the only way to drop a vector index. It leaves a fulltext index on
+    # the same label in place.
+
+    async def _drop_vector_index(self, query: str, descriptor: str) -> None:
+        try:
+            await self._conn.query(query)
+            logger.info(f"Dropped vector index on {descriptor}")
+            # ensure_indices() would otherwise skip recreating it on this store.
+            self._indices_ensured = False
+        except Exception as exc:
+            logger.warning(f"Could not drop vector index on {descriptor}: {exc}")
+
     async def drop_chunk_vector_index(self) -> None:
         """Drop the ``Chunk`` vector index."""
-        try:
-            await self._conn.query("CALL db.idx.vector.drop('Chunk')")
-            logger.info("Dropped vector index on Chunk")
-        except Exception as exc:
-            logger.warning(f"Could not drop vector index on Chunk: {exc}")
+        await self._drop_vector_index("DROP VECTOR INDEX FOR (n:Chunk) ON (n.embedding)", "Chunk")
 
     async def drop_entity_vector_index(self) -> None:
         """Drop the ``__Entity__`` vector index."""
-        try:
-            await self._conn.query("CALL db.idx.vector.drop('__Entity__')")
-            logger.info("Dropped vector index on __Entity__")
-        except Exception as exc:
-            logger.warning(f"Could not drop vector index on __Entity__: {exc}")
+        await self._drop_vector_index(
+            "DROP VECTOR INDEX FOR (n:__Entity__) ON (n.embedding)", "__Entity__"
+        )
 
     async def drop_relates_vector_index(self) -> None:
         """Drop the ``RELATES`` edge vector index."""
-        try:
-            await self._conn.query("CALL db.idx.vector.drop('RELATES')")
-            logger.info("Dropped vector index on RELATES")
-        except Exception as exc:
-            logger.warning(f"Could not drop vector index on RELATES: {exc}")
+        await self._drop_vector_index(
+            "DROP VECTOR INDEX FOR ()-[e:RELATES]->() ON (e.embedding)", "RELATES"
+        )
 
     # ── Indexing ─────────────────────────────────────────────────
 

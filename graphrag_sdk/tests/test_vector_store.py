@@ -72,18 +72,28 @@ class TestVectorStoreIndex:
     async def test_drop_chunk_vector_index(self, vector_store, mock_connection):
         await vector_store.drop_chunk_vector_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "vector.drop" in cypher
-        assert "Chunk" in cypher
+        # No FalkorDB version has a db.idx.vector.drop procedure.
+        assert cypher == "DROP VECTOR INDEX FOR (n:Chunk) ON (n.embedding)"
 
     async def test_drop_entity_vector_index(self, vector_store, mock_connection):
         await vector_store.drop_entity_vector_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "__Entity__" in cypher
+        assert cypher == "DROP VECTOR INDEX FOR (n:__Entity__) ON (n.embedding)"
 
     async def test_drop_relates_vector_index(self, vector_store, mock_connection):
         await vector_store.drop_relates_vector_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "RELATES" in cypher
+        assert cypher == "DROP VECTOR INDEX FOR ()-[e:RELATES]->() ON (e.embedding)"
+
+    async def test_drop_lets_ensure_indices_recreate(self, vector_store, mock_connection):
+        await vector_store.ensure_indices()
+        await vector_store.drop_chunk_vector_index()
+        mock_connection.query.reset_mock()
+
+        await vector_store.ensure_indices()
+
+        issued = [c.args[0] for c in mock_connection.query.call_args_list]
+        assert any("CREATE VECTOR INDEX FOR (n:Chunk)" in q for q in issued)
 
     async def test_create_index_error_handled(self, vector_store, mock_connection):
         mock_connection.query = AsyncMock(side_effect=Exception("index exists"))
