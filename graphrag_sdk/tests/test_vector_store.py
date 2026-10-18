@@ -263,28 +263,46 @@ class TestVectorStoreSearch:
     ):
         """FalkorDB 6.0.x answers a missing RELATES index with no rows rather
         than an error, so an empty answer must reach the scan too."""
-        empty, fallback_result = MagicMock(), MagicMock()
+        empty, no_index, fallback_result = MagicMock(), MagicMock(), MagicMock()
         empty.result_set = []
+        no_index.result_set = []  # db.indexes(): no RELATES index
         fallback_result.result_set = [["Alice", "WORKS_AT", "Acme", "self-match", 1.0]]
-        mock_connection.query = AsyncMock(side_effect=[empty, fallback_result])
+        mock_connection.query = AsyncMock(side_effect=[empty, no_index, fallback_result])
 
         results = await vector_store.search_relationships(query_vector=[0.1] * 8, top_k=5)
 
         assert [r["fact"] for r in results] == ["self-match"]
-        assert mock_connection.query.await_count == 2
+        assert mock_connection.query.await_count == 3
 
-    async def test_search_relationships_trusts_an_empty_answer_from_an_ensured_index(
+    async def test_search_relationships_trusts_an_empty_answer_when_the_index_exists(
         self, vector_store, mock_connection
     ):
-        """Once ensure_indices() created the RELATES index, no rows means no
-        match; scanning every edge on each such search would be wasted work."""
-        vector_store._indices_ensured = True
-        empty = MagicMock()
+        """With the RELATES index in place, no rows means no match; scanning
+        every edge on each such search would be wasted work."""
+        empty, has_index = MagicMock(), MagicMock()
         empty.result_set = []
-        mock_connection.query = AsyncMock(return_value=empty)
+        has_index.result_set = [[{"embedding": ["VECTOR"]}]]
+        mock_connection.query = AsyncMock(side_effect=[empty, has_index])
 
         assert await vector_store.search_relationships(query_vector=[0.1] * 8) == []
-        assert mock_connection.query.await_count == 1
+        assert mock_connection.query.await_count == 2
+        assert "db.indexes()" in mock_connection.query.call_args_list[1].args[0]
+
+    async def test_search_relationships_scans_when_the_index_is_gone_despite_the_flag(
+        self, vector_store, mock_connection
+    ):
+        """_indices_ensured only says what this store did; another store may
+        have dropped the shared index since, so it is not trusted."""
+        vector_store._indices_ensured = True
+        empty, no_index, fallback_result = MagicMock(), MagicMock(), MagicMock()
+        empty.result_set = []
+        no_index.result_set = []
+        fallback_result.result_set = [["Alice", "WORKS_AT", "Acme", "self-match", 1.0]]
+        mock_connection.query = AsyncMock(side_effect=[empty, no_index, fallback_result])
+
+        results = await vector_store.search_relationships(query_vector=[0.1] * 8)
+
+        assert [r["fact"] for r in results] == ["self-match"]
 
     async def test_search_relationships_expects_the_missing_index_reply(
         self, vector_store, mock_connection

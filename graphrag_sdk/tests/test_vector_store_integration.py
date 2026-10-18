@@ -189,6 +189,16 @@ class TestRelationshipSearch:
 
         assert [r["fact"] for r in results] == ["Bob knows Alice"]
 
+    async def test_an_index_another_store_dropped_does_not_hide_edges(self, conn):
+        await self._graph_with_embedded_edges(conn)
+        first = VectorStore(conn, embedding_dimension=3)
+        await first.ensure_indices()
+        await VectorStore(conn, embedding_dimension=3).drop_relates_vector_index()
+
+        results = await first.search_relationships([1.0, 0.0, 0.0], top_k=1)
+
+        assert [r["fact"] for r in results] == ["Alice works at Acme"]
+
     async def test_an_empty_graph_returns_nothing(self, conn):
         store = VectorStore(conn, embedding_dimension=3)
         assert await store.search_relationships([1.0, 0.0, 0.0]) == []

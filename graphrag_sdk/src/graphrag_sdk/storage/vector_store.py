@@ -506,9 +506,13 @@ class VectorStore:
                 }
                 for row in result.result_set
             ]
-            # ensure_indices() on this store created the RELATES index, so an
-            # empty answer is genuine: nothing to scan for.
-            if rows or self._indices_ensured:
+            if rows:
+                return rows
+            # With the index in place an empty answer is genuine: nothing to
+            # scan for. Asked of the graph, not taken from _indices_ensured,
+            # which only says what this store did — another store or process
+            # may have dropped the index since.
+            if await self._relates_vector_index_exists():
                 return rows
             # FalkorDB 4.x raises when the RELATES vector index is missing;
             # 6.0.x answers with no rows. Either way the scan below is the only
@@ -547,6 +551,25 @@ class VectorStore:
         except Exception as exc:
             logger.warning(f"Relationship vector search failed: {exc}")
             return []
+
+    async def _relates_vector_index_exists(self) -> bool:
+        """Whether the graph has a vector index on ``RELATES.embedding``.
+
+        False when it cannot tell (including a graph that does not exist yet),
+        so the caller keeps its scan fallback.
+        """
+        try:
+            result = await self._conn.query(
+                "CALL db.indexes() YIELD label, types WHERE label = 'RELATES' RETURN types",
+                expected_errors=("empty key",),
+            )
+        except Exception:
+            return False
+        return any(
+            "VECTOR" in ((row[0] or {}).get("embedding") or [])
+            for row in result.result_set or []
+            if row and isinstance(row[0], dict)
+        )
 
     async def fulltext_search_chunks(
         self,
