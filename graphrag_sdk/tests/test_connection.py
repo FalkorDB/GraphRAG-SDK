@@ -389,6 +389,9 @@ class TestDriverErrorsBecomeDatabaseError:
             "Division by zero",
             "Unable to drop index on :Nope(x): no such index.",
             "Cannot merge node using null property value for key 'id'",
+            # A rejection that quotes a word a temporary reply also uses
+            "'timeout' not defined",
+            "'busy' not defined",
         ],
     )
     async def test_server_rejection_is_raised_once_and_spares_the_breaker(self, message):
@@ -411,11 +414,40 @@ class TestDriverErrorsBecomeDatabaseError:
         assert mock_graph.query.await_count == conn._breaker.failure_threshold + 1
         assert await conn._breaker.allow_request()
 
+    async def test_a_rejected_half_open_probe_closes_the_breaker(self):
+        """After an outage the breaker lets one probe through. A rejection
+        proves the server answered; reporting nothing left the breaker
+        HALF_OPEN and every later query was refused for good."""
+        from redis.exceptions import ConnectionError as RedisConnectionError
+        from redis.exceptions import ResponseError
+
+        from graphrag_sdk.core.circuit_breaker import CircuitState
+
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=1, retry_delay=0.001))
+        conn._breaker.recovery_timeout = 0.0
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=RedisConnectionError("down"))
+        conn._driver = MagicMock()
+        conn._graph = mock_graph
+        for _ in range(conn._breaker.failure_threshold):
+            with pytest.raises(DatabaseError):
+                await conn.query("RETURN 1")
+        assert conn._breaker._state == CircuitState.OPEN
+
+        mock_graph.query = AsyncMock(side_effect=ResponseError("Division by zero"))
+        with pytest.raises(DatabaseError):
+            await conn.query("RETURN 1 / 0")  # the half-open probe
+
+        assert conn._breaker.state == CircuitState.CLOSED
+        mock_graph.query = AsyncMock(return_value="ok")
+        assert await conn.query("RETURN 1") == "ok"
+
     @pytest.mark.parametrize(
         ("error_type", "message"),
         [
             ("ResponseError", "Query timed out"),  # FalkorDB 6.0.x query timeout
             ("ResponseError", "Max pending queries exceeded"),
+            ("ResponseError", "BUSY Redis is busy running a script."),
             ("TryAgainError", "TRYAGAIN"),
             ("ReadOnlyError", "READONLY"),
             ("OutOfMemoryError", "OOM"),

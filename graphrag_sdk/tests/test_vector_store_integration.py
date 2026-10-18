@@ -65,6 +65,19 @@ class TestFulltextIndexes:
         assert [r["id"] for r in await store.fulltext_search_chunks("fox")] == ["c1"]
         assert [r["id"] for r in await store.fulltext_search_entities("Fox")] == ["e1"]
 
+    async def test_an_index_on_name_alone_still_gets_description(self, conn):
+        await conn.query(
+            "CREATE (:__Entity__ {id: 'e1', name: 'Fox', description: 'a quick animal'})"
+        )
+        await conn.query("CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.name)")
+        store = VectorStore(conn, embedding_dimension=8)
+
+        assert await store.create_entity_fulltext_index() is True
+
+        entity = await _index_types(conn, "__Entity__")
+        assert "FULLTEXT" in entity.get("description", [])
+        assert [r["id"] for r in await store.fulltext_search_entities("animal")] == ["e1"]
+
     async def test_ensure_indices_is_idempotent(self, conn):
         await VectorStore(conn, embedding_dimension=8).ensure_indices()
 
@@ -89,6 +102,7 @@ class TestServerRejections:
             "RETURN 1 / 0",
             "MERGE (n:L {id: null}) RETURN n",
             "DROP INDEX FOR (n:Nope) ON (n.x)",
+            "RETURN timeout",  # quotes a word a temporary reply also uses
         ]
         for statement in rejected * 2:  # more failures than the breaker threshold
             try:

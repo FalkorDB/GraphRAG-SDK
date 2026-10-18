@@ -337,6 +337,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves more concurrent questions.
 
 ### Fixed
+- **FalkorDB 6.0.x: fulltext indexes were never created.** 6.0.x rejects the
+  multi-argument `db.idx.fulltext.createNodeIndex(label, field, ...)` procedure,
+  so `ensure_indices()` left `Chunk(text)` and `__Entity__(name, description)`
+  unindexed and fulltext search returned nothing. Each failing statement was
+  also retried and counted against the circuit breaker, which then opened and
+  refused every query for the recovery timeout. Fulltext indexes are now created
+  with `CREATE FULLTEXT INDEX`, which works on 4.x and 6.0.x, one field per
+  statement so an existing index on `name` cannot leave `description` unindexed.
+- **A query the server rejects is no longer retried.** Only replies matching a
+  short list were treated as permanent; anything else — division by zero, an
+  unknown variable, a `MERGE` on a null key, a missing index, a procedure called
+  with the wrong arity — was retried three times and counted against the circuit
+  breaker, on 4.x as well as 6.0.x. Every server reply is now permanent except
+  the temporary ones (timeout, full query queue, `BUSY`/`LOADING`, cluster
+  redirect/failover, read-only replica, out of memory). A rejected query raises
+  `DatabaseError` once instead of `DatabaseUnavailableError`, and closes a
+  half-open breaker, since the server did answer.
+- `drop_chunk_vector_index()`, `drop_entity_vector_index()` and
+  `drop_relates_vector_index()` called `db.idx.vector.drop`, which exists on no
+  FalkorDB version, so nothing was dropped. They now use `DROP VECTOR INDEX`, and
+  a later `ensure_indices()` on the same store recreates the index.
+- **FalkorDB 6.0.x: relationship search returned nothing without a `RELATES`
+  vector index.** The cosine-scan fallback only ran when the index query raised;
+  4.x raises for a missing index, 6.0.x answers with no rows. An empty answer now
+  falls back too.
 - `delete_all()` forgot to reset the memo for the per-label `id` range
   indexes. The graph drop took the indexes with it, but in the same process
   `create_id_range_indices()` believed they still existed, so the next ingest

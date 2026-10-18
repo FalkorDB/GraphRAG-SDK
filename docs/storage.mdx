@@ -105,12 +105,15 @@ CREATE VECTOR INDEX FOR (n:Chunk) ON (n.embedding)
 OPTIONS {dimension:256, similarityFunction:'cosine'}
 ```
 
-**Fulltext indexes** use the RediSearch-based fulltext API:
+**Fulltext indexes** use the fulltext index DDL, one field per statement:
 
 ```
-CALL db.idx.fulltext.createNodeIndex('Chunk', 'text')
-CALL db.idx.fulltext.createNodeIndex('__Entity__', 'name', 'description')
+CREATE FULLTEXT INDEX FOR (n:Chunk) ON (n.text)
+CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.name)
+CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.description)
 ```
+
+FalkorDB 6.0.x rejects the older `db.idx.fulltext.createNodeIndex(label, field, ...)` procedure.
 
 **Relationship vector indexes** use the edge index syntax:
 

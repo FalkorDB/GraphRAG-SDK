@@ -62,8 +62,19 @@ class TestVectorStoreIndex:
 
     async def test_create_entity_fulltext_index(self, vector_store, mock_connection):
         await vector_store.create_entity_fulltext_index()
-        cypher = mock_connection.query.call_args[0][0]
-        assert cypher == "CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.name, n.description)"
+        issued = [c.args[0] for c in mock_connection.query.call_args_list]
+        # One field per statement, so an existing index on one field cannot
+        # stop the other from being indexed.
+        assert issued == [
+            "CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.name)",
+            "CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.description)",
+        ]
+
+    async def test_entity_fulltext_index_reports_a_failed_field(
+        self, vector_store, mock_connection
+    ):
+        mock_connection.query = AsyncMock(side_effect=[MagicMock(), Exception("boom")])
+        assert await vector_store.create_entity_fulltext_index() is False
 
     async def test_fulltext_index_already_existing_is_success(self, vector_store, mock_connection):
         mock_connection.query.side_effect = Exception("Attribute 'text' is already indexed")

@@ -158,12 +158,21 @@ class VectorStore:
         )
 
     async def create_entity_fulltext_index(self) -> bool:
-        """Create the fulltext index on ``__Entity__(name, description)``."""
-        return await self._try_create_index(
-            "CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.name, n.description)",
-            "__Entity__(name, description)",
-            "fulltext",
-        )
+        """Create the fulltext index on ``__Entity__(name, description)``.
+
+        One statement per field: a single ``ON (n.name, n.description)`` fails
+        as a whole with "already indexed" when ``name`` is indexed on its own,
+        which reads as success while ``description`` never gets indexed.
+        """
+        created = [
+            await self._try_create_index(
+                f"CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.{field})",
+                f"__Entity__({field})",
+                "fulltext",
+            )
+            for field in ("name", "description")
+        ]
+        return all(created)
 
     # There is no ``db.idx.vector.drop`` procedure on any FalkorDB version; the
     # DDL is the only way to drop a vector index. It leaves a fulltext index on

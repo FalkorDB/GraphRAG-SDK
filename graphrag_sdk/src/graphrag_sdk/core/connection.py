@@ -218,6 +218,11 @@ class FalkorDBConnection:
                         exc,
                     )
                     logger.debug("Non-transient FalkorDB query failure details", exc_info=True)
+                    # The server answered, so it is reachable: close the
+                    # breaker. Without this a rejected query that happens to be
+                    # the half-open probe leaves the breaker HALF_OPEN for good,
+                    # and every later query is refused.
+                    await self._breaker.record_success()
                     raise DatabaseError(f"FalkorDB query failed: {exc}") from exc
                 await self._breaker.record_failure()
                 logger.warning(
@@ -263,16 +268,17 @@ class FalkorDBConnection:
         "procedure not found",
     )
 
-    # A server reply (``ResponseError``) that says the server is temporarily
-    # unable to run the query, rather than that the query is wrong. FalkorDB
-    # 6.0.x reports its own query timeout this way ("Query timed out").
-    _TRANSIENT_REPLY_MARKERS = (
-        "timed out",
-        "timeout",
+    # How a server reply (``ResponseError``) starts when the server is
+    # temporarily unable to run the query, rather than saying the query is
+    # wrong. FalkorDB 4.x and 6.0.x word their own two the same way; ``BUSY``
+    # and ``LOADING`` are Redis replies. Matched as prefixes, not substrings:
+    # a rejection quotes the query ("'timeout' not defined"), and a substring
+    # match would retry it and count it against the breaker.
+    _TRANSIENT_REPLY_PREFIXES = (
+        "query timed out",
         "max pending queries",
-        "busy",
-        "loading",
-        "try again",
+        "busy ",
+        "loading ",
     )
 
     @classmethod
@@ -310,7 +316,7 @@ class FalkorDBConnection:
         )
         if isinstance(exc, transient_types):
             return False
-        return not any(marker in msg for marker in cls._TRANSIENT_REPLY_MARKERS)
+        return not msg.strip().startswith(cls._TRANSIENT_REPLY_PREFIXES)
 
     # ── Health & Admin ────────────────────────────────────────────
 
