@@ -478,7 +478,7 @@ class VectorStore:
                     "vector": query_vector,
                 },
             )
-            return [
+            rows = [
                 {
                     "src_name": row[0] if row[0] else "",
                     "type": row[1] if len(row) > 1 and row[1] else "",
@@ -488,6 +488,12 @@ class VectorStore:
                 }
                 for row in result.result_set
             ]
+            if rows:
+                return rows
+            # FalkorDB 4.x raises when the RELATES vector index is missing;
+            # 6.0.x answers with no rows. Either way the scan below is the only
+            # way to reach edges that carry an embedding but no index.
+            logger.debug("Edge vector query returned nothing, falling back to Cypher scan")
         except Exception as exc:
             logger.debug(f"Edge vector query not available, falling back to Cypher scan: {exc}")
 

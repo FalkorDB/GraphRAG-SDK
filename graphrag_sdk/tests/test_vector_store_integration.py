@@ -124,3 +124,38 @@ class TestDropVectorIndexes:
         result = await store.ensure_indices()
         assert result["vector_Chunk"] and result["vector_Entity"] and result["vector_RELATES"]
         assert "VECTOR" in (await _index_types(conn, "Chunk")).get("embedding", [])
+
+
+class TestRelationshipSearch:
+    async def _graph_with_embedded_edges(self, conn):
+        await conn.query(
+            "CREATE (a:__Entity__ {id: 'a', name: 'Alice'}), "
+            "(b:__Entity__ {id: 'b', name: 'Acme'}), (c:__Entity__ {id: 'c', name: 'Bob'}), "
+            "(a)-[:RELATES {rel_type: 'WORKS_AT', src_name: 'Alice', tgt_name: 'Acme', "
+            "fact: 'Alice works at Acme', embedding: vecf32([1.0, 0.0, 0.0])}]->(b), "
+            "(c)-[:RELATES {rel_type: 'KNOWS', src_name: 'Bob', tgt_name: 'Alice', "
+            "fact: 'Bob knows Alice', embedding: vecf32([0.0, 1.0, 0.0])}]->(a)"
+        )
+
+    async def test_edges_are_found_without_a_relates_index(self, conn):
+        await self._graph_with_embedded_edges(conn)
+        store = VectorStore(conn, embedding_dimension=3)  # no index created
+
+        results = await store.search_relationships([1.0, 0.0, 0.0], top_k=2)
+
+        assert [r["fact"] for r in results] == ["Alice works at Acme", "Bob knows Alice"]
+        assert results[0]["score"] == pytest.approx(1.0, abs=1e-6)
+
+    async def test_edges_are_found_through_the_index(self, conn):
+        await self._graph_with_embedded_edges(conn)
+        store = VectorStore(conn, embedding_dimension=3)
+        assert await store.create_relates_vector_index()
+
+        results = await store.search_relationships([0.0, 1.0, 0.0], top_k=1)
+
+        assert [r["fact"] for r in results] == ["Bob knows Alice"]
+
+    async def test_an_empty_graph_returns_nothing(self, conn):
+        store = VectorStore(conn, embedding_dimension=3)
+        assert await store.search_relationships([1.0, 0.0, 0.0]) == []
+        assert await conn._breaker.allow_request()

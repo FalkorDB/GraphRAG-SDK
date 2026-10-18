@@ -247,6 +247,21 @@ class TestVectorStoreSearch:
         fallback_cypher = mock_connection.query.call_args_list[1][0][0]
         assert "(1-dist) AS score" in fallback_cypher
 
+    async def test_search_relationships_falls_back_when_the_index_answers_nothing(
+        self, vector_store, mock_connection
+    ):
+        """FalkorDB 6.0.x answers a missing RELATES index with no rows rather
+        than an error, so an empty answer must reach the scan too."""
+        empty, fallback_result = MagicMock(), MagicMock()
+        empty.result_set = []
+        fallback_result.result_set = [["Alice", "WORKS_AT", "Acme", "self-match", 1.0]]
+        mock_connection.query = AsyncMock(side_effect=[empty, fallback_result])
+
+        results = await vector_store.search_relationships(query_vector=[0.1] * 8, top_k=5)
+
+        assert [r["fact"] for r in results] == ["self-match"]
+        assert mock_connection.query.await_count == 2
+
     async def test_search_chunks_empty(self, vector_store, mock_connection):
         result_mock = MagicMock()
         result_mock.result_set = []
