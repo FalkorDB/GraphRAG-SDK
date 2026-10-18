@@ -72,6 +72,14 @@ DescriptionKind = Literal["entity", "relation", "entity_property", "relation_pro
 
 logger = logging.getLogger(__name__)
 
+# Several :Relation nodes share a label, one per (source, target) pattern, and
+# where they disagree the first one created wins. Node ids cannot tell which
+# that is — FalkorDB reuses the ids of deleted nodes — so each Relation is
+# stamped when it is created. Nodes written before the stamp existed have none
+# and sort first, which is right: they predate every stamped node.
+_STAMP_NEW_RELATION = "ON CREATE SET r.created_at = timestamp()"
+_RELATION_AGE = "coalesce(r.created_at, 0), id(r)"
+
 
 class OntologyContradictionError(ValueError):
     """Raised when an incoming ontology re-types an existing property.
@@ -144,11 +152,12 @@ class OntologyStore:
         """
         try:
             ent_result = await self._query(
-                # Every read below is in creation order. Where two nodes say
-                # different things about one label, the first one written is
-                # kept; without an order that was whichever row the engine
-                # listed first, and FalkorDB 4.x and 6.0.x list rows
-                # differently.
+                # Every read below is ordered, so the result does not depend
+                # on the order the engine lists rows in (FalkorDB 4.x and
+                # 6.0.x differ). Node id gives a stable order but not creation
+                # order — ids of deleted nodes are reused — so where several
+                # Relation nodes describe one label and the first must win,
+                # they are ordered by the creation stamp first.
                 "MATCH (e:Entity) RETURN e.label AS label, e.description AS description "
                 "ORDER BY id(e)"
             )
@@ -161,17 +170,18 @@ class OntologyStore:
             patterned_rel_result = await self._query(
                 "MATCH (r:Relation)-[:SOURCE]->(s:Entity), (r)-[:TARGET]->(t:Entity) "
                 "RETURN r.label AS rel_label, r.description AS description, "
-                "s.label AS src, t.label AS tgt ORDER BY id(r)"
+                f"s.label AS src, t.label AS tgt ORDER BY {_RELATION_AGE}"
             )
             open_rel_result = await self._query(
                 "MATCH (r:Relation) WHERE NOT (r)-[:SOURCE]->() "
-                "RETURN r.label AS rel_label, r.description AS description ORDER BY id(r)"
+                "RETURN r.label AS rel_label, r.description AS description "
+                f"ORDER BY {_RELATION_AGE}"
             )
             rel_prop_result = await self._query(
                 "MATCH (r:Relation)-[:HAS_PROPERTY]->(p:Property) "
                 "RETURN r.label AS owner, p.label AS name, p.type AS type, "
                 "p.description AS description, p.structured AS structured "
-                "ORDER BY id(r), id(p)"
+                f"ORDER BY {_RELATION_AGE}, id(p)"
             )
         except Exception as exc:
             logger.debug("Ontology load failed (returning empty ontology): %s", exc)
@@ -278,7 +288,7 @@ class OntologyStore:
                 entry["patterns"].append((src, tgt))
             # The first pattern written holds the declared description; a later
             # pattern only fills a gap. Taking the last one let a table's
-            # "Declared by ..." text replace what the user wrote.
+            # "<source> to <target>" fallback text replace what the user wrote.
             if description and not entry["description"]:
                 entry["description"] = description
 
@@ -814,6 +824,7 @@ class OntologyStore:
                     "MERGE (s:Entity {label: $src}) "
                     "MERGE (t:Entity {label: $tgt}) "
                     "MERGE (s)<-[:SOURCE]-(r:Relation {label: $rel_label})-[:TARGET]->(t) "
+                    f"{_STAMP_NEW_RELATION} "
                     "SET r.description = coalesce($description, r.description)",
                     {
                         "src": src,
@@ -827,6 +838,7 @@ class OntologyStore:
         else:
             await self._query(
                 "MERGE (r:Relation {label: $rel_label}) "
+                f"{_STAMP_NEW_RELATION} "
                 "SET r.description = coalesce($description, r.description)",
                 {"rel_label": rt.label, "description": rt.description},
             )
@@ -976,6 +988,7 @@ class OntologyStore:
             "MATCH (s:Entity {label: $src}) "
             "MATCH (t:Entity {label: $tgt}) "
             "MERGE (s)<-[:SOURCE]-(r:Relation {label: $rel_label})-[:TARGET]->(t) "
+            f"{_STAMP_NEW_RELATION} "
             "SET r.description = coalesce($description, r.description)",
             {"src": src, "tgt": tgt, "rel_label": rel_label, "description": description},
         )
@@ -991,7 +1004,7 @@ class OntologyStore:
             # One row per property name, taken from the oldest sibling: with a
             # row per sibling the last SET won, and which sibling came last was
             # the engine's row order.
-            "WITH new, p ORDER BY id(existing), id(p) "
+            "WITH new, p ORDER BY coalesce(existing.created_at, 0), id(existing), id(p) "
             "WITH new, p.label AS name, collect(p) AS props "
             "WITH new, name, props[0] AS p, "
             "any(x IN props WHERE coalesce(x.structured, false)) AS structured "

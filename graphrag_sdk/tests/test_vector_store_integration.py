@@ -147,9 +147,11 @@ class TestRelationshipSearch:
         assert results[0]["score"] == pytest.approx(1.0, abs=1e-6)
 
     async def test_edges_are_found_through_the_index(self, conn):
-        await self._graph_with_embedded_edges(conn)
+        # Index first, then data: an index built over existing nodes fills in
+        # the background, and a search right away can see only part of it.
         store = VectorStore(conn, embedding_dimension=3)
         assert await store.create_relates_vector_index()
+        await self._graph_with_embedded_edges(conn)
 
         results = await store.search_relationships([0.0, 1.0, 0.0], top_k=1)
 
@@ -202,13 +204,15 @@ class TestEntityFulltextRanking:
 
 class TestVectorSearchTies:
     async def test_equally_close_entities_are_cut_by_id(self, conn):
+        # Index first, then data: an index built over existing nodes fills in
+        # the background, and a search right away can see only part of it.
+        store = VectorStore(conn, embedding_dimension=3)
+        assert await store.create_entity_vector_index()
         await conn.query(
             "CREATE (:__Entity__ {id: 'p1', name: 'A', embedding: vecf32([1.0, 0.0, 0.0])}), "
             "(:__Entity__ {id: 'p2', name: 'A', embedding: vecf32([1.0, 0.0, 0.0])}), "
             "(:__Entity__ {id: 'p0', name: 'Far', embedding: vecf32([0.0, 1.0, 0.0])})"
         )
-        store = VectorStore(conn, embedding_dimension=3)
-        assert await store.create_entity_vector_index()
 
         top = await store.search_entities([1.0, 0.0, 0.0], top_k=1)
         both = await store.search_entities([1.0, 0.0, 0.0], top_k=2)
@@ -216,12 +220,33 @@ class TestVectorSearchTies:
         assert [r["id"] for r in top] == ["p1"]
         assert [r["id"] for r in both] == ["p1", "p2"]
 
+    async def test_a_tie_wider_than_the_first_fetch_is_still_cut_by_id(self, conn):
+        # Twelve equally close entities, inserted highest id first: the index
+        # alone would hand back an arbitrary subset of them.
+        # Index first, then data: an index built over existing nodes fills in
+        # the background, and a search right away can see only part of it.
+        store = VectorStore(conn, embedding_dimension=3)
+        assert await store.create_entity_vector_index()
+        await conn.query(
+            "UNWIND range(11, 0, -1) AS i "
+            "CREATE (:__Entity__ {id: 'e' + right('0' + toString(i), 2), name: 'x', "
+            "embedding: vecf32([1.0, 0.0, 0.0])})"
+        )
+
+        top = await store.search_entities([1.0, 0.0, 0.0], top_k=1)
+        three = await store.search_entities([1.0, 0.0, 0.0], top_k=3)
+
+        assert [r["id"] for r in top] == ["e00"]
+        assert [r["id"] for r in three] == ["e00", "e01", "e02"]
+
     async def test_equally_close_chunks_are_cut_by_id(self, conn):
+        # Index first, then data: an index built over existing nodes fills in
+        # the background, and a search right away can see only part of it.
+        store = VectorStore(conn, embedding_dimension=3)
+        assert await store.create_chunk_vector_index()
         await conn.query(
             "CREATE (:Chunk {id: 'c2', text: 'b', embedding: vecf32([1.0, 0.0, 0.0])}), "
             "(:Chunk {id: 'c1', text: 'a', embedding: vecf32([1.0, 0.0, 0.0])})"
         )
-        store = VectorStore(conn, embedding_dimension=3)
-        assert await store.create_chunk_vector_index()
 
         assert [r["id"] for r in await store.search_chunks([1.0, 0.0, 0.0], top_k=1)] == ["c1"]
