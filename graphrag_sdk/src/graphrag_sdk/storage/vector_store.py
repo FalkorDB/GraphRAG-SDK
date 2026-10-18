@@ -26,6 +26,14 @@ _MAX_PAGINATION_ITERATIONS = 10_000
 # treat them as idempotent success rather than a creation failure.
 _INDEX_EXISTS_MARKERS = ("already indexed", "already exists")
 
+# How FalkorDB 4.x answers a vector query on a label or relationship type with
+# no vector index (or, on an empty graph, no such attribute). The caller falls
+# back to a scan, so these are expected rather than errors worth logging.
+_MISSING_VECTOR_INDEX_MARKERS = (
+    "invalid arguments for procedure",
+    "attempted to access undefined attribute",
+)
+
 # Characters that RediSearch treats as syntax in fulltext queries.
 _REDISEARCH_SPECIAL = set(r""",./<>{}[]\"':;!@#$%^&*()-+=~|""")
 
@@ -486,6 +494,7 @@ class VectorStore:
                     "top_k": top_k,
                     "vector": query_vector,
                 },
+                expected_errors=_MISSING_VECTOR_INDEX_MARKERS,
             )
             rows = [
                 {
@@ -497,7 +506,9 @@ class VectorStore:
                 }
                 for row in result.result_set
             ]
-            if rows:
+            # ensure_indices() on this store created the RELATES index, so an
+            # empty answer is genuine: nothing to scan for.
+            if rows or self._indices_ensured:
                 return rows
             # FalkorDB 4.x raises when the RELATES vector index is missing;
             # 6.0.x answers with no rows. Either way the scan below is the only

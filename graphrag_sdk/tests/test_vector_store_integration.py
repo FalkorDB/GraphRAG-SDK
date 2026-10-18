@@ -19,7 +19,7 @@ from graphrag_sdk.storage.vector_store import VectorStore
 
 @pytest.fixture
 async def conn():
-    if not os.getenv("RUN_INTEGRATION"):
+    if os.getenv("RUN_INTEGRATION") != "1":
         pytest.skip("Set RUN_INTEGRATION=1 to run real-FalkorDB integration tests")
     connection = FalkorDBConnection(
         ConnectionConfig(
@@ -36,6 +36,22 @@ async def conn():
         await connection.delete_graph()
     finally:
         await connection.close()
+
+
+async def _engine_major(conn: FalkorDBConnection) -> int:
+    """Major version of the FalkorDB graph module: 4 is the C engine, 6 the Rust engine."""
+    from redis.asyncio import Redis
+
+    config = conn.config
+    client = Redis(
+        host=config.host, port=config.port, username=config.username, password=config.password
+    )
+    try:
+        modules = await client.module_list()
+    finally:
+        await client.aclose()
+    graph = next(m for m in modules if m[b"name"] == b"graph")
+    return int(graph[b"ver"]) // 10000
 
 
 async def _index_types(conn: FalkorDBConnection, label: str) -> dict[str, list[str]]:
@@ -93,10 +109,9 @@ class TestServerRejections:
     async def test_rejected_statements_fail_once_and_keep_the_breaker_closed(self, conn):
         from graphrag_sdk.core.exceptions import DatabaseError, DatabaseUnavailableError
 
-        # Statements each engine rejects, with wording that differs between
+        # Statements the server rejects, with wording that differs between
         # the C engine (4.x) and the Rust engine (6.0.x).
         rejected = [
-            "CALL db.idx.fulltext.createNodeIndex('L', 'a', 'b')",  # 6.0.x arity
             "CALL db.nope()",
             "RETURN zz",
             "RETURN 1 / 0",
@@ -104,13 +119,18 @@ class TestServerRejections:
             "DROP INDEX FOR (n:Nope) ON (n.x)",
             "RETURN timeout",  # quotes a word a temporary reply also uses
         ]
+        if await _engine_major(conn) >= 6:
+            # The C engine accepts the multi-argument form; only 6.x rejects it.
+            rejected.append("CALL db.idx.fulltext.createNodeIndex('L', 'a', 'b')")
         for statement in rejected * 2:  # more failures than the breaker threshold
             try:
                 await conn.query(statement)
             except DatabaseUnavailableError as exc:
                 pytest.fail(f"{statement!r} was retried as an outage: {exc}")
             except DatabaseError:
-                pass
+                # The expected outcome: rejected once, as a plain DatabaseError.
+                continue
+            pytest.fail(f"{statement!r} was expected to be rejected")
 
         assert await conn._breaker.allow_request()
         assert (await conn.query("RETURN 1")).result_set == [[1]]

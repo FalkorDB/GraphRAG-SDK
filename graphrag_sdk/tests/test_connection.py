@@ -377,8 +377,10 @@ class TestDriverErrorsBecomeDatabaseError:
         "message",
         [
             # FalkorDB 6.0.x (Rust engine)
-            "Received 2 arguments to procedure 'db.idx.fulltext.createNodeIndex', "
-            "expected at most 1",
+            (
+                "Received 2 arguments to procedure 'db.idx.fulltext.createNodeIndex', "
+                + "expected at most 1"
+            ),
             "Cannot merge a map with a non-map value",
             # FalkorDB 4.x (C engine)
             "Procedure `db.nope` is not registered",

@@ -273,6 +273,33 @@ class TestVectorStoreSearch:
         assert [r["fact"] for r in results] == ["self-match"]
         assert mock_connection.query.await_count == 2
 
+    async def test_search_relationships_trusts_an_empty_answer_from_an_ensured_index(
+        self, vector_store, mock_connection
+    ):
+        """Once ensure_indices() created the RELATES index, no rows means no
+        match; scanning every edge on each such search would be wasted work."""
+        vector_store._indices_ensured = True
+        empty = MagicMock()
+        empty.result_set = []
+        mock_connection.query = AsyncMock(return_value=empty)
+
+        assert await vector_store.search_relationships(query_vector=[0.1] * 8) == []
+        assert mock_connection.query.await_count == 1
+
+    async def test_search_relationships_expects_the_missing_index_reply(
+        self, vector_store, mock_connection
+    ):
+        """FalkorDB 4.x answers a missing RELATES index with an error the scan
+        handles; it is passed as expected so it is not logged as an ERROR."""
+        empty = MagicMock()
+        empty.result_set = []
+        mock_connection.query = AsyncMock(return_value=empty)
+
+        await vector_store.search_relationships(query_vector=[0.1] * 8)
+
+        expected = mock_connection.query.call_args_list[0].kwargs["expected_errors"]
+        assert "invalid arguments for procedure" in expected
+
     async def test_search_chunks_empty(self, vector_store, mock_connection):
         result_mock = MagicMock()
         result_mock.result_set = []

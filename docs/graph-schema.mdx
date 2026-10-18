@@ -184,6 +184,8 @@ CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.name)
 CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.description)
 ```
 
+FalkorDB keeps one fulltext index per label, so the two `__Entity__` statements build a single index over `name` and `description`. They are separate statements so that an existing index on one field cannot stop the other from being added.
+
 ---
 
 ## The Provenance Chain
