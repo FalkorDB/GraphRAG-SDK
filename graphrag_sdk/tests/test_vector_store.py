@@ -280,7 +280,52 @@ class TestVectorStoreSearch:
         mock_connection.query = AsyncMock(return_value=result_mock)
         await vector_store.search_chunks(query_vector=[0.1] * 8, top_k=10)
         params = mock_connection.query.call_args[0][1]
-        assert params["top_k"] == 10
+        # Asks the index for more than top_k so a tie at the cutoff is cut by id.
+        assert params["fetch_k"] == 20
+
+    @staticmethod
+    def _rows(scores):
+        result = MagicMock()
+        result.result_set = [[f"c{i:03d}", "t", score] for i, score in enumerate(scores)]
+        return result
+
+    async def test_a_tie_at_the_cutoff_widens_the_fetch(self, vector_store, mock_connection):
+        """Four equally close chunks and top_k=1: the first fetch (2) ends inside
+        the tie, so the store asks for more until the tie is complete."""
+        mock_connection.query = AsyncMock(
+            side_effect=[
+                self._rows([0.9, 0.9]),
+                self._rows([0.9, 0.9, 0.9, 0.9]),
+                self._rows([0.9, 0.9, 0.9, 0.9, 0.5]),
+            ]
+        )
+
+        results = await vector_store.search_chunks(query_vector=[0.1] * 8, top_k=1)
+
+        assert [c.args[1]["fetch_k"] for c in mock_connection.query.call_args_list] == [2, 4, 8]
+        assert [r["id"] for r in results] == ["c000"]
+
+    async def test_no_tie_at_the_cutoff_fetches_once(self, vector_store, mock_connection):
+        mock_connection.query = AsyncMock(return_value=self._rows([0.9, 0.8, 0.7, 0.7]))
+
+        results = await vector_store.search_chunks(query_vector=[0.1] * 8, top_k=2)
+
+        assert mock_connection.query.await_count == 1
+        assert [r["score"] for r in results] == [0.9, 0.8]
+
+    async def test_widening_stops_at_the_cap(self, vector_store, mock_connection):
+        from graphrag_sdk.storage import vector_store as vs_module
+
+        async def all_tied(query, params):
+            return self._rows([0.9] * params["fetch_k"])
+
+        mock_connection.query = AsyncMock(side_effect=all_tied)
+
+        results = await vector_store.search_chunks(query_vector=[0.1] * 8, top_k=3)
+
+        fetches = [c.args[1]["fetch_k"] for c in mock_connection.query.call_args_list]
+        assert fetches[-1] == vs_module._MAX_TIE_FETCH
+        assert len(results) == 3
 
 
 class TestVectorStoreFulltextSearch:

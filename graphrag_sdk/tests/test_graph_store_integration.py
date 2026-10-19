@@ -92,8 +92,10 @@ class TestResultsDoNotDependOnEngineRowOrder:
         viz = GraphVisualizer(store._conn)
 
         sample = await viz.sample_nodes(label="Thing", limit=3)
+        unlabelled = await viz.sample_nodes(limit=3)
 
         assert [row["node"].properties["id"] for row in sample] == ["n0", "n1", "n2"]
+        assert [row["node"].properties["id"] for row in unlabelled] == ["n0", "n1", "n2"]
 
 
 class TestOneKeyTwiceInOneCall:

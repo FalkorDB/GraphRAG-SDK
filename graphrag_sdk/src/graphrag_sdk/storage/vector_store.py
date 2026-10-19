@@ -30,14 +30,9 @@ _INDEX_EXISTS_MARKERS = ("already indexed", "already exists")
 _REDISEARCH_SPECIAL = set(r""",./<>{}[]\"':;!@#$%^&*()-+=~|""")
 
 
-def _tie_safe_fetch(top_k: int) -> int:
-    """How many neighbours to ask the vector index for, to return ``top_k``.
-
-    The index decides which of several equally close nodes makes its top
-    ``k``, and FalkorDB 4.x and 6.0.x decide differently. Asking for twice as
-    many and ordering by score, then id, makes the cut ours.
-    """
-    return max(1, int(top_k)) * 2
+# Upper bound on how many neighbours a vector search asks the index for while
+# widening to take in a whole tie at its cutoff (see _nearest_rows).
+_MAX_TIE_FETCH = 1024
 
 
 def _escape_fulltext_query(text: str) -> str:
@@ -371,6 +366,33 @@ class VectorStore:
 
     # ── Search ───────────────────────────────────────────────────
 
+    async def _nearest_rows(
+        self, query: str, vector: list[float], top_k: int, *, score_col: int
+    ) -> list[list[Any]]:
+        """The ``top_k`` rows of a ``$fetch_k`` vector query, cut by score then id.
+
+        The index decides which of several equally close nodes make its top
+        ``k``, and FalkorDB 4.x and 6.0.x decide differently. So ask for more
+        than ``top_k`` and, while the score at the cutoff is still the score of
+        the last row fetched — the tie may continue past it — ask for twice as
+        many, up to ``_MAX_TIE_FETCH``. ``query`` must return rows ordered by
+        score descending, then id.
+        """
+        if top_k <= 0:
+            return []
+        fetch_k = top_k * 2
+        while True:
+            result = await self._conn.query(query, {"fetch_k": fetch_k, "vector": vector})
+            rows = list(result.result_set or [])
+            if (
+                len(rows) <= top_k
+                or len(rows) < fetch_k
+                or fetch_k >= _MAX_TIE_FETCH
+                or rows[top_k - 1][score_col] != rows[-1][score_col]
+            ):
+                return rows[:top_k]
+            fetch_k = min(fetch_k * 2, _MAX_TIE_FETCH)
+
     async def search_chunks(
         self,
         query_vector: list[float],
@@ -389,19 +411,11 @@ class VectorStore:
             "CALL db.idx.vector.queryNodes('Chunk', 'embedding', $fetch_k, vecf32($vector)) "
             "YIELD node, score "
             "RETURN node.id AS id, node.text AS text, (1-score) AS score "
-            "ORDER BY score DESC, id LIMIT $top_k"
+            "ORDER BY score DESC, id"
         )
         try:
-            result = await self._conn.query(
-                query,
-                {
-                    "top_k": top_k,
-                    "fetch_k": _tie_safe_fetch(top_k),
-                    "vector": query_vector,
-                },
-            )
             results: list[dict[str, Any]] = []
-            for row in result.result_set:
+            for row in await self._nearest_rows(query, query_vector, top_k, score_col=2):
                 results.append(
                     {
                         "id": row[0],
@@ -428,19 +442,11 @@ class VectorStore:
             "YIELD node, score "
             "RETURN node.id AS id, node.name AS name, node.description AS description, "
             "(1-score) AS score "
-            "ORDER BY score DESC, id LIMIT $top_k"
+            "ORDER BY score DESC, id"
         )
         try:
-            result = await self._conn.query(
-                query,
-                {
-                    "top_k": top_k,
-                    "fetch_k": _tie_safe_fetch(top_k),
-                    "vector": query_vector,
-                },
-            )
             results: list[dict[str, Any]] = []
-            for row in result.result_set:
+            for row in await self._nearest_rows(query, query_vector, top_k, score_col=3):
                 results.append(
                     {
                         "id": row[0],

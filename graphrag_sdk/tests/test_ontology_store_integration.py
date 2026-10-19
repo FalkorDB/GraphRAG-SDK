@@ -55,6 +55,33 @@ class TestRelationDescription:
         assert relation.description == "orig"
         assert relation.patterns == [("A", "B"), ("B", "A")]
 
+    async def test_a_reused_node_id_does_not_make_a_new_pattern_the_oldest(self, onto):
+        """FalkorDB reuses the ids of deleted nodes, so a pattern added after a
+        drop can get a lower id than the declared one; id order would then
+        let its description win."""
+        await onto.register(
+            Ontology(
+                entities=[Entity(label="A"), Entity(label="B"), Entity(label="C")],
+                relations=[Relation(label="TMP", patterns=[("A", "C")])],
+            )
+        )
+        await onto.register(
+            Ontology(relations=[Relation(label="R", description="orig", patterns=[("A", "B")])])
+        )
+        await onto.drop_relation_label("TMP")  # frees an id lower than R's
+
+        await onto.add_relation_pattern_node("R", "B", "A", description="from a table")
+
+        ids = (
+            await onto._query(
+                "MATCH (r:Relation {label: 'R'})-[:SOURCE]->(s:Entity) RETURN s.label, id(r)"
+            )
+        ).result_set
+        by_src = dict(ids)
+        assert by_src["B"] < by_src["A"], "precondition: the new pattern reused a lower id"
+        (relation,) = (await onto.load()).relations
+        assert relation.description == "orig"
+
     async def test_a_new_pattern_copies_properties_from_the_oldest_sibling(self, onto):
         await _register(
             onto,
