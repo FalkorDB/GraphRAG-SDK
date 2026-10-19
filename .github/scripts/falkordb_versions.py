@@ -21,7 +21,9 @@ import sys
 import urllib.request
 
 TAGS_URL = "https://hub.docker.com/v2/repositories/falkordb/falkordb/tags?page_size=100"
-MAX_PAGES = 30
+# Every page is read: the newest release can be on any page. This only stops a
+# runaway loop (about 600 tags exist today, 7 pages); reaching it is reported.
+MAX_PAGES = 500
 RELEASE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 
 # Used only when Docker Hub cannot be read.
@@ -29,9 +31,11 @@ FALLBACK = {"C": "v4.22.1", "Rust": "6.0.2"}
 
 
 def engine_of(major: int) -> str | None:
+    # Exactly these release lines. A new major (7.x, ...) is a deliberate
+    # change to make here, not something CI should start testing on its own.
     if major == 4:
         return "C"
-    if major >= 6:
+    if major == 6:
         return "Rust"
     return None
 
@@ -41,11 +45,17 @@ def fetch_tags() -> list[str]:
     url: str | None = TAGS_URL
     for _ in range(MAX_PAGES):
         if not url:
-            break
+            return tags
         with urllib.request.urlopen(url, timeout=20) as response:
             page = json.load(response)
         tags.extend(result["name"] for result in page.get("results", []))
         url = page.get("next")
+    if url:
+        print(
+            f"::warning::Stopped reading Docker Hub tags after {MAX_PAGES} pages; "
+            "the newest release may have been missed",
+            file=sys.stderr,
+        )
     return tags
 
 

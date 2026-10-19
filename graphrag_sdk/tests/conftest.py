@@ -314,7 +314,11 @@ def pytest_report_header(config):
     if not os.getenv("RUN_INTEGRATION"):
         return None
     host = os.getenv("FALKOR_HOST", "localhost")
-    port = int(os.getenv("FALKOR_PORT", "6379"))
+    port_value = os.getenv("FALKOR_PORT", "6379")
+    try:
+        port = int(port_value)
+    except ValueError as exc:
+        return f"falkordb: {host}:{port_value} not readable ({exc})"
     try:
         from redis import Redis
 
