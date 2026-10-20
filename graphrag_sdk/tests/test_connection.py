@@ -394,6 +394,8 @@ class TestDriverErrorsBecomeDatabaseError:
             # A rejection that quotes a word a temporary reply also uses
             "'timeout' not defined",
             "'busy' not defined",
+            # The query used its whole time budget: a retry costs as much again
+            "Query timed out",
         ],
     )
     async def test_server_rejection_is_raised_once_and_spares_the_breaker(self, message):
@@ -447,9 +449,11 @@ class TestDriverErrorsBecomeDatabaseError:
     @pytest.mark.parametrize(
         ("error_type", "message"),
         [
-            ("ResponseError", "Query timed out"),  # FalkorDB 6.0.x query timeout
             ("ResponseError", "Max pending queries exceeded"),
             ("ResponseError", "BUSY Redis is busy running a script."),
+            ("ResponseError", "NOREPLICAS Not enough good replicas to write."),
+            ("ResponseError", "MISCONF Redis is configured to save RDB snapshots, but ..."),
+            ("BusyLoadingError", "Redis is loading the dataset in memory"),  # LOADING
             ("TryAgainError", "TRYAGAIN"),
             ("ReadOnlyError", "READONLY"),
             ("OutOfMemoryError", "OOM"),

@@ -183,10 +183,12 @@ class FalkorDBConnection:
             ``QueryResult`` from the async FalkorDB driver.
 
         Raises:
-            DatabaseError: The query could not be completed — the connection is
-                unhealthy, retries were exhausted, or the failure is permanent.
-                Driver-level exceptions are wrapped so callers can distinguish
-                infrastructure failures from application errors.
+            DatabaseUnavailableError: The circuit breaker is open, or a
+                transient failure (connection loss, full query queue, ``BUSY``,
+                failover, ...) outlasted ``retry_count`` attempts.
+            DatabaseError: The server rejected the query, or it ran past its
+                timeout. Raised on the first attempt, not retried. Driver-level
+                exceptions are wrapped and kept as ``__cause__``.
         """
         self._ensure_client()
         assert self._graph is not None  # for type-checkers
@@ -270,15 +272,22 @@ class FalkorDBConnection:
 
     # How a server reply (``ResponseError``) starts when the server is
     # temporarily unable to run the query, rather than saying the query is
-    # wrong. FalkorDB 4.x and 6.0.x word their own two the same way; ``BUSY``
-    # and ``LOADING`` are Redis replies. Matched as prefixes, not substrings:
-    # a rejection quotes the query ("'timeout' not defined"), and a substring
-    # match would retry it and count it against the breaker.
+    # wrong. FalkorDB 4.x and 6.0.x word "max pending queries" the same way.
+    # ``BUSY``, ``NOREPLICAS`` and ``MISCONF`` are Redis replies that redis-py
+    # leaves as a plain ``ResponseError`` with the code kept in the text;
+    # GRAPH.QUERY is a write command, so the last two refuse reads too.
+    # ``LOADING`` never gets here: redis-py raises ``BusyLoadingError``, a
+    # ``ConnectionError``. "Query timed out" is left out on purpose: the query
+    # used its whole time budget, so a retry costs as much again and usually
+    # times out too, and counting it against the breaker let two slow queries
+    # refuse every caller for the recovery timeout. Matched as prefixes, not
+    # substrings: a rejection quotes the query ("'timeout' not defined"), and a
+    # substring match would retry it and count it against the breaker.
     _TRANSIENT_REPLY_PREFIXES = (
-        "query timed out",
         "max pending queries",
         "busy ",
-        "loading ",
+        "noreplicas ",
+        "misconf ",
     )
 
     @classmethod

@@ -95,11 +95,15 @@ class DatabaseError(GraphRAGError):
 
 
 class DatabaseUnavailableError(DatabaseError):
-    """Raised when FalkorDB cannot be reached at all.
+    """Raised when FalkorDB could not run the query now.
 
+    The server is unreachable, the circuit breaker is open, or a temporary
+    condition (connection loss, full query queue, ``BUSY``/``LOADING``,
+    failover, read-only replica, out of memory) outlasted every retry.
     Distinct from a plain :class:`DatabaseError`, which means the server
-    answered and *rejected* the query. Callers that fall back to a slower
-    path on cache/read failures need that distinction: a rejected query
+    answered and *rejected* the query, or the query ran past its timeout.
+    Callers that fall back to a slower path on cache/read failures need
+    that distinction: a rejected query
     leaves the rest of the pipeline perfectly usable, while an unreachable
     server will fail the write phase no matter how much work is done first.
 
