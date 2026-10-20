@@ -176,9 +176,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The judge runs **once** per set and names each merged group (the survivor
     takes that name and its vector; its old name moves to `aliases`; a table
     row keeps its declared name). It also sees each entity's existing aliases.
-    Only a clean partition is a verdict — a member number the set lacks, or a
-    merged name on a one-member group, is no answer — and a set without one is
-    asked again on its own, up to 2 more times. Agreed pairs chain across sets,
+    The answer lists only groups of two or more, or `SET n NONE` (a member no
+    line lists stands alone), which cut answer tokens by about two thirds.
+    Only a clean answer is a verdict — a member number the set lacks,
+    overlapping groups, or a merged name on a one-member group is no answer —
+    and a set without one is asked again on its own, up to 2 more times. Agreed pairs chain across sets,
     but never into a group holding a pair the judge kept apart.
   - **Every merge is decided before any is written.** The run's merges, from
     both phases, are written as a merge plan, sealed, and applied one atomic

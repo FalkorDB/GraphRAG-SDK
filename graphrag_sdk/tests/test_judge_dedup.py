@@ -179,15 +179,29 @@ def test_overlapping_groups_are_not_a_partition_and_merge_nothing():
     assert _pairs(text, [[10, 11, 12], [20, 21]]) == {(20, 21)}
 
 
-def test_incomplete_partition_is_not_a_verdict():
-    """A set answered without one of its members was not judged: silence about
-    an entity is not a statement that it differs. The set yields no groups and
-    merges nothing; a complete set in the same answer is kept."""
-    text = "SET 1 GROUP: 1, 2\nSET 2 GROUP: 1\nSET 2 GROUP: 2"
-    assert parse_groups(text, [3, 2]) == {1: [[0], [1]]}
-    # an omitted set yields nothing too; explicit singletons are a full answer
+def test_only_groups_are_listed_and_an_unlisted_member_stands_alone():
+    """The judge writes groups of two or more, or ``SET n NONE``; a member no
+    line lists is a different entity from the rest of its set. Only groups
+    cost output tokens — measured, 73% of an answer was one-member lines."""
+    text = "SET 1 GROUP: 1, 3 | NAME: IBM\nSET 2 NONE"
+    assert parse_groups(text, [3, 2]) == {0: [[0, 2], [1]], 1: [[0], [1]]}
+    assert different_pairs_from_response(text, [[10, 11, 12], [20, 21]]) == {
+        (10, 11),
+        (11, 12),
+        (20, 21),
+    }
+    # the longer form, one line per member, reads the same
     singletons = "SET 1 GROUP: 1\nSET 1 GROUP: 2\nSET 1 GROUP: 3"
     assert parse_groups(singletons, [3, 2]) == {0: [[0], [1], [2]]}
+    # a set no line mentions was not answered; a bare NONE answers a lone set
+    assert parse_groups("SET 1 NONE", [2, 2]) == {0: [[0], [1]]}
+    assert parse_groups("NONE", [2]) == {0: [[0], [1]]}
+
+
+def test_none_after_a_sets_groups_means_no_further_group():
+    """gpt-4.1 closes a set it grouped with ``SET n NONE``: no more groups."""
+    text = "SET 1 GROUP: 1, 3 | NAME: IBM\nSET 1 NONE"
+    assert parse_groups(text, [3]) == {0: [[0, 2], [1]]}
 
 
 def test_pack_prompts_lists_every_set():
@@ -257,15 +271,16 @@ class ScriptedLLM:
             for si, block in enumerate(re.split(r"--- Set \d+ ---\n", p)[1:], start=1):
                 block = block.split("\n\nDECISION PROCEDURE")[0]
                 names = re.findall(r"^(\d+)\. (.+?) \[", block, flags=re.M)
-                used = set()
+                used: set[str] = set()
+                groups = []
                 for num, name in names:
                     if num in used:
                         continue
-                    grp = [n for n, nm in names if any(name in g and nm in g for g in same)] or [
-                        num
-                    ]
-                    used.update(grp)
-                    lines.append(f"SET {si} GROUP: {', '.join(grp)}")
+                    grp = [n for n, nm in names if any(name in g and nm in g for g in same)]
+                    if len(grp) > 1:
+                        used.update(grp)
+                        groups.append(f"SET {si} GROUP: {', '.join(grp)} | NAME: {name}")
+                lines += groups or [f"SET {si} NONE"]
             out.append(LLMBatchItem(index=i, response=SimpleNamespace(content="\n".join(lines))))
         return out
 
@@ -323,7 +338,7 @@ def test_a_failed_call_merges_nothing_and_its_set_is_asked_again_alone():
 
 
 def test_an_answer_that_is_not_a_clean_partition_is_not_a_verdict():
-    for answer in ("SET 1 GROUP: 1", "SET 1 GROUP: 1, 2, 7", "SET 1 GROUP: 1 | NAME: IBM"):
+    for answer in ("SET 1 GROUP: 1, 2, 7", "SET 1 GROUP: 1 | NAME: IBM", "SET 2 NONE"):
         sim = _sim(judge=ScriptedLLM([answer]))
         assert sim.merged == 0, answer
         assert set(_retried(sim)) == {"e1", "e2"}, answer
@@ -400,7 +415,7 @@ def test_a_group_a_failed_set_could_change_is_held_and_the_neighbour_refunded(mo
     )
 
     class NeverAnswersTheSecondSet(ScriptedLLM):
-        """Answers set {P, A}; leaves out a member of set {P, B} every time."""
+        """Answers set {P, A}; names a member set {P, B} lacks, every time."""
 
         async def abatch_invoke(self, prompts, **kw):
             out = await super().abatch_invoke(prompts, **kw)
@@ -410,7 +425,7 @@ def test_a_group_a_failed_set_could_change_is_held_and_the_neighbour_refunded(mo
                 spoiled = {si for si, block in enumerate(blocks, 1) if "Tim Cooke" in block}
                 item.response.content = "\n".join(
                     line for line in lines if int(line.split()[1]) not in spoiled
-                ) + "".join(f"\nSET {si} GROUP: 1" for si in spoiled)
+                ) + "".join(f"\nSET {si} GROUP: 1, 9 | NAME: x" for si in spoiled)
             return out
 
     sim = _sim(rows, judge=NeverAnswersTheSecondSet([[{"Tim Cook", "Timothy Cook"}]]))

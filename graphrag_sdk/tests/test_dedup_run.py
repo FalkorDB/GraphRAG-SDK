@@ -77,18 +77,21 @@ class Judge:
                     if num in used:
                         continue
                     grp = [n for n, nm in names if any({name, nm} <= g for g in self.same)]
-                    grp = grp or [num]
+                    if len(grp) < 2:
+                        continue
                     used.update(grp)
                     keep = [
                         f"{attr}={n}"
                         for attr, owner in self.keep.items()
                         for n, nm in names
-                        if n in grp and nm == owner and len(grp) > 1
+                        if n in grp and nm == owner
                     ]
                     lines.append(
-                        f"SET {si} GROUP: {', '.join(grp)}"
-                        + (f" | NAME: {name} | KEEP: {'; '.join(keep)}" if keep else "")
+                        f"SET {si} GROUP: {', '.join(grp)} | NAME: {name}"
+                        + (f" | KEEP: {'; '.join(keep)}" if keep else "")
                     )
+                if not any(line.startswith(f"SET {si} ") for line in lines):
+                    lines.append(f"SET {si} NONE")
             out.append(LLMBatchItem(index=i, response=SimpleNamespace(content="\n".join(lines))))
         return out
 

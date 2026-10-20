@@ -135,23 +135,23 @@ JUDGE_PROMPT = (
     "merge corrupts the graph permanently; a missed merge is recoverable. When in "
     "doubt, separate.\n\n"
     "OUTPUT\n"
-    "For every set, write one line per group. Every line must start with "
-    '"SET <set number> GROUP:" followed by the member numbers. For a group of '
-    'two or more, end the line with "| NAME:" and the best name for the merged '
-    "entity: its most complete, commonly used form, copied exactly from the "
-    "names and aliases shown in that group (a full name over an initial, a "
-    "company name over a ticker symbol or a generic reference). When members of "
-    'such a group show different values for one attribute, then add "| KEEP:" '
-    "and, for each such attribute, attribute=the number of the member whose "
-    'value is correct for the merged entity, separated by ";" (attribute names '
-    "as shown). Leave KEEP out when the values agree. Example for a set of 4 "
-    "and a set of 2:\n"
+    "Write one line per group of two or more members that are the same "
+    'entity: "SET <set number> GROUP:" followed by their member numbers, then '
+    '"| NAME:" and the best name for the merged entity: its most complete, '
+    "commonly used form, copied exactly from the names and aliases shown in "
+    "that group (a full name over an initial, a company name over a ticker "
+    "symbol or a generic reference). Only when members of the group show "
+    'different values for the same attribute, add "| KEEP:" and, for each such '
+    "attribute, attribute=the number of the member whose value is correct for "
+    'the merged entity, separated by ";" (attribute names as shown). A member '
+    "in no group is a different entity from every other member: do not list "
+    'it. For a set with no group, write the one line "SET <set number> NONE". '
+    "Example for a set of 4, a set of 3 and a set of 2:\n"
     "  SET 1 GROUP: 1, 4 | NAME: International Business Machines\n"
-    "  SET 1 GROUP: 2\n"
-    "  SET 1 GROUP: 3\n"
-    "  SET 2 GROUP: 1, 2 | NAME: Marie Curie | KEEP: born=1; title=2\n"
-    "Every member of every set must appear in exactly one line, including the "
-    "last set. No other text.\n\n"
+    "  SET 2 NONE\n"
+    "  SET 3 GROUP: 1, 2 | NAME: Marie Curie | KEEP: born=1\n"
+    "Every set must have at least one line, including the last set. No other "
+    "text.\n\n"
     "Answer:"
 )
 
@@ -353,6 +353,8 @@ def pack_prompts(
 
 
 _ANSWER_LINE = re.compile(r"^[\s\-*#>`|]*SET\s*(\d+)\b", re.IGNORECASE)
+_NONE_LINE = re.compile(r"^[\s\-*#>`|]*SET\s*(\d+)\s*:?\s*NONE\b", re.IGNORECASE)
+_BARE_NONE_LINE = re.compile(r"^[\s\-*#>`|]*()NONE\s*$", re.IGNORECASE)
 # The parts after a group's members, each up to the next "|".
 _NAME_PART = re.compile(r"\|\s*NAME\s*:\s*([^|]*?)\s*(?=\||$)", re.IGNORECASE)
 _KEEP_PART = re.compile(r"\|\s*KEEP\s*:\s*([^|]*?)\s*(?=\||$)", re.IGNORECASE)
@@ -370,20 +372,31 @@ def parse_groups(text: str, sizes: list[int]) -> dict[int, list[list[int]]]:
     which set it answers and is dropped rather than applied to set 1's
     partition on evidence about other entities.
 
-    A set yields groups only when its answer is a clean partition: every
-    member exactly once, nothing else. Silence about a member is not a verdict
-    that it differs; groups that overlap — ``1, 2`` and ``1, 3`` — would merge
-    2 and 3 through 1 though the model never put them together; a member
-    number the set does not have, or a one-member group carrying a ``NAME``
-    (the name of a merged entity, given to an entity left alone), says the
-    model lost track of the set; so does a ``KEEP`` on a member left alone.
-    Each of these makes the whole set unanswered,
-    so it is asked again rather than half-read; an unmentioned set yields no
-    groups either.
+    The judge lists only groups of two or more, or ``SET n NONE`` for a set
+    with none; a member no line lists is a group of its own, so the result
+    is the set's full partition, one-member groups included. One-member
+    ``GROUP`` lines (the longer form) are read the same way.
+
+    A set yields groups only when its answer is clean. Groups that overlap —
+    ``1, 2`` and ``1, 3`` — would merge 2 and 3 through 1 though the model
+    never put them together; a member number the set does not have, a
+    one-member group carrying a ``NAME`` or ``KEEP`` (the name or values of a
+    merged entity, given to an entity left alone) says the model lost track
+    of the set; ``NONE`` after a set's groups only says there are no more.
+    Each of these makes the whole
+    set unanswered, so it is asked again rather than half-read; a set no line
+    mentions is unanswered too.
     """
     out: dict[int, list[list[int]]] = {}
     spoiled: dict[int, str] = {}
+    none: set[int] = set()
     for line in text.splitlines():
+        nothing = _NONE_LINE.match(line) or (len(sizes) == 1 and _BARE_NONE_LINE.match(line))
+        if nothing:
+            si = int(nothing.group(1)) - 1 if nothing.re is _NONE_LINE else 0
+            if 0 <= si < len(sizes):
+                none.add(si)
+            continue
         up = line.upper()
         if "GROUP" not in up:
             continue
@@ -405,16 +418,22 @@ def parse_groups(text: str, sizes: list[int]) -> dict[int, list[list[int]]]:
             spoiled.setdefault(si, "a merged name given to a one-member group")
         if picked:
             out.setdefault(si, []).append(picked)
+    for si in none:
+        # Beside groups, NONE is the model saying "no further group" — the
+        # form it uses (measured: gpt-4.1 closed every set this way).
+        out.setdefault(si, [])
     for si, groups in list(out.items()):
         listed = [x for grp in groups for x in grp]
         why = spoiled.get(si)
         if why is None and len(listed) != len(set(listed)):
             why = "overlapping groups"
-        elif why is None and len(listed) != sizes[si]:
-            why = f"{len(set(listed))} of {sizes[si]} members"
         if why is not None:
             logger.warning("judge dedup: set %d answered with %s; asked again", si + 1, why)
             del out[si]
+            continue
+        # Every member no line listed is on its own: a different entity.
+        groups.extend([x] for x in range(sizes[si]) if x not in set(listed))
+        groups.sort()
     return out
 
 
