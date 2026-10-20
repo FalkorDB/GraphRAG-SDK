@@ -528,6 +528,9 @@ class VectorStore:
         except Exception as exc:
             logger.debug(f"Edge vector query not available, falling back to Cypher scan: {exc}")
 
+        # The index may have been dropped after this store ensured it; forget
+        # that, so the ensure_indices() the warning asks for recreates it.
+        self._indices_ensured = False
         # The scan reads every embedded edge, so on a large graph each search
         # costs far more than the index. Say so once, where it can be seen.
         if not self._warned_relates_scan:
@@ -569,14 +572,16 @@ class VectorStore:
             return []
 
     async def _relates_vector_index_exists(self) -> bool:
-        """Whether the graph has a vector index on ``RELATES.embedding``.
+        """Whether the graph has a vector index on ``RELATES.embedding`` edges.
 
         False when it cannot tell (including a graph that does not exist yet),
-        so the caller keeps its scan fallback.
+        so the caller keeps its scan fallback. A node label named ``RELATES``
+        with its own vector index does not count.
         """
         try:
             result = await self._conn.query(
-                "CALL db.indexes() YIELD label, types WHERE label = 'RELATES' RETURN types",
+                "CALL db.indexes() YIELD label, types, entitytype "
+                "WHERE label = 'RELATES' AND entitytype = 'RELATIONSHIP' RETURN types",
                 expected_errors=("empty key",),
             )
         except Exception:

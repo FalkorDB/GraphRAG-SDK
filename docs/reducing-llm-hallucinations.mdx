@@ -63,7 +63,8 @@ passages with similar meaning, even without shared keywords) and over
 meaning). They use different FalkorDB procedures: chunk and entity search call
 `db.idx.vector.queryNodes`, while edge search calls
 `db.idx.vector.queryRelationships` (FalkorDB ≥ 4.2), falling back to a
-`vec.cosineDistance` Cypher scan when the graph has no `RELATES` vector index
+`vec.cosineDistance` Cypher scan when that query fails or the graph has no
+`RELATES` vector index
 (`search_relates_edges()` in
 [`entity_discovery.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py),
 `retrieve_chunks()` in

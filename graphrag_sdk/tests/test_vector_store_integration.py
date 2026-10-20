@@ -228,6 +228,23 @@ class TestRelationshipSearch:
         results = await first.search_relationships([1.0, 0.0, 0.0], top_k=1)
 
         assert [r["fact"] for r in results] == ["Alice works at Acme"]
+        # The fallback warns "run ensure_indices()"; on this store, which ran
+        # it once already, that must recreate the index, not return early.
+        assert (await first.ensure_indices())["vector_RELATES"]
+        assert "VECTOR" in (await _index_types(conn, "RELATES")).get("embedding", [])
+
+    async def test_a_node_index_named_relates_does_not_hide_edges(self, conn):
+        await self._graph_with_embedded_edges(conn)
+        await conn.query("CREATE (:RELATES {embedding: vecf32([0.0, 0.0, 1.0])})")
+        await conn.query(
+            "CREATE VECTOR INDEX FOR (n:RELATES) ON (n.embedding) "
+            "OPTIONS {dimension:3, similarityFunction:'cosine'}"
+        )
+        store = VectorStore(conn, embedding_dimension=3)  # no index on the edges
+
+        results = await store.search_relationships([1.0, 0.0, 0.0], top_k=1)
+
+        assert [r["fact"] for r in results] == ["Alice works at Acme"]
 
     async def test_an_empty_graph_returns_nothing(self, conn):
         store = VectorStore(conn, embedding_dimension=3)
