@@ -19,7 +19,7 @@ import pytest
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
-from graphrag_sdk.core.models import GraphNode, GraphRelationship
+from graphrag_sdk.core.models import Attribute, Entity, GraphNode, GraphRelationship, Ontology
 from graphrag_sdk.core.providers.base import LLMBatchItem
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
@@ -54,9 +54,11 @@ class Judge:
     """Answers by name: ``same`` are the name groups that are one entity.
     ``fail`` names an entity whose sets get no answer, every time."""
 
-    def __init__(self, same=(), fail=()):
+    def __init__(self, same=(), fail=(), keep=None):
         self.same = [set(g) for g in same]
         self.fail = set(fail)
+        # attribute -> the name of the member whose value a merged group keeps
+        self.keep = dict(keep or {})
         self.prompts: list[str] = []
 
     async def abatch_invoke(self, prompts, **kw):
@@ -77,7 +79,16 @@ class Judge:
                     grp = [n for n, nm in names if any({name, nm} <= g for g in self.same)]
                     grp = grp or [num]
                     used.update(grp)
-                    lines.append(f"SET {si} GROUP: {', '.join(grp)}")
+                    keep = [
+                        f"{attr}={n}"
+                        for attr, owner in self.keep.items()
+                        for n, nm in names
+                        if n in grp and nm == owner and len(grp) > 1
+                    ]
+                    lines.append(
+                        f"SET {si} GROUP: {', '.join(grp)}"
+                        + (f" | NAME: {name} | KEEP: {'; '.join(keep)}" if keep else "")
+                    )
             out.append(LLMBatchItem(index=i, response=SimpleNamespace(content="\n".join(lines))))
         return out
 
@@ -389,6 +400,47 @@ async def test_without_the_judge_the_check_stays_owed(graph):
     dd = dedup(graph)
     await dd.deduplicate(release_unjudged=True)
     assert await records(graph) == []
+
+
+# ── attributes ───────────────────────────────────────────────────
+
+
+async def test_the_judge_sees_the_ontologys_attributes_and_picks_the_value(graph):
+    """The judge sees each entity's declared attributes and chooses which
+    birth year the merged entity keeps; the other stays on it, in
+    ``born__dropped``, and the run reports the collision."""
+    ontology = Ontology(
+        entities=[Entity(label="Person", properties=[Attribute(name="born", type="INTEGER")])]
+    )
+    await graph.query_raw(
+        "CREATE (:__Entity__:Person {id: 'tim', name: 'Tim Cook', description: 'Apple CEO', "
+        "born: 1961, embedding: vecf32([1.0, 0.0, 0.0, 0.0])})"
+    )
+    await graph.upsert_nodes(
+        [
+            GraphNode(
+                id="timothy",
+                label="Person",
+                properties={
+                    "name": "Timothy Cook",
+                    "description": "chief executive of Apple",
+                    "born": 1960,
+                },
+            )
+        ]
+    )
+    judge = Judge([TIM], keep={"born": "Tim Cook"})
+    dd = dedup(graph)
+    assert await dd.deduplicate(judge_llm=judge, ontology=ontology) == 1
+    assert "TYPES AND THEIR ATTRIBUTES\nPerson. Attributes: born (INTEGER)" in judge.prompts[0]
+    assert "| born: 1961" in judge.prompts[0] and "| born: 1960" in judge.prompts[0]
+    # Timothy Cook survives (the longer description); the judge kept Tim's year.
+    assert await rows(graph, "MATCH (e:__Entity__) RETURN e.id, e.born, e.born__dropped") == [
+        ["timothy", 1961, [1960]]
+    ]
+    assert dd.last_report.collisions == [
+        "Timothy Cook: born kept 1961 (judge), dropped 1960 from Tim Cook"
+    ]
 
 
 # ── the server ───────────────────────────────────────────────────

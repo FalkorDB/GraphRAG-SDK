@@ -12,6 +12,7 @@ from uuid import uuid4
 import pytest
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
+from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.merge_query import (
     APPLIED,
@@ -29,6 +30,7 @@ from graphrag_sdk.storage.merge_query import (
 )
 from graphrag_sdk.storage.system_store import (
     ABSORB,
+    JUDGE,
     RENAME,
     Decisions,
     DedupRunActiveError,
@@ -386,3 +388,53 @@ async def test_a_plan_page_holds_every_column_and_decisions_page_together(graph)
     assert plan.decisions[0].handoff == ["h"] and plan.decision_done == [False, False]
     await store.drop_plans()
     assert await store.sealed_plan() is None
+
+
+async def test_a_collision_keeps_the_chosen_value_and_the_other_in_dropped(graph):
+    """The judge chose the duplicate's ``born``; the survivor's goes to
+    ``born__dropped``, in the one merge query. A value rewritten after the
+    read stops the merge: the fold would otherwise overwrite it."""
+    await tim_cook(graph)
+    await graph.query_raw(
+        "MATCH (s:__Entity__ {id: 's'}), (d:__Entity__ {id: 'd'}) "
+        "SET s.born = 1961, s.born__dropped = [1959], d.born = 1960"
+    )
+    store = await held(graph)
+    op = PlanOp(
+        ABSORB,
+        0,
+        "s",
+        "Tim Cook",
+        dup="d",
+        dup_name="Timothy Cook",
+        policy=JUDGE,
+        keep='{"born": 1960}',
+    )
+    plan_run = await store.write_plan([op], Decisions())
+    where = {
+        "plan_run": plan_run,
+        "page": 0,
+        "op": 0,
+        "dup": "d",
+        "dup_name": "Timothy Cook",
+        "survivor": "s",
+        "survivor_name": "Tim Cook",
+    }
+
+    async def apply(read):
+        fold = EntityDeduplicator(graph, None)._fold(op, read)
+        result = await store.fenced(
+            absorb_query(read.kinds, fold.sets, fold.labels),
+            {**fold.params, **where, "handled": handled(read.kinds)},
+        )
+        return outcome(result[0], 0)
+
+    read = await read_for_merge(graph, "s", "d")
+    await graph.query_raw("MATCH (s:__Entity__ {id: 's'}) SET s.born = 1962")  # ingest, between
+    assert await apply(read) == STALE
+    await graph.query_raw("MATCH (s:__Entity__ {id: 's'}) SET s.born = 1961")
+
+    assert await apply(await read_for_merge(graph, "s", "d")) == APPLIED
+    assert await rows(graph, "MATCH (s:__Entity__ {id: 's'}) RETURN s.born, s.born__dropped") == [
+        [1960, [1959, 1961]]
+    ]

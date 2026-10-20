@@ -104,11 +104,21 @@ def handled(kinds: list[tuple[str, str]]) -> list[str]:
     return [f"{t}:{d}" for t, d in kinds]
 
 
-def snapshot_params(read: MergeRead, carry: dict[str, Any]) -> dict[str, Any]:
+def snapshot_params(
+    read: MergeRead, carry: dict[str, Any], seen: Iterable[str] = ()
+) -> dict[str, Any]:
     """The preconditions :func:`absorb_query` checks: the fields the fold was
     computed from, as read. ``carry`` is what the fold copies from the
-    duplicate onto properties the survivor lacked."""
-    params: dict[str, Any] = {"carry": carry}
+    duplicate onto properties the survivor lacked; ``seen`` are the other
+    properties it read on both nodes (a collision and its ``__dropped``
+    history)."""
+    seen = list(seen)
+    params: dict[str, Any] = {
+        "carry": carry,
+        "s_seen": {k: read.keep[k] for k in seen if read.keep.get(k) is not None},
+        "d_seen": {k: read.dup[k] for k in (*carry, *seen) if read.dup.get(k) is not None},
+        "s_absent": [*carry, *(k for k in seen if read.keep.get(k) is None)],
+    }
     for side, props in (("s", read.keep), ("d", read.dup)):
         for param, key, empty in (
             ("desc", "description", ""),
@@ -179,8 +189,9 @@ _ABSORB_HEAD = (
     "AND coalesce(s.aliases, []) = $s_aliases AND coalesce(s.merged_labels, '') = $s_merged "
     "AND coalesce(d.description, '') = $d_desc AND coalesce(d.descriptions, []) = $d_descs "
     "AND coalesce(d.aliases, []) = $d_aliases AND coalesce(d.merged_labels, '') = $d_merged "
-    "AND all(k IN keys($carry) WHERE d[k] = $carry[k] "
-    "AND (s[k] IS NULL OR s[k] = '' OR s[k] = [])) AS fresh "
+    "AND all(k IN keys($s_seen) WHERE s[k] = $s_seen[k]) "
+    "AND all(k IN keys($d_seen) WHERE d[k] = $d_seen[k]) "
+    "AND all(k IN $s_absent WHERE s[k] IS NULL OR s[k] = '' OR s[k] = []) AS fresh "
     # Every relationship type the duplicate has must have a block below. The
     # parentheses matter: ``a + CASE ... END IN l`` parses as ``a + (... IN l)``.
     "OPTIONAL MATCH (d)-[x]-() WHERE present "

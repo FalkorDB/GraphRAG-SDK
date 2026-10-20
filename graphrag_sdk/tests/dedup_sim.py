@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator, _entity_from_row, _Run
+from graphrag_sdk.storage.judge_dedup import AttributeSchema
 from graphrag_sdk.storage.merge_query import MergeRead
 from graphrag_sdk.storage.system_store import ABSORB, Decisions, PlanOp
 
@@ -31,6 +32,7 @@ class Write:
     sets: list[str]
     labels: list[str]
     params: dict[str, Any]
+    collisions: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -122,6 +124,14 @@ class SimGraph:
                 scored.sort(key=lambda hit: hit[1])
                 out.append([eid, scored[: params["k"] - 1]])
             return SimpleNamespace(result_set=out)
+        if "e[k] IS NOT NULL" in cypher:
+            rows = []
+            for eid in ids:
+                props = self.nodes[eid]["props"]
+                rows.append(
+                    [eid, [[k, props[k]] for k in params["keys"] if props.get(k) is not None]]
+                )
+            return SimpleNamespace(result_set=rows)
         if "WITH e RETURN e.id AS id" in cypher:
             return SimpleNamespace(result_set=[self._entity_row(eid) for eid in ids])
         if "RETURN e.id, e.name, e.description" in cypher:
@@ -171,6 +181,8 @@ def _apply(nodes: dict[str, dict[str, Any]], op: PlanOp, sets, labels, params) -
             sp["aliases"] = list(params["aliases"])
         elif item == "s += $carry":
             sp.update(params["carry"])
+        elif item == "s += $override":
+            sp.update(params["override"])
         elif item == "s.merged_labels = $merged_labels":
             sp["merged_labels"] = params["merged_labels"]
         else:
@@ -188,6 +200,7 @@ async def simulate(
     skip_pairs: set[frozenset[str]] | None = None,
     pending: list[str] | None = None,
     graph_class: type | None = None,
+    ontology: Any = None,
 ) -> Sim:
     """Decide and apply one run over ``rows`` — ``[id, name, description,
     label or [labels], aliases, is_stub, degree, embedding]``, trailing
@@ -203,6 +216,7 @@ async def simulate(
     graph = (graph_class or SimGraph)(nodes)
     dedup = EntityDeduplicator(graph, None)
     dedup._declared_labels = {label.lower() for label in declared_labels or set()}
+    dedup._schema = AttributeSchema.from_ontology(ontology)
     dedup._dedup_all = pending is None
     run = _Run(judged=judge is not None)
     points = list(nodes) if pending is None else list(pending)
@@ -236,9 +250,9 @@ async def simulate(
                 dup_labels=list(d["labels"]),
                 kinds=[],
             )
-            sets, labels, params = dedup._fold(op, read)
-            _apply(nodes, op, sets, labels, params)
-            writes.append(Write(op, sets, labels, params))
+            fold = dedup._fold(op, read)
+            _apply(nodes, op, fold.sets, fold.labels, fold.params)
+            writes.append(Write(op, fold.sets, fold.labels, fold.params, fold.collisions))
         else:
             p = nodes[op.survivor]["props"]
             names = [*(p.get("aliases") or []), p.get("name")]

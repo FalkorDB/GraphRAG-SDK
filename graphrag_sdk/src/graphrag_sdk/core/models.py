@@ -1028,6 +1028,16 @@ class FinalizeResult(DataModel):
     judged with. ``finalize(dedup_all=True)`` retries them.
     """
 
+    dedup_collisions: list[str] = Field(default_factory=list)
+    """Merges whose two entities held different values for one property.
+
+    The value that stays is the judge's choice (``KEEP``) on a judged merge,
+    otherwise the survivor's; the other is not lost — it is kept on the merged
+    entity in ``<property>__dropped``, a list. Each entry names both values::
+
+        "Tim Cook: born kept 1960 (judge), dropped 1961 from Timothy Cook"
+    """
+
     dedup_merges_changed: int = 0
     """Planned merges skipped because an entity changed while the run applied
     them — deleted or re-keyed by ``update()``, renamed, or rewritten too often

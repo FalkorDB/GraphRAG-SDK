@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import platform
@@ -22,17 +23,19 @@ import unicodedata
 from collections import defaultdict
 from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import RESERVED_NODE_LABELS
 from graphrag_sdk.core.providers import Embedder, LLMInterface
+from graphrag_sdk.core.tables import RESERVED_PROPERTY_NAMES
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import DEFAULT_ENTITY_TYPES
 from graphrag_sdk.ingestion.resolution_strategies.base import description_list
 from graphrag_sdk.storage.identity import NearMiss, canonical_key, find_near_misses
 from graphrag_sdk.storage.judge_dedup import (
     NEIGHBOUR_GATE,
     NEIGHBOUR_K,
+    AttributeSchema,
     Hit,
     LLMJudgeDeduplicator,
     NameNeighbourIndex,
@@ -571,6 +574,10 @@ class DedupReport:
     changed: int = 0
     #: Merges applied from an interrupted run's sealed plan.
     resumed: int = 0
+    #: Every value a merge kept out of a property because the other node's
+    #: won: ``"Tim Cook: born kept 1960 (judge), dropped 1961 from Timothy Cook"``.
+    #: The dropped value is on the survivor, in ``<property>__dropped``.
+    collisions: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -594,6 +601,9 @@ class _Run:
     #: Decided absorbs, ``dup id -> (survivor id, policy)``, in decision order.
     into: dict[str, tuple[str, str]] = field(default_factory=dict)
     renames: dict[str, str] = field(default_factory=dict)
+    #: Judged survivor id -> the judge's KEEP picks for its group,
+    #: ``{node property: value}``.
+    keeps: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: Listed ids the claim charged one judged attempt.
     charged: set[str] = field(default_factory=set)
     #: Ids in a set that got no usable verdict; ids in a group such a set
@@ -722,6 +732,8 @@ class EntityDeduplicator:
         # Name vectors this run wrote, on nodes still in the graph at the end.
         self.names_embedded = 0
         self._name_embedded_ids: set[str] = set()
+        # The ontology's types and attributes, as the judge sees them.
+        self._schema = AttributeSchema()
 
     async def deduplicate(
         self,
@@ -731,8 +743,15 @@ class EntityDeduplicator:
         judge_llm: LLMInterface | None = None,
         dedup_all: bool = False,
         release_unjudged: bool = False,
+        ontology: Any = None,
     ) -> int:
         """Run deduplication and return the number of duplicates merged.
+
+        ``ontology``, when given, is the schema the judge sees: each entity
+        shows the values of the attributes its types declare, under a header
+        listing those types' attributes, and the judge may choose, per
+        attribute its group's members disagree on, whose value the merged
+        entity keeps (``KEEP``). See :meth:`_fold`.
 
         ``declared_labels`` are labels a structured mapping declared. They are
         treated as authoritative about type, which lets the one safe kind of
@@ -767,6 +786,7 @@ class EntityDeduplicator:
         self._judge_pairs = []
         self.names_embedded = 0
         self._name_embedded_ids = set()
+        self._schema = AttributeSchema.from_ontology(ontology)
         await _require_falkordb(self._graph)
 
         store = SystemStore(self._graph)
@@ -1242,9 +1262,18 @@ class EntityDeduplicator:
         stats["sets"] = len(sets)
         if not sets:
             return
+        if self._schema.keys:
+            shown = sorted({i for members in sets for i in members})
+            stored = await judge.attribute_values(
+                [ents[i]["id"] for i in shown], self._schema.keys, batch_size
+            )
+            for i in shown:
+                held = self._schema.values(ents[i], stored.get(ents[i]["id"], {}))
+                ents[i]["values"] = [(f.shown, value) for f, value in held]
+                ents[i]["attrs"] = {f.shown.casefold(): (f.key, value) for f, value in held}
         run.charged = {ents[i]["id"] for members in sets for i in members} & run.listed
         await self._claim(store, run)
-        verdicts = await judge.judge(sets, ents)
+        verdicts = await judge.judge(sets, ents, self._schema)
         stats["llm_calls"] = verdicts.calls
         stats["llm_failed"] = verdicts.failed_calls
         await self._resolve(run, ents, verdicts, protected, batch_size)
@@ -1327,7 +1356,12 @@ class EntityDeduplicator:
             known = [run.rows.get(ents[i]["id"]) or fetched.get(ents[i]["id"]) for i in group]
             name = pick_group_name(group, verdicts.names, ents)
             self._plan_judged_group(
-                run, [row for row in known if row is not None], [ents[i] for i in group], name, skip
+                run,
+                [row for row in known if row is not None],
+                [ents[i] for i in group],
+                name,
+                skip,
+                keep=_picked_values(group, verdicts.keeps, ents),
             )
 
     def _plan_judged_group(
@@ -1337,8 +1371,13 @@ class EntityDeduplicator:
         members: list[dict[str, Any]],
         preferred_name: str | None,
         skip: set[frozenset[str]],
+        keep: dict[str, Any] | None = None,
     ) -> None:
         """Decide the merges of one group the judge agreed on.
+
+        ``keep`` is the judge's choice, per attribute the members disagree on,
+        of the value the merged entity keeps; it travels with the group's
+        absorbs in the plan and is applied by :meth:`_fold`.
 
         ``preferred_name`` is the judge's best name for the group (one of its
         members' names or aliases). The survivor is still picked by
@@ -1373,6 +1412,8 @@ class EntityDeduplicator:
         self.last_judge_stats["merged"] = int(self.last_judge_stats.get("merged", 0)) + len(
             absorbed
         )
+        if absorbed and keep:
+            run.keeps[survivor["id"]] = keep
         if (
             absorbed
             and preferred_name
@@ -1498,6 +1539,11 @@ class EntityDeduplicator:
                         dup=dup,
                         dup_name=run.rows[dup]["name"],
                         policy=policy,
+                        keep=(
+                            json.dumps(run.keeps[survivor], default=str)
+                            if policy == JUDGE and survivor in run.keeps
+                            else ""
+                        ),
                     )
                 )
             if root in renames:
@@ -1611,19 +1657,25 @@ class EntityDeduplicator:
             read = await read_for_merge(self._graph, op.survivor, op.dup)
             if read is None:
                 break  # an entity is gone: recorded as changed below
-            sets, labels, params = self._fold(op, read)
+            fold = self._fold(op, read)
             rows = await store.fenced(
-                absorb_query(read.kinds, sets, labels),
-                {**params, **where, "handled": handled(read.kinds)},
+                absorb_query(read.kinds, fold.sets, fold.labels),
+                {**fold.params, **where, "handled": handled(read.kinds)},
             )
             state = outcome(rows[0], i)
+            if state == APPLIED:
+                self.last_report.collisions.extend(
+                    f"{op.survivor_name}: {c.key} kept {c.kept!r}"
+                    f"{' (judge)' if c.by_judge else ''}, dropped {c.dropped!r} from {op.dup_name}"
+                    for c in fold.collisions
+                )
             if state != STALE:
                 return state
         return outcome((await store.fenced(SKIP_QUERY, where))[0], i)
 
-    def _fold(self, op: PlanOp, read: MergeRead) -> tuple[list[str], list[str], dict[str, Any]]:
+    def _fold(self, op: PlanOp, read: MergeRead) -> Fold:
         """What an absorb writes onto the survivor, from the two nodes as read:
-        ``(SET items, labels to add, parameters)``.
+        SET items, labels to add, parameters, and the property collisions.
 
         The policy decides the labels. Every absorb carries the labels the
         duplicate holds beyond its own primary — the ones earlier merges gave
@@ -1643,6 +1695,14 @@ class EntityDeduplicator:
         the survivor's aliases, and any property the survivor lacks is copied
         (:func:`properties_to_carry`). Node provenance is unioned by the query
         itself.
+
+        A property both nodes hold with different values is a **collision**,
+        and no value is lost to it: the one that stays is the judge's choice
+        (``KEEP``, on a judged absorb) or else the survivor's, and the other is
+        appended to ``<property>__dropped`` on the survivor — a list, unioned
+        with both nodes' earlier ones, so a later merge adds to the history.
+        Two list values are unioned instead. The SDK's own properties never
+        collide: each has its own rule above.
         """
         keep, dup = read.keep, read.dup
         recorded = split_merged_labels(keep.get(MERGED_LABELS_KEY))
@@ -1690,21 +1750,20 @@ class EntityDeduplicator:
             params["aliases"] = aliases
 
         carry = properties_to_carry(keep, dup, never=self._NEVER_CARRY)
-        # Handled above, or by the absorb query itself.
-        for key in (
-            "description",
-            "descriptions",
-            "aliases",
-            "source_chunk_ids",
-            MERGED_LABELS_KEY,
-        ):
-            carry.pop(key, None)
+        # Handled above, by the collisions below, or by the absorb query itself.
+        for key in [k for k in carry if k in _FOLDED_KEYS or k.endswith(DROPPED_SUFFIX)]:
+            carry.pop(key)
         if carry:
             sets.append("s += $carry")
         if merged_labels != recorded:
             sets.append(f"s.{MERGED_LABELS_KEY} = $merged_labels")
             params["merged_labels"] = " | ".join(merged_labels)
-        return sets, labels, {**params, **snapshot_params(read, carry)}
+
+        override, collisions, seen = _collisions(keep, dup, json.loads(op.keep or "{}"))
+        if override:
+            sets.append("s += $override")
+            params["override"] = override
+        return Fold(sets, labels, {**params, **snapshot_params(read, carry, seen)}, collisions)
 
     async def _apply_rename(
         self, store: SystemStore, plan_run: str, page: int, i: int, op: PlanOp, *, apply: bool
@@ -2093,6 +2152,112 @@ class EntityDeduplicator:
 
     # Written by the system, never carried across from a duplicate.
     _NEVER_CARRY = frozenset({"id", "embedding"})
+
+
+#: Where a merge keeps the values a collision displaced: ``born__dropped``.
+DROPPED_SUFFIX = "__dropped"
+# Properties a merge folds by a rule of its own, never by carry.
+_FOLDED_KEYS = frozenset(
+    {"description", "descriptions", "aliases", "source_chunk_ids", MERGED_LABELS_KEY}
+)
+# Properties the SDK owns; none collides — the survivor's stays, and one the
+# survivor lacks is carried (``is_stub``, ``entity_key``: it now holds the row).
+_OWN_KEYS = RESERVED_PROPERTY_NAMES | _FOLDED_KEYS
+
+
+class Collision(NamedTuple):
+    key: str
+    kept: Any
+    dropped: Any
+    by_judge: bool
+
+
+class Fold(NamedTuple):
+    """What one absorb writes: see :meth:`EntityDeduplicator._fold`."""
+
+    sets: list[str]
+    labels: list[str]
+    params: dict[str, Any]
+    collisions: list[Collision]
+
+
+def _canon(value: Any) -> str:
+    """A value's comparable form: equal values compare equal whatever their
+    container type (a pick stored as JSON in the plan, a value read back)."""
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _as_list(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, list) else ([] if value is None else [value])
+
+
+def _union(*lists: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    seen: set[str] = set()
+    for item in (x for values in lists for x in values):
+        if _canon(item) not in seen:
+            seen.add(_canon(item))
+            out.append(item)
+    return out
+
+
+def _collisions(
+    keep: dict[str, Any], dup: dict[str, Any], picked: dict[str, Any]
+) -> tuple[dict[str, Any], list[Collision], list[str]]:
+    """The writes one absorb's property collisions need: ``(override, the
+    collisions, every property read for them)`` — see
+    :meth:`EntityDeduplicator._fold`. ``picked`` is the judge's KEEP for the
+    group: a value it chose that is neither node's leaves the survivor's."""
+    override: dict[str, Any] = {}
+    collisions: list[Collision] = []
+    lost: dict[str, list[Any]] = defaultdict(list)
+    for key in sorted(set(keep) & set(dup)):
+        if key in _OWN_KEYS or key.endswith(DROPPED_SUFFIX):
+            continue
+        mine, theirs = keep[key], dup[key]
+        if mine in (None, "", []) or theirs in (None, "", []) or _canon(mine) == _canon(theirs):
+            continue
+        if isinstance(mine, list) and isinstance(theirs, list):
+            override[key] = _union(mine, theirs)
+            continue
+        choice = _canon(picked[key]) if key in picked else None
+        if choice == _canon(theirs):
+            override[key] = theirs
+            collisions.append(Collision(key, theirs, mine, by_judge=True))
+            lost[key + DROPPED_SUFFIX].append(mine)
+        else:
+            collisions.append(Collision(key, mine, theirs, by_judge=choice == _canon(mine)))
+            lost[key + DROPPED_SUFFIX].append(theirs)
+    histories = {k for k in (*keep, *dup) if k.endswith(DROPPED_SUFFIX)} | set(lost)
+    for key in sorted(histories):
+        merged = _union(_as_list(keep.get(key)), _as_list(dup.get(key)), lost.get(key, []))
+        if merged != _as_list(keep.get(key)):
+            override[key] = merged
+    seen = sorted(set(override) | {c.key for c in collisions})
+    return override, collisions, seen
+
+
+def _picked_values(
+    group: list[int], keeps: dict[frozenset[int], dict[str, int]], ents: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The values the judge chose for a group, ``{node property: value}``:
+    from every judged sub-group, a pick naming an attribute the chosen member
+    shows. Two picks of different values for one property cancel out."""
+    members = set(group)
+    chosen: dict[str, Any] = {}
+    torn: set[str] = set()
+    for sub, picks in keeps.items():
+        if not sub <= members:
+            continue
+        for attr, i in picks.items():
+            hit = (ents[i].get("attrs") or {}).get(attr)
+            if hit is None:
+                continue
+            key, value = hit
+            if key in chosen and _canon(chosen[key]) != _canon(value):
+                torn.add(key)
+            chosen.setdefault(key, value)
+    return {k: v for k, v in chosen.items() if k not in torn}
 
 
 def _any_decision(decisions: Decisions) -> bool:

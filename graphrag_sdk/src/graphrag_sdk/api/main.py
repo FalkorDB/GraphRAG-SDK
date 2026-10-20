@@ -4617,6 +4617,7 @@ class GraphRAG:
             judge_llm=(judge_llm or self.llm) if judge else None,
             dedup_all=dedup_all,
             release_unjudged=release_unjudged,
+            ontology=self._global_ontology,
         )
         # Dedup has run over what was pending, so the pending-dedup reminder
         # no longer applies. Reset here rather than in finalize() so a caller
@@ -4886,6 +4887,12 @@ class GraphRAG:
                 "the declared labels"
             )
 
+        if dedup_report.collisions:
+            report(
+                f"finalize: {len(dedup_report.collisions)} merge(s) found the two entities "
+                "holding different values for one property; the other value is kept in "
+                "<property>__dropped on the merged entity. See FinalizeResult.dedup_collisions"
+            )
         if dedup_report.unresolved:
             report(
                 f"finalize: {len(dedup_report.unresolved)} entity/entities got no usable dedup "
@@ -4903,6 +4910,7 @@ class GraphRAG:
                 for eid, u in sorted(dedup_report.unresolved.items())
             ],
             dedup_merges_changed=dedup_report.changed,
+            dedup_collisions=list(dedup_report.collisions),
             judge_llm_calls=judge_stats.get("llm_calls", 0),
             judge_stats=judge_stats,
             unmerged_name_collisions=collisions,

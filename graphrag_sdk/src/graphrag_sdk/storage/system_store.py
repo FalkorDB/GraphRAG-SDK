@@ -160,6 +160,9 @@ class PlanOp:
     dup_name: str = ""
     policy: str = EXACT
     rename_to: str = ""
+    #: A judged absorb's ``KEEP`` picks, JSON: ``{node property: value}`` the
+    #: judge chose for its group where the members' values differ.
+    keep: str = ""
 
 
 _PLAN_COLUMNS = (
@@ -171,6 +174,7 @@ _PLAN_COLUMNS = (
     "dup_name",
     "policy",
     "rename_to",
+    "keep",
 )
 
 

@@ -206,6 +206,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     of a pending entity's 10 nearest names are exact-phase matches, the lookup
     widens (up to 1,000) to find matches beyond the tenth. A table re-sync that
     renames a row drops its vector, so it is checked under its new name.
+  - **The judge sees your ontology's attributes.** Each entity shows the values
+    of the attributes its types declare (`born: 1960; role: "CEO"`), under a
+    header listing those types and attributes — only the types in that prompt.
+    Two different values of a fact that does not change mean different entities;
+    on a small labelled set (gpt-4.1) namesakes told apart only by a birth year or
+    birthplace were merged every time without the values and kept apart every
+    time with them. Where a merged group's members disagree, the judge picks
+    whose value stays (`KEEP: born=1`); the other value is kept on the merged
+    entity in `<property>__dropped` (a list), and `FinalizeResult.dedup_collisions`
+    names each. Merges without the judge keep the survivor's value the same way.
   - `finalize(judge=False)` keeps the pending entities pending — the judge still
     owes them a check — and `release_unjudged=True` marks them checked instead.
   - The bookkeeping lives in SDK system nodes in the data graph, beside the

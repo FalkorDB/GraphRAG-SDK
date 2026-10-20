@@ -9,15 +9,23 @@ from types import SimpleNamespace
 
 import pytest
 
+from graphrag_sdk.core.models import Attribute, Entity, Ontology
 from graphrag_sdk.core.providers.base import LLMBatchItem
-from graphrag_sdk.storage.deduplicator import EntityDeduplicator, _entity_from_row
+from graphrag_sdk.storage.deduplicator import (
+    EntityDeduplicator,
+    _collisions,
+    _entity_from_row,
+    _picked_values,
+)
 from graphrag_sdk.storage.judge_dedup import (
     MAX_DESC_CHARS,
     MAX_NAME_CHARS,
     PROMPT_TOKEN_BUDGET,
     REASKS,
+    AttributeSchema,
     NameNeighbourIndex,
     different_pairs_from_response,
+    group_keeps_from_response,
     make_groups_dense,
     pack_prompts,
     pairs_by_set_from_response,
@@ -609,7 +617,7 @@ def _fold(dup_labels, *, keep_labels=("Organization",), policy=JUDGE, keep=None,
         dup_labels=list(dup_labels),
         kinds=[],
     )
-    return EntityDeduplicator(None, None)._fold(op, read)
+    return EntityDeduplicator(None, None)._fold(op, read)[:3]
 
 
 def test_a_merge_refuses_a_label_that_is_not_an_identifier():
@@ -731,3 +739,118 @@ def test_a_spoiled_answer_is_warned_about_once(caplog):
         _sim(judge=llm)
     spoiled = [r for r in caplog.records if "asked again" in r.getMessage()]
     assert len(spoiled) == 1 + REASKS
+
+
+# ── attributes: the judge sees them, picks a value, nothing is lost ─────────
+
+PEOPLE = Ontology(
+    entities=[
+        Entity(
+            label="Person",
+            description="a human being",
+            properties=[
+                Attribute(name="born", type="INTEGER", description="year of birth"),
+                Attribute(name="role", type="STRING"),
+            ],
+        ),
+        Entity(
+            label="Organization",
+            properties=[Attribute(name="founded", type="INTEGER")],
+        ),
+        Entity(label="Location", properties=[Attribute(name="country", type="STRING")]),
+    ]
+)
+
+
+def test_each_entity_shows_its_own_types_attributes_under_a_schema_header():
+    schema = AttributeSchema.from_ontology(PEOPLE)
+    ents = [
+        {"name": "Tim Cook", "labels": ["Person"], "values": [("born", 1960), ("role", "CEO")]},
+        {"name": "Apple", "labels": ["Organization"], "values": [("founded", 1976)]},
+    ]
+    (prompt,), _ = pack_prompts([[0, 1]], ents, schema=schema)
+    assert '1. Tim Cook [Person] — (no description) | born: 1960; role: "CEO"' in prompt
+    assert "2. Apple [Organization] — (no description) | founded: 1976" in prompt
+    header = prompt.split("TYPES AND THEIR ATTRIBUTES\n")[1].split("\n\n")[0]
+    assert header.splitlines() == [
+        "Organization. Attributes: founded (INTEGER)",
+        "Person — a human being. Attributes: born (INTEGER): year of birth; role (STRING)",
+    ], "only the types in the prompt, each with its own attributes"
+    (bare,), _ = pack_prompts([[0, 1]], ents)
+    assert "TYPES AND THEIR ATTRIBUTES" not in bare
+
+
+def test_a_node_under_two_types_has_the_attributes_of_both():
+    schema = AttributeSchema.from_ontology(PEOPLE)
+    keys = [f.key for f in schema.fields(["Person", "Organization"])]
+    assert keys == ["born", "role", "founded"]
+    held = schema.values({"labels": ["Person", "Organization"]}, {"born": 1960, "founded": 1976})
+    assert [(f.shown, v) for f, v in held] == [("born", 1960), ("founded", 1976)]
+
+
+def test_keep_names_members_and_an_attribute_ending_in_a_digit_is_not_one():
+    text = "SET 1 GROUP: 1, 3 | NAME: Tim Cook | KEEP: address2=3; born=1; role=2\nSET 1 GROUP: 2"
+    order = [[10, 11, 12]]
+    assert parse_groups(text, [3]) == {0: [[0, 2], [1]]}
+    assert group_keeps_from_response(text, order) == {
+        frozenset((10, 12)): {"address2": 12, "born": 10}
+    }, "member 2 is not in the group: its pick is dropped"
+    assert parse_groups("SET 1 GROUP: 1 | KEEP: born=1\nSET 1 GROUP: 2", [2]) == {}
+
+
+TIMS = [
+    ["s", "Tim Cook", "Apple CEO", ["Person"], None, None, 3],
+    ["d", "Timothy Cook", "chief executive of Apple", ["Person"]],
+]
+
+
+def test_the_judge_chooses_the_value_and_the_other_is_kept_in_dropped():
+    llm = ScriptedLLM(["SET 1 GROUP: 1, 2 | NAME: Tim Cook | KEEP: born=2"])
+    sim = _sim(
+        TIMS,
+        judge=llm,
+        ontology=PEOPLE,
+        stored={"s": {"props": {"born": 1961, "role": "CEO"}}, "d": {"props": {"born": 1960}}},
+    )
+    assert '| born: 1961; role: "CEO"' in llm.prompts[0] and "| born: 1960" in llm.prompts[0]
+    (write,) = sim.writes
+    assert json.loads(write.op.keep) == {"born": 1960}
+    props = sim.nodes["s"]["props"]
+    assert props["born"] == 1960 and props["born__dropped"] == [1961] and props["role"] == "CEO"
+    assert write.collisions == [("born", 1960, 1961, True)]
+
+
+def test_without_a_pick_the_survivors_value_stays_and_the_other_is_dropped():
+    rows = [
+        ["s", "Tim Cook", "Apple CEO", "Person", None, False, 3],  # a table row: merged by rule
+        ["d", "tim cook", "", "Person"],
+    ]
+    sim = _sim(rows, stored={"s": {"props": {"role": "CEO"}}, "d": {"props": {"role": "COO"}}})
+    props = sim.nodes["s"]["props"]
+    assert props["role"] == "CEO" and props["role__dropped"] == ["COO"]
+    assert sim.writes[0].collisions == [("role", "CEO", "COO", False)]
+
+
+def test_dropped_values_accumulate_lists_union_and_the_sdks_own_never_collide():
+    override, collisions, seen = _collisions(
+        {"born": 1961, "born__dropped": [1959], "tags": ["a"], "is_stub": False, "x": 1},
+        {"born": 1960, "born__dropped": [1958], "tags": ["b", "a"], "is_stub": True, "x": 1},
+        {},
+    )
+    assert override == {"born__dropped": [1959, 1958, 1960], "tags": ["a", "b"]}
+    assert collisions == [("born", 1961, 1960, False)]
+    assert seen == ["born", "born__dropped", "tags"]
+
+
+def test_two_picks_of_different_values_for_one_attribute_cancel():
+    ents = [
+        {"attrs": {"born": ("born", 1960)}},
+        {"attrs": {"born": ("born", 1961)}},
+        {"attrs": {"role": ("role", "CEO")}},
+    ]
+    keeps = {
+        frozenset((0, 1)): {"born": 0},
+        frozenset((1, 2)): {"born": 1, "role": 2},
+        frozenset((2, 3)): {"born": 0},  # not inside the group: ignored
+    }
+    assert _picked_values([0, 1, 2], keeps, ents) == {"role": "CEO"}

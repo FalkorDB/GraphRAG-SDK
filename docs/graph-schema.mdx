@@ -89,6 +89,7 @@ The layers are connected by `MENTIONED_IN` edges, which link entities to the chu
 | `aliases` | `list[string]` | Other names the entity was merged under |
 | `descriptions` | `list[string]` | Every merged member's description (`description` joins them with `" \| "`) |
 | `merged_labels` | `string` | Labels a merge added, joined with `" \| "` |
+| `<property>__dropped` | `list` | Values of `<property>` a dedup merge displaced: the two merged entities held different values, and the one that stayed is the judge's choice or the survivor's (e.g. `born__dropped: [1961]`) |
 
 **Created in:** Step 7 (Write). `__Entity__` label is automatically added. Embedding is written during `finalize()`.
 
