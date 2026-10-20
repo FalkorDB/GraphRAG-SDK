@@ -337,6 +337,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves more concurrent questions.
 
 ### Fixed
+- A cancelled circuit-breaker probe refused every query until restart. Once
+  the breaker opens, one query is let through as the probe and the rest are
+  refused until it reports back, but a probe cancelled mid-query
+  (`asyncio.wait_for`, a web framework's request timeout) never did:
+  `CancelledError` skipped the handler that records the outcome. A probe that
+  hit a non-transient error raised before reporting too. Either left the
+  breaker probing forever. A probe that exits without an outcome now hands
+  its slot back, and the next query probes.
 - `delete_all()` forgot to reset the memo for the per-label `id` range
   indexes. The graph drop took the indexes with it, but in the same process
   `create_id_range_indices()` believed they still existed, so the next ingest
