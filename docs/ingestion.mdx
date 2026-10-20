@@ -245,18 +245,17 @@ After all documents are ingested, call `finalize()` to prepare the graph for que
 | 2. Deduplicate | Global exact-name entity dedup | "Alice" from doc 1 and doc 5 become one node |
 | 3. Entity embeddings | Embeds entity names into vectors | Powers entity vector search during retrieval |
 | 4. Relationship embeddings | Embeds fact text on RELATES edges | Powers RELATES edge vector search during retrieval |
-| 5. Ensure indexes | Creates all 5 standard indexes | Vector + fulltext indexes for search |
+| 5. Ensure indexes | Creates the `id` range indexes and the 5 vector and fulltext indexes | Fast MERGE on write; vector + fulltext search |
 
 ```python
 # After ingesting ALL documents:
 stats = await rag.finalize()
-# Returns: {
-#     "null_stubs_removed": 0,
-#     "entities_deduplicated": 142,
-#     "entities_embedded": 3200,
-#     "relationships_embedded": 8500,
-#     "indexes": { "vector_Chunk": True, "vector___Entity__": True, ... }
-# }
+# Returns a FinalizeResult:
+#     stats.null_stubs_removed      -> 0
+#     stats.entities_deduplicated   -> 142
+#     stats.entities_embedded       -> 3200
+#     stats.relationships_embedded  -> 8500
+#     stats.indexes                 -> {"range_ids": True, "vector_Chunk": True, "vector_Entity": True, ...}
 ```
 
 **Important:** Do not call `finalize()` after each document — call it once after all ingestion is complete. Entity backfill re-scans all entities and is slow when called repeatedly.

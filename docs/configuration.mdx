@@ -539,28 +539,29 @@ After all documents have been ingested, run post-ingestion steps to deduplicate 
 
 ### `finalize()` -- All-In-One
 
-The recommended approach is to call `finalize()` after all ingestion is complete. It bundles four steps in order:
+The recommended approach is to call `finalize()` after all ingestion is complete. It runs these steps in order:
 
-1. `deduplicate_entities()` -- global exact-name deduplication.
-2. `backfill_entity_embeddings()` -- embed entity names for vector search.
-3. `embed_relationships()` -- embed fact text on RELATES edges.
-4. `ensure_indices()` -- create all 5 standard indexes (idempotent).
+1. Remove legacy entities with a `NULL` name.
+2. `deduplicate_entities()` -- global exact-name deduplication, then the cross-source resolver and the LLM-judged phase (both on by default; see `finalize()` in the [API reference](/api-reference)).
+3. `backfill_entity_embeddings()` -- embed entity names for vector search.
+4. `embed_relationships()` -- embed fact text on RELATES edges.
+5. `ensure_indices()` -- create the `id` range indexes and the 5 vector and fulltext indexes (idempotent).
+
+It returns a `FinalizeResult`, a typed model with one field per count:
 
 ```python
 # After ingesting all documents:
 stats = await rag.finalize()
-print(stats)
+print(stats.entities_deduplicated, stats.entities_embedded, stats.relationships_embedded)
+# 142 3200 8500
+print(stats.indexes)
 # {
-#     "entities_deduplicated": 142,
-#     "entities_embedded": 3200,
-#     "relationships_embedded": 8500,
-#     "indexes": {
-#         "vector_Chunk": True,
-#         "vector___Entity__": True,
-#         "vector_RELATES": True,
-#         "fulltext_Chunk": True,
-#         "fulltext___Entity__": True,
-#     },
+#     "range_ids": True,
+#     "vector_Chunk": True,
+#     "vector_Entity": True,
+#     "vector_RELATES": True,
+#     "fulltext_Chunk": True,
+#     "fulltext_Entity": True,
 # }
 ```
 
@@ -621,9 +622,11 @@ Creates all standard indexes (idempotent -- safe to call repeatedly):
 | Vector      | `RELATES` (edge) | `embedding`          |
 | Fulltext    | `Chunk`        | `text`                 |
 | Fulltext    | `__Entity__`   | `name`, `description`  |
+| Range       | `Document`, `Chunk`, `__Entity__` | `id`  |
 
 ```python
 results = await rag.vector_store.ensure_indices()
+# {"range_ids": True, "vector_Chunk": True, "vector_Entity": True, ...}
 ```
 
 Note: `ensure_indices()` is called automatically after each `ingest()` call. The `finalize()` method resets the internal `_indices_ensured` flag and re-runs it to catch any newly needed indexes.

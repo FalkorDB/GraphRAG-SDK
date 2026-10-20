@@ -210,7 +210,7 @@ During retrieval, the `rerank_chunks()` function uses **stored embeddings** when
 
 ### ensure_indices()
 
-Creates all 5 standard indexes in one call. Tracks state internally (`_indices_ensured`) to avoid redundant creation. Called automatically after each `ingest()` call, and re-run during `finalize()` (which resets the flag).
+Creates the `id` range indexes on `Document`, `Chunk` and `__Entity__` and the 5 vector and fulltext indexes in one call, returning a `dict[str, bool]` keyed `range_ids`, `vector_Chunk`, `vector_Entity`, `vector_RELATES`, `fulltext_Chunk`, `fulltext_Entity`. Tracks state internally (`_indices_ensured`) to avoid redundant creation. Called automatically after each `ingest()` call, and re-run during `finalize()` (which resets the flag).
 
 ---
 
