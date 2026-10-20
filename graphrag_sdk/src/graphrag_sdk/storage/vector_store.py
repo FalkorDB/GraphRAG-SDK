@@ -4,15 +4,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 from graphrag_sdk.core.connection import FalkorDBConnection
+from graphrag_sdk.core.exceptions import DatabaseUnavailableError
 from graphrag_sdk.core.models import TextChunks
 
 logger = logging.getLogger(__name__)
 
 _MAX_EMBEDDING_DIMENSION = 8192
+
+# How long ensure_indices() waits for FalkorDB to finish building indexes over
+# existing data before it gives up with a warning. 10,000 chunks at 1536
+# dimensions take about a minute on FalkorDB 4.x.
+_INDEX_BUILD_WAIT_S = 600.0
 
 # Pagination safety net for IS-NULL streaming loops. At batch_size=500
 # this covers 5M items — large enough for any realistic graph. Trips
@@ -525,6 +532,11 @@ class VectorStore:
             # 6.0.x answers with no rows. Either way the scan below is the only
             # way to reach edges that carry an embedding but no index.
             logger.debug("Edge vector query returned nothing, falling back to Cypher scan")
+        except DatabaseUnavailableError as exc:
+            # The server is unreachable or the breaker is open: the scan would
+            # fail the same way, and the index is not to blame.
+            logger.warning(f"Relationship vector search failed: {exc}")
+            return []
         except Exception as exc:
             logger.debug(f"Edge vector query not available, falling back to Cypher scan: {exc}")
 
@@ -536,8 +548,9 @@ class VectorStore:
         if not self._warned_relates_scan:
             self._warned_relates_scan = True
             logger.warning(
-                "No usable RELATES vector index: relationship search scans every "
-                "embedded edge instead. Run ensure_indices() to create the index."
+                "RELATES vector index missing, still building, or rejecting the query: "
+                "relationship search scans every embedded edge instead. If it is "
+                "missing, ensure_indices() creates it."
             )
 
         # Fallback: Cypher-based cosine distance scan
@@ -576,12 +589,14 @@ class VectorStore:
 
         False when it cannot tell (including a graph that does not exist yet),
         so the caller keeps its scan fallback. A node label named ``RELATES``
-        with its own vector index does not count.
+        with its own vector index does not count, nor does an index still
+        being built (FalkorDB 6.0.x answers a query on it with no rows).
         """
         try:
             result = await self._conn.query(
-                "CALL db.indexes() YIELD label, types, entitytype "
-                "WHERE label = 'RELATES' AND entitytype = 'RELATIONSHIP' RETURN types",
+                "CALL db.indexes() YIELD label, types, entitytype, status "
+                "WHERE label = 'RELATES' AND entitytype = 'RELATIONSHIP' "
+                "AND status = 'OPERATIONAL' RETURN types",
                 expected_errors=("empty key",),
             )
         except Exception:
@@ -711,6 +726,51 @@ class VectorStore:
         self._id_indices_ensured = ok
         return ok
 
+    async def _wait_for_index_builds(self) -> None:
+        """Wait until FalkorDB reports every index in the graph built.
+
+        ``CREATE ... INDEX`` returns while the index is still being built over
+        the existing data. Until the build ends, FalkorDB 4.x answers a vector
+        query on that label with an error and 6.0.x with no or partial rows, so
+        a search right after ``ensure_indices()`` found nothing on a large
+        graph. ``db.indexes()`` reports progress without waiting for it.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _INDEX_BUILD_WAIT_S
+        next_log = loop.time() + 10.0
+        delay = 0.05
+        while True:
+            try:
+                result = await self._conn.query(
+                    "CALL db.indexes() YIELD label, status RETURN label, status",
+                    expected_errors=("empty key",),
+                )
+            except Exception:
+                return  # cannot tell; do not hold up the caller
+            # 4.x and 6.0.x both report "[Indexing] x/y: UNDER CONSTRUCTION"
+            # during a build and "OPERATIONAL" after it.
+            building = [
+                f"{row[0]} {row[1]}"
+                for row in result.result_set or []
+                if len(row) > 1 and "UNDER CONSTRUCTION" in str(row[1])
+            ]
+            if not building:
+                return
+            now = loop.time()
+            if now >= deadline:
+                logger.warning(
+                    "Indexes still building after %.0fs; searches on them may "
+                    "return nothing until they finish: %s",
+                    _INDEX_BUILD_WAIT_S,
+                    "; ".join(building),
+                )
+                return
+            if now >= next_log:
+                logger.info("Waiting for index builds: %s", "; ".join(building))
+                next_log = now + 10.0
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 1.0)
+
     async def ensure_indices(self) -> dict[str, bool]:
         """Create all standard vector and fulltext indices (idempotent).
 
@@ -750,6 +810,9 @@ class VectorStore:
             except Exception:
                 logger.debug("Index creation failed for %s", key, exc_info=True)
                 results[key] = False
+            # Before the next statement: it would wait for this build on the
+            # server, past the client's socket timeout on a large graph.
+            await self._wait_for_index_builds()
 
         # Only mark indices as ensured if everything actually succeeded —
         # otherwise the next call to ensure_indices() would skip retrying

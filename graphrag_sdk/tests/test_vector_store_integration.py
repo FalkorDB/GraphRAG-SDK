@@ -250,3 +250,24 @@ class TestRelationshipSearch:
         store = VectorStore(conn, embedding_dimension=3)
         assert await store.search_relationships([1.0, 0.0, 0.0]) == []
         assert await conn._breaker.allow_request()
+
+
+class TestIndexBuilds:
+    async def test_a_search_after_the_build_wait_finds_the_chunks(self, conn):
+        """CREATE VECTOR INDEX returns before the build over existing chunks
+        ends; until then 4.x rejects a search and 6.0.x answers with no rows,
+        so a search right after ensure_indices() found nothing."""
+        rows = [
+            {"id": f"c{i}", "v": [1.0 + (i * 7 + d) % 13 for d in range(128)]} for i in range(3000)
+        ]
+        for start in range(0, len(rows), 500):
+            await conn.query(
+                "UNWIND $rows AS r CREATE (:Chunk {id: r.id, text: r.id, embedding: vecf32(r.v)})",
+                {"rows": rows[start : start + 500]},
+            )
+        store = VectorStore(conn, embedding_dimension=128)
+        assert await store.create_chunk_vector_index()
+
+        await store._wait_for_index_builds()
+
+        assert len(await store.search_chunks([1.0] * 128, top_k=5)) == 5

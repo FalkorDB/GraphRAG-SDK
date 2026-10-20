@@ -424,3 +424,46 @@ class TestEnsureIndicesSkip:
     async def test_ensure_indices_flag_starts_false(self, mock_connection, embedder):
         store = VectorStore(mock_connection, embedder=embedder)
         assert store._indices_ensured is False
+
+
+class TestRelationshipSearchDuringAnOutage:
+    async def test_an_unreachable_server_is_not_blamed_on_the_index(
+        self, vector_store, mock_connection
+    ):
+        """With the server down the scan fails the same way; running it, and
+        warning that the index is missing, sent operators to the wrong place."""
+        from graphrag_sdk.core.exceptions import DatabaseUnavailableError
+
+        vector_store._indices_ensured = True
+        mock_connection.query = AsyncMock(side_effect=DatabaseUnavailableError("breaker open"))
+
+        assert await vector_store.search_relationships(query_vector=[0.1] * 8) == []
+        assert mock_connection.query.await_count == 1
+        assert vector_store._indices_ensured is True
+        assert vector_store._warned_relates_scan is False
+
+
+class TestEnsureIndicesWaitsForBuilds:
+    async def test_waits_while_an_index_is_under_construction(self, vector_store, mock_connection):
+        """CREATE INDEX returns before the build over existing data ends; a
+        search sent then found nothing on a large graph."""
+        building, built, other = MagicMock(), MagicMock(), MagicMock()
+        building.result_set = [["Chunk", "[Indexing] 10/2000: UNDER CONSTRUCTION"]]
+        built.result_set = [["Chunk", "OPERATIONAL"]]
+        other.result_set = []
+        status_replies = iter([building, building] + [built] * 20)
+
+        async def query(cypher, *args, **kwargs):
+            if "YIELD label, status" in cypher:
+                return next(status_replies)
+            return other
+
+        mock_connection.query = AsyncMock(side_effect=query)
+
+        results = await vector_store.ensure_indices()
+
+        assert all(results.values())
+        status_calls = [
+            c for c in mock_connection.query.call_args_list if "YIELD label, status" in c.args[0]
+        ]
+        assert len(status_calls) == len(results) + 2  # two extra polls during the build
