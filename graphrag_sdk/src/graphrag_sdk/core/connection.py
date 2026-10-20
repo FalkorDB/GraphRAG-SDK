@@ -86,6 +86,10 @@ class FalkorDBConnection:
         await conn.close()
     """
 
+    # Bound for liveness checks (PING, the driver's startup probe), which need
+    # no query budget: redis-py's own default, which the SDK used to inherit.
+    _PROBE_TIMEOUT_S = 5.0
+
     def __init__(self, config: ConnectionConfig | None = None) -> None:
         from graphrag_sdk.core.circuit_breaker import CircuitBreaker
 
@@ -116,10 +120,12 @@ class FalkorDBConnection:
             "decode_responses": True,
             # redis-py stops waiting for a reply after 5 s unless told
             # otherwise, before the server's own query timeout (10 s by
-            # default) can answer. A slower read then failed as a socket
+            # default) can answer. A slower query then failed as a socket
             # timeout: retried, counted against the breaker, and left running
-            # on the server. Wait for the server's answer plus a margin; past
-            # that the server missed its own deadline, a real health signal.
+            # on the server. Wait for the server's answer plus a margin. For a
+            # read, a reply later than that means the server missed its own
+            # deadline. FalkorDB applies no deadline to a write, so a write
+            # slower than this is still cut here and re-sent by the retry loop.
             "socket_timeout": (
                 self.config.query_timeout_ms / 1000 + 5.0 if self.config.query_timeout_ms else None
             ),
@@ -138,6 +144,14 @@ class FalkorDBConnection:
             pool_kwargs["ssl_check_hostname"] = self.config.ssl_check_hostname
 
         self._pool = self._pool or BlockingConnectionPool(**pool_kwargs)
+        # The driver's constructor probes the server with a blocking call that
+        # copies the pool's socket timeout and stalls the event loop while it
+        # waits. Probe with the short bound; queries get the long one. Safe to
+        # swap: the constructor is synchronous, so no pool connection can be
+        # created from the lowered value.
+        connection_kwargs = self._pool.connection_kwargs
+        query_socket_timeout = connection_kwargs.get("socket_timeout")
+        connection_kwargs["socket_timeout"] = self._PROBE_TIMEOUT_S
         try:
             self._driver = FalkorDB(connection_pool=self._pool)
             self._graph = self._driver.select_graph(self.config.graph_name)
@@ -152,6 +166,8 @@ class FalkorDBConnection:
             raise DatabaseUnavailableError(
                 f"Could not connect to FalkorDB at {self.config.host}:{self.config.port}: {exc}"
             ) from exc
+        finally:
+            connection_kwargs["socket_timeout"] = query_socket_timeout
 
         logger.info(
             "Connected to FalkorDB (async) at %s:%s (tls=%s)",
@@ -182,8 +198,10 @@ class FalkorDBConnection:
             cypher: The Cypher query string.
             params: Optional query parameters.
             timeout: Optional per-query timeout (ms) forwarded to FalkorDB.
-                The client stops waiting at ``query_timeout_ms`` + 5 s, so a
-                larger value here is cut short there.
+                The client stops waiting at ``query_timeout_ms`` + 5 s whatever
+                this says; a reply later than that is a socket timeout, which
+                is retried (re-sending the query while the earlier attempt may
+                still run) and ends in ``DatabaseUnavailableError``.
             expected_errors: Lower-case substrings identifying non-transient
                 failures the caller anticipates and handles itself (e.g.
                 ``"already indexed"`` for an idempotent ``CREATE INDEX``). Such
@@ -200,8 +218,8 @@ class FalkorDBConnection:
             DatabaseUnavailableError: The circuit breaker is open, or a
                 transient failure (connection loss, full query queue, ``BUSY``,
                 failover, ...) outlasted ``retry_count`` attempts.
-            DatabaseError: The server rejected the query, or it ran past its
-                timeout. Raised on the first attempt, not retried. Driver-level
+            DatabaseError: The server rejected the query, or answered that it
+                ran past its timeout. Raised on the first attempt, not retried. Driver-level
                 exceptions are wrapped and kept as ``__cause__``.
         """
         self._ensure_client()
@@ -357,7 +375,9 @@ class FalkorDBConnection:
             from redis.asyncio import Redis
 
             redis: Redis = Redis(connection_pool=self._pool)
-            return await redis.ping()
+            # PING needs no query budget; the pool's socket timeout is sized
+            # for slow queries and is unbounded when query_timeout_ms is None.
+            return await asyncio.wait_for(redis.ping(), timeout=self._PROBE_TIMEOUT_S)
         except ImportError:
             # The driver isn't installed. Reporting that as "server down"
             # sends operators to inspect a healthy database instead of the
