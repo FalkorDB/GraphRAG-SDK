@@ -8,6 +8,7 @@ Skipped unless ``RUN_INTEGRATION=1``.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from uuid import uuid4
 
@@ -60,6 +61,21 @@ async def _index_types(conn: FalkorDBConnection, label: str) -> dict[str, list[s
         {"label": label},
     )
     return dict(result.result_set[0][0]) if result.result_set else {}
+
+
+async def _wait_until_operational(conn: FalkorDBConnection, label: str) -> None:
+    """Wait for the indexes on ``label`` to finish building. 4.x answers a
+    vector query sent while its index is under construction with an error,
+    which sends the search down the scan instead."""
+    for _ in range(200):
+        result = await conn.query(
+            "CALL db.indexes() YIELD label, status WHERE label = $label RETURN status",
+            {"label": label},
+        )
+        if result.result_set and all(row[0] == "OPERATIONAL" for row in result.result_set):
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"indexes on {label} still building after 10s")
 
 
 class TestFulltextIndexes:
@@ -180,20 +196,34 @@ class TestRelationshipSearch:
         assert [r["fact"] for r in results] == ["Alice works at Acme", "Bob knows Alice"]
         assert results[0]["score"] == pytest.approx(1.0, abs=1e-6)
 
-    async def test_edges_are_found_through_the_index(self, conn):
+    async def test_edges_are_found_through_the_index(self, conn, monkeypatch):
         await self._graph_with_embedded_edges(conn)
         store = VectorStore(conn, embedding_dimension=3)
         assert await store.create_relates_vector_index()
+        await _wait_until_operational(conn, "RELATES")
+        sent: list[str] = []
+        real_query = conn.query
+
+        async def recording_query(cypher, *args, **kwargs):
+            sent.append(cypher)
+            return await real_query(cypher, *args, **kwargs)
+
+        monkeypatch.setattr(conn, "query", recording_query)
 
         results = await store.search_relationships([0.0, 1.0, 0.0], top_k=1)
 
         assert [r["fact"] for r in results] == ["Bob knows Alice"]
+        # The scan finds the same edge, so only this shows the index answered.
+        assert not any("cosineDistance" in cypher for cypher in sent)
 
     async def test_an_index_another_store_dropped_does_not_hide_edges(self, conn):
         await self._graph_with_embedded_edges(conn)
         first = VectorStore(conn, embedding_dimension=3)
         await first.ensure_indices()
         await VectorStore(conn, embedding_dimension=3).drop_relates_vector_index()
+        # The drop logs and swallows its errors; without this a failed drop
+        # leaves the index answering, and the test never reaches the scan.
+        assert (await _index_types(conn, "RELATES")).get("embedding") is None
 
         results = await first.search_relationships([1.0, 0.0, 0.0], top_k=1)
 
