@@ -187,15 +187,18 @@ ORDER BY score DESC
 -- Primary (FalkorDB >= 4.2):
 CALL db.idx.vector.queryRelationships('RELATES', 'embedding', $top_k, vecf32($vector))
 YIELD relationship AS r, score
-RETURN r.src_name, r.rel_type, r.tgt_name, r.fact, score
+RETURN r.src_name AS src, r.rel_type AS type, r.tgt_name AS tgt, r.fact AS fact, (1-score) AS score
+ORDER BY score DESC
 
 -- Fallback (Cypher-based cosine distance scan):
 MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__)
 WHERE r.embedding IS NOT NULL
-WITH a, r, b, vecf32.distance.cosine(r.embedding, vecf32($vector)) AS dist
-RETURN r.src_name, r.rel_type, r.tgt_name, r.fact, (1-dist) AS score
+WITH a, r, b, vec.cosineDistance(r.embedding, vecf32($vector)) AS dist
+RETURN r.src_name AS src, r.rel_type AS type, r.tgt_name AS tgt, r.fact AS fact, (1-dist) AS score
 ORDER BY dist ASC LIMIT $top_k
 ```
+
+The scan runs when the primary query fails (FalkorDB 4.x raises when there is no `RELATES` vector index), or when it returns no rows and `db.indexes()` shows no vector index on `RELATES.embedding` (FalkorDB 6.0.x answers a missing index with no rows). With the index in place, an empty answer is returned as is. The scan reads every embedded edge, so the SDK logs a warning the first time a store falls back to it.
 
 **Fulltext search:**
 ```cypher
@@ -320,7 +323,7 @@ This is much faster than `MATCH (n) DETACH DELETE n` on large graphs.
 
 ### Retry Behavior
 
-The connection layer retries transient query failures up to 3 times using exponential backoff with jitter (`retry_delay * 2^attempt * random(0.5, 1.5)`) and employs a circuit breaker to short-circuit repeated failures. Non-transient errors (containing "already indexed", "already exists", or "unknown index") are raised immediately.
+The connection layer makes up to `retry_count` attempts per query (default 3: the first try and two retries), with exponential backoff and jitter between them (`retry_delay * 2^attempt * random(0.5, 1.5)`), and employs a circuit breaker to short-circuit repeated failures. Only temporary failures are retried (a lost connection, a full query queue, `BUSY`, `LOADING`, `NOREPLICAS`, `MISCONF`, failover, a read-only replica, out of memory); one that outlasts every attempt raises `DatabaseUnavailableError`. A query the server rejects, or one that runs past its timeout, raises `DatabaseError` at once, without retrying or counting against the breaker. See [Configuration](/configuration#retry-behavior).
 
 ---
 
