@@ -271,29 +271,21 @@ Each retrieval path was tested **in isolation** (only that path, no others) to m
 
 ### Toggling Text-to-Cypher
 
+Turn it on with `enable_cypher=True` on `GraphRAG`. The default `MultiPathRetrieval` is then built with the Cypher path enabled, and `GraphRAG` keeps it in step with the graph's ontology, which Cypher generation reads:
+
 ```python
-from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+from graphrag_sdk import GraphRAG
 
 # Without text-to-cypher (default)
-strategy = MultiPathRetrieval(
-    graph_store=rag.graph_store,
-    vector_store=rag.vector_store,
-    embedder=embedder,
-    llm=llm,
-    enable_cypher=False,  # default
-)
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder)
 
 # With text-to-cypher (opt-in, adds ~1.5s latency)
-strategy = MultiPathRetrieval(
-    graph_store=rag.graph_store,
-    vector_store=rag.vector_store,
-    embedder=embedder,
-    llm=llm,
-    enable_cypher=True,
-)
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, enable_cypher=True)
 
-result = await rag.completion("Your question", strategy=strategy)
+result = await rag.completion("Your question")
 ```
+
+If you pass your own `retrieval_strategy`, `GraphRAG(enable_cypher=)` does not apply to it. Set `enable_cypher=True` on the `MultiPathRetrieval` you build instead (see [Strategies](/strategies)).
 
 ### Tuning Parameters
 

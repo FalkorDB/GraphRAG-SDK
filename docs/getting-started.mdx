@@ -205,15 +205,19 @@ Supported roles: `"system"`, `"user"`, `"assistant"`. Invalid roles raise `Value
 Use `get_statistics()` to see a summary of what the graph contains:
 
 ```python
-stats = await rag.graph_store.get_statistics()
+stats = await rag.get_statistics()
 print(f"Nodes: {stats['node_count']}, Edges: {stats['edge_count']}")
 ```
 
-You can also run raw Cypher queries against the graph:
+You can also run raw Cypher queries against the graph with `query()`, which returns a list of rows, each a list of column values. Extracted relationships are stored as `RELATES` edges with their type in the `rel_type` property:
 
 ```python
-results = await rag.graph_store.query_raw("MATCH (p:Person)-[:WORKS_AT]->(o:Organization) RETURN p.name, o.name LIMIT 10")
-for row in results.result_set:
+rows = await rag.query(
+    "MATCH (p:Person)-[r:RELATES]->(o:Organization) "
+    "WHERE r.rel_type = 'WORKS_AT' "
+    "RETURN p.name, o.name LIMIT 10"
+)
+for row in rows:
     print(row)
 ```
 

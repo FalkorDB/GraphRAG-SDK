@@ -264,7 +264,7 @@ This is good for exploration. For production, a defined schema produces cleaner,
 ### Statistics
 
 ```python
-stats = await rag.graph_store.get_statistics()
+stats = await rag.get_statistics()
 # Returns: node_count, edge_count, entity_types, relationship_types,
 #          graph_density, embedded_relationship_count, mention_edge_count,
 #          relates_edge_count
@@ -272,20 +272,23 @@ stats = await rag.graph_store.get_statistics()
 
 ### Raw Cypher Queries
 
+`rag.query()` runs a Cypher query and returns a list of rows, each a list of column values in `RETURN` order. Pass values as parameters rather than formatting them into the string:
+
 ```python
 # Find all Person entities
-result = await rag.graph_store.query_raw(
+rows = await rag.query(
     "MATCH (p:Person) RETURN p.name, p.description LIMIT 10"
 )
 
 # Find relationships between two entities
-result = await rag.graph_store.query_raw(
-    "MATCH (a:Person {name: 'Alice'})-[r:RELATES]->(b) "
-    "RETURN a.name, r.rel_type, b.name, r.fact"
+rows = await rag.query(
+    "MATCH (a:Person {name: $name})-[r:RELATES]->(b) "
+    "RETURN a.name, r.rel_type, b.name, r.fact",
+    {"name": "Alice"},
 )
 
 # Count mentions per entity
-result = await rag.graph_store.query_raw(
+rows = await rag.query(
     "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(c:Chunk) "
     "RETURN e.name, count(m) AS mentions "
     "ORDER BY mentions DESC LIMIT 20"

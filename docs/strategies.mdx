@@ -483,12 +483,15 @@ class RetrievalStrategy(ABC):
 
 Simple retrieval: vector search on chunks + 1-hop entity traversal.
 
+Retrieval strategies take a `GraphStore` and a `VectorStore`. `GraphRAG` keeps its own stores private, so build them on the same `FalkorDBConnection` (`conn`) you pass to `GraphRAG`:
+
 ```python
+from graphrag_sdk import GraphStore, VectorStore
 from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
 
 retriever = LocalRetrieval(
-    graph_store=rag.graph_store,
-    vector_store=rag.vector_store,
+    graph_store=GraphStore(conn),
+    vector_store=VectorStore(conn, embedder=embedder),
     embedder=embedder,
     top_k=5,                # chunks to retrieve (default: 5)
     include_entities=True,  # include connected entities (default: True)
@@ -502,11 +505,20 @@ retriever = LocalRetrieval(
 Production-grade retrieval with RELATES edge vector search, 2-path entity discovery, 4-path chunk retrieval, and cosine reranking. This is the **default**, and the strategy used for the [GraphRAG-Bench results](/benchmark).
 
 ```python
-from graphrag_sdk import MultiPathRetrieval
+from graphrag_sdk import (
+    ConnectionConfig,
+    FalkorDBConnection,
+    GraphRAG,
+    GraphStore,
+    MultiPathRetrieval,
+    VectorStore,
+)
+
+conn = FalkorDBConnection(ConnectionConfig(host="localhost", graph_name="my_graph"))
 
 retriever = MultiPathRetrieval(
-    graph_store=rag.graph_store,
-    vector_store=rag.vector_store,
+    graph_store=GraphStore(conn),
+    vector_store=VectorStore(conn, embedder=embedder),
     embedder=embedder,
     llm=llm,
     chunk_top_k=15,         # final chunks after reranking (default: 15)
