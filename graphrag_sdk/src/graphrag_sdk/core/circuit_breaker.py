@@ -7,6 +7,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class CircuitState(Enum):
@@ -30,6 +31,7 @@ class CircuitBreaker:
     _last_failure_time: float = field(default=0.0, init=False, repr=False)
     _state: CircuitState = field(default=CircuitState.CLOSED, init=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
+    _probe_task: asyncio.Task[Any] | None = field(default=None, init=False, repr=False)
 
     @property
     def state(self) -> CircuitState:
@@ -60,7 +62,8 @@ class CircuitBreaker:
 
         Atomic: in HALF_OPEN state, only the first caller gets permission
         (transitions to HALF_OPEN internally so subsequent callers are
-        rejected until ``record_success()`` or ``record_failure()``).
+        rejected until ``record_success()``, ``record_failure()`` or
+        ``release_probe()``).
         """
         async with self._lock:
             if self._state == CircuitState.CLOSED:
@@ -71,5 +74,25 @@ class CircuitBreaker:
             ):
                 # Transition to HALF_OPEN — only this caller gets through
                 self._state = CircuitState.HALF_OPEN
+                self._probe_task = asyncio.current_task()
                 return True
             return False
+
+    def release_probe(self) -> None:
+        """Hand back the HALF_OPEN probe slot if the current task holds it.
+
+        A probe that ends without ``record_success()`` or ``record_failure()``
+        — its task was cancelled, say — would otherwise leave the circuit
+        HALF_OPEN, rejecting every later request. Reverting to OPEN, with the
+        recovery timeout already spent, lets the next caller probe instead.
+        A no-op once the outcome is recorded or another task holds the slot.
+
+        Synchronous so it completes inside a ``finally`` even while the task
+        is being cancelled; with no ``await`` it cannot interleave, so it
+        needs no lock.
+        """
+        if self._probe_task is not asyncio.current_task():
+            return
+        self._probe_task = None
+        if self._state == CircuitState.HALF_OPEN:
+            self._state = CircuitState.OPEN

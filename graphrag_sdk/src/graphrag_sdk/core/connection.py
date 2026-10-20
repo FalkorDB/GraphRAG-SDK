@@ -199,53 +199,61 @@ class FalkorDBConnection:
 
         effective_timeout = timeout if timeout is not None else self.config.query_timeout_ms
 
-        last_exc: Exception | None = None
-        for attempt in range(self.config.retry_count):
-            try:
-                result = await self._graph.query(cypher, params=params, timeout=effective_timeout)
-                await self._breaker.record_success()
-                return result
-            except Exception as exc:
-                last_exc = exc
-                # Don't retry non-transient errors (e.g. schema/index conflicts)
-                if self._is_non_transient(exc):
-                    msg = str(exc).lower()
-                    expected = any(marker in msg for marker in expected_errors)
-                    logger.log(
-                        logging.DEBUG if expected else logging.ERROR,
-                        "Non-transient FalkorDB query failure: %s: %s",
-                        type(exc).__name__,
+        try:
+            last_exc: Exception | None = None
+            for attempt in range(self.config.retry_count):
+                try:
+                    result = await self._graph.query(
+                        cypher, params=params, timeout=effective_timeout
+                    )
+                    await self._breaker.record_success()
+                    return result
+                except Exception as exc:
+                    last_exc = exc
+                    # Don't retry non-transient errors (e.g. schema/index conflicts)
+                    if self._is_non_transient(exc):
+                        msg = str(exc).lower()
+                        expected = any(marker in msg for marker in expected_errors)
+                        logger.log(
+                            logging.DEBUG if expected else logging.ERROR,
+                            "Non-transient FalkorDB query failure: %s: %s",
+                            type(exc).__name__,
+                            exc,
+                        )
+                        logger.debug("Non-transient FalkorDB query failure details", exc_info=True)
+                        raise DatabaseError(f"FalkorDB query failed: {exc}") from exc
+                    await self._breaker.record_failure()
+                    logger.warning(
+                        "Query attempt %d/%d failed: %s",
+                        attempt + 1,
+                        self.config.retry_count,
                         exc,
                     )
-                    logger.debug("Non-transient FalkorDB query failure details", exc_info=True)
-                    raise DatabaseError(f"FalkorDB query failed: {exc}") from exc
-                await self._breaker.record_failure()
-                logger.warning(
-                    "Query attempt %d/%d failed: %s",
-                    attempt + 1,
-                    self.config.retry_count,
-                    exc,
-                )
-                if attempt < self.config.retry_count - 1:
-                    if not await self._breaker.allow_request():
-                        break
-                    base_delay = self.config.retry_delay * (2**attempt)
-                    await asyncio.sleep(base_delay * (0.5 + random.random()))
-        logger.error(
-            "FalkorDB query failed after %d attempts: %s: %s",
-            self.config.retry_count,
-            type(last_exc).__name__ if last_exc is not None else "UnknownError",
-            last_exc,
-        )
-        if last_exc is not None:
-            logger.debug(
-                "FalkorDB query failure details",
-                exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
+                    if attempt < self.config.retry_count - 1:
+                        if not await self._breaker.allow_request():
+                            break
+                        base_delay = self.config.retry_delay * (2**attempt)
+                        await asyncio.sleep(base_delay * (0.5 + random.random()))
+            logger.error(
+                "FalkorDB query failed after %d attempts: %s: %s",
+                self.config.retry_count,
+                type(last_exc).__name__ if last_exc is not None else "UnknownError",
+                last_exc,
             )
-            raise DatabaseUnavailableError(
-                f"FalkorDB query failed after {self.config.retry_count} attempts: {last_exc}"
-            ) from last_exc
-        raise DatabaseError("FalkorDB query failed without an exception")
+            if last_exc is not None:
+                logger.debug(
+                    "FalkorDB query failure details",
+                    exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
+                )
+                raise DatabaseUnavailableError(
+                    f"FalkorDB query failed after {self.config.retry_count} attempts: {last_exc}"
+                ) from last_exc
+            raise DatabaseError("FalkorDB query failed without an exception")
+        finally:
+            # A probe that exits without recording an outcome (cancelled,
+            # or a non-transient error) must free the HALF_OPEN slot, or the
+            # breaker rejects every later request.
+            self._breaker.release_probe()
 
     # Substrings that indicate a non-transient (permanent) error —
     # retrying will never succeed.

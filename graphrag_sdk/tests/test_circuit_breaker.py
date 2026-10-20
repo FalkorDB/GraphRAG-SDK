@@ -86,3 +86,20 @@ class TestCircuitBreaker:
         results = await asyncio.gather(*[cb.allow_request() for _ in range(5)])
         assert results.count(True) == 1
         assert results.count(False) == 4
+
+    async def test_release_probe_only_frees_the_callers_own_slot(self):
+        """Freeing another task's probe would let a second one through
+        while the first is still running."""
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0)
+        await cb.record_failure()
+        assert await cb.allow_request() is True  # this task holds the probe
+
+        async def other_task():
+            cb.release_probe()
+
+        await asyncio.create_task(other_task())
+        assert await cb.allow_request() is False
+
+        cb.release_probe()
+        assert cb.state == CircuitState.HALF_OPEN  # OPEN, timeout already spent
+        assert await cb.allow_request() is True

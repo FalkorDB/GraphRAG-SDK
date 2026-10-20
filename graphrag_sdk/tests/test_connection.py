@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -233,6 +234,59 @@ class TestFalkorDBConnection:
             conn._driver = mock_driver
             conn._graph = mock_graph
             assert conn.graph is mock_graph
+
+    async def test_cancelled_probe_does_not_wedge_the_circuit_breaker(self):
+        """A probe cancelled mid-query (``asyncio.wait_for``, a request
+        timeout) records neither success nor failure. Unless it frees its
+        HALF_OPEN slot, the breaker rejects every query until restart."""
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=1))
+        conn._breaker.recovery_timeout = 0
+        for _ in range(conn._breaker.failure_threshold):
+            await conn._breaker.record_failure()
+
+        started = asyncio.Event()
+        never = asyncio.Event()
+
+        async def hang(*args, **kwargs):
+            started.set()
+            await never.wait()
+
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=hang)
+        conn._graph = mock_graph
+        conn._driver = MagicMock()
+
+        probe = asyncio.create_task(conn.query("RETURN 1"))
+        await started.wait()
+        # Still one probe at a time: others are refused while it is in flight.
+        with pytest.raises(DatabaseError, match="Circuit breaker is open"):
+            await conn.query("RETURN 1")
+
+        probe.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await probe
+
+        mock_graph.query = AsyncMock(return_value="ok")
+        assert await conn.query("RETURN 1") == "ok"
+
+    async def test_non_transient_probe_failure_does_not_wedge_the_circuit_breaker(self):
+        """A probe rejected as non-transient raises before recording an
+        outcome, so it must free the HALF_OPEN slot just like a cancel."""
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=1))
+        conn._breaker.recovery_timeout = 0
+        for _ in range(conn._breaker.failure_threshold):
+            await conn._breaker.record_failure()
+
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=Exception("syntax error at offset 3"))
+        conn._graph = mock_graph
+        conn._driver = MagicMock()
+
+        with pytest.raises(DatabaseError, match="syntax error"):
+            await conn.query("MATCH (n RETURN n")
+
+        mock_graph.query = AsyncMock(return_value="ok")
+        assert await conn.query("RETURN 1") == "ok"
 
 
 class TestFalkorDBConnectionTLS:
