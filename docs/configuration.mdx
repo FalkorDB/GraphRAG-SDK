@@ -535,17 +535,18 @@ rag = GraphRAG(
 
 ## 7. Post-Ingestion
 
-After all documents have been ingested, run post-ingestion steps to deduplicate entities, backfill embeddings, and ensure all indexes exist.
+After all documents have been ingested, run post-ingestion steps to deduplicate entities, embed entity names and relationships, and ensure all indexes exist.
 
 ### `finalize()` -- All-In-One
 
-The recommended approach is to call `finalize()` after all ingestion is complete. It bundles five steps in order:
+The recommended approach is to call `finalize()` after all ingestion is complete. It bundles four steps in order:
 
 1. Remove NULL-name stub entities left by legacy writes (only nodes no mapping wrote).
-2. `deduplicate_entities()` -- incremental: entities added since the last `finalize()` get exact-name dedup, then one LLM judge pass over their nearest names in the whole graph. A second `finalize()` with nothing pending does no dedup work (an entity whose check failed stays pending and is retried, up to 3 runs); `finalize(dedup_all=True)` checks every entity (once, for a graph built before the `dedup_pending` flag existed).
-3. `backfill_entity_embeddings()` -- embed entity names for vector search.
-4. `embed_relationships()` -- embed fact text on RELATES edges.
-5. `ensure_indices()` -- create all 5 standard indexes (idempotent).
+2. `deduplicate_entities()` -- incremental and crash-safe: the entities whose check is pending (added since the last `finalize()`, or left pending by it) get exact-name dedup, then one LLM judge pass over their nearest names in the whole graph. Dedup also gives every entity its name embedding. A second `finalize()` with nothing pending does no dedup work. An entity whose check did not complete stays pending and is retried; after 3 judged runs without a usable verdict it is reported in `dedup_unresolved` and no longer retried. An interrupted `finalize()` is finished by the next one. `finalize(dedup_all=True)` checks every entity.
+3. `embed_relationships()` -- embed fact text on RELATES edges.
+4. `ensure_indices()` -- create all 5 standard indexes (idempotent).
+
+Deduplication requires FalkorDB 4.20 or later. One `finalize()` runs per graph at a time; a second raises `DedupRunActiveError`. `update()` and deletes may run meanwhile.
 
 ```python
 # After ingesting all documents:
@@ -553,6 +554,7 @@ stats = await rag.finalize()  # a FinalizeResult model, not a dict
 print(stats.entities_deduplicated)   # 142
 print(stats.entities_embedded)       # 3200
 print(stats.relationships_embedded)  # 8500
+print(stats.dedup_pending)           # 0: every check completed
 print(stats.indexes)
 # {"vector_Chunk": True, "vector___Entity__": True, "vector_RELATES": True,
 #  "fulltext_Chunk": True, "fulltext___Entity__": True}
@@ -572,7 +574,8 @@ Call this when you need fine-grained control over deduplication.
 merged_count = await rag.deduplicate_entities(
     batch_size=500,               # entities per query batch
     judge=False,                  # True to also run the LLM-judged phase
-    dedup_all=False,              # True to check every entity, not only new ones
+    dedup_all=False,              # True to check every entity, not only pending ones
+    release_unjudged=False,       # with judge=False: True marks the pending entities checked
 )
 ```
 
@@ -583,17 +586,18 @@ merged_count = await rag.deduplicate_entities(
 | `batch_size`           | `int`   | `500`   | Entities per query batch.                                           |
 | `judge`                | `bool`  | `False` | Run the LLM-judged phase (on by default in `finalize()`).           |
 | `judge_llm`            | `LLMInterface \| None` | `None` | Judge model; defaults to the instance's `llm`.        |
-| `dedup_all`            | `bool`  | `False` | Check every entity, not only those flagged since the last run.      |
+| `dedup_all`            | `bool`  | `False` | Check every entity, not only the pending ones, and retry the unresolved ones. |
+| `release_unjudged`     | `bool`  | `False` | Without the judge, mark the pending entities checked instead of keeping them pending for a judged run. |
 
-Only entities flagged `dedup_pending` since the last run are checked (pass `dedup_all=True` to check every entity); the flag is removed when the run ends, except on an entity whose check did not complete (a failed lookup, judge call or merge write, an answer that was not a full partition, or no name vector), which the next run retries, up to 3 runs.
+Only the pending entities are checked: those with no name vector yet (ingest writes entities without one), and those a `pending` system record lists — a run lists every entity before it embeds it, and clears it once its check completes. An entity whose check did not complete (a failed lookup or judge call, an answer that was not a clean partition, a group held for one, a merge an `update()` changed) stays pending for the next run. Without the judge (`judge=False`) the pending entities stay pending: the judge still owes them a check. See [Storage](/storage) for the merge plan and crash safety.
 
-**Phase 1 (always runs): Exact name match.** Groups the new entities and their nearest names from the vector index by canonical name (case, accents, punctuation and a leading English article folded; `A.I.` = `AI`; `Surname, Given` un-inverted; common abbreviations expanded; one trailing legal form such as `Ltd` or `Inc` dropped) and label to prevent cross-type merging. An acronym joins its long form when exactly one same-label entity spells its initials (`AIHS` / `Ashford Island Historical Society`). The survivor is the node whose id came from a declared table key, then a real node over a placeholder, then the long form over an acronym, then the best-connected entity (most RELATES and MENTIONED_IN edges), then the longest description, then the longest name. A group of extracted mentions only goes to the judge instead when it runs (`judge=True`, the `finalize()` default). The duplicate's description is appended to the survivor's with `" | "`, its name is recorded in the survivor's `aliases`, its `source_chunk_ids` are unioned in, any property the survivor lacks is copied over, and its RELATES and MENTIONED_IN edges are remapped before it is deleted.
+**Phase 1 (always runs): Exact name match.** Groups the new entities and their nearest names from the vector index by canonical name (case, accents, punctuation and a leading English article folded; `A.I.` = `AI`; `Surname, Given` un-inverted; common abbreviations expanded; one trailing legal form such as `Ltd` or `Inc` dropped) and label to prevent cross-type merging. An acronym joins its long form when exactly one same-label entity spells its initials (`AIHS` / `Ashford Island Historical Society`). The survivor is the node whose id came from a declared table key, then a real node over a placeholder, then the long form over an acronym, then the best-connected entity (most RELATES and MENTIONED_IN edges), then the longest description, then the longest name. A group of extracted mentions only goes to the judge instead when it runs (`judge=True`, the `finalize()` default). The duplicate's description is appended to the survivor's with `" | "`, its name is recorded in the survivor's `aliases`, its `source_chunk_ids` are unioned in, any property the survivor lacks is copied over, and every relationship it has, of every type, moves to the survivor in the same query that deletes it.
 
-**Phase 2 (optional, `judge=True`): LLM-judged match.** Each new entity's nearest names from the vector index form small candidate sets; the judge model partitions each set once, and agreed groups merge by the Phase 1 rules. See [Storage](/storage).
+**Phase 2 (optional, `judge=True`): LLM-judged match.** Each pending entity's nearest names from the vector index form small candidate sets; the judge model partitions each set once, and agreed groups merge by the Phase 1 rules. Every set is judged before anything merges. See [Storage](/storage).
 
 ### `backfill_entity_embeddings()` -- Entity Vector Backfill
 
-Embeds `__Entity__` nodes that are missing embeddings. Queries entities where `embedding IS NULL`, batch-embeds the entity `name`, and stores vectors. Safe for incremental runs.
+Embeds `__Entity__` nodes that are missing embeddings. Queries entities where `embedding IS NULL`, batch-embeds the entity `name`, and stores vectors. It is **not** a dedup step: an entity with a vector and no pending record counts as checked, so a vector written here skips that entity's dedup check. `finalize()` no longer calls it — dedup embeds every entity — and after calling it directly, run `finalize(dedup_all=True)` once.
 
 ```python
 count = await rag.vector_store.backfill_entity_embeddings(batch_size=500)
@@ -631,8 +635,7 @@ Note: `ensure_indices()` is called automatically after each `ingest()` call. The
 |---------------------------------------------|---------------------------------------|
 | After ingesting all documents               | `await rag.finalize()`                |
 | After incremental ingestion (new documents) | `await rag.finalize()`                |
-| Only need dedup (embeddings already exist)  | `await rag.deduplicate_entities()`    |
-| Only need entity embeddings                 | `await rag.vector_store.backfill_entity_embeddings()` |
+| Only need dedup                             | `await rag.deduplicate_entities()` (it embeds entity names too) |
 | Only need RELATES edge embeddings           | `await rag.vector_store.embed_relationships()`        |
 | Only need indexes                           | `await rag.vector_store.ensure_indices()`             |
 

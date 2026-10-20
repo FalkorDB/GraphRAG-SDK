@@ -183,12 +183,12 @@ In file mode, `document_id` defaults to `os.path.normpath(source)` so
 no extra plumbing. See [`examples/07_incremental_updates.py`](graphrag_sdk/examples/07_incremental_updates.py).
 
 **Cost model.** `finalize()` deduplicates only the entities ingested
-since the last `finalize()` (flagged `dedup_pending` at ingest), reaching
+since the last `finalize()` (they have no name vector yet), reaching
 the rest of the graph through the vector index — its LLM calls,
 embeddings and merges follow the **change size**, not the graph size.
-Finding the flagged entities and the ones missing an embedding is one
-label scan each (about 0.1 s on a 44k-entity graph), so a `finalize()`
-with nothing pending does no dedup work. For CI
+Finding the entities missing a vector is a range scan of internal node
+ids (1M entities in about 1.1 s), so a `finalize()` with nothing pending
+does no dedup work. For CI
 use cases, batch all PR changes through `apply_changes` and call
 `finalize` **once** at the end of the run: one call judges the whole
 batch's new entities together, in fewer LLM calls than one per file.

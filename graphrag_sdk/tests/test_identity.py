@@ -190,7 +190,7 @@ class TestFinalizeReports:
         )
         await rag.query(
             "CREATE (:__Entity__:Person {id:'m_ellison__person', name:'M. Ellison', "
-            "description:'an engineer who led the remediation plan', dedup_pending: true})"
+            "description:'an engineer who led the remediation plan'})"
         )
         await rag.finalize(judge=False)
         path = tmp_path / "hr.csv"
@@ -212,10 +212,10 @@ class TestFinalizeReports:
             resolver=resolver,
             ontology=Ontology(entities=[Entity(label="Person")], tables=[_HR]),
         )
-        # Written by hand, so flag it the way ingest flags a new entity.
+        # Written by hand without a vector: pending, as ingest leaves a new entity.
         await rag.query(
             "CREATE (:__Entity__:Person {id:'m_ellison__person', name:'M. Ellison', "
-            "description:'an engineer who led the remediation plan', dedup_pending: true})"
+            "description:'an engineer who led the remediation plan'})"
         )
         path = tmp_path / "hr.csv"
         path.write_text("employee_id,full_name,age\nE-1,Maya Ellison,34\n")
@@ -511,8 +511,7 @@ class TestTheJoinAgainstARealGraph:
         )
         await rag.query(
             "CREATE (:__Entity__:Organization {id:'globex_limited__organization', "
-            "name:'Globex Limited', description:'the grid operator named in the review', "
-            "dedup_pending: true})"
+            "name:'Globex Limited', description:'the grid operator named in the review'})"
         )
         path = tmp_path / "orgs.csv"
         path.write_text("org_id,org_name,employee_count\nG-1,Globex Ltd,240\n")

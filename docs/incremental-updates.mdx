@@ -225,7 +225,7 @@ for entry in result.modified:
 
 `apply_changes()` does not itself touch the graph — it dispatches to the primitives documented above and aggregates their results. Two whole-batch consequences worth knowing:
 
-- **No automatic `finalize()`.** Call `finalize()` once after the batch, not once per file. Its dedup checks only the entities the batch added (flagged `dedup_pending` at ingest), so one call covers the whole batch and a second call with nothing pending does no dedup work (an entity whose check failed stays pending and is retried, up to 3 runs). A graph built before `dedup_pending` existed has no flags: run `finalize(dedup_all=True)` once.
+- **No automatic `finalize()`.** Call `finalize()` once after the batch, not once per file. Its dedup checks only the entities whose check is pending — the ones the batch added, which have no name vector yet — so one call covers the whole batch and a second call with nothing pending does no dedup work (an entity whose check did not complete stays pending and is retried). `update()` and deletes may run while `finalize()` deduplicates; a merge whose entities they change is skipped and decided again on the next run.
 - **Peak entity cardinality is minimised** because deletes run first — orphan candidates are gone before adds can re-introduce overlapping ids.
 
 ### Canonical CI usage

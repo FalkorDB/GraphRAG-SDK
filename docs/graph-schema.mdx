@@ -85,18 +85,20 @@ The layers are connected by `MENTIONED_IN` edges, which link entities to the chu
 | `description` | `string` | Rich description from LLM extraction |
 | `source_chunk_ids` | `list[string]` | Chunks where this entity was found |
 | `spans` | `string` (JSON) | Character offsets: `{chunk_id: [{start, end}]}` |
-| `embedding` | `vecf32` | Vector embedding of the entity name (added during `finalize()`) |
+| `embedding` | `vecf32` | Vector embedding of the entity name, written by `finalize()`'s dedup. Its absence is what marks an entity pending dedup; nothing else is written on an entity for dedup |
 | `aliases` | `list[string]` | Other names the entity was merged under |
 | `descriptions` | `list[string]` | Every merged member's description (`description` joins them with `" \| "`) |
 | `merged_labels` | `string` | Labels a merge added, joined with `" \| "` |
-| `dedup_pending` | `bool` | Set when ingest creates the entity; removed once a dedup run has checked it, or after 3 failed checks |
-| `dedup_attempts` | `int` | Failed dedup checks of a still-pending entity; removed with the flag |
 
-**Created in:** Step 7 (Write). `__Entity__` label is automatically added. Embedding is backfilled during `finalize()`.
+**Created in:** Step 7 (Write). `__Entity__` label is automatically added. Embedding is written during `finalize()`.
 
 **Default entity types (11):** Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method
 
 Entities below the NER confidence threshold get the special label `Unknown`.
+
+### SDK system nodes
+
+Besides your data, the graph holds a small, fixed set of the SDK's own nodes under two labels: `__GraphRAGConfig__` (the embedding model and vector size the graph was written with) and `__GraphRAGProcessing__` (dedup work in progress — the run lock, the entities whose dedup check is owed, and an interrupted run's merge plan; a finished run leaves only what is still owed). They have no edges and no vector, so no traversal or search reaches them, and `get_statistics()` does not count them. Nothing the SDK does to deduplicate is written on your entities. See [Storage](/storage#sdk-system-nodes).
 
 ---
 
