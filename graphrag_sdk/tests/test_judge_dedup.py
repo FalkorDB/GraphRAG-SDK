@@ -719,3 +719,15 @@ def test_a_label_holding_the_separator_is_refused_and_a_recorded_one_reads_back_
     # at read: a node whose record holds A|B keeps its real primary label
     row = ["a", "Airbus", "", "A", None, None, 0, ["A", "B", "Organization"], "A|B"]
     assert _entity_from_row(row)["label"] == "A"  # not filtered out as if A and B had been absorbed
+
+
+def test_a_spoiled_answer_is_warned_about_once(caplog):
+    """One answer is parsed once: a spoiled set is one warning, not one per
+    reading of the answer."""
+    import logging
+
+    llm = ScriptedLLM(["SET 1 GROUP: 1 | NAME: IBM\nSET 1 GROUP: 2"])
+    with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.judge_dedup"):
+        _sim(judge=llm)
+    spoiled = [r for r in caplog.records if "asked again" in r.getMessage()]
+    assert len(spoiled) == 1 + REASKS

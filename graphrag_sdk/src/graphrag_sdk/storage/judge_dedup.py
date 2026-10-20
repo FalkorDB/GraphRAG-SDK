@@ -359,12 +359,21 @@ def parse_groups(text: str, sizes: list[int]) -> dict[int, list[list[int]]]:
     return out
 
 
-def pairs_by_set_from_response(text: str, order: list[list[int]]) -> dict[tuple[int, int], int]:
+#: ``parse_groups``'s result, for the helpers below to share one parse (and
+#: one warning) per answer.
+Parsed = dict[int, list[list[int]]]
+
+
+def pairs_by_set_from_response(
+    text: str, order: list[list[int]], parsed: Parsed | None = None
+) -> dict[tuple[int, int], int]:
     """Entity-index pairs the judge put in one group, keyed by pair with the
     position in ``order`` of the set the pair was judged in, so a caller can tell an
     agreement reached inside one set from one it never asked for."""
     out: dict[tuple[int, int], int] = {}
-    for si, groups in parse_groups(text, [len(m) for m in order]).items():
+    if parsed is None:
+        parsed = parse_groups(text, [len(m) for m in order])
+    for si, groups in parsed.items():
         members = order[si]
         for grp in groups:
             real = [members[k] for k in grp]
@@ -374,12 +383,16 @@ def pairs_by_set_from_response(text: str, order: list[list[int]]) -> dict[tuple[
     return out
 
 
-def different_pairs_from_response(text: str, order: list[list[int]]) -> set[tuple[int, int]]:
+def different_pairs_from_response(
+    text: str, order: list[list[int]], parsed: Parsed | None = None
+) -> set[tuple[int, int]]:
     """Entity-index pairs of an answered set that the judge put in different
     groups: a verdict that they are two things, which no chain of agreements
     in other sets may overturn."""
     out: set[tuple[int, int]] = set()
-    for si, groups in parse_groups(text, [len(m) for m in order]).items():
+    if parsed is None:
+        parsed = parse_groups(text, [len(m) for m in order])
+    for si, groups in parsed.items():
         members = order[si]
         for g, grp in enumerate(groups):
             for other in groups[g + 1 :]:
@@ -393,15 +406,17 @@ def different_pairs_from_response(text: str, order: list[list[int]]) -> set[tupl
 _NAME_PART = re.compile(r"\|\s*NAME\s*:\s*(.+?)\s*$", re.IGNORECASE)
 
 
-def group_names_from_response(text: str, order: list[list[int]]) -> dict[frozenset[int], str]:
+def group_names_from_response(
+    text: str, order: list[list[int]], parsed: Parsed | None = None
+) -> dict[frozenset[int], str]:
     """The best name the judge gave each group of two or more, keyed by the
     group's entity indices. Only groups :func:`parse_groups` accepted count;
     the name is returned as written and checked against the members by the
     caller."""
     sizes = [len(m) for m in order]
-    accepted = {
-        (si, tuple(grp)) for si, groups in parse_groups(text, sizes).items() for grp in groups
-    }
+    if parsed is None:
+        parsed = parse_groups(text, sizes)
+    accepted = {(si, tuple(grp)) for si, groups in parsed.items() for grp in groups}
     out: dict[frozenset[int], str] = {}
     for line in text.splitlines():
         m = _ANSWER_LINE.match(line)
@@ -763,9 +778,9 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
             unanswered.extend(
                 first[item.index] + si for si in range(len(order)) if si not in answered
             )
-            verdicts.same.update(pairs_by_set_from_response(content, order))
-            verdicts.different.update(different_pairs_from_response(content, order))
-            verdicts.names.update(group_names_from_response(content, order))
+            verdicts.same.update(pairs_by_set_from_response(content, order, answered))
+            verdicts.different.update(different_pairs_from_response(content, order, answered))
+            verdicts.names.update(group_names_from_response(content, order, answered))
         for p, order in enumerate(orders):
             if p not in answered_prompts:  # no result came back for the prompt at all
                 unanswered.extend(range(first[p], first[p] + len(order)))
