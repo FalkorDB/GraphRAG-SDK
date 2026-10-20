@@ -25,7 +25,7 @@ This document is the comprehensive configuration reference for GraphRAG SDK v2. 
 | `retry_count`      | `int`             | `3`                 | Attempts per query for transient failures, first try included (`1` disables retries). |
 | `retry_delay`      | `float`           | `1.0`               | Base delay (seconds) for exponential backoff with jitter: `retry_delay * 2^attempt * random(0.5, 1.5)`. |
 | `pool_timeout`     | `float`           | `30.0`              | Timeout (seconds) waiting to acquire a connection from the pool.    |
-| `query_timeout_ms` | `int \| None`     | `10_000`            | Per-query timeout in milliseconds forwarded to FalkorDB. The client waits this long plus 5 s for the reply. Set to `None` to disable both. |
+| `query_timeout_ms` | `int \| None`     | `10_000`            | Per-query timeout in milliseconds forwarded to FalkorDB, which applies it to reads only. The client waits this long plus 5 s for any reply. Set to `None` to disable both: the client then waits indefinitely for every reply. |
 
 ### Creating from a URL
 
@@ -63,9 +63,9 @@ rag = GraphRAG(connection=conn, llm=my_llm, embedder=my_embedder)
 
 ### Retry Behavior
 
-Each query is attempted up to `retry_count` times in total, the first try included, with exponential backoff and jitter between attempts (`retry_delay * 2^attempt * random(0.5, 1.5)`, `attempt` counting from 0). Only temporary failures are retried: a lost connection or socket timeout, a full query queue, `BUSY`, `LOADING`, `NOREPLICAS`, `MISCONF`, a cluster redirect or failover, a read-only replica, and out of memory. If one outlasts every attempt, or the circuit breaker is open, `query()` raises `DatabaseUnavailableError`.
+Each query is attempted up to `retry_count` times in total, the first try included, with exponential backoff and jitter between attempts (`retry_delay * 2^attempt * random(0.5, 1.5)`, `attempt` counting from 0). Everything that is not a server reply is retried: a lost connection or socket timeout, `LOADING`, an error raised in the driver. Of the server's replies only the temporary ones are: a full query queue, `BUSY`, `NOREPLICAS`, `MISCONF`, a cluster redirect or failover, a read-only replica, and out of memory. If one outlasts every attempt, the circuit breaker is open, or the first connection to the server fails, `query()` raises `DatabaseUnavailableError`. On a server that accepts connections but never answers, that takes about `retry_count` × (`query_timeout_ms` + 5 s); lower either to fail sooner.
 
-Any other server reply means the query itself was rejected -- a syntax error, an unknown variable, division by zero, a `MERGE` on a null key, a missing index, a procedure called with the wrong arguments. A query that runs past `query_timeout_ms` is treated the same way, since a retry would cost as much again. Both raise `DatabaseError` on the first attempt, and the circuit breaker counts them as a healthy answer, not a failure. `DatabaseUnavailableError` subclasses `DatabaseError`, so `except DatabaseError` catches both.
+Any other server reply means the query itself was rejected -- a syntax error, an unknown variable, division by zero, a `MERGE` on a null key, a missing index, a procedure called with the wrong arguments. A read the server stops at its timeout (`query_timeout_ms`, or the `timeout=` passed to `query()`) is treated the same way, since a retry would cost as much again. FalkorDB applies no timeout to writes: a write slower than `query_timeout_ms` + 5 s is cut on the client as a socket timeout and re-sent, while the first attempt may still run. Both raise `DatabaseError` on the first attempt, and the circuit breaker counts them as a healthy answer, not a failure. `DatabaseUnavailableError` subclasses `DatabaseError`, so `except DatabaseError` catches both.
 
 ---
 
@@ -628,7 +628,7 @@ Creates all standard indexes (idempotent -- safe to call repeatedly):
 results = await rag.vector_store.ensure_indices()
 ```
 
-Note: `ensure_indices()` is called automatically after each `ingest()` call. The `finalize()` method resets the internal `_indices_ensured` flag and re-runs it to catch any newly needed indexes.
+Note: `ensure_indices()` is called automatically after each `ingest()` call. The `finalize()` method resets the internal `_indices_ensured` flag and re-runs it to catch any newly needed indexes. It returns once FalkorDB reports every index built (up to 10 minutes), since a vector search on an index still being built finds nothing.
 
 ### When to Call Each
 

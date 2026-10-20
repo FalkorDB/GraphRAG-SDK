@@ -175,9 +175,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A query the server rejects, or one that runs past its timeout, raises
   `DatabaseError` on its first attempt, not `DatabaseUnavailableError` after the
-  retries.** Only temporary failures are still retried: a lost connection, a
-  full query queue, `BUSY`/`LOADING`, `NOREPLICAS`, `MISCONF`, cluster
-  redirect/failover, a read-only replica, out of memory. A rejection counts as a
+  retries.** Everything that is not a server reply is still retried, as before:
+  a lost connection, a socket timeout, `LOADING`, an error raised in the driver.
+  Of the server's replies only the temporary ones are: a full query queue,
+  `BUSY`, `NOREPLICAS`, `MISCONF`, cluster redirect/failover, a read-only
+  replica, out of memory. A rejection counts as a
   healthy answer for the circuit breaker: it resets the failure count and closes
   a half-open breaker. A timed-out query is not tried again, since each attempt
   costs the full timeout, and two of them opened the breaker for every caller.
@@ -185,9 +187,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer reach that handler; catch `DatabaseError` for them.
   `update(cache_unchanged_chunks=True)` now falls back to extraction on such an
   error instead of stopping. On FalkorDB 4.x, a chunk or entity vector search
-  sent while its index is still being built (after a drop and recreate, or from
-  another process during the first `ensure_indices()`) now returns no hits at
-  once instead of waiting out the retries.
+  sent while its index is still being built in another process now returns no
+  hits at once; the old retries (about 1.5–4.5 s) could outlast a short build,
+  but counted each attempt against the breaker. In the process that builds the
+  index, `ensure_indices()` now waits for the build (see **Fixed**).
+- **On a server that accepts connections but never answers, a query takes about
+  three times `query_timeout_ms` + 5 s (about 47 s at the defaults, was about
+  18 s) to raise `DatabaseUnavailableError`**, the price of waiting long enough
+  for a slow query to finish. Lower `query_timeout_ms` or `retry_count` to fail
+  sooner. `ping()` still answers within 5 s.
 - **CI runs the FalkorDB-backed tests.** The integration job used to run one
   file (`tests/test_integration.py`); the whole suite now runs with
   `RUN_INTEGRATION=1`, so every test that needs a live graph is exercised on
@@ -367,14 +375,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   breaker, so two such statements in a row opened it and refused every caller
   for the recovery timeout, on 4.x as well as 6.0.x. See **Changed** for the
   error type it now raises.
-- **Reads slower than 5 seconds always failed.** redis-py stops waiting for a
-  reply after 5 s unless told otherwise, and the SDK never told it, so a read
+- **Queries slower than 5 seconds always failed.** redis-py stops waiting for a
+  reply after 5 s unless told otherwise, and the SDK never told it, so a query
   needing 5–10 s failed on the client before the server's 10 s
   `query_timeout_ms` could answer. Each attempt was retried, counted against
   the circuit breaker and left running on the server: a 7 s query failed after
-  about 15 s, and two of them opened the breaker. The client now waits
-  `query_timeout_ms` plus 5 s (no limit when `query_timeout_ms` is `None`);
-  connecting still gives up after 5 s.
+  16–20 s, and two of them opened the breaker. The client now waits
+  `query_timeout_ms` plus 5 s for a reply (no limit when `query_timeout_ms` is
+  `None`). Opening a connection, `ping()` and the driver's first probe of the
+  server still give up after 5 s.
+- **A search right after `ensure_indices()` on a large graph found nothing.**
+  `CREATE ... INDEX` returns while FalkorDB is still building the index over
+  existing data; until it finishes, 4.x rejects a vector search and 6.0.x
+  answers with no rows. With 20,000 chunks, `ensure_indices()` (and so
+  `ingest()`) returned with the chunk index half built and the entity index not
+  started, and chunk and entity search came back empty. Each index statement
+  also waited on the server for the previous build, past the client's socket
+  timeout, and was re-sent. `ensure_indices()` now waits until `db.indexes()`
+  reports every index built (up to 10 minutes, logging progress every 10 s).
 - `drop_chunk_vector_index()`, `drop_entity_vector_index()` and
   `drop_relates_vector_index()` called `db.idx.vector.drop`, which exists on no
   FalkorDB version, so nothing was dropped. They now use `DROP VECTOR INDEX`, and

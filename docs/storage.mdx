@@ -170,7 +170,7 @@ RELATES edges with a `fact` property but no embedding are batch-embedded:
 ```cypher
 CALL db.idx.vector.queryNodes('Chunk', 'embedding', $top_k, vecf32($vector))
 YIELD node, score
-RETURN node.id AS id, node.text AS text, score
+RETURN node.id AS id, node.text AS text, (1-score) AS score
 ORDER BY score DESC
 ```
 
@@ -178,7 +178,7 @@ ORDER BY score DESC
 ```cypher
 CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $top_k, vecf32($vector))
 YIELD node, score
-RETURN node.id AS id, node.name AS name, node.description AS description, score
+RETURN node.id AS id, node.name AS name, node.description AS description, (1-score) AS score
 ORDER BY score DESC
 ```
 
@@ -198,7 +198,7 @@ RETURN r.src_name AS src, r.rel_type AS type, r.tgt_name AS tgt, r.fact AS fact,
 ORDER BY dist ASC LIMIT $top_k
 ```
 
-The scan runs when the primary query fails (FalkorDB 4.x raises when there is no `RELATES` vector index), or when it returns no rows and `db.indexes()` shows no vector index on `RELATES.embedding` (FalkorDB 6.0.x answers a missing index with no rows). With the index in place, an empty answer is returned as is. The scan reads every embedded edge, so the SDK logs a warning the first time a store falls back to it.
+The scan runs when the server rejects the primary query (FalkorDB 4.x does when there is no `RELATES` vector index, or while it is still being built), or when it returns no rows and `db.indexes()` shows no built vector index on `RELATES.embedding` (FalkorDB 6.0.x answers a missing index with no rows). With the index in place, an empty answer is returned as is. If FalkorDB is unreachable, the search returns no results without scanning. The scan reads every embedded edge, so the SDK logs a warning the first time a store falls back to it.
 
 **Fulltext search:**
 ```cypher
@@ -217,6 +217,8 @@ During retrieval, the `rerank_chunks()` function uses **stored embeddings** when
 ### ensure_indices()
 
 Creates all 5 standard indexes in one call. Tracks state internally (`_indices_ensured`) to avoid redundant creation. Called automatically after each `ingest()` call, and re-run during `finalize()` (which resets the flag).
+
+FalkorDB builds an index over existing data in the background after `CREATE ... INDEX` returns, and a vector search on it finds nothing until the build ends. `ensure_indices()` therefore waits until `db.indexes()` reports every index built before it returns (up to 10 minutes, logging progress every 10 s), so a search right after `ingest()` sees the data. On a large first ingest this wait is most of the time `ingest()` spends after extraction.
 
 ---
 
@@ -323,7 +325,7 @@ This is much faster than `MATCH (n) DETACH DELETE n` on large graphs.
 
 ### Retry Behavior
 
-The connection layer makes up to `retry_count` attempts per query (default 3: the first try and two retries), with exponential backoff and jitter between them (`retry_delay * 2^attempt * random(0.5, 1.5)`), and employs a circuit breaker to short-circuit repeated failures. Only temporary failures are retried (a lost connection, a full query queue, `BUSY`, `LOADING`, `NOREPLICAS`, `MISCONF`, failover, a read-only replica, out of memory); one that outlasts every attempt raises `DatabaseUnavailableError`. A query the server rejects, or one that runs past its timeout, raises `DatabaseError` at once, without retrying or counting against the breaker. See [Configuration](/configuration#retry-behavior).
+The connection layer makes up to `retry_count` attempts per query (default 3: the first try and two retries), with exponential backoff and jitter between them (`retry_delay * 2^attempt * random(0.5, 1.5)`), and employs a circuit breaker to short-circuit repeated failures. Everything that is not a server reply is retried (a lost connection or socket timeout, `LOADING`), and of the server's replies only the temporary ones (a full query queue, `BUSY`, `NOREPLICAS`, `MISCONF`, a cluster redirect or failover, a read-only replica, out of memory); one that outlasts every attempt raises `DatabaseUnavailableError`. A query the server rejects, or a read it stops at its timeout, raises `DatabaseError` at once, without retrying or counting against the breaker. See [Configuration](/configuration#retry-behavior).
 
 ---
 
