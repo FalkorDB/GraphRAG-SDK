@@ -307,6 +307,22 @@ class SystemStore:
         finally:
             self.run_id = None
 
+    async def expire(self) -> None:
+        """Give up the lock but keep its record, aged past the TTL: for a run
+        that stops with a sealed plan unfinished. While the record exists,
+        delete calls leave ``deleted`` records the plan checks, and the next
+        run takes the lock at once and finishes the plan."""
+        if self.run_id is None:
+            return
+        try:
+            await self.fenced(f"{_GUARD}SET _run.heartbeat_at = 0) RETURN owned")
+        except OwnershipLostError:
+            logger.warning("Dedup run %s had already lost its lock", self.run_id)
+        except Exception:
+            logger.warning("Could not expire the dedup lock; it expires on its own", exc_info=True)
+        finally:
+            self.run_id = None
+
     async def fenced(self, tail: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
         """Run ``FENCE + tail`` and check ownership.
 

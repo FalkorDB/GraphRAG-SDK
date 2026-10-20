@@ -8,11 +8,14 @@ graph to do it, so merge throughput fell from 61.9 to 10.3 merges/s between a
 """
 
 import re
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from graphrag_sdk.storage.deduplicator import _REMAP_QUERIES, EntityDeduplicator
+from graphrag_sdk.storage.merge_query import absorb_query
+
+from .dedup_sim import simulate
 
 
 def _result(rows):
@@ -360,92 +363,54 @@ class TestMergePreservesDescriptions:
     """
 
     @staticmethod
-    def _dedup(rows, *, survivor_exists: bool = True, stored=None):
-        graph = MagicMock()
-
-        async def query_raw(q, params=None):
-            if (
-                "MATCH (e:__Entity__)" in q
-                and "RETURN" in q
-                and "WHERE e.dedup_pending = true" in q
-            ):
-                return _result(rows if not params.get("last") else [])
-            if "properties(k), properties(d)" in q:
-                return _props_read(rows, params, stored)
-            if "DETACH DELETE" in q:
-                # The absorb query RETURNs the survivor's id iff it matched.
-                return _result([[params["survivor_id"]]] if survivor_exists else [])
-            return _result([])
-
-        graph.query_raw = AsyncMock(side_effect=query_raw)
-        return EntityDeduplicator(graph, MagicMock()), graph
-
-    @staticmethod
-    def _description_writes(graph):
-        return [
-            c.args[1]["desc"]
-            for c in graph.query_raw.call_args_list
-            if len(c.args) > 1 and isinstance(c.args[1], dict) and "desc" in c.args[1]
-        ]
-
-    @staticmethod
-    def _delete_calls(graph):
-        return [c for c in graph.query_raw.call_args_list if "DETACH DELETE" in c.args[0]]
+    def _description_writes(sim):
+        return [w.params["desc"] for w in sim.writes if "desc" in w.params]
 
     async def test_losing_description_is_preserved(self):
-        dedup, graph = self._dedup(
+        sim = await simulate(
             [
                 ["e1", "Cape Morrow Light", "a lighthouse on Cape Morrow", "Location"],
                 ["e2", "cape morrow light", "first lit in 1871", "Location"],
             ]
         )
-        merged = await dedup.deduplicate()
-        assert merged == 1
-        writes = self._description_writes(graph)
+        assert sim.merged == 1
+        writes = self._description_writes(sim)
         assert writes, "no description write was issued — the loser's text is gone"
         assert "first lit in 1871" in writes[0]
         assert "a lighthouse on Cape Morrow" in writes[0]
 
     async def test_same_name_different_label_is_not_merged(self):
-        dedup, graph = self._dedup(
+        sim = await simulate(
             [
                 ["e1", "Paris", "the capital of France", "Location"],
                 ["e2", "Paris", "a prince of Troy", "Person"],
             ]
         )
-        merged = await dedup.deduplicate()
-        assert merged == 0
-        assert self._description_writes(graph) == []
+        assert sim.merged == 0 and sim.ops == []
 
     async def test_identical_descriptions_are_not_concatenated(self):
         """The text is not repeated — and the ``descriptions`` list is still
         written, so the member the deleted node held is recorded: two nodes
         with the same description and no list used to leave the survivor
         without one, reporting fewer members than it absorbed."""
-        dedup, graph = self._dedup(
+        sim = await simulate(
             [
                 ["e1", "Alice", "an engineer", "Person"],
                 ["e2", "alice", "an engineer", "Person"],
             ]
         )
-        await dedup.deduplicate()
-        assert self._description_writes(graph) == ["an engineer"]
-        (write,) = [
-            c
-            for c in graph.query_raw.call_args_list
-            if len(c.args) > 1 and isinstance(c.args[1], dict) and "descs" in c.args[1]
-        ]
-        assert write.args[1]["descs"] == ["an engineer"]
+        assert self._description_writes(sim) == ["an engineer"]
+        (write,) = sim.writes
+        assert write.params["descs"] == ["an engineer"]
 
     async def test_empty_description_does_not_produce_a_separator(self):
-        dedup, graph = self._dedup(
+        sim = await simulate(
             [
                 ["e1", "Bob", "a physicist", "Person"],
                 ["e2", "bob", "", "Person"],
             ]
         )
-        await dedup.deduplicate()
-        for w in self._description_writes(graph):
+        for w in self._description_writes(sim):
             assert not w.startswith(" | ") and not w.endswith(" | ")
 
     async def test_existing_segments_are_not_repeated(self):
@@ -457,16 +422,15 @@ class TestMergePreservesDescriptions:
         entities. The members are the survivor's stored ``descriptions``
         list, the shape every merge writes.
         """
-        dedup, graph = self._dedup(
+        sim = await simulate(
             [
                 ["e1", "Cape Morrow Light", "a lighthouse | first lit in 1871", "Location"],
                 ["e2", "cape morrow light", "first lit in 1871", "Location"],
             ],
-            stored={"e1": {"descriptions": ["a lighthouse", "first lit in 1871"]}},
+            stored={"e1": {"props": {"descriptions": ["a lighthouse", "first lit in 1871"]}}},
         )
-        merged = await dedup.deduplicate()
-        assert merged == 1
-        assert self._description_writes(graph) == []
+        assert sim.merged == 1
+        assert self._description_writes(sim) == []
 
     async def test_a_lone_description_holding_the_separator_is_one_member(self):
         """A node with only ``description`` is one member, not split on
@@ -474,103 +438,61 @@ class TestMergePreservesDescriptions:
         pre-``descriptions`` survivor from a fresh node whose single text
         contains the separator, and splitting the fresh one invents members
         that count toward ``force_summary_threshold``."""
-        dedup, graph = self._dedup(
+        sim = await simulate(
             [
                 ["e1", "Maya Ellison", "CEO | founder of Acme", "Person"],
                 ["e2", "maya ellison", "born 1970", "Person"],
             ]
         )
-        merged = await dedup.deduplicate()
-        assert merged == 1
-        (write,) = [
-            c
-            for c in graph.query_raw.call_args_list
-            if len(c.args) > 1 and isinstance(c.args[1], dict) and "descs" in c.args[1]
-        ]
-        assert write.args[1]["descs"] == ["CEO | founder of Acme", "born 1970"]
-        assert write.args[1]["desc"] == "CEO | founder of Acme | born 1970"
+        assert sim.merged == 1
+        (write,) = sim.writes
+        assert write.params["descs"] == ["CEO | founder of Acme", "born 1970"]
+        assert write.params["desc"] == "CEO | founder of Acme | born 1970"
 
     async def test_segments_accumulate_once_across_a_group(self):
-        dedup, graph = self._dedup(
+        sim = await simulate(
             [
                 ["e1", "Cape Morrow Light", "a lighthouse", "Location"],
                 ["e2", "cape morrow light", "first lit in 1871", "Location"],
                 ["e3", "Cape  Morrow  Light", "first lit in 1871 | automated in 1960", "Location"],
             ],
-            stored={"e3": {"descriptions": ["first lit in 1871", "automated in 1960"]}},
+            stored={"e3": {"props": {"descriptions": ["first lit in 1871", "automated in 1960"]}}},
         )
-        await dedup.deduplicate()
-        writes = self._description_writes(graph)
-        # e3 has the longest description and survives; the others fold in once.
-        assert writes[-1] == "first lit in 1871 | automated in 1960 | a lighthouse"
-
-    async def test_survivor_update_and_deletion_are_one_statement(self):
-        """A failed description write must not leave the duplicate deleted.
-
-        Previously the duplicates were ``DETACH DELETE``d first and the
-        survivor's description written afterwards, with the write's failure
-        swallowed -- the duplicate's unique text was gone for good.
-        """
-        dedup, graph = self._dedup(
-            [
-                ["e1", "Cape Morrow Light", "a lighthouse", "Location"],
-                ["e2", "cape morrow light", "first lit in 1871", "Location"],
-            ]
+        # e3 has the longest description and survives; the others fold in
+        # once, each merge building on the one before.
+        assert sim.nodes["e3"]["props"]["description"] == (
+            "first lit in 1871 | automated in 1960 | a lighthouse"
         )
-        await dedup.deduplicate()
-        deletes = self._delete_calls(graph)
-        assert len(deletes) == 1
-        q, params = deletes[0].args
-        assert "SET s.description = $desc" in q
-        assert "MATCH (s:__Entity__ {id: $survivor_id})" in q
-        assert q.index("MATCH (s:__Entity__") < q.index("DETACH DELETE")
-        assert "first lit in 1871" in params["desc"]
+        assert set(sim.nodes) == {"e3"}
 
-    async def test_missing_survivor_is_not_reported_as_a_merge(self, caplog):
-        """The entity list is a snapshot; a survivor can vanish mid-loop.
-
-        The remap queries then match nothing and a bare ``DETACH DELETE`` would
-        destroy every edge the duplicate still holds while the pass reported
-        success. Binding the survivor in the delete statement makes a missing
-        one a no-op, and the empty result must not count as merged.
-        """
-        dedup, graph = self._dedup(
-            [
-                ["e1", "Cape Morrow Light", "a lighthouse", "Location"],
-                ["e2", "cape morrow light", "first lit in 1871", "Location"],
-            ],
-            survivor_exists=False,
+    def test_the_fold_and_the_delete_are_one_statement_after_every_edge_moved(self):
+        """A failed description write must not leave the duplicate deleted,
+        and no edge may be deleted with it: the fold, the delete and every
+        edge move are one query, the moves before the delete, the fold and
+        the delete under the same guard."""
+        q = absorb_query([("RELATES", "in"), ("MENTIONED_IN", "out")], ["s.desc = $d"], [])
+        assert (
+            q.count("MERGE (b)-[nr:`RELATES`") == 1 and q.count("MERGE (s)-[nr:`MENTIONED_IN`") == 1
         )
-        with caplog.at_level("WARNING", logger="graphrag_sdk.storage.deduplicator"):
-            merged = await dedup.deduplicate()
-        assert merged == 0
-        assert "no longer exists" in caplog.text
+        assert q.rindex("MERGE ") < q.index("SET s.desc = $d") < q.index("DETACH DELETE d")
+        assert "CASE WHEN ok THEN [1] ELSE [] END | DETACH DELETE d" in q
 
-    async def test_node_provenance_is_unioned_before_deletion(self):
+    def test_node_provenance_is_unioned_before_deletion(self):
         """Entity nodes carry ``source_chunk_ids`` read back by
         ``CachedChunkExtraction``; deleting the duplicate outright dropped
-        its half."""
-        dedup, graph = self._dedup(
-            [
-                ["e1", "Alice", "an engineer", "Person"],
-                ["e2", "alice", "", "Person"],
-            ]
-        )
-        await dedup.deduplicate()
-        (delete,) = self._delete_calls(graph)
-        q = delete.args[0]
-        assert "s.source_chunk_ids" in q and "dup.source_chunk_ids" in q
-        assert "[c IN contrib WHERE NOT c IN old]" in q
+        its half. The union is done by the merge query from the values at
+        write time."""
+        q = absorb_query([], [], [])
+        assert "SET s.source_chunk_ids" in q
+        assert "[c IN d.source_chunk_ids WHERE NOT c IN coalesce(s.source_chunk_ids, [])]" in q
+        assert q.index("SET s.source_chunk_ids") < q.index("DETACH DELETE d")
 
 
 class TestAcronymMerge:
-    _dedup = staticmethod(TestMergePreservesDescriptions._dedup)
-    _delete_calls = staticmethod(TestMergePreservesDescriptions._delete_calls)
-
     async def test_long_form_survives_regardless_of_description_length(self):
-        """``backfill_entity_embeddings`` embeds the *name* only. Keeping
-        ``AIHS`` would leave the entity vector-indexed as an opaque string."""
-        dedup, graph = self._dedup(
+        """The *name* is what the entity is vector-indexed by. Keeping
+        ``AIHS`` would leave the entity indexed as an opaque string."""
+        sim = await simulate(
             [
                 [
                     "a",
@@ -581,96 +503,37 @@ class TestAcronymMerge:
                 ["b", "Ashford Island Historical Society", "short", "Organization"],
             ]
         )
-        merged = await dedup.deduplicate()
-        assert merged == 1
-        (delete,) = self._delete_calls(graph)
-        assert delete.args[1]["dup_id"] == "a"
-        assert delete.args[1]["survivor_id"] == "b"
+        assert sim.merged == 1
+        (write,) = sim.writes
+        assert (write.op.dup, write.op.survivor) == ("a", "b")
 
     async def test_absorbed_acronym_is_recorded_as_an_alias(self):
-        dedup, graph = self._dedup(
+        sim = await simulate(
             [
                 ["a", "AIHS", "", "Organization"],
                 ["b", "Ashford Island Historical Society", "", "Organization"],
             ]
         )
-        await dedup.deduplicate()
-        (delete,) = self._delete_calls(graph)
-        q, params = delete.args
-        assert "s.aliases = $aliases" in q
-        assert params["aliases"] == ["AIHS"]
+        (write,) = sim.writes
+        assert "s.aliases = $aliases" in write.sets
+        assert write.params["aliases"] == ["AIHS"]
 
     async def test_spelling_variant_is_not_an_alias(self):
-        dedup, graph = self._dedup(
+        sim = await simulate(
             [
                 ["e1", "Cape Morrow Light", "", "Location"],
                 ["e2", "cape morrow light", "", "Location"],
             ]
         )
-        await dedup.deduplicate()
-        (delete,) = self._delete_calls(graph)
-        assert "aliases" not in delete.args[1]
+        (write,) = sim.writes
+        assert "aliases" not in write.params
 
     async def test_aliases_accumulate_without_duplicates(self):
-        rows = [
-            ["b", "Ashford Island Historical Society", "", "Organization", ["A.I.H.S."]],
-            ["a", "AIHS", "", "Organization", ["Ashford Society"]],
-        ]
-        dedup, graph = self._dedup(rows)
-        await dedup.deduplicate()
-        (delete,) = self._delete_calls(graph)
-        assert delete.args[1]["aliases"] == ["A.I.H.S.", "AIHS", "Ashford Society"]
-
-
-class TestPendingFlag:
-    """Only entities ingest flagged ``dedup_pending`` are read, and the flag is
-    removed from exactly those once the run ends."""
-
-    @staticmethod
-    def _graph(pending_rows, all_rows):
-        graph = MagicMock()
-
-        async def query_raw(q, params=None):
-            params = params or {}
-            if "WHERE e.dedup_pending = true" in q:
-                return _result(pending_rows if not params.get("last") else [])
-            if "WHERE e.id > $last" in q:
-                return _result(all_rows if not params.get("last") else [])
-            return _result([])
-
-        graph.query_raw = AsyncMock(side_effect=query_raw)
-        return graph
-
-    @staticmethod
-    def _clears(graph):
-        return [
-            c.args[1]["ids"]
-            for c in graph.query_raw.call_args_list
-            if "REMOVE e.dedup_pending" in c.args[0]
-        ]
-
-    async def test_only_the_flagged_entities_are_read_and_cleared(self):
-        graph = self._graph([["e2", "Beta", "", "Person"]], [])
-        dedup = EntityDeduplicator(graph, MagicMock())
-        await dedup.deduplicate()
-        assert self._clears(graph) == [["e2"]]
-        assert not any(
-            "WHERE e.id > $last" in c.args[0] and "pending" not in c.args[0]
-            for c in graph.query_raw.call_args_list
+        sim = await simulate(
+            [
+                ["b", "Ashford Island Historical Society", "", "Organization", ["A.I.H.S."]],
+                ["a", "AIHS", "", "Organization", ["Ashford Society"]],
+            ]
         )
-
-    async def test_nothing_flagged_reads_nothing_more_and_writes_nothing(self):
-        graph = self._graph([], [["e1", "Alpha", "", "Person"]])
-        dedup = EntityDeduplicator(graph, MagicMock())
-        assert await dedup.deduplicate() == 0
-        assert self._clears(graph) == []
-        assert len(graph.query_raw.call_args_list) == 1  # the one pending read
-
-    async def test_dedup_all_reads_every_entity(self):
-        """A graph written before the flag existed has none; ``dedup_all``
-        checks every entity instead."""
-        rows = [["e1", "Alpha", "", "Person"], ["e2", "Beta", "", "Person"]]
-        graph = self._graph([], rows)
-        dedup = EntityDeduplicator(graph, MagicMock())
-        await dedup.deduplicate(dedup_all=True)
-        assert self._clears(graph) == [["e1", "e2"]]
+        (write,) = sim.writes
+        assert write.params["aliases"] == ["A.I.H.S.", "AIHS", "Ashford Society"]

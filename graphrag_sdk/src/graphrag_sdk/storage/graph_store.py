@@ -23,7 +23,12 @@ from graphrag_sdk.core.models import (
     GraphRelationship,
 )
 from graphrag_sdk.storage.deduplicator import _REMAP_QUERIES, properties_to_carry
-from graphrag_sdk.storage.judge_dedup import DEDUP_ATTEMPTS_KEY, DEDUP_PENDING_KEY
+from graphrag_sdk.storage.system_store import (
+    CONFIG_LABEL,
+    PROCESSING_LABEL,
+    deleted_record_clause,
+    is_system_label,
+)
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 
@@ -220,10 +225,9 @@ class GraphStore:
                 ]
                 query = f"UNWIND $batch AS item MERGE (n:`{safe_label}` {{id: item.id}}) "
                 if is_entity:
+                    # Nothing marks a new entity for dedup: it has no name
+                    # vector, and that is what the next finalize() looks for.
                     query += (
-                        # New to the graph: the next finalize checks it for
-                        # duplicates, then removes the flag.
-                        f"ON CREATE SET n.{DEDUP_PENDING_KEY} = true "
                         "WITH n, item, "
                         "     coalesce(n.source_chunk_ids, []) AS old, "
                         "     coalesce(item.properties.source_chunk_ids, []) AS contrib "
@@ -248,7 +252,6 @@ class GraphStore:
                         q = f"MERGE (n:`{safe_node_label}` {{id: $id}}) "
                         if is_entity:
                             q += (
-                                f"ON CREATE SET n.{DEDUP_PENDING_KEY} = true "
                                 "WITH n, $properties AS props, "
                                 "     coalesce(n.source_chunk_ids, []) AS old, "
                                 "     coalesce($properties.source_chunk_ids, []) AS contrib "
@@ -489,7 +492,8 @@ class GraphStore:
                 if new_id in movers:
                     aside = f"{old_id}__swapping"
                     await self.query_raw(
-                        "MATCH (n:__Entity__ {id: $old}) SET n.id = $aside",
+                        "MATCH (n:__Entity__ {id: $old}) SET n.id = $aside "
+                        + deleted_record_clause("[$old]"),
                         {"old": old_id, "aside": aside},
                     )
                     deferred.append((aside, new_id))
@@ -521,34 +525,29 @@ class GraphStore:
         )
         if not (exists.result_set and exists.result_set[0][0]):
             # The embedding is of the old name; left on the node, vector search
-            # kept finding the row under a name it no longer has. finalize()
-            # embeds every node without one. The new name is new to dedup too,
-            # so the node is flagged for the next finalize to check.
+            # kept finding the row under a name it no longer has. Without it the
+            # node is pending dedup again — the new name is new to dedup too —
+            # and the next finalize() embeds and checks it. The old id leaves a
+            # deleted record, so a merge planned on it is not applied to the node.
             await self.query_raw(
-                "MATCH (n:__Entity__ {id: $old}) "
-                f"SET n.id = $new, n.{DEDUP_PENDING_KEY} = true REMOVE n.embedding",
+                "MATCH (n:__Entity__ {id: $old}) SET n.id = $new REMOVE n.embedding "
+                + deleted_record_clause("[$old]"),
                 {"old": old_id, "new": new_id},
             )
             return 1, 0
         # Something already sits at new_id — a prose mention of the same name,
-        # typically. Fold the old node into it, and flag the result: it now
-        # carries the row's identity, which no dedup run has seen with it.
+        # typically. Fold the old node into it, and make the result pending
+        # dedup again: it now carries the row's identity, which no dedup run has
+        # seen with it.
         for query in _REMAP_QUERIES:
             await self.query_raw(query, {"dup_id": old_id, "survivor_id": new_id})
         await self._carry_then_delete(old_id, new_id)
-        await self.query_raw(
-            f"MATCH (n:__Entity__ {{id: $new}}) SET n.{DEDUP_PENDING_KEY} = true",
-            {"new": new_id},
-        )
+        await self.query_raw("MATCH (n:__Entity__ {id: $new}) REMOVE n.embedding", {"new": new_id})
         return 0, 1
 
     # The row about to be written sets ``is_stub`` itself; a placeholder's
-    # ``True`` must not land on the node first and then have to be undone. The
-    # dedup flag and failure count belong to each node's own checks: the fold
-    # flags the survivor itself, and another node's count would cut its retries.
-    _NEVER_CARRY_ON_RECONCILE = frozenset(
-        {"id", "embedding", "is_stub", DEDUP_PENDING_KEY, DEDUP_ATTEMPTS_KEY}
-    )
+    # ``True`` must not land on the node first and then have to be undone.
+    _NEVER_CARRY_ON_RECONCILE = frozenset({"id", "embedding", "is_stub"})
 
     async def _carry_then_delete(self, old_id: str, new_id: str) -> None:
         """Copy what only the old node knew onto the new one, then delete the old.
@@ -569,7 +568,12 @@ class GraphStore:
                     "MATCH (k:__Entity__ {id: $new}) SET k += $carry",
                     {"new": new_id, "carry": carry},
                 )
-        await self.query_raw("MATCH (d:__Entity__ {id: $old}) DETACH DELETE d", {"old": old_id})
+        await self.query_raw(
+            "MATCH (d:__Entity__ {id: $old}) WITH collect(d) AS gone "
+            + deleted_record_clause("[$old]")
+            + "FOREACH (d IN gone | DETACH DELETE d)",
+            {"old": old_id},
+        )
 
     async def upsert_reference_nodes(self, references: Sequence[ReferenceNode]) -> int:
         """Write foreign-key reference nodes: the key always, the name never.
@@ -639,7 +643,7 @@ class GraphStore:
                     f"UNWIND $batch AS item "
                     f"MERGE (n:`{safe_label}` {{id: item.id}}) "
                     f"ON CREATE SET n += item.properties, n.name = item.name, "
-                    f"n.is_stub = true, n.{DEDUP_PENDING_KEY} = true "
+                    f"n.is_stub = true "
                     f"ON MATCH SET n += item.claims, "
                     f"n.entity_key = coalesce(n.entity_key, item.properties.entity_key), "
                     f"n.is_stub = coalesce(n.is_stub, true) "
@@ -855,6 +859,10 @@ class GraphStore:
             logger.warning(f"Failed to get entities for chunk {chunk_id}: {exc}")
             return []
 
+    async def server_version(self) -> tuple[int, int, int] | None:
+        """The FalkorDB version this store talks to; ``None`` if unknown."""
+        return await self._conn.server_version()
+
     async def query_raw(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
         """Execute a raw Cypher query.
 
@@ -876,14 +884,21 @@ class GraphStore:
         """
         stats: dict[str, Any] = {}
 
-        r = await self._conn.query("MATCH (n) RETURN count(n)")
-        stats["node_count"] = r.result_set[0][0] if r.result_set else 0
+        # The SDK's own system nodes (config, dedup records) are not data.
+        r = await self._conn.query(
+            "MATCH (n) RETURN count(n) AS n UNION ALL "
+            f"MATCH (n:{CONFIG_LABEL}) RETURN -count(n) AS n UNION ALL "
+            f"MATCH (n:{PROCESSING_LABEL}) RETURN -count(n) AS n"
+        )
+        stats["node_count"] = sum(row[0] for row in r.result_set or [])
 
         r = await self._conn.query("MATCH ()-[r]->() RETURN count(r)")
         stats["edge_count"] = r.result_set[0][0] if r.result_set else 0
 
         r = await self._conn.query("CALL db.labels()")
-        stats["entity_types"] = [row[0] for row in r.result_set] if r.result_set else []
+        stats["entity_types"] = [
+            row[0] for row in r.result_set or [] if not is_system_label(row[0])
+        ]
 
         r = await self._conn.query("CALL db.relationshipTypes()")
         stats["relationship_types"] = [row[0] for row in r.result_set] if r.result_set else []
@@ -1612,7 +1627,9 @@ class GraphStore:
                 "UNWIND $ids AS eid "
                 "MATCH (e:__Entity__ {id: eid}) "
                 "WHERE NOT (e)-[:MENTIONED_IN]->(:Chunk) "
-                "DETACH DELETE e RETURN count(e) AS n",
+                "WITH collect(e) AS orphans, collect(DISTINCT e.id) AS gone "
+                + deleted_record_clause("gone")
+                + "FOREACH (e IN orphans | DETACH DELETE e) RETURN size(orphans) AS n",
                 {"ids": batch},
             )
             deleted += r.result_set[0][0] if r.result_set else 0
@@ -1951,7 +1968,13 @@ class GraphStore:
         count = count_r.result_set[0][0] if count_r.result_set else 0
         if count == 0:
             return 0
-        await self._conn.query(f"MATCH (n:`{safe_label}`) DETACH DELETE n")
+        await self._conn.query(
+            f"MATCH (n:`{safe_label}`) "
+            "WITH collect(n) AS nodes, "
+            "collect(DISTINCT CASE WHEN n:__Entity__ THEN n.id END) AS gone "
+            + deleted_record_clause("gone")
+            + "FOREACH (n IN nodes | DETACH DELETE n)"
+        )
         return count
 
     async def rename_relation_type(self, old: str, new: str) -> int:
@@ -2205,13 +2228,10 @@ class GraphStore:
         - Lists: filter items to primitives only, strip control chars from strings.
         - Dicts: serialise to JSON string.
         - Other: convert to string and strip control characters.
-        - ``dedup_pending`` and ``dedup_attempts`` are dropped: the SDK owns
-          them, and an incoming value would overwrite the flag set when the
-          node is created.
         """
         cleaned: dict[str, Any] = {}
         for key, value in props.items():
-            if value is None or key in (DEDUP_PENDING_KEY, DEDUP_ATTEMPTS_KEY):
+            if value is None:
                 continue
             if isinstance(value, str | int | float | bool):
                 cleaned[key] = cls._sanitize_string(value) if isinstance(value, str) else value

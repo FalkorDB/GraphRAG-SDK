@@ -1,36 +1,27 @@
 # GraphRAG SDK — Storage: LLM-judged cross-document deduplication
 #
-# "Similarity nominates, the LLM decides." Runs at finalize() time, after
-# exact-name dedup, over the entities that are NEW since the last finalize
-# (flagged ``dedup_pending`` at ingest) — never over the whole graph:
+# "Similarity nominates, the LLM decides." Runs at finalize() time, after the
+# exact-name phase, over the entities whose dedup check is pending (see
+# ``deduplicator``) — never over the whole graph:
 #
-#   1. embed each new entity's name (the node's ``embedding`` property — the
-#      same vector retrieval uses — written here if missing). One vector per
-#      entity, computed once.
-#   2. nominate candidates with the graph's own ``__Entity__`` vector index:
-#      the top-k name neighbours of each new entity among ALL entities, in
-#      batched index queries. Cost is per new entity, not per graph size.
-#   3. group nominated pairs into small dense sets (cap 8)
-#   4. ask the LLM ONCE to partition each set into same-referent groups. The
+#   1. nominate candidates with the graph's own ``__Entity__`` vector index:
+#      each pending entity's nearest names among ALL entities, searched from
+#      the name vector stored on it (the same vector retrieval uses). Cost is
+#      per pending entity, not per graph size.
+#   2. group nominated pairs into small dense sets (cap 8)
+#   3. ask the LLM ONCE to partition each set into same-referent groups. The
 #      prompt shows each member's description: that is what tells namesakes
-#      apart, so it matters to the judge even though it is not embedded.
-#   5. merge agreed groups through the caller's ``merge_group`` hook —
-#      ``EntityDeduplicator._merge_judged_group``, which applies its ``_absorb``
-#      rules (survivor rank, property carry, provenance union, descriptions
-#      list, aliases) and adds every member's label to the survivor. Agreements
-#      are unioned across sets ("AAPL" = "Apple Inc." in one set, "Apple Inc."
-#      = "Apple" in another is one company), never through a protected pair.
-#      This class decides *identity* only; it never writes a merge itself.
-#
-# Nothing else is written: a pair the judge keeps apart is simply left alone.
-# The caller clears the entity's ``dedup_pending`` flag once its check
-# completes, and only flagged entities are query points, so the pair is put to
-# the judge again only if a later new entity brings it into a set.
+#      apart, so it matters to the judge even though it is not embedded. A set
+#      whose answer is not a clean partition is asked again on its own.
+#   4. hand the verdicts back. This module decides *identity* only and never
+#      writes a merge: ``EntityDeduplicator`` resolves the verdicts of the
+#      whole run into a sealed merge plan and applies it under its own rules
+#      (survivor rank, property carry, provenance union, descriptions list,
+#      aliases, the label union).
 #
 # Pairs the caller has already settled — a mention two keyed rows could
-# equally own (``skip_pairs``), and any two rows written from a declared key
-# (``is_stub``) — are dropped before the model is asked and
-# never unioned into one group.
+# equally own, and any two rows written from a declared key (``is_stub``) — are
+# dropped before the model is asked and never shown to it as one set.
 #
 # Measured on a labeled 277-entity set (138 true pairs), gpt-4.1, 3 runs: one
 # pass over index-nominated sets scored P 0.92-0.93 / R 0.75-0.77 (F1
@@ -39,38 +30,36 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Callable, Hashable, Iterable
+from dataclasses import dataclass, field
 from typing import Any
-
-import numpy as np
 
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 
 logger = logging.getLogger(__name__)
 
-#: Set on an entity node when ingest creates it, removed by the finalize that
-#: checks it for duplicates. Only flagged entities are query points of a dedup
-#: run, so its cost follows what was added since the last one; once every check
-#: has completed (or been released) the graph carries no dedup data.
-DEDUP_PENDING_KEY = "dedup_pending"
-#: Failed checks of a still-pending entity (a lookup, judge call or merge write
-#: that did not complete, an answer that was not a full partition, or no name
-#: vector). Removed with the flag; after ``MAX_DEDUP_ATTEMPTS`` failures the
-#: entity is no longer retried.
-DEDUP_ATTEMPTS_KEY = "dedup_attempts"
-MAX_DEDUP_ATTEMPTS = 3
+#: A nearest name: ``(entity id, cosine similarity, name)``.
+Hit = tuple[str, float, Any]
 
-# Index-nominated neighbours per new entity, and the cosine floor for them.
+# Index-nominated neighbours per pending entity, and the cosine floor for them.
 # Measured on the labeled set: k=5 found 92-96 % of true pairs; k=10 doubled
 # the LLM calls for no F1 gain.
 NEIGHBOUR_K = 5
 NEIGHBOUR_GATE = 0.5
-# New entities per batched vector-index query.
+# Pending entities per batched vector-index query.
 KNN_BATCH = 250
+#: A set without a usable answer is asked again, on its own, this many times.
+REASKS = 2
+#: Internal node ids per window of the scan for entities without a name vector.
+SCAN_WINDOW = 10_000
+#: How long a run waits for a vector index FalkorDB is still building.
+INDEX_READY_TIMEOUT_S = 300.0
 GROUP_CAP = 8
 MIN_DENSITY = 0.5
 PROMPT_TOKEN_BUDGET = 3000
@@ -150,17 +139,21 @@ JUDGE_PROMPT = (
 # ── pure helpers (unit-testable without a graph) ────────────────────────────
 
 
-class _UF:
-    def __init__(self, items: list[int]) -> None:
-        self.p = {x: x for x in items}
+class UnionFind:
+    """Union-find over hashable items, with path halving. An item first seen
+    by :meth:`find` is its own root."""
 
-    def find(self, x: int) -> int:
+    def __init__(self, items: Iterable[Hashable] = ()) -> None:
+        self.p: dict[Hashable, Hashable] = {x: x for x in items}
+
+    def find(self, x: Hashable) -> Hashable:
+        self.p.setdefault(x, x)
         while self.p[x] != x:
             self.p[x] = self.p[self.p[x]]
             x = self.p[x]
         return x
 
-    def union(self, a: int, b: int) -> bool:
+    def union(self, a: Hashable, b: Hashable) -> bool:
         ra, rb = self.find(a), self.find(b)
         if ra == rb:
             return False
@@ -187,7 +180,7 @@ def make_groups_dense(
     asked about — such a pair.
     """
     nodes = sorted({x for e in edges for x in e})
-    uf = _UF(nodes)
+    uf = UnionFind(nodes)
     mem = {x: {x} for x in nodes}
     eset = set(edges)
     for (a, b), _ in sorted(edges.items(), key=lambda kv: -kv[1]):
@@ -319,15 +312,18 @@ def parse_groups(text: str, sizes: list[int]) -> dict[int, list[list[int]]]:
     which set it answers and is dropped rather than applied to set 1's
     partition on evidence about other entities.
 
-    Out-of-range numbers are dropped; an unmentioned set yields no groups (no
-    merge). A set whose groups do not cover every member exactly once is not
-    a partition and yields no groups: silence about a member is not a verdict
-    that it differs. A set whose groups overlap
-    — ``1, 2`` and ``1, 3`` — is not a partition, and taking it at face value
-    would merge 2 and 3 through 1 though the model never put them together;
-    such a set yields no groups either.
+    A set yields groups only when its answer is a clean partition: every
+    member exactly once, nothing else. Silence about a member is not a verdict
+    that it differs; groups that overlap — ``1, 2`` and ``1, 3`` — would merge
+    2 and 3 through 1 though the model never put them together; a member
+    number the set does not have, or a one-member group carrying a ``NAME``
+    (the name of a merged entity, given to an entity left alone), says the
+    model lost track of the set. Each of these makes the whole set unanswered,
+    so it is asked again rather than half-read; an unmentioned set yields no
+    groups either.
     """
     out: dict[int, list[list[int]]] = {}
+    spoiled: dict[int, str] = {}
     for line in text.splitlines():
         up = line.upper()
         if "GROUP" not in up:
@@ -341,27 +337,24 @@ def parse_groups(text: str, sizes: list[int]) -> dict[int, list[list[int]]]:
             continue
         if not 0 <= si < len(sizes):
             continue
-        members_part = re.split(r"\|\s*NAME\s*:", after, maxsplit=1, flags=re.IGNORECASE)[0]
-        nums = [int(x) - 1 for x in re.findall(r"\d+", members_part.split(":", 1)[-1])]
-        picked = sorted({x for x in nums if 0 <= x < sizes[si]})
+        parts = re.split(r"\|\s*NAME\s*:", after, maxsplit=1, flags=re.IGNORECASE)
+        nums = {int(x) - 1 for x in re.findall(r"\d+", parts[0].split(":", 1)[-1])}
+        picked = sorted(x for x in nums if 0 <= x < sizes[si])
+        if len(picked) != len(nums):
+            spoiled.setdefault(si, "a member number the set does not have")
+        elif len(picked) == 1 and len(parts) > 1:
+            spoiled.setdefault(si, "a merged name given to a one-member group")
         if picked:
             out.setdefault(si, []).append(picked)
     for si, groups in list(out.items()):
         listed = [x for grp in groups for x in grp]
-        if len(listed) != len(set(listed)):
-            logger.warning("judge dedup: set %d answered with overlapping groups; ignored", si + 1)
-            del out[si]
-        elif len(listed) != sizes[si]:
-            # A partition names every member exactly once. A set answered
-            # without some of its members was not judged: silence about an
-            # entity is not a verdict that it differs from the others, and
-            # treating it as one would turn an omission into a decision.
-            logger.warning(
-                "judge dedup: set %d answered with %d of %d members; ignored",
-                si + 1,
-                len(listed),
-                sizes[si],
-            )
+        why = spoiled.get(si)
+        if why is None and len(listed) != len(set(listed)):
+            why = "overlapping groups"
+        elif why is None and len(listed) != sizes[si]:
+            why = f"{len(set(listed))} of {sizes[si]} members"
+        if why is not None:
+            logger.warning("judge dedup: set %d answered with %s; asked again", si + 1, why)
             del out[si]
     return out
 
@@ -378,6 +371,22 @@ def pairs_by_set_from_response(text: str, order: list[list[int]]) -> dict[tuple[
             for x in range(len(real)):
                 for y in range(x + 1, len(real)):
                     out[(min(real[x], real[y]), max(real[x], real[y]))] = si
+    return out
+
+
+def different_pairs_from_response(text: str, order: list[list[int]]) -> set[tuple[int, int]]:
+    """Entity-index pairs of an answered set that the judge put in different
+    groups: a verdict that they are two things, which no chain of agreements
+    in other sets may overturn."""
+    out: set[tuple[int, int]] = set()
+    for si, groups in parse_groups(text, [len(m) for m in order]).items():
+        members = order[si]
+        for g, grp in enumerate(groups):
+            for other in groups[g + 1 :]:
+                for a in grp:
+                    for b in other:
+                        x, y = members[a], members[b]
+                        out.add((min(x, y), max(x, y)))
     return out
 
 
@@ -432,14 +441,14 @@ def pick_group_name(
     return None
 
 
-# ── the deduplicator ────────────────────────────────────────────────────────
+# ── the graph reads ─────────────────────────────────────────────────────────
 
 
 class NameNeighbourIndex:
     """Entity reads the dedup phases share, all through indexes: rows by id,
-    the entities still flagged ``dedup_pending``, their stored name vectors
-    (embedding the missing ones), and each one's nearest names from the
-    ``__Entity__.embedding`` vector index. Nothing here reads every entity.
+    the entities without a name vector (by node-id window), and each entity's
+    nearest names from the ``__Entity__.embedding`` vector index, searched from
+    the vector stored on it. Nothing here reads every entity.
 
     Args:
         graph_store: object with ``query_raw(cypher, params)``.
@@ -449,13 +458,10 @@ class NameNeighbourIndex:
     def __init__(self, graph_store: Any, embedder: Embedder) -> None:
         self._graph = graph_store
         self._embedder = embedder
-        # Stats of the run in progress; ``embedded`` counts name vectors written.
-        self.last_stats: dict[str, int] = {}
-        self._embedded_ids: set[str] = set()
 
     _ENTITY_FIELDS = (
         "{v}.id, {v}.name, {v}.description, "
-        "[l IN labels({v}) WHERE l <> '__Entity__'], {v}.aliases, {v}.embedding, "
+        "[l IN labels({v}) WHERE l <> '__Entity__'], {v}.aliases, "
         "{v}.descriptions, {v}.is_stub"
     )
 
@@ -465,7 +471,7 @@ class NameNeighbourIndex:
         — a fact row keyed on a reading id — cannot be judged to be anything,
         and manufacturing a name from its id would let ``e-1`` nominate against
         a prose ``E-1``."""
-        eid, name, desc, labels, aliases, emb, descs, is_stub = (list(row) + [None] * 8)[:8]
+        eid, name, desc, labels, aliases, descs, is_stub = (list(row) + [None] * 7)[:7]
         if not name or not str(name).strip():
             return None
         return {
@@ -476,26 +482,8 @@ class NameNeighbourIndex:
             "labels": list(labels or []),
             "label": (labels or [""])[0] if labels else "",
             "aliases": list(aliases or []),
-            "embedding": list(emb) if emb else None,
             "is_stub": is_stub,
         }
-
-    async def fetch_pending(self, batch_size: int) -> list[dict]:
-        """Named entities still flagged ``dedup_pending``, paged by id."""
-        out: list[dict] = []
-        last = ""
-        while True:
-            r = await self._graph.query_raw(
-                f"MATCH (e:__Entity__) WHERE e.{DEDUP_PENDING_KEY} = true AND e.id > $last "
-                "WITH e ORDER BY e.id LIMIT $limit "
-                f"RETURN {self._ENTITY_FIELDS.format(v='e')}",
-                {"last": last, "limit": batch_size},
-            )
-            rows = r.result_set or []
-            out.extend(e for e in map(self._entity_from_row, rows) if e is not None)
-            if len(rows) < batch_size:
-                return out
-            last = rows[-1][0]
 
     async def fetch_by_ids(self, ids: list[str], batch_size: int) -> list[dict]:
         """Named entities among ``ids`` that still exist, in ``ids`` order."""
@@ -512,110 +500,154 @@ class NameNeighbourIndex:
                     found[ent["id"]] = ent
         return [found[i] for i in ids if i in found]
 
-    async def ensure_vector_index(self, dim: int) -> None:
-        """The ``__Entity__.embedding`` vector index the neighbour query needs.
-        ``finalize()`` creates it too; here it may not exist yet on a graph
-        whose first finalize this is. Looked up first, so an existing index is
-        not re-created (the connection would log that refusal as an error)."""
-        try:
-            r = await self._graph.query_raw(
-                "CALL db.indexes() YIELD label, properties, types "
-                "WHERE label = '__Entity__' RETURN types"
-            )
-            for (types,) in getattr(r, "result_set", None) or []:
-                if "VECTOR" in str((types or {}).get("embedding", "")):
-                    return
-            await self._graph.query_raw(
-                "CREATE VECTOR INDEX FOR (n:__Entity__) ON (n.embedding) "
-                f"OPTIONS {{dimension:{int(dim)}, similarityFunction:'cosine'}}"
-            )
-        except Exception as exc:
-            if "already indexed" not in str(exc).lower():
-                logger.debug("judge dedup: vector index not created: %s", exc)
+    async def unembedded(self) -> AsyncIterator[list[tuple[str, str | None]]]:
+        """``(id, name)`` of every entity without a name vector, one node-id
+        window at a time.
 
-    async def neighbours(
-        self, pending: list[dict], k: int, gate: float
-    ) -> list[tuple[int, dict, float]]:
-        """``(pending index, neighbour row, cosine)`` for each new entity's top-k
-        name neighbours among ALL entities, via the vector index. One query per
-        ``KNN_BATCH`` new entities; nothing is read beyond the neighbours."""
-        items = [
-            {"i": i, "id": e["id"], "v": e["embedding"]}
-            for i, e in enumerate(pending)
-            if e["embedding"]
-        ]
-        out: list[tuple[int, dict, float]] = []
-        for b in range(0, len(items), KNN_BATCH):
+        A window is a range scan of internal node ids — no sort, so a page
+        costs the same at the end of a large graph as at its start (1M
+        entities in 1.1 s, against 3.2 s for the *first* ``ORDER BY e.id``
+        page). Ids are reused after deletes, so windows do not follow creation
+        order; an entity created behind the scan is found by the next run.
+        """
+        r = await self._graph.query_raw("MATCH (e:__Entity__) RETURN max(ID(e))")
+        top = (r.result_set or [[None]])[0][0]
+        if top is None:
+            return
+        for lo in range(0, int(top) + 1, SCAN_WINDOW):
             r = await self._graph.query_raw(
-                "UNWIND $items AS it "
-                "CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $k, vecf32(it.v)) "
-                "YIELD node, score WITH it, node, score WHERE node.id <> it.id "
-                # The neighbour's vector is not needed (it never becomes a
-                # query point here) and is the bulk of the reply, so null it.
-                f"RETURN it.i, score, "
-                f"{self._ENTITY_FIELDS.format(v='node').replace('node.embedding', 'null')}",
-                {"items": items[b : b + KNN_BATCH], "k": k + 1},
+                "MATCH (e:__Entity__) WHERE ID(e) >= $lo AND ID(e) < $hi "
+                "AND e.embedding IS NULL RETURN e.id, e.name",
+                {"lo": lo, "hi": lo + SCAN_WINDOW},
             )
-            for row in r.result_set or []:
-                sim = 1.0 - float(row[1])  # the index reports cosine distance
-                if sim < gate:
-                    continue
-                ent = self._entity_from_row(row[2:])
-                if ent is not None:
-                    out.append((int(row[0]), ent, sim))
-        return out
+            rows = [(row[0], row[1]) for row in r.result_set or [] if row and row[0]]
+            if rows:
+                yield rows
 
-    async def name_vectors(self, ents: list[dict]) -> np.ndarray:
-        """Name embeddings: reuse ``e.embedding`` where present, embed the rest
-        and persist them so every entity keeps a name vector for retrieval.
-        The ids written are kept in ``self._embedded_ids`` so the run's
-        ``embedded`` count can leave out a node a later merge deletes."""
-        self._embedded_ids = set()
-        missing = [i for i, e in enumerate(ents) if not e["embedding"]]
-        if missing:
-            fresh = await self._embedder.aembed_documents([ents[i]["name"] for i in missing])
-            for i, v in zip(missing, fresh):
-                ents[i]["embedding"] = list(v)
-            for k in range(0, len(missing), 200):
-                items = [
-                    {"id": ents[i]["id"], "v": ents[i]["embedding"]}
-                    for i in missing[k : k + 200]
-                    if ents[i]["embedding"]
-                ]
-                if items:
+    async def ensure_vector_index(self, dim: int | None) -> None:
+        """The ``__Entity__.embedding`` vector index the neighbour query needs,
+        ready to answer. ``ingest()`` creates it; here it may not exist yet on
+        a graph written another way, and is created for vectors of ``dim``
+        (``None``: only waited for). Looked up first, so an existing index is
+        not re-created (the connection would log that refusal as an error).
+
+        FalkorDB builds an index over existing vectors in the background, and
+        a query until it is ``OPERATIONAL`` fails ("Invalid arguments") — over
+        100k vectors that took more than two minutes — so this waits for it,
+        up to ``INDEX_READY_TIMEOUT_S``. Vectors written into a ready index are
+        searchable at once.
+        """
+        deadline = time.monotonic() + INDEX_READY_TIMEOUT_S
+        created = False
+        while True:
+            try:
+                r = await self._graph.query_raw(
+                    "CALL db.indexes() YIELD label, types, status "
+                    "WHERE label = '__Entity__' RETURN types, status"
+                )
+                rows = getattr(r, "result_set", None) or []
+            except Exception as exc:
+                logger.debug("judge dedup: could not read the indexes: %s", exc)
+                return
+            vector = [
+                str(status or "")
+                for types, status in rows
+                if "VECTOR" in str((types or {}).get("embedding", ""))
+            ]
+            if vector and all(s.upper() == "OPERATIONAL" for s in vector):
+                return
+            if not vector and dim is None:
+                return
+            if not vector and not created:
+                created = True
+                try:
                     await self._graph.query_raw(
-                        "UNWIND $items AS it MATCH (e:__Entity__ {id: it.id}) "
-                        "SET e.embedding = vecf32(it.v)",
-                        {"items": items},
+                        "CREATE VECTOR INDEX FOR (n:__Entity__) ON (n.embedding) "
+                        f"OPTIONS {{dimension:{int(dim)}, similarityFunction:'cosine'}}"
                     )
-                    self.last_stats["embedded"] = self.last_stats.get("embedded", 0) + len(items)
-                    self._embedded_ids.update(it["id"] for it in items)
-        dim = max((len(e["embedding"]) for e in ents if e["embedding"]), default=0)
-        vecs = np.zeros((len(ents), dim), dtype=np.float32)
-        for i, e in enumerate(ents):
-            if e["embedding"] and len(e["embedding"]) == dim:
-                vecs[i] = e["embedding"]
-        return vecs
+                except Exception as exc:
+                    if "already indexed" not in str(exc).lower():
+                        logger.warning("judge dedup: vector index not created: %s", exc)
+                        return
+                continue
+            if time.monotonic() > deadline:
+                logger.warning(
+                    "The entity vector index is still being built after %d s; nearest-name "
+                    "lookups may fail, and the entities they miss stay pending",
+                    int(INDEX_READY_TIMEOUT_S),
+                )
+                return
+            await asyncio.sleep(1.0)
+
+    async def discover(self, ids: list[str], k: int) -> tuple[dict[str, list[Hit]], set[str]]:
+        """Each entity's ``k`` nearest names, as ``{id: [(neighbour id,
+        cosine, neighbour name)]}``, nearest first; and the ids whose search
+        failed.
+
+        Searched from the vector stored on the entity, so nothing is embedded
+        or sent. One row per entity — every neighbour collected into it — so a
+        wide lookup stays far under FalkorDB's 10,000-row result cap; an empty
+        list is a completed search that found nothing. The index returns the
+        entity itself as its own nearest name, hence ``k + 1``.
+        """
+        found: dict[str, list[Hit]] = {}
+        failed: set[str] = set()
+        for b in range(0, len(ids), KNN_BATCH):
+            batch = ids[b : b + KNN_BATCH]
+            try:
+                r = await self._graph.query_raw(
+                    "UNWIND $ids AS id MATCH (e:__Entity__ {id: id}) "
+                    "WHERE e.embedding IS NOT NULL "
+                    "CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $k, e.embedding) "
+                    "YIELD node, score "
+                    "RETURN e.id, "
+                    "collect(CASE WHEN node.id <> e.id THEN [node.id, score, node.name] END)",
+                    {"ids": batch, "k": k + 1},
+                )
+            except Exception as exc:
+                logger.warning("Nearest-name lookup failed for %d entities: %s", len(batch), exc)
+                failed.update(batch)
+                continue
+            for eid, hits in r.result_set or []:
+                # The index reports cosine distance.
+                found.setdefault(eid, []).extend(
+                    (nid, 1.0 - float(score), name) for nid, score, name in hits or [] if nid
+                )
+        for hits in found.values():
+            hits.sort(key=lambda hit: -hit[1])
+        return found, failed
+
+
+# ── the judge ───────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Verdicts:
+    """What the judge decided about one run's sets, by entity index.
+
+    ``same`` pairs were put in one group; ``different`` pairs were in one set
+    and put apart. ``names`` is the judge's name per agreed group. ``failed``
+    are the members of every set that got no usable answer, after
+    ``REASKS`` further attempts each.
+    """
+
+    same: set[tuple[int, int]] = field(default_factory=set)
+    different: set[tuple[int, int]] = field(default_factory=set)
+    names: dict[frozenset[int], str] = field(default_factory=dict)
+    failed: set[int] = field(default_factory=set)
+    calls: int = 0
+    failed_calls: int = 0
 
 
 class LLMJudgeDeduplicator(NameNeighbourIndex):
-    """Cross-document dedup of NEW entities: the vector index nominates, the
-    LLM decides in one pass.
+    """Cross-document dedup of the pending entities: the vector index
+    nominates, the LLM decides in one pass per set.
 
     Args:
         graph_store: object with ``query_raw(cypher, params)``.
         embedder: embedding provider (entity names).
         llm: judge model. gpt-4.1-class models measured 9 wrong merges where
             gpt-4o-mini made 51 on the same input; use the strongest you can.
-        merge_group: ``async (members: list[dict], preferred_name=...) ->
-            (survivor_id, absorbed_ids)`` that performs the merge of one agreed
-            group. ``preferred_name`` is passed only when the judge named the
-            group with one of its members' own names or aliases.
-            ``EntityDeduplicator`` supplies :meth:`_merge_judged_group`, so a
-            judge merge obeys the same rules as every other phase (a table row
-            survives a mention, two keyed rows never merge, properties and
-            provenance are carried, labels are unioned). This class decides
-            identity only and never writes a merge itself.
         max_concurrency: judge prompts in flight. ``None`` uses the LLM's own
             ``max_concurrency``.
     """
@@ -625,193 +657,116 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
         graph_store: Any,
         embedder: Embedder,
         llm: LLMInterface,
-        merge_group: Callable[..., Awaitable[tuple[str, set[str]]]],
         *,
         max_concurrency: int | None = None,
     ) -> None:
         super().__init__(graph_store, embedder)
-        # Best name per agreed group, from the last pass (see _judge).
-        self._group_names: dict[frozenset[int], str] = {}
-        # Entities of the last run whose set got no usable verdict (a failed
-        # call, or an answer that was not a full partition). The caller keeps
-        # them pending so the next run asks again.
-        self.unjudged_ids: set[str] = set()
         self._llm = llm
-        self._merge = merge_group
         self._conc = max_concurrency
 
-    async def _judge(
-        self, sets: list[list[int]], ents: list[dict]
-    ) -> tuple[dict[tuple[int, int], int], int, int]:
-        """One pass over ``sets``: ``(same pairs -> index of the set they were
-        judged in, prompts, failed prompts)``."""
-        prompts, orders = pack_prompts(sets, ents)
-        offsets: list[int] = []
+    @staticmethod
+    def candidate_sets(
+        pending: list[dict],
+        neighbours: dict[str, list[tuple[str, float]]],
+        rows: dict[str, dict],
+        *,
+        extra_pairs: list[tuple[str, str]],
+        protected: Callable[[dict, dict], bool],
+    ) -> tuple[list[dict], list[list[int]], int]:
+        """``(entities, sets, candidate pairs)`` for one run.
+
+        ``entities`` are the pending rows, then every neighbour row (from
+        ``rows``) they nominated; sets index into it. ``extra_pairs`` are id
+        pairs put to the judge whatever their similarity — the same-name pairs
+        the exact phase declined to merge on spelling alone. A ``protected``
+        pair is never a candidate and never shown in one set.
+        """
+        ents: list[dict] = list(pending)
+        index = {e["id"]: i for i, e in enumerate(ents)}
+
+        def at(eid: str) -> int | None:
+            if eid not in index:
+                if eid not in rows:
+                    return None
+                index[eid] = len(ents)
+                ents.append(rows[eid])
+            return index[eid]
+
+        edges: dict[tuple[int, int], float] = {}
+        for ent in pending:
+            i = index[ent["id"]]
+            for nid, sim in neighbours.get(ent["id"], []):
+                j = at(nid)
+                if j is not None and j != i:
+                    a, b = min(i, j), max(i, j)
+                    edges[(a, b)] = max(sim, edges.get((a, b), -1.0))
+        for x, y in extra_pairs:
+            i, j = at(x), at(y)
+            if i is not None and j is not None and i != j:
+                edges[(min(i, j), max(i, j))] = 1.0
+
+        def protected_idx(i: int, j: int) -> bool:
+            return protected(ents[i], ents[j])
+
+        edges = {p: v for p, v in edges.items() if not protected_idx(*p)}
+        if not edges:
+            return ents, [], 0
+        return ents, make_groups_dense(edges, keep_apart=protected_idx), len(edges)
+
+    async def judge(self, sets: list[list[int]], ents: list[dict]) -> Verdicts:
+        """Ask the judge about every set; a set without a usable answer (a
+        failed call, an answer that is not a clean partition) is asked again
+        on its own, up to ``REASKS`` times. Nothing is written."""
+        verdicts = Verdicts()
+        todo = list(range(len(sets)))
+        for attempt in range(1 + REASKS):
+            if not todo:
+                break
+            # A first pass packs sets into prompts by token budget; a retry asks
+            # one set per prompt, so one confusing set cannot spoil others.
+            unanswered = await self._ask([sets[s] for s in todo], ents, verdicts, alone=attempt > 0)
+            todo = [todo[k] for k in unanswered]
+        for s in todo:
+            verdicts.failed.update(sets[s])
+        return verdicts
+
+    async def _ask(
+        self, sets: list[list[int]], ents: list[dict], verdicts: Verdicts, *, alone: bool
+    ) -> list[int]:
+        """One round over ``sets``; returns the positions of the sets that got
+        no usable answer."""
+        prompts, orders = pack_prompts(sets, ents, budget=0 if alone else PROMPT_TOKEN_BUDGET)
+        first: list[int] = []
         pos = 0
         for order in orders:
-            offsets.append(pos)
+            first.append(pos)
             pos += len(order)
-        results = await self._llm.abatch_invoke(prompts, max_concurrency=self._conc)
-        same: dict[tuple[int, int], int] = {}
-        self._group_names: dict[frozenset[int], str] = {}
-        failed = 0
+        try:
+            results = await self._llm.abatch_invoke(prompts, max_concurrency=self._conc)
+        except Exception as exc:
+            logger.warning("judge dedup: %d judge calls failed: %s", len(prompts), exc)
+            verdicts.calls += len(prompts)
+            verdicts.failed_calls += len(prompts)
+            return list(range(len(sets)))
+        verdicts.calls += len(prompts)
+        unanswered: list[int] = []
+        answered_prompts: set[int] = set()
         for item in results:
             order = orders[item.index]
+            answered_prompts.add(item.index)
             if not item.ok or item.response is None:
-                failed += 1  # a failed call merges nothing — the safe default
-                self.unjudged_ids.update(ents[i]["id"] for members in order for i in members)
+                verdicts.failed_calls += 1
+                unanswered.extend(range(first[item.index], first[item.index] + len(order)))
                 continue
             content = item.response.content or ""
             answered = parse_groups(content, [len(members) for members in order])
-            for si, members in enumerate(order):
-                if si not in answered:
-                    self.unjudged_ids.update(ents[i]["id"] for i in members)
-            for pair, si in pairs_by_set_from_response(content, order).items():
-                same[pair] = offsets[item.index] + si
-            self._group_names.update(group_names_from_response(content, order))
-        return same, len(prompts), failed
-
-    async def deduplicate(
-        self,
-        batch_size: int = 500,
-        *,
-        pending_ids: list[str] | None = None,
-        skip_pairs: set[frozenset[str]] | None = None,
-        extra_pairs: list[tuple[str, str]] | None = None,
-    ) -> dict[str, int]:
-        """Judge the new entities against their index neighbours; return stats.
-
-        ``pending_ids`` are the entities to check (the caller's snapshot of
-        flagged entities); without it, every entity flagged
-        ``dedup_pending`` is read. Neighbours may be any entity, old or
-        new. ``skip_pairs`` are id pairs already decided elsewhere (a mention
-        two keyed rows could equally own); two rows written from a declared
-        key (both carry ``is_stub``) are never asked about. ``extra_pairs``
-        are id pairs that must be put to the judge whatever their similarity —
-        the same-name pairs the exact phase declined to merge on spelling alone.
-        """
-        skip = skip_pairs or set()
-
-        self.unjudged_ids = set()
-        stats = self.last_stats = {
-            "entities": 0,
-            "neighbours": 0,
-            "candidates": 0,
-            "sets": 0,
-            "llm_calls": 0,
-            "llm_failed": 0,
-            "agreed_pairs": 0,
-            "merged": 0,
-            "embedded": 0,
-        }
-        pending = (
-            await self.fetch_by_ids(list(pending_ids), batch_size)
-            if pending_ids is not None
-            else await self.fetch_pending(batch_size)
-        )
-        stats["entities"] = len(pending)
-        # Before the size check: a lone named entity still gets its name
-        # vector persisted, as the API promises for ``judge=True``.
-        nv = await self.name_vectors(pending)
-        if not pending:
-            return stats
-        # An entity the embedder returned no vector for is not looked up in the
-        # index; it stays pending so the next run nominates its neighbours.
-        self.unjudged_ids.update(e["id"] for e in pending if not e["embedding"])
-
-        # ents = the new entities, then every neighbour the index returned.
-        ents: list[dict] = list(pending)
-        index = {e["id"]: i for i, e in enumerate(ents)}
-        edges: dict[tuple[int, int], float] = {}
-        if nv.shape[1] == 0:
-            # No name vectors (the embedder returned none): the index cannot
-            # nominate, so the new entities stay pending for the next run. The
-            # pairs handed over below need no vector and are still judged.
-            self.unjudged_ids.update(e["id"] for e in pending)
-        else:
-            await self.ensure_vector_index(nv.shape[1])
-            for pi, ent, sim in await self.neighbours(pending, NEIGHBOUR_K, NEIGHBOUR_GATE):
-                j = index.get(ent["id"])
-                if j is None:
-                    j = index[ent["id"]] = len(ents)
-                    ents.append(ent)
-                a, b = min(pi, j), max(pi, j)
-                if a != b:
-                    edges[(a, b)] = max(sim, edges.get((a, b), -1.0))
-        if extra_pairs:
-            unseen = [i for p in extra_pairs for i in p if i not in index]
-            for ent in await self.fetch_by_ids(list(dict.fromkeys(unseen)), batch_size):
-                index[ent["id"]] = len(ents)
-                ents.append(ent)
-            for x, y in extra_pairs:
-                if x in index and y in index and x != y:
-                    a, b = sorted((index[x], index[y]))
-                    edges[(a, b)] = 1.0
-        stats["neighbours"] = len(ents) - len(pending)
-        distinct = {e["id"] for e in ents if e.get("is_stub") is not None}
-
-        def protected(a: str, b: str) -> bool:
-            return frozenset((a, b)) in skip or (a in distinct and b in distinct)
-
-        def protected_idx(i: int, j: int) -> bool:
-            return protected(ents[i]["id"], ents[j]["id"])
-
-        edges = {p: v for p, v in edges.items() if not protected_idx(*p)}
-        stats["candidates"] = len(edges)
-        if not edges:
-            return stats
-
-        sets = make_groups_dense(edges, keep_apart=protected_idx)
-        stats["sets"] = len(sets)
-        same, calls, failed = await self._judge(sets, ents)
-        stats["llm_calls"] += calls
-        stats["llm_failed"] += failed
-        # The model never saw a protected pair as a candidate, but a partition
-        # of a set can still put the two in one group; a decided pair stays
-        # decided.
-        agreed = {p: si for p, si in same.items() if not protected_idx(*p)}
-        stats["agreed_pairs"] = len(agreed)
-
-        # Union every agreed pair into groups. Transitive on purpose: "AAPL" =
-        # "Apple Inc." in one set and "Apple Inc." = "Apple" in another is one
-        # company; restricting unions to a single set left such chains split
-        # (recall 0.66 vs 0.90 on the labeled set, same precision). A pair is
-        # still never unioned when that would put a protected pair (two keyed
-        # rows, an undecidable mention) into one group through a third member.
-        uf = _UF(list(range(len(ents))))
-        members: dict[int, set[int]] = {i: {i} for i in range(len(ents))}
-        for a, b in sorted(agreed):
-            ra, rb = uf.find(a), uf.find(b)
-            if ra == rb:
-                continue
-            if any(protected_idx(x, y) for x in members[ra] for y in members[rb]):
-                logger.info(
-                    "judge dedup: not grouping %s with %s — it would join a pair already "
-                    "decided distinct",
-                    ents[a]["id"],
-                    ents[b]["id"],
-                )
-                continue
-            merged_members = members.pop(ra) | members.pop(rb)
-            uf.union(a, b)
-            members[uf.find(a)] = merged_members
-        groups: dict[int, list[int]] = defaultdict(list)
-        for i in range(len(ents)):
-            groups[uf.find(i)].append(i)
-        byid = {e["id"]: e for e in ents}
-        for idxs in groups.values():
-            if len(idxs) < 2:
-                continue
-            members = [byid[ents[i]["id"]] for i in idxs]
-            name = pick_group_name(idxs, self._group_names, ents)
-            if name is not None:
-                _, absorbed = await self._merge(members, preferred_name=name)
-            else:
-                _, absorbed = await self._merge(members)
-            stats["merged"] += len(absorbed)
-            # A name vector written this run to a node the merge then deleted
-            # is not a vector the graph holds; the count is of those it does.
-            stats["embedded"] -= len(self._embedded_ids & set(absorbed))
-            self._embedded_ids -= set(absorbed)
-        logger.info("LLMJudgeDeduplicator: %s", stats)
-        return stats
+            unanswered.extend(
+                first[item.index] + si for si in range(len(order)) if si not in answered
+            )
+            verdicts.same.update(pairs_by_set_from_response(content, order))
+            verdicts.different.update(different_pairs_from_response(content, order))
+            verdicts.names.update(group_names_from_response(content, order))
+        for p, order in enumerate(orders):
+            if p not in answered_prompts:  # no result came back for the prompt at all
+                unanswered.extend(range(first[p], first[p] + len(order)))
+        return sorted(set(unanswered))

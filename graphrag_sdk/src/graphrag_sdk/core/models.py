@@ -1009,6 +1009,31 @@ class FinalizeResult(DataModel):
     entities_deduplicated: int = 0
     judge_llm_calls: int = 0
     judge_stats: dict[str, int | str] = Field(default_factory=dict)
+    dedup_pending: int = 0
+    """Entities still pending a dedup check after this run.
+
+    A check that did not complete — a failed judge call or lookup, an answer
+    that was not a clean partition, a group held because one of its sets got no
+    verdict, a merge an ``update()`` changed — leaves the entity pending, and
+    the next ``finalize()`` checks it again. So does ``judge=False``: the
+    judge still owes those entities a check (see ``release_unjudged``).
+    """
+
+    dedup_unresolved: list[str] = Field(default_factory=list)
+    """Entities dedup no longer retries: 3 judged runs gave no usable verdict.
+
+    Left out of every candidate set and never merged automatically, so a
+    model that keeps failing on one entity cannot hold up the rest. Each entry
+    names the entity, the last reason, and the entities it was kept from being
+    judged with. ``finalize(dedup_all=True)`` retries them.
+    """
+
+    dedup_merges_changed: int = 0
+    """Planned merges skipped because an entity changed while the run applied
+    them — deleted or re-keyed by ``update()``, renamed, or rewritten too often
+    to read. Nothing was written for them; their groups are decided again on
+    the next run."""
+
     entities_embedded: int = 0
     relationships_embedded: int = 0
     indexes: dict[str, bool] = Field(default_factory=dict)

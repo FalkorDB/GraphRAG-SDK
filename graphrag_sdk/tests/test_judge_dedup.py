@@ -7,22 +7,27 @@ import json
 import re
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 
 from graphrag_sdk.core.providers.base import LLMBatchItem
-from graphrag_sdk.storage.deduplicator import EntityDeduplicator
+from graphrag_sdk.storage.deduplicator import EntityDeduplicator, _entity_from_row
 from graphrag_sdk.storage.judge_dedup import (
     MAX_DESC_CHARS,
     MAX_NAME_CHARS,
     PROMPT_TOKEN_BUDGET,
-    LLMJudgeDeduplicator,
+    REASKS,
+    NameNeighbourIndex,
+    different_pairs_from_response,
     make_groups_dense,
     pack_prompts,
     pairs_by_set_from_response,
     parse_groups,
     render_set,
 )
+from graphrag_sdk.storage.merge_query import MergeRead
+from graphrag_sdk.storage.system_store import ABSORB, JUDGE, PlanOp
+
+from .dedup_sim import SimGraph, simulate
 
 # ── pure helpers ────────────────────────────────────────────────────────────
 
@@ -58,11 +63,28 @@ def test_make_groups_dense_rejects_a_four_node_chain():
 
 
 def test_parse_groups_and_pairs():
-    text = "SET 1 GROUP: 1, 3\nSET 1 GROUP: 2\nSET 2 GROUP: 1, 2\nSET 2 GROUP: 9\nnoise"
+    text = "SET 1 GROUP: 1, 3\nSET 1 GROUP: 2\nSET 2 GROUP: 1, 2\nnoise"
     groups = parse_groups(text, [3, 2])
     assert groups == {0: [[0, 2], [1]], 1: [[0, 1]]}
     pairs = _pairs(text, [[10, 11, 12], [20, 21]])
     assert pairs == {(10, 12), (20, 21)}
+    assert different_pairs_from_response(text, [[10, 11, 12], [20, 21]]) == {(10, 11), (11, 12)}
+
+
+def test_a_member_number_the_set_lacks_spoils_the_set():
+    """``SET 2 GROUP: 9`` in a set of two says the model lost track of the
+    set: its whole answer is discarded, to be asked again, not half-read."""
+    text = "SET 1 GROUP: 1, 2\nSET 2 GROUP: 1, 2\nSET 2 GROUP: 9"
+    assert parse_groups(text, [2, 2]) == {0: [[0, 1]]}
+
+
+def test_a_merged_name_on_a_one_member_group_spoils_the_set():
+    """A NAME is the name of a merged entity; given to a member left alone,
+    the answer contradicts itself (measured: the model kept "Tim Cook" and
+    "Timothy Cook" apart and named each). The set is asked again."""
+    text = "SET 1 GROUP: 1 | NAME: Tim Cook\nSET 1 GROUP: 2 | NAME: Timothy Cook"
+    assert parse_groups(text, [2]) == {}
+    assert parse_groups("SET 1 GROUP: 1, 2 | NAME: Tim Cook", [2]) == {0: [[0, 1]]}
 
 
 def test_pairs_empty_on_garbage():
@@ -192,99 +214,19 @@ def test_pack_prompts_keeps_an_oversized_set_within_budget():
     assert len(enc.encode(prompts[0])) <= PROMPT_TOKEN_BUDGET
 
 
-# ── deduplicator behaviour against a scripted graph ─────────────────────────
-
-
-def _props_read(rows, params):
-    """Answer ``_read_properties`` from fetched rows ``(id, name, desc, label,
-    aliases, ...)`` the way the graph would: ``[props(k), props(d), labels(k),
-    labels(d)]``; no row when either node is missing."""
-    by_id = {r[0]: r for r in rows}
-
-    def props(r):
-        out = {"name": r[1], "description": r[2]}
-        if len(r) > 4 and r[4]:
-            out["aliases"] = list(r[4])
-        return out
-
-    def labels(r):
-        lab = r[3] if len(r) > 3 else None
-        return list(lab) if isinstance(lab, (list, tuple)) else ([lab] if lab else [])
-
-    k, d = by_id.get(params["survivor_id"]), by_id.get(params["dup_id"])
-    if k is None or d is None:
-        return SimpleNamespace(result_set=[])
-    return SimpleNamespace(result_set=[[props(k), props(d), labels(k), labels(d)]])
-
-
-def _knn_answer(rows, params, everyone_close=False):
-    """Answer the judge's batched ``db.idx.vector.queryNodes`` query from rows
-    ``(id, name, description, labels, aliases, embedding)``: each new entity's
-    top-``k`` by cosine over the stored name vectors, as ``[i, distance,
-    *node fields]``, itself excluded. ``everyone_close`` makes every other row
-    a neighbour at distance 0."""
-    out = []
-    for it in params["items"]:
-        v = np.asarray(it["v"], dtype=float)
-        scored = []
-        for r in rows:
-            if r[0] == it["id"]:
-                continue
-            if everyone_close:
-                scored.append((1.0, r))
-                continue
-            if not r[5]:
-                continue
-            e = np.asarray(r[5], dtype=float)
-            norm = np.linalg.norm(v) * np.linalg.norm(e)
-            scored.append((float(v @ e / norm) if norm else 0.0, r))
-        scored.sort(key=lambda t: -t[0])
-        for cos, r in scored[: params["k"] - 1]:
-            out.append([it["i"], 1.0 - cos, *(list(r) + [None, None])[:8]])
-    return SimpleNamespace(result_set=out)
-
-
-def _by_ids(rows, cypher, params):
-    """An ``UNWIND $ids`` read answers only the ids it asked for."""
-    if "UNWIND $ids" in cypher:
-        return [r for r in rows if r[0] in params["ids"]]
-    return list(rows)
-
-
-class ScriptedGraph:
-    """Records every Cypher call; answers the entity fetch with fixed rows."""
-
-    def __init__(self, rows):
-        self.rows = rows
-        self.calls: list[tuple[str, dict]] = []
-
-    async def query_raw(self, cypher, params=None):
-        self.calls.append((cypher, params or {}))
-        if "SET e.embedding = vecf32" in cypher:
-            # the graph keeps the name vectors the judge writes; the index reads them
-            written = {it["id"]: it["v"] for it in params["items"]}
-            self.rows = [(*r[:5], written.get(r[0], r[5]), *r[6:]) for r in self.rows]
-            return SimpleNamespace(result_set=[])
-        if "db.idx.vector.queryNodes" in cypher:
-            return _knn_answer(self.rows, params)
-        if "RETURN e.id, e.name, e.description" in cypher:
-            return SimpleNamespace(result_set=_by_ids(self.rows, cypher, params))
-        return SimpleNamespace(result_set=[])
-
-
-class FakeEmbedder:
-    def __init__(self, table):
-        self.table = table
-
-    async def aembed_documents(self, texts, **kw):
-        return [self.table.get(t, [0.0, 0.0, 1.0]) for t in texts]
+# ── the judge and the run's decisions, simulated ───────────────────────────
+#
+# ``simulate`` (tests/dedup_sim.py) runs the production decision code — the
+# exact phase, the judge's sets and their resolution, the plan — and each
+# planned merge's ``_fold``, over in-memory rows. The merge query and the run
+# against a real FalkorDB are covered by test_dedup_records / test_dedup_run.
 
 
 class ScriptedLLM:
-    """Oracle judge: answers by entity NAME. ``per_pass[0]`` lists the name
-    groups that are the same entity; ``None`` makes every call fail; a ``str``
-    is returned verbatim as every call's answer. The judge runs one pass, so
-    later entries are never read."""
+    """Oracle judge: answers by entity NAME. ``per_pass[n]`` is the n-th
+    round's answer — the name groups that are one entity; ``None`` makes every
+    call of that round fail; a ``str`` is returned verbatim. Rounds past the
+    list answer like the last one, so ``[None]`` fails every re-ask too."""
 
     def __init__(self, per_pass):
         self.per_pass = list(per_pass)
@@ -293,7 +235,7 @@ class ScriptedLLM:
 
     async def abatch_invoke(self, prompts, **kw):
         self.prompts.extend(prompts)
-        same = self.per_pass[self.pass_no] if self.pass_no < len(self.per_pass) else []
+        same = self.per_pass[min(self.pass_no, len(self.per_pass) - 1)]
         self.pass_no += 1
         out = []
         for i, p in enumerate(prompts):
@@ -321,94 +263,75 @@ class ScriptedLLM:
 
 
 IBM = {"IBM", "International Business Machines"}
+# id, name, description, labels, aliases, is_stub, degree, name vector
 ROWS = [
-    # id, name, description, labels, aliases, embedding
-    ("e1", "IBM", "Computer company founded 1911.", ["Organization"], None, [1.0, 0.0, 0.0]),
-    (
+    ["e1", "IBM", "Computer company founded 1911.", ["Organization"], None, None, 0, [1.0, 0, 0]],
+    [
         "e2",
         "International Business Machines",
         "American computer firm; IBM.",
         ["Company"],
         None,
+        None,
+        0,
         [0.95, 0.3, 0.0],
-    ),
-    ("e3", "Thomas Watson", "Led IBM.", ["Person"], None, [0.0, 1.0, 0.0]),
+    ],
+    ["e3", "Thomas Watson", "Led IBM.", ["Person"], None, None, 0, [0.0, 1.0, 0.0]],
 ]
 
 
-class RecordingMerge:
-    """The ``merge_group`` hook: records each agreed group and "merges" it into
-    its first member by id order, so the tests see exactly what identity the
-    judge handed over. How a merge is written is ``EntityDeduplicator``'s job
-    and is tested through it below."""
-
-    def __init__(self):
-        self.groups: list[list[str]] = []
-
-    async def __call__(self, members):
-        ids = sorted(m["id"] for m in members)
-        self.groups.append(ids)
-        return ids[0], set(ids[1:])
+def _sim(rows=ROWS, **kw):
+    return asyncio.run(simulate([list(r) for r in rows], **kw))
 
 
-def _run(graph, llm, **kw):
-    merge = RecordingMerge()
-    dd = LLMJudgeDeduplicator(graph, FakeEmbedder({}), llm, merge)
-    return asyncio.run(dd.deduplicate(**kw)), merge
+def _retried(sim):
+    return dict(zip(sim.decisions.retry, sim.decisions.reasons))
 
 
-def test_agreed_pair_is_handed_to_the_merge_hook_once():
-    graph = ScriptedGraph(ROWS)
-    # IBM == International Business Machines, Watson separate
+def test_an_agreed_pair_merges_once():
     llm = ScriptedLLM([[IBM]])
-    stats, merge = _run(graph, llm)
-    # one pass: the IBM pair is judged once
-    assert stats["llm_calls"] == 1 and stats["merged"] == 1
-    assert merge.groups == [["e1", "e2"]]
-    # the judge writes no merge of its own
-    assert not any("DETACH DELETE" in c[0] or "SET s." in c[0] for c in graph.calls)
+    sim = _sim(judge=llm)
+    # one round: the IBM pair is judged once and merged once
+    assert sim.dedup.last_judge_stats["llm_calls"] == 1
+    assert sim.groups == [["e1", "e2"]] and sim.merged == 1
+    assert set(sim.decisions.clear) == {"e1", "e2", "e3"}
 
 
-def test_failed_llm_call_merges_nothing():
-    """A prompt that failed is not a verdict: nothing in it merges."""
-    graph = ScriptedGraph(ROWS)
+def test_a_failed_call_merges_nothing_and_its_set_is_asked_again_alone():
+    """A prompt that failed is not a verdict: nothing in it merges, its sets
+    are asked again one per prompt, and an entity whose set never got an
+    answer stays pending, charged one judged attempt."""
     llm = ScriptedLLM([None])
-    stats, merge = _run(graph, llm)
-    assert stats["llm_failed"] == 1 and stats["merged"] == 0 and merge.groups == []
+    sim = _sim(judge=llm)
+    stats = sim.dedup.last_judge_stats
+    assert sim.merged == 0 and stats["llm_failed"] == stats["llm_calls"] == 1 + REASKS
+    assert _retried(sim) == {"e1": "no usable verdict", "e2": "no usable verdict"}
+    assert sim.run.charged == {"e1", "e2"} and sim.decisions.clear == ["e3"]
+
+    llm = ScriptedLLM([None, [IBM]])
+    sim = _sim(judge=llm)
+    assert sim.groups == [["e1", "e2"]], "the re-ask answered"
+    assert "--- Set 2 ---" not in llm.prompts[-1]
 
 
-def test_handed_over_pairs_are_judged_without_name_vectors():
-    """With no name vector the index cannot nominate, but a same-name pair the
-    exact phase handed over needs none: it is still judged, and the new
+def test_an_answer_that_is_not_a_clean_partition_is_not_a_verdict():
+    for answer in ("SET 1 GROUP: 1", "SET 1 GROUP: 1, 2, 7", "SET 1 GROUP: 1 | NAME: IBM"):
+        sim = _sim(judge=ScriptedLLM([answer]))
+        assert sim.merged == 0, answer
+        assert set(_retried(sim)) == {"e1", "e2"}, answer
+
+
+def test_same_name_mentions_are_judged_even_without_name_vectors():
+    """The index cannot nominate an entity with no vector, but a same-name pair
+    the exact phase handed to the judge needs none: it is still judged, and the
     entities stay pending so the next run looks up their neighbours."""
-
-    class NoVectors:
-        async def aembed_documents(self, texts, **kw):
-            return [[] for _ in texts]
-
-    rows = [(*r[:5], None) for r in ROWS]
-    graph = ScriptedGraph(rows)
-    merge = RecordingMerge()
-    dd = LLMJudgeDeduplicator(graph, NoVectors(), ScriptedLLM([[IBM]]), merge)
-    stats = asyncio.run(dd.deduplicate(extra_pairs=[("e1", "e2")]))
-    assert stats["llm_calls"] == 1 and merge.groups == [["e1", "e2"]]
-    assert {"e1", "e2", "e3"} <= dd.unjudged_ids
-
-
-def test_an_unjudged_set_is_reported_so_its_entities_stay_pending():
-    """A failed call, or an answer that is not a full partition, is not a
-    verdict: the set's entities are listed in ``unjudged_ids`` so the caller
-    keeps them pending and the next run asks again."""
-    for answer in (None, "SET 1 GROUP: 1"):
-        graph = ScriptedGraph(ROWS)
-        dd = LLMJudgeDeduplicator(graph, FakeEmbedder({}), ScriptedLLM([answer]), RecordingMerge())
-        stats = asyncio.run(dd.deduplicate())
-        assert stats["merged"] == 0
-        assert {"e1", "e2"} <= dd.unjudged_ids, answer
-    graph = ScriptedGraph(ROWS)
-    dd = LLMJudgeDeduplicator(graph, FakeEmbedder({}), ScriptedLLM([[IBM]]), RecordingMerge())
-    asyncio.run(dd.deduplicate())
-    assert dd.unjudged_ids == set()
+    rows = [
+        ["p1", "Paris", "capital of France", ["Location"], None, None, 0, []],
+        ["p2", "Paris", "French capital city", ["Location"], None, None, 0, []],
+    ]
+    sim = _sim(rows, judge=ScriptedLLM([[{"Paris"}]]))
+    assert sim.groups == [["p1", "p2"]]
+    assert _retried(sim) == {"p1": "no name vector", "p2": "no name vector"}
 
 
 def test_agreements_chain_across_sets_but_never_through_a_protected_pair(monkeypatch):
@@ -417,87 +340,112 @@ def test_agreements_chain_across_sets_but_never_through_a_protected_pair(monkeyp
     would put a protected pair into one group through a third member is
     still refused."""
     rows = [
-        ("a", "Apple", "Maker of the iPhone.", ["Organization"], None, [1.0, 0.0, 0.0]),
-        ("b", "Apple Inc.", "Cupertino company.", ["Organization"], None, [0.9, 0.44, 0.0]),
-        ("c", "AAPL", "Its stock rose.", ["Organization"], None, [0.62, 0.79, 0.0]),
+        ["a", "Apple", "Maker of the iPhone.", ["Organization"]],
+        ["b", "Apple Inc.", "Cupertino company.", ["Organization"]],
+        ["c", "AAPL", "Its stock rose.", ["Organization"]],
     ]
     same = {"Apple", "Apple Inc.", "AAPL"}
     # Two sets that share "Apple Inc.": {Apple, Apple Inc.} and {Apple Inc., AAPL}.
     monkeypatch.setattr(
         "graphrag_sdk.storage.judge_dedup.make_groups_dense", lambda edges, **kw: [[0, 1], [1, 2]]
     )
-    graph = ScriptedGraph(rows)
-    merge = RecordingMerge()
     llm = ScriptedLLM([[same]])
-    dd = LLMJudgeDeduplicator(graph, FakeEmbedder({}), llm, merge)
-    stats = asyncio.run(dd.deduplicate())
-    assert stats["sets"] == 2 and "--- Set 2 ---" in llm.prompts[0]
-    assert merge.groups == [["a", "b", "c"]], "agreements in two sets chain into one group"
+    sim = _sim(rows, judge=llm)
+    assert sim.dedup.last_judge_stats["sets"] == 2 and "--- Set 2 ---" in llm.prompts[0]
+    assert sim.groups == [["a", "b", "c"]], "agreements in two sets chain into one group"
 
-    graph = ScriptedGraph(rows)
-    merge = RecordingMerge()
-    dd = LLMJudgeDeduplicator(graph, FakeEmbedder({}), ScriptedLLM([[same]]), merge)
-    asyncio.run(dd.deduplicate(skip_pairs={frozenset(("a", "c"))}))
-    assert all(not {"a", "c"} <= set(g) for g in merge.groups)
+    sim = _sim(rows, judge=ScriptedLLM([[same]]), skip_pairs={frozenset(("a", "c"))})
+    assert all(not {"a", "c"} <= set(g) for g in sim.groups)
 
 
-def test_stored_name_vectors_nominate_without_re_embedding():
-    """Entities without a description are nominated by their stored name
-    vectors; nothing is embedded again."""
+def test_a_pair_the_judge_put_apart_is_never_joined_through_other_sets(monkeypatch):
+    """The judge saw A, B and C together and kept C apart. Two other sets
+    agreeing C = D and B = D would chain C into A's group through D; that
+    overturns a verdict, so the union is refused and C stays."""
     rows = [
-        ("a", "Acme", "", ["Organization"], None, [1.0, 0.0, 0.0]),
-        ("b", "Acne", "", ["Organization"], None, [0.6, 0.8, 0.0]),  # cos = 0.60
+        ["a", "Acme", "anvils", ["Organization"]],
+        ["b", "Acme Corp", "anvils, Arizona", ["Organization"]],
+        ["c", "Acme Corp (Ohio)", "Ohio ironmonger", ["Organization"]],
+        ["d", "ACME Co.", "anvils", ["Organization"]],
     ]
-    graph = ScriptedGraph(rows)
-    embedder = FakeEmbedder({})
-    seen: list[list[str]] = []
-
-    async def spy(texts, **kw):
-        seen.append(list(texts))
-        return [[1.0, 0.0, 0.0] for _ in texts]
-
-    embedder.aembed_documents = spy
-    dd = LLMJudgeDeduplicator(graph, embedder, ScriptedLLM([[]]), RecordingMerge())
-    stats = asyncio.run(dd.deduplicate())
-    # There is no description door any more: the pair is nominated by name
-    # alone (cos 0.60 is above the 0.5 neighbour floor), and nothing is
-    # embedded — names are stored, and descriptions are never embedded.
-    assert stats["candidates"] == 1 and stats["llm_calls"] == 1
-    assert seen == []
+    monkeypatch.setattr(
+        "graphrag_sdk.storage.judge_dedup.make_groups_dense",
+        lambda edges, **kw: [[0, 1, 2], [2, 3], [1, 3]],
+    )
+    llm = ScriptedLLM([[{"Acme", "Acme Corp", "ACME Co."}, {"Acme Corp (Ohio)", "ACME Co."}]])
+    sim = _sim(rows, judge=llm)
+    assert sim.groups == [["a", "b", "d"]]
+    assert "c" in sim.decisions.clear, "a decided pair is a completed check"
 
 
-def test_a_lone_named_entity_still_gets_its_name_vector():
-    rows = [("e1", "IBM", "Computer company.", ["Organization"], None, None)]
-    graph = ScriptedGraph(rows)
-    stats, _ = _run(graph, ScriptedLLM([[]]))
-    assert stats["entities"] == 1 and stats["llm_calls"] == 0
-    writes = [c for c in graph.calls if "SET e.embedding = vecf32" in c[0]]
-    assert len(writes) == 1 and [it["id"] for it in writes[0][1]["items"]] == ["e1"]
+def test_a_group_a_failed_set_could_change_is_held_and_the_neighbour_refunded(monkeypatch):
+    """{P, A} agreed; {P, B} got no verdict. B might be P too, so the group
+    {P, A} is held, not merged: P, whose own set failed, keeps its charged
+    attempt; A, held only because of P's set, gets it back."""
+    rows = [
+        ["p", "Tim Cook", "Apple CEO", ["Person"]],
+        ["a", "Timothy Cook", "chief executive of Apple", ["Person"]],
+        ["b", "Tim Cooke", "a footballer", ["Person"]],
+    ]
+    monkeypatch.setattr(
+        "graphrag_sdk.storage.judge_dedup.make_groups_dense", lambda edges, **kw: [[0, 1], [0, 2]]
+    )
+
+    class NeverAnswersTheSecondSet(ScriptedLLM):
+        """Answers set {P, A}; leaves out a member of set {P, B} every time."""
+
+        async def abatch_invoke(self, prompts, **kw):
+            out = await super().abatch_invoke(prompts, **kw)
+            for item in out:
+                lines = item.response.content.splitlines()
+                blocks = re.split(r"--- Set \d+ ---\n", prompts[item.index])[1:]
+                spoiled = {si for si, block in enumerate(blocks, 1) if "Tim Cooke" in block}
+                item.response.content = "\n".join(
+                    line for line in lines if int(line.split()[1]) not in spoiled
+                ) + "".join(f"\nSET {si} GROUP: 1" for si in spoiled)
+            return out
+
+    sim = _sim(rows, judge=NeverAnswersTheSecondSet([[{"Tim Cook", "Timothy Cook"}]]))
+    assert sim.merged == 0
+    assert _retried(sim)["p"] == "no usable verdict"
+    assert _retried(sim)["a"].startswith("held")
+    assert "a" in sim.decisions.refund and "p" not in sim.decisions.refund
 
 
-def test_missing_name_embedding_is_written_back():
-    rows = [(*r[:5], None) for r in ROWS]
-    graph = ScriptedGraph(rows)
-    llm = ScriptedLLM([[]])
-    _run(graph, llm)
-    writes = [c for c in graph.calls if "SET e.embedding = vecf32" in c[0]]
-    assert len(writes) == 1 and {it["id"] for it in writes[0][1]["items"]} == {"e1", "e2", "e3"}
+def test_the_neighbour_search_runs_from_the_stored_vector():
+    """Nothing is embedded or sent to look a name up: the index is searched
+    from the vector already on the node, one row per entity."""
+    calls = []
+
+    class Recording:
+        async def query_raw(self, cypher, params=None):
+            calls.append((cypher, params))
+            return SimpleNamespace(result_set=[["a", [["b", 0.1, "Acne"]]]])
+
+    found, failed = asyncio.run(NameNeighbourIndex(Recording(), None).discover(["a"], 5))
+    ((cypher, params),) = calls
+    assert "e.embedding)" in cypher and "collect(" in cypher
+    assert params == {"ids": ["a"], "k": 6}
+    assert found == {"a": [("b", pytest.approx(0.9), "Acne")]} and failed == set()
 
 
 def test_nameless_entities_are_not_judged():
     """A fact row keyed on a reading id has no name; giving it its id as a
     name would let ``e2`` nominate against a prose ``E2``. It is left out."""
-    rows = [ROWS[0], ("e2", None, "American computer firm; IBM.", ["Company"], None, None), ROWS[2]]
-    graph = ScriptedGraph(rows)
+    rows = [
+        ROWS[0],
+        ["e2", None, "American computer firm; IBM.", ["Company"], *ROWS[1][4:]],
+        ROWS[2],
+    ]
     llm = ScriptedLLM([[IBM]])
-    stats, merge = _run(graph, llm)
-    assert stats["entities"] == 2 and merge.groups == []
-    assert not any("e2" in p for p in llm.prompts)
+    sim = _sim(rows, judge=llm)
+    assert sim.dedup.last_judge_stats["entities"] == 2 and sim.groups == []
+    assert not any("American computer firm" in p for p in llm.prompts)
 
 
 def _keyed(rows, ids):
     """``rows`` with ``is_stub`` False (a table row) on the given ids."""
-    return [(*r[:6], None, False) if r[0] in ids else r for r in rows]
+    return [[*r[:5], False, *r[6:]] if r[0] in ids else r for r in rows]
 
 
 def test_keyed_rows_are_never_asked_about_each_other():
@@ -505,17 +453,16 @@ def test_keyed_rows_are_never_asked_about_each_other():
     called: the pair is dropped before the model is called. Measured as
     ``finalize()`` spending two judge calls on E-1 / E-2 'Alice Smith' rows
     the merge rules would have refused anyway."""
-    graph = ScriptedGraph(_keyed(ROWS, {"e1", "e2", "e3"}))
     llm = ScriptedLLM([[IBM]])
-    stats, merge = _run(graph, llm)
-    assert stats["llm_calls"] == 0 and stats["candidates"] == 0 and merge.groups == []
+    sim = _sim(_keyed(ROWS, {"e1", "e2", "e3"}), judge=llm)
+    stats = sim.dedup.last_judge_stats
+    assert stats["llm_calls"] == 0 and stats["candidates"] == 0 and sim.groups == []
     assert llm.prompts == []
     # Only the rows are protected: Watson is still judged against IBM, but the
     # two rows are never put in one set nor in one group.
-    graph = ScriptedGraph(_keyed(ROWS, {"e1", "e2"}))
     llm = ScriptedLLM([[IBM]])
-    stats, merge = _run(graph, llm)
-    assert merge.groups == [] and stats["merged"] == 0
+    sim = _sim(_keyed(ROWS, {"e1", "e2"}), judge=llm)
+    assert sim.groups == []
     for prompt in llm.prompts:
         for block in re.split(r"--- Set \d+ ---", prompt)[1:]:
             names = re.findall(r"^\d+\. (.+?) \[", block, flags=re.M)
@@ -526,299 +473,104 @@ def test_a_protected_pair_is_never_grouped_through_a_third_member():
     """A~B and A~C agreed while B|C is protected: grouping all three would
     fold B and C into one node. Only one of them joins A."""
     rows = [
-        ("a", "Acme", "Acme Corp, maker of anvils.", ["Organization"], None, [1.0, 0.0, 0.0]),
-        ("b", "Acme Corp", "Anvil maker.", ["Organization"], None, [0.98, 0.1, 0.0]),
-        ("c", "Acme Inc", "Anvils.", ["Organization"], None, [0.97, 0.15, 0.0]),
+        ["a", "Acme", "Acme Corp, maker of anvils.", ["Organization"]],
+        ["b", "Acme Corp", "Anvil maker.", ["Organization"]],
+        ["c", "Acme Inc", "Anvils.", ["Organization"]],
     ]
-    desc = {
-        "Acme Corp, maker of anvils.": [1.0, 0.0, 0.0],
-        "Anvil maker.": [0.95, 0.2, 0.0],
-        "Anvils.": [0.95, 0.25, 0.0],
-    }
     same = {"Acme", "Acme Corp", "Acme Inc"}
-    graph = ScriptedGraph(rows)
-    merge = RecordingMerge()
-    dd = LLMJudgeDeduplicator(graph, FakeEmbedder(desc), ScriptedLLM([[same]]), merge)
-    stats = asyncio.run(dd.deduplicate(skip_pairs={frozenset(("b", "c"))}))
-    assert merge.groups in ([["a", "b"]], [["a", "c"]])
-    assert stats["merged"] == 1
+    sim = _sim(rows, judge=ScriptedLLM([[same]]), skip_pairs={frozenset(("b", "c"))})
+    assert sim.groups in ([["a", "b"]], [["a", "c"]])
+    assert sim.merged == 1
 
 
 def test_exact_phase_joins_descriptions_and_records_aliases():
-    class G:
-        def __init__(self):
-            self.calls = []
-            # id, name, description, label, aliases, is_stub, degree
-            self.rows = [
-                ("a", "Globex Limited", "Maker of widgets.", "Organization", None, None, 0),
-                ("b", "Globex Ltd", "Founded 1990.", "Organization", None, None, 0),
-            ]
-            self.pages = [
-                SimpleNamespace(result_set=list(self.rows)),
-                SimpleNamespace(result_set=[]),
-            ]
-
-        async def query_raw(self, cypher, params=None):
-            self.calls.append((cypher, params or {}))
-            if "WHERE e.dedup_pending = true" in cypher:
-                return self.pages.pop(0) if self.pages else SimpleNamespace(result_set=[])
-            if "properties(k), properties(d)" in cypher:
-                return _props_read(self.rows, params)
-            if "DETACH DELETE dup RETURN s.id" in cypher:
-                return SimpleNamespace(result_set=[[params["survivor_id"]]])
-            return SimpleNamespace(result_set=[])
-
-    g = G()
-    dd = EntityDeduplicator(g, FakeEmbedder({}))
-    n = asyncio.run(dd.deduplicate())
-    assert n == 1
-    upd = [c for c in g.calls if "s.aliases = $aliases" in c[0]]
-    assert len(upd) == 1
-    assert upd[0][1]["desc"] == "Maker of widgets. | Founded 1990."
-    assert upd[0][1]["descs"] == ["Maker of widgets.", "Founded 1990."]
-    assert upd[0][1]["aliases"] == ["Globex Ltd"]
-
-
-class _JudgeGraph:
-    """Answers the exact phase's paged fetch and the judge's fetch with the
-    same three entities, in each query's row shape; records every call."""
-
-    def __init__(self, rows=ROWS):
-        self.calls: list[tuple[str, dict]] = []
-        self.rows = list(rows)
-        # id, name, description, label, aliases, is_stub, degree
-        self.page = [(r[0], r[1], r[2], r[3][0], r[4], None, 0) for r in self.rows]
-
-    async def query_raw(self, cypher, params=None):
-        self.calls.append((cypher, params or {}))
-        params = params or {}
-        if "WHERE e.dedup_pending = true" in cypher or "e.id > $last" in cypher:
-            # every entity is new to this run; one page, then the end
-            rows = self.page if not params.get("last") else []
-            return SimpleNamespace(result_set=list(rows))
-        if "MATCH (e:__Entity__ {id: id}) WITH e" in cypher:
-            return SimpleNamespace(result_set=[r for r in self.page if r[0] in params["ids"]])
-        if "db.idx.vector.queryNodes" in cypher:
-            return _knn_answer(self.rows, params)
-        if "RETURN e.id, e.name, e.description" in cypher:
-            return SimpleNamespace(result_set=_by_ids(self.rows, cypher, params))
-        if "properties(k), properties(d)" in cypher:
-            return _props_read(self.page, params)
-        if "DETACH DELETE dup RETURN s.id" in cypher:
-            return SimpleNamespace(result_set=[[params["survivor_id"]]])
-        return SimpleNamespace(result_set=[])
-
-
-def _cleared(graph) -> set[str]:
-    """Ids the run removed ``dedup_pending`` from."""
-    return {
-        eid
-        for cypher, params in graph.calls
-        if "REMOVE e.dedup_pending" in cypher
-        for eid in params["ids"]
-    }
-
-
-def test_entities_the_judge_could_not_check_keep_their_flag():
-    """The flag is removed only from entities whose check completed: a judge
-    call that failed leaves its set's entities pending for the next run."""
-    g = _JudgeGraph()
-    dd = EntityDeduplicator(g, FakeEmbedder({}))
-    asyncio.run(dd.deduplicate(judge_llm=ScriptedLLM([None])))
-    assert not {"e1", "e2"} & _cleared(g)
-
-    g = _JudgeGraph()
-    dd = EntityDeduplicator(g, FakeEmbedder({}))
-    asyncio.run(dd.deduplicate(judge_llm=ScriptedLLM([[IBM]])))
-    assert {"e1", "e3"} <= _cleared(g)
-
-
-def test_an_entity_that_keeps_failing_is_released_after_the_last_attempt():
-    """Each failed check is counted on the node; at MAX_DEDUP_ATTEMPTS the
-    entity is cleared with the rest instead of costing calls every run."""
-    from graphrag_sdk.storage.judge_dedup import MAX_DEDUP_ATTEMPTS
-
-    class Counting(_JudgeGraph):
-        def __init__(self, attempts):
-            super().__init__()
-            self.attempts = attempts
-
-        async def query_raw(self, cypher, params=None):
-            if "dedup_attempts = coalesce" in cypher:
-                self.calls.append((cypher, params or {}))
-                # SET ... + 1 RETURN: the stored count plus this failure
-                rows = [r for r in self.page if r[0] in params["ids"]]
-                return SimpleNamespace(result_set=[[r[0], r[1], self.attempts + 1] for r in rows])
-            return await super().query_raw(cypher, params)
-
-    g = Counting(MAX_DEDUP_ATTEMPTS - 2)
-    asyncio.run(EntityDeduplicator(g, FakeEmbedder({})).deduplicate(judge_llm=ScriptedLLM([None])))
-    assert not {"e1", "e2"} & _cleared(g), "still under the cap: retried next run"
-
-    g = Counting(MAX_DEDUP_ATTEMPTS - 1)
-    asyncio.run(EntityDeduplicator(g, FakeEmbedder({})).deduplicate(judge_llm=ScriptedLLM([None])))
-    assert {"e1", "e2"} <= _cleared(g), "at the cap: released"
-
-
-def test_the_flag_and_the_counter_are_removed_one_property_per_statement():
-    """FalkorDB 4.18 removed the wrong properties, the name vector among them,
-    when one REMOVE named two properties on a node holding a vector."""
-    g = _JudgeGraph()
-    asyncio.run(EntityDeduplicator(g, FakeEmbedder({})).deduplicate())
-    removes = [c[0] for c in g.calls if " REMOVE e." in c[0]]
-    assert removes and all(
-        c.count("REMOVE") == 1 and "," not in c.split("REMOVE")[1] for c in removes
+    sim = _sim(
+        [
+            ["a", "Globex Limited", "Maker of widgets.", "Organization"],
+            ["b", "Globex Ltd", "Founded 1990.", "Organization"],
+        ]
     )
-    order = [c for c in removes if "REMOVE e.dedup_" in c]
-    assert "REMOVE e.dedup_attempts" in order[0] and "REMOVE e.dedup_pending" in order[1], (
-        "the counter goes first, so a failed second statement leaves the node flagged"
-    )
+    (write,) = sim.writes
+    assert write.params["desc"] == "Maker of widgets. | Founded 1990."
+    assert write.params["descs"] == ["Maker of widgets.", "Founded 1990."]
+    assert write.params["aliases"] == ["Globex Ltd"]
 
 
-def test_an_entity_the_embedder_gave_no_vector_stays_pending():
-    """One entity without a vector gets no neighbour lookup, in either phase,
-    even when the others have one; it keeps its flag for the next run."""
-
-    class PartialEmbedder:
-        async def aembed_documents(self, texts, **kw):
-            return [[] if t == "Thomas Watson" else [1.0, 0.0, 0.0] for t in texts]
-
-    rows = [(*r[:5], None) for r in ROWS]
-    graph = ScriptedGraph(rows)
-    dd = LLMJudgeDeduplicator(graph, PartialEmbedder(), ScriptedLLM([[IBM]]), RecordingMerge())
-    asyncio.run(dd.deduplicate())
-    assert "e3" in dd.unjudged_ids and "e1" not in dd.unjudged_ids
-
-    class NoVectorRows(_JudgeGraph):
-        async def query_raw(self, cypher, params=None):
-            if "RETURN e.id, e.name, e.description" in cypher:
-                self.calls.append((cypher, params or {}))
-                rows = [(*r[:5], None) for r in self.rows]
-                return SimpleNamespace(result_set=_by_ids(rows, cypher, params or {}))
-            return await super().query_raw(cypher, params)
-
-    g = NoVectorRows()
-    asyncio.run(EntityDeduplicator(g, PartialEmbedder()).deduplicate())
-    assert "e3" not in _cleared(g) and {"e1", "e2"} <= _cleared(g)
+def test_an_entity_with_no_name_vector_is_not_looked_up_and_stays_pending():
+    """One entity without a vector gets no neighbour lookup, even when the
+    others have one; it stays pending for the next run."""
+    rows = [*ROWS[:2], [*ROWS[2][:7], []]]
+    sim = _sim(rows, judge=ScriptedLLM([[IBM]]))
+    assert sim.groups == [["e1", "e2"]]
+    assert _retried(sim) == {"e3": "no name vector"}
 
 
 def test_more_same_name_entities_than_one_lookup_returns_are_all_found():
     """Fourteen existing "John Smith" mentions and one new one: the first lookup
     returns ten, all of them matches, so it is widened until it is not; every
     one is grouped with the new mention."""
-    rows = [
-        (f"js{i}", "John Smith", f"Mention {i}.", ["Person"], None, [1.0, 0.0, 0.0])
-        for i in range(15)
-    ]
+    ks = []
 
-    class OneNew(_JudgeGraph):
+    class Recording(SimGraph):
         async def query_raw(self, cypher, params=None):
-            if "WHERE e.dedup_pending = true" in cypher:
-                self.calls.append((cypher, params or {}))
-                first = (params or {}).get("last")
-                return SimpleNamespace(result_set=[] if first else [self.page[0]])
+            if "db.idx.vector.queryNodes" in cypher:
+                ks.append(params["k"])
             return await super().query_raw(cypher, params)
 
-    g = OneNew(rows=rows)
-    merged = asyncio.run(EntityDeduplicator(g, FakeEmbedder({})).deduplicate())
-    assert merged == 14
-    ks = [c[1]["k"] for c in g.calls if "db.idx.vector.queryNodes" in c[0]]
+    rows = [[f"js{i}", "John Smith", f"Mention {i}.", "Person"] for i in range(15)]
+    sim = asyncio.run(simulate(rows, pending=["js0"], graph_class=Recording))
+    assert sim.merged == 14 and set(sim.nodes) == {sim.writes[0].op.survivor}
     assert ks[0] == 11 and max(ks) > 11, ks
 
 
-def test_a_merge_that_fails_to_write_leaves_both_entities_pending():
-    """A decided merge whose write failed is not a completed check: both ends
-    keep the flag, so the next run decides the pair again."""
-
-    class FailingWrite(_JudgeGraph):
-        async def query_raw(self, cypher, params=None):
-            if "DETACH DELETE dup RETURN s.id" in cypher:
-                self.calls.append((cypher, params or {}))
-                raise RuntimeError("write timed out")
-            return await super().query_raw(cypher, params)
-
-    g = FailingWrite()
-    merged = asyncio.run(
-        EntityDeduplicator(g, FakeEmbedder({})).deduplicate(judge_llm=ScriptedLLM([[IBM]]))
-    )
-    assert merged == 0
-    assert not {"e1", "e2"} & _cleared(g) and "e3" in _cleared(g)
-
-
-def test_a_judge_that_raises_leaves_every_new_entity_pending():
+def test_a_judge_that_raises_leaves_every_judged_entity_pending():
     class Raises:
         async def abatch_invoke(self, prompts, **kw):
             raise RuntimeError("provider unreachable")
 
-    g = _JudgeGraph()
-    dd = EntityDeduplicator(g, FakeEmbedder({}))
-    asyncio.run(dd.deduplicate(judge_llm=Raises()))
-    assert _cleared(g) == set()
+    sim = _sim(judge=Raises())
+    assert sim.merged == 0 and sim.decisions.clear == ["e3"]
+    assert set(_retried(sim)) == {"e1", "e2"}
 
 
-def test_a_renamed_survivor_gets_the_new_names_vector():
-    """The judge's best name replaces the node's name, so the name vector is
-    replaced too; one that cannot be embedded is removed for the backfill."""
-    g = _JudgeGraph()
-    dd = EntityDeduplicator(g, FakeEmbedder({"Apple Inc.": [0.1, 0.2, 0.3]}))
-    asyncio.run(
-        dd._rename_survivor({"id": "s", "label": "Organization", "name": "AAPL"}, "Apple Inc.")
-    )
-    assert "s" in dd._name_embedded_ids, "the new vector counts toward entities_embedded"
-    (cypher, params) = g.calls[-1]
-    assert "SET s.name = $name" in cypher and "s.embedding = vecf32($v)" in cypher
-    assert params["v"] == [0.1, 0.2, 0.3]
-
-    class NoVector:
-        async def aembed_documents(self, texts, **kw):
-            raise RuntimeError("embedder down")
-
-    g = _JudgeGraph()
-    dd = EntityDeduplicator(g, NoVector())
-    asyncio.run(
-        dd._rename_survivor({"id": "s", "label": "Organization", "name": "AAPL"}, "Apple Inc.")
-    )
-    assert "REMOVE s.embedding" in g.calls[-1][0]
+def test_the_judges_name_is_the_groups_last_operation():
+    """A survivor that won on rank can still read as the judge named the
+    group: it is renamed, after every absorb of its group."""
+    rows = [
+        ["s", "Tim Cook", "Apple CEO", ["Person"], None, None, 3],
+        ["d", "Timothy D. Cook", "chief executive of Apple", ["Person"]],
+    ]
+    answer = "SET 1 GROUP: 1, 2 | NAME: Timothy D. Cook"
+    sim = _sim(rows, judge=ScriptedLLM([answer]))
+    assert [op.op for op in sim.ops] == ["absorb", "rename"]
+    assert (sim.ops[0].survivor, sim.ops[1].survivor) == ("s", "s"), "the better connected"
+    assert sim.ops[1].rename_to == "Timothy D. Cook"
+    assert sim.nodes["s"]["props"]["name"] == "Timothy D. Cook"
+    assert sim.nodes["s"]["props"]["aliases"] == ["Tim Cook"]
 
 
 @pytest.mark.parametrize("judge", [False, True])
 def test_entity_deduplicator_judge_toggle(judge):
-    g = _JudgeGraph()
-    llm = ScriptedLLM([[IBM]])
-    dd = EntityDeduplicator(g, FakeEmbedder({}))
-    n = asyncio.run(dd.deduplicate(judge_llm=llm if judge else None))
-    assert n == (1 if judge else 0)
-    assert bool(dd.last_judge_stats) is judge
+    sim = _sim(judge=ScriptedLLM([[IBM]]) if judge else None)
+    assert sim.merged == (1 if judge else 0)
+    assert bool(sim.dedup.last_judge_stats) is judge
 
 
-def test_judge_merges_through_absorb_and_unions_labels():
-    """Inside EntityDeduplicator the judge decides identity and ``_absorb``
-    performs the merge: one atomic absorb-and-delete write carrying the
-    descriptions list, aliases and the loser's label."""
-    g = _JudgeGraph()
-    dd = EntityDeduplicator(g, FakeEmbedder({}))
-    n = asyncio.run(dd.deduplicate(judge_llm=ScriptedLLM([[IBM]])))
-    assert n == 1 and dd.last_judge_stats["merged"] == 1
-    # the judge's own direct write is not used; the shared absorb path is
-    assert not any(
-        c[0].startswith("MATCH (s:__Entity__ {id: $id}) SET s.description") for c in g.calls
-    )
-    absorb = [c for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
-    assert len(absorb) == 1
+def test_a_judged_merge_folds_descriptions_aliases_and_the_losers_label():
+    """The judge decides identity and ``_fold`` writes the merge: the
+    descriptions list, aliases and the loser's label, in the one query that
+    moves its edges and deletes it."""
+    sim = _sim(judge=ScriptedLLM([[IBM]]))
+    (write,) = sim.writes
     # survivor rank: equal provenance and degree, so the longest description
     # ("American computer firm; IBM.") keeps its node
-    assert absorb[0][1]["survivor_id"] == "e2" and absorb[0][1]["dup_id"] == "e1"
-    assert absorb[0][1]["descs"] == [
+    assert (write.op.survivor, write.op.dup) == ("e2", "e1")
+    assert write.params["descs"] == [
         "American computer firm; IBM.",
         "Computer company founded 1911.",
     ]
-    assert absorb[0][1]["aliases"] == ["IBM"]
-    # the loser's label is set in the same statement that deletes it
-    cypher = absorb[0][0]
-    assert "SET s:`Organization`" in cypher
-    assert "SET s:`Company`" not in cypher  # already the survivor's own
-    assert cypher.index("SET s:`Organization`") < cypher.index("DETACH DELETE")
-    assert not any("SET s:`" in c[0] and "DETACH DELETE" not in c[0] for c in g.calls)
+    assert write.params["aliases"] == ["IBM"]
+    assert write.labels == ["Organization"]  # Company is already the survivor's own
 
 
 def test_remap_queries_bind_survivor_before_merge():
@@ -832,157 +584,47 @@ def test_remap_queries_bind_survivor_before_merge():
         assert "MERGE (s:__Entity__" not in q and "->(s:__Entity__" not in q
 
 
-# Three spellings the canonical-name phase does NOT unify, so what merges here
-# is the judge's doing alone.
-ACME_ROWS = [
-    ("a", "Acme", "Acme Corp, maker of anvils.", ["Organization"], None, [1.0, 0.0, 0.0]),
-    ("b", "Akme Corp", "Anvil maker.", ["Organization"], None, [0.98, 0.1, 0.0]),
-    ("c", "Acme Industries", "Anvils.", ["Company"], None, [0.97, 0.15, 0.0]),
-]
-ACME_DESC = {
-    "Acme Corp, maker of anvils.": [1.0, 0.0, 0.0],
-    "Anvil maker.": [0.95, 0.2, 0.0],
-    "Anvils.": [0.95, 0.25, 0.0],
-}
-ACME = {"Acme", "Akme Corp", "Acme Industries"}
-
-
 def test_two_keyed_rows_are_not_asked_and_a_mention_between_them_is_not_moved():
     """The CI contract from structured ingestion: two rows keyed E-1 / E-2
     named 'Alice Smith' and a passage mentioning her. The exact phase leaves
     all three; the judge must spend no LLM call on them."""
-    # id, name, description, labels, aliases, embedding, descriptions, is_stub
     rows = [
-        (
-            "alice__person",
-            "Alice Smith",
-            "Presented the plan",
-            ["Person"],
-            None,
-            [1.0, 0.0, 0.0],
-            None,
-            None,
-        ),
-        ("e-1__person", "Alice Smith", "", ["Person"], None, [1.0, 0.0, 0.0], None, False),
-        ("e-2__person", "Alice Smith", "", ["Person"], None, [1.0, 0.0, 0.0], None, False),
-    ]
-    g = _JudgeGraph(rows=rows)
-    # rows: is_stub False marks a keyed node
-    g.page = [
-        (r[0], r[1], r[2], r[3][0], r[4], None if i == 0 else False, 0) for i, r in enumerate(rows)
+        ["alice__person", "Alice Smith", "Presented the plan", ["Person"]],
+        ["e-1__person", "Alice Smith", "", ["Person"], None, False],
+        ["e-2__person", "Alice Smith", "", ["Person"], None, False],
     ]
     llm = ScriptedLLM([[{"Alice Smith"}]])
-    dd = EntityDeduplicator(g, FakeEmbedder({}))
-    n = asyncio.run(dd.deduplicate(judge_llm=llm))
-    assert n == 0 and llm.prompts == []
-    assert dd.last_judge_stats["llm_calls"] == 0 and dd.last_judge_stats["candidates"] == 0
-    assert not any("DETACH DELETE" in c[0] for c in g.calls)
+    sim = _sim(rows, judge=llm)
+    assert sim.merged == 0 and llm.prompts == []
+    stats = sim.dedup.last_judge_stats
+    assert stats["llm_calls"] == 0 and stats["candidates"] == 0
 
 
-def test_absorb_refuses_a_label_that_is_not_an_identifier():
-    g = _JudgeGraph(rows=ACME_ROWS)
-    dd = EntityDeduplicator(g, FakeEmbedder(ACME_DESC))
-    entities = asyncio.run(dd._fetch_all_entities(500))
-    by_id = {e["id"]: e for e in entities}
-    ok = asyncio.run(
-        dd._absorb(
-            by_id["a"],
-            by_id["b"],
-            add_labels=["Company", "X` DETACH DELETE (n) //", "Document", "__Entity__"],
-        )
+def _fold(dup_labels, *, keep_labels=("Organization",), policy=JUDGE, keep=None, dup=None):
+    op = PlanOp(ABSORB, 0, "s", "Acme", dup="d", dup_name="Akme Corp", policy=policy)
+    read = MergeRead(
+        keep={"name": "Acme", **(keep or {})},
+        dup={"name": "Akme Corp", **(dup or {})},
+        keep_labels=list(keep_labels),
+        dup_labels=list(dup_labels),
+        kinds=[],
     )
-    assert ok
-    (absorb,) = [c for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
-    assert "SET s:`Company`" in absorb[0] and "X`" not in absorb[0]
-    assert "Document" not in absorb[0] and "SET s:`__Entity__`" not in absorb[0]
-    assert absorb[1]["merged_labels"] == "Company"
+    return EntityDeduplicator(None, None)._fold(op, read)
 
 
-def test_absorb_admits_every_label_the_repository_does():
+def test_a_merge_refuses_a_label_that_is_not_an_identifier():
+    sets, labels, params = _fold(["Company", "X` DETACH DELETE (n) //", "Document", "__Entity__"])
+    assert labels == ["Company"]
+    assert params["merged_labels"] == "Company"
+
+
+def test_a_merge_admits_every_label_the_repository_does():
     """The label contract is ``sanitize_cypher_label``'s, the one a mapping is
     checked against: ``Legal Entity``, ``Org-Unit`` and ``Ünïcode`` are valid
     labels and a judge cross-label merge must not drop them."""
-    g = _JudgeGraph(rows=ACME_ROWS)
-    dd = EntityDeduplicator(g, FakeEmbedder(ACME_DESC))
-    by_id = {e["id"]: e for e in asyncio.run(dd._fetch_all_entities(500))}
-    ok = asyncio.run(
-        dd._absorb(by_id["a"], by_id["b"], add_labels=["Legal Entity", "Org-Unit", "Ünïcode"])
-    )
-    assert ok
-    (absorb,) = [c for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
-    for lab in ("Legal Entity", "Org-Unit", "Ünïcode"):
-        assert f"SET s:`{lab}`" in absorb[0]
-    assert absorb[1]["merged_labels"] == "Legal Entity | Org-Unit | Ünïcode"
-
-
-class _LabelledGraph(_JudgeGraph):
-    """A graph whose nodes carry real label lists and a ``merged_labels``
-    property, answering the exact phase's paged read, the absorb's property
-    read and the absorb write itself so a merge's label union can be
-    followed across two runs."""
-
-    def __init__(self, nodes: dict[str, dict]):
-        super().__init__(rows=[])
-        self.nodes = nodes  # id -> {name, description, labels, merged_labels?}
-
-    async def query_raw(self, cypher, params=None):
-        self.calls.append((cypher, params or {}))
-        params = params or {}
-        if "db.idx.vector.queryNodes" in cypher:
-            rows = [
-                (nid, n["name"], n["description"], list(n["labels"]), None, [1.0, 0.0, 0.0])
-                for nid, n in self.nodes.items()
-            ]
-            return _knn_answer(rows, params, everyone_close=True)
-        by_ids = "MATCH (e:__Entity__ {id: id}) WITH e" in cypher
-        if "WHERE e.dedup_pending = true" in cypher or "e.id > $last" in cypher or by_ids:
-            if params.get("last"):
-                return SimpleNamespace(result_set=[])
-            rows = []
-            for nid, n in self.nodes.items():
-                if by_ids and nid not in params["ids"]:
-                    continue
-                rows.append(
-                    (
-                        nid,
-                        n["name"],
-                        n["description"],
-                        # the HEAD() column deliberately reports the *absorbed* label,
-                        # as FalkorDB may: the primary must come from the label list
-                        n["labels"][-1],
-                        None,
-                        None,
-                        n.get("degree", 0),
-                        list(n["labels"]),
-                        n.get("merged_labels"),
-                    )
-                )
-            return SimpleNamespace(result_set=rows)
-        if "RETURN e.id, e.name, e.description" in cypher:
-            rows = [
-                (nid, n["name"], n["description"], list(n["labels"]), None, [1.0, 0.0, 0.0])
-                for nid, n in self.nodes.items()
-            ]
-            return SimpleNamespace(result_set=_by_ids(rows, cypher, params or {}))
-        if "RETURN properties(k), properties(d), labels(k), labels(d)" in cypher:
-            k, d = self.nodes[params["survivor_id"]], self.nodes[params["dup_id"]]
-            props = lambda n: {  # noqa: E731
-                key: n[key] for key in ("name", "description", "merged_labels") if n.get(key)
-            }
-            k_labels, d_labels = ["__Entity__", *k["labels"]], ["__Entity__", *d["labels"]]
-            return SimpleNamespace(result_set=[[props(k), props(d), k_labels, d_labels]])
-        if "DETACH DELETE dup RETURN s.id" in cypher:
-            s = self.nodes[params["survivor_id"]]
-            if "merged_labels" in params:
-                s["merged_labels"] = params["merged_labels"]
-            for lab in re.findall(r"SET s:`([^`]+)`", cypher):
-                if lab not in s["labels"]:
-                    s["labels"].append(lab)
-            if "desc" in params:
-                s["description"] = params["desc"]
-            del self.nodes[params["dup_id"]]
-            return SimpleNamespace(result_set=[[params["survivor_id"]]])
-        return SimpleNamespace(result_set=[])
+    _, labels, params = _fold(["Legal Entity", "Org-Unit", "Ünïcode"])
+    assert labels == ["Legal Entity", "Org-Unit", "Ünïcode"]
+    assert params["merged_labels"] == "Legal Entity | Org-Unit | Ünïcode"
 
 
 def test_a_judge_label_union_survives_a_later_exact_merge():
@@ -991,52 +633,33 @@ def test_a_judge_label_union_survives_a_later_exact_merge():
     Run 2: a same-name ``Airbus SE`` [Company] with a higher rank absorbs
     that survivor through the exact phase — which reads one primary label —
     and must inherit ``Organization`` too, or the earlier union is gone."""
-    g = _LabelledGraph(
-        {
-            "a": {"name": "Airbus", "description": "Planemaker.", "labels": ["Organization"]},
-            "b": {"name": "Airbus SE", "description": "Toulouse group.", "labels": ["Company"]},
-        }
-    )
-    dd = EntityDeduplicator(g, FakeEmbedder({}))
-    same = {"Airbus", "Airbus SE"}
-    n = asyncio.run(dd.deduplicate(judge_llm=ScriptedLLM([[same]])))
-    assert n == 1 and set(g.nodes) == {"b"}
-    assert g.nodes["b"]["labels"] == ["Company", "Organization"]
-    assert g.nodes["b"]["merged_labels"] == "Organization"
+    rows = [
+        ["a", "Airbus", "Planemaker.", ["Organization"]],
+        ["b", "Airbus SE", "Toulouse group.", ["Company"]],
+    ]
+    first = _sim(rows, judge=ScriptedLLM([[{"Airbus", "Airbus SE"}]]))
+    b = first.nodes["b"]
+    assert set(first.nodes) == {"b"} and b["labels"] == ["Company", "Organization"]
+    assert b["props"]["merged_labels"] == "Organization"
 
     # a second run: a better-connected Airbus SE [Company] arrives
-    g.nodes["c"] = {
-        "name": "Airbus SE",
-        "description": "European aerospace company.",
-        "labels": ["Company"],
-        "degree": 5,
-    }
-    g.calls.clear()
-    dd = EntityDeduplicator(g, FakeEmbedder({}))
-    n = asyncio.run(dd.deduplicate())
-    assert n == 1 and set(g.nodes) == {"c"}
-    assert g.nodes["c"]["labels"] == ["Company", "Organization"]
-    assert g.nodes["c"]["merged_labels"] == "Organization"
-    (absorb,) = [c for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
-    assert "SET s:`Organization`" in absorb[0] and absorb[1]["merged_labels"] == "Organization"
+    rows = [
+        ["b", "Airbus SE", b["props"]["description"], b["labels"]],
+        ["c", "Airbus SE", "European aerospace company.", ["Company"], None, None, 5],
+    ]
+    second = _sim(rows, stored={"b": {"props": {"merged_labels": "Organization"}}})
+    assert set(second.nodes) == {"c"}
+    assert second.nodes["c"]["labels"] == ["Company", "Organization"]
+    (write,) = second.writes
+    assert write.labels == ["Organization"] and write.params["merged_labels"] == "Organization"
 
 
 def test_primary_label_does_not_flip_to_an_absorbed_one():
     """``HEAD(labels(e))`` may return the absorbed label on a later run; the
     exact phase groups on the primary, so it must be the one not on record as
     absorbed, whatever order the graph lists them in."""
-    g = _LabelledGraph(
-        {
-            "a": {
-                "name": "Airbus",
-                "description": "Planemaker.",
-                "labels": ["Organization", "Company"],
-                "merged_labels": "Company",
-            },
-        }
-    )
-    dd = EntityDeduplicator(g, FakeEmbedder({}))
-    (ent,) = asyncio.run(dd._fetch_all_entities(500))
+    row = ["a", "Airbus", "", "Company", None, None, 0, ["Organization", "Company"], "Company"]
+    ent = _entity_from_row(row)
     assert ent["label"] == "Organization" and ent["labels"] == ["Organization", "Company"]
 
 
@@ -1045,18 +668,8 @@ def test_primary_label_falls_back_the_same_way_whatever_the_order():
     to prefer; the fallback must still not depend on the order ``labels(e)``
     happens to list them in, or the grouping key flips between runs."""
     for order in (["Organization", "Company"], ["Company", "Organization"]):
-        g = _LabelledGraph(
-            {
-                "a": {
-                    "name": "Airbus",
-                    "description": "Planemaker.",
-                    "labels": list(order),
-                    "merged_labels": "Company | Organization",
-                },
-            }
-        )
-        (ent,) = asyncio.run(EntityDeduplicator(g, FakeEmbedder({}))._fetch_all_entities(500))
-        assert ent["label"] == "Company"
+        row = ["a", "Airbus", "", order[0], None, None, 0, order, "Company | Organization"]
+        assert _entity_from_row(row)["label"] == "Company"
 
 
 def test_adoption_does_not_inherit_the_guesses_the_guess_absorbed():
@@ -1065,43 +678,24 @@ def test_adoption_does_not_inherit_the_guesses_the_guess_absorbed():
     ``Practice`` reached the node by the same route — an earlier merge of
     another guess — and is dropped with it, not stamped on the declared
     entity by the back door."""
-    g = _LabelledGraph(
-        {
-            "d": {
-                "name": "Carbon Farming",
-                "description": "Declared by the mapping.",
-                "labels": ["MitigationPractice"],
-            },
-            "x": {
-                "name": "Carbon Farming",
-                "description": "Guessed from prose.",
-                "labels": ["Concept", "Practice"],
-                "merged_labels": "Practice",
-            },
-        }
+    rows = [
+        ["d", "Carbon Farming", "Declared by the mapping.", ["MitigationPractice"]],
+        ["x", "Carbon Farming", "Guessed from prose.", ["Concept", "Practice"]],
+    ]
+    sim = _sim(
+        rows,
+        stored={"x": {"props": {"merged_labels": "Practice"}}},
+        declared_labels={"MitigationPractice"},
     )
-    dd = EntityDeduplicator(g, FakeEmbedder({}))
-    n = asyncio.run(dd.deduplicate(declared_labels={"MitigationPractice"}))
-    assert n == 1 and set(g.nodes) == {"d"}
-    assert g.nodes["d"]["labels"] == ["MitigationPractice"]
-    assert "merged_labels" not in g.nodes["d"]
-    (absorb,) = [c for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
-    assert "SET s:`" not in absorb[0] and "merged_labels" not in absorb[1]
+    assert sim.merged == 1 and set(sim.nodes) == {"d"}
+    (write,) = sim.writes
+    assert write.op.policy == "adopt" and write.labels == []
+    assert "merged_labels" not in write.params
+    assert sim.nodes["d"]["labels"] == ["MitigationPractice"]
     # the description still crossed over: only the labels were refused
-    assert g.nodes["d"]["description"] == "Declared by the mapping. | Guessed from prose."
-
-
-def test_embedded_counts_only_vectors_on_nodes_still_here():
-    """Every name is embedded before the judge merges; a vector written to a
-    node the merge then deleted is not one the graph holds, so the count the
-    caller adds to ``entities_embedded`` leaves it out."""
-    rows = [(*r[:5], None) for r in ROWS]
-    graph = ScriptedGraph(rows)
-    stats, merge = _run(graph, ScriptedLLM([[IBM]]))
-    writes = [c for c in graph.calls if "SET e.embedding = vecf32" in c[0]]
-    assert sum(len(w[1]["items"]) for w in writes) == 3  # all three were written...
-    assert merge.groups == [["e1", "e2"]] and stats["merged"] == 1
-    assert stats["embedded"] == 2  # ...but e2 is gone
+    assert sim.nodes["d"]["props"]["description"] == (
+        "Declared by the mapping. | Guessed from prose."
+    )
 
 
 def test_a_label_holding_the_separator_is_refused_and_a_recorded_one_reads_back_whole():
@@ -1119,24 +713,9 @@ def test_a_label_holding_the_separator_is_refused_and_a_recorded_one_reads_back_
     assert split_merged_labels("Company | Organization") == ["Company", "Organization"]
 
     # at write: the judge's label union drops it, with the others kept
-    g = _JudgeGraph(rows=ACME_ROWS)
-    dd = EntityDeduplicator(g, FakeEmbedder(ACME_DESC))
-    by_id = {e["id"]: e for e in asyncio.run(dd._fetch_all_entities(500))}
-    assert asyncio.run(dd._absorb(by_id["a"], by_id["b"], add_labels=["A|B", "Company"]))
-    (absorb,) = [c for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
-    assert "A|B" not in absorb[0] and "SET s:`Company`" in absorb[0]
-    assert absorb[1]["merged_labels"] == "Company"
+    _, labels, params = _fold(["A|B", "Company"])
+    assert labels == ["Company"] and params["merged_labels"] == "Company"
 
     # at read: a node whose record holds A|B keeps its real primary label
-    g = _LabelledGraph(
-        {
-            "a": {
-                "name": "Airbus",
-                "description": "Planemaker.",
-                "labels": ["A", "B", "Organization"],
-                "merged_labels": "A|B",
-            },
-        }
-    )
-    (ent,) = asyncio.run(EntityDeduplicator(g, FakeEmbedder({}))._fetch_all_entities(500))
-    assert ent["label"] == "A"  # not filtered out as if A and B had been absorbed
+    row = ["a", "Airbus", "", "A", None, None, 0, ["A", "B", "Organization"], "A|B"]
+    assert _entity_from_row(row)["label"] == "A"  # not filtered out as if A and B had been absorbed

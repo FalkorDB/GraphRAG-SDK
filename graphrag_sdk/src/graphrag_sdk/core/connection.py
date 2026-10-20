@@ -294,6 +294,29 @@ class FalkorDBConnection:
             logger.debug("Ping failed", exc_info=True)
             return False
 
+    async def server_version(self) -> tuple[int, int, int] | None:
+        """The FalkorDB module version, e.g. ``(4, 20, 4)``; ``None`` when the
+        server does not say (``MODULE LIST`` refused, or no graph module)."""
+        self._ensure_client()
+        from redis.asyncio import Redis
+
+        redis: Redis = Redis(connection_pool=self._pool)
+        try:
+            modules = await redis.execute_command("MODULE", "LIST")
+        except Exception:
+            logger.debug("MODULE LIST failed", exc_info=True)
+            return None
+        for module in modules or []:
+            info = module if isinstance(module, dict) else dict(zip(module[::2], module[1::2]))
+            info = {str(k).lower(): v for k, v in info.items()}
+            if str(info.get("name", "")).lower() == "graph":
+                try:
+                    ver = int(info.get("ver"))
+                except (TypeError, ValueError):
+                    return None
+                return ver // 10000, ver // 100 % 100, ver % 100
+        return None
+
     async def delete_graph(self) -> None:
         """Delete the entire graph using ``GRAPH.DELETE`` (fast).
 

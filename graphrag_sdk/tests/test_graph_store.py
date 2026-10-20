@@ -157,25 +157,23 @@ class TestUpsertNodesKeepsProvenance:
         assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in fallback[0]
 
 
-class TestUpsertNodesFlagsNewEntitiesForDedup:
-    """An entity node gets ``dedup_pending`` when ingest creates it — and only
-    then — so the next finalize checks exactly what is new, and a re-mention
-    of an existing entity does not re-queue it."""
+class TestUpsertNodesMarksNothingForDedup:
+    """Ingest writes nothing onto an entity for dedup. A new entity has no name
+    vector, and that is what the next finalize looks for; it lists the entity
+    in a system record before it embeds it."""
 
-    async def test_an_entity_is_flagged_on_create_only(self, graph_store, mock_connection):
+    async def test_a_new_entity_carries_no_dedup_marker(self, graph_store, mock_connection):
         await graph_store.upsert_nodes(
             [GraphNode(id="acme", label="Organization", properties={"name": "Acme"})]
         )
         cypher = upsert_calls(mock_connection)[0][0][0]
-        assert "ON CREATE SET n.dedup_pending = true" in cypher
-        assert "ON MATCH" not in cypher.split("WITH")[0]
+        assert "dedup" not in cypher and "ON CREATE" not in cypher
+        assert "embedding" not in cypher
 
-    async def test_an_incoming_flag_value_cannot_unflag_a_new_entity(
+    async def test_a_property_named_like_the_old_flag_is_the_users(
         self, graph_store, mock_connection
     ):
-        """``dedup_pending`` is the SDK's: a property of that name in the data
-        is dropped, so ``SET n += item.properties`` cannot overwrite the flag
-        the create just set."""
+        """``dedup_pending`` was once an SDK flag; it is ordinary data now."""
         await graph_store.upsert_nodes(
             [
                 GraphNode(
@@ -186,14 +184,14 @@ class TestUpsertNodesFlagsNewEntitiesForDedup:
             ]
         )
         params = upsert_calls(mock_connection)[0][0][1]
-        assert params["batch"][0]["properties"] == {"name": "Acme"}
+        assert params["batch"][0]["properties"] == {"name": "Acme", "dedup_pending": False}
 
-    async def test_a_structural_node_is_never_flagged(self, graph_store, mock_connection):
+    async def test_a_structural_node_is_never_marked(self, graph_store, mock_connection):
         await graph_store.upsert_nodes([GraphNode(id="c1", label="Chunk", properties={})])
         cypher = upsert_calls(mock_connection)[0][0][0]
-        assert "dedup_pending" not in cypher
+        assert "dedup" not in cypher
 
-    async def test_the_per_item_fallback_flags_too(self, graph_store, mock_connection):
+    async def test_the_per_item_fallback_marks_nothing_either(self, graph_store, mock_connection):
         async def fail_the_batch(cypher, params=None):
             if "UNWIND" in cypher:
                 raise Exception("batch fail")
@@ -208,7 +206,7 @@ class TestUpsertNodesFlagsNewEntitiesForDedup:
             for call in mock_connection.query.call_args_list
             if "UNWIND" not in call[0][0] and not _is_index_housekeeping(call[0][0])
         ]
-        assert len(fallback) == 1 and "ON CREATE SET n.dedup_pending = true" in fallback[0]
+        assert len(fallback) == 1 and "dedup" not in fallback[0]
 
 
 class TestUpsertReferenceNodes:
@@ -355,19 +353,22 @@ class TestReconcileKeyedIdentity:
             " the key is not such a rival"
         )
 
-    async def test_a_renamed_row_is_flagged_for_the_next_dedup_run(
+    async def test_a_renamed_row_is_pending_dedup_and_its_old_id_recorded(
         self, graph_store, mock_connection
     ):
-        """A re-sync that renames a row gives it a name no dedup run has seen;
-        the node is flagged so the next finalize checks it under that name."""
+        """A re-sync that renames a row gives it a name no dedup run has seen.
+        Its vector (of the old name) goes, so the next finalize embeds and
+        checks it under the new one; the old id leaves a deleted record in the
+        same query, so a merge a running dedup planned on it is not applied."""
         mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[[0]]))
         assert await graph_store._move_entity("globex__org", "initech__org") == (1, 0)
         (rename,) = [
             c[0][0] for c in mock_connection.query.call_args_list if "SET n.id = $new" in c[0][0]
         ]
-        assert "n.dedup_pending = true" in rename and "REMOVE n.embedding" in rename
+        assert "REMOVE n.embedding" in rename and "dedup_pending" not in rename
+        assert "kind: 'deleted', eid: _eid" in rename
 
-    async def test_a_row_folded_into_an_existing_node_flags_the_survivor(
+    async def test_a_row_folded_into_an_existing_node_makes_the_survivor_pending(
         self, graph_store, mock_connection
     ):
         async def answer(cypher, params=None):
@@ -379,20 +380,18 @@ class TestReconcileKeyedIdentity:
 
         mock_connection.query = AsyncMock(side_effect=answer)
         assert await graph_store._move_entity("globex__org", "initech__org") == (0, 1)
-        flagged = [
-            c[0]
-            for c in mock_connection.query.call_args_list
-            if "SET n.dedup_pending = true" in c[0][0]
-        ]
-        assert flagged and flagged[-1][1] == {"new": "initech__org"}
+        calls = [c[0] for c in mock_connection.query.call_args_list]
+        (pending,) = [c for c in calls if "REMOVE n.embedding" in c[0]]
+        assert pending[1] == {"new": "initech__org"}
+        (delete,) = [c for c in calls if "DETACH DELETE d" in c[0]]
+        assert "kind: 'deleted', eid: _eid" in delete[0] and delete[1] == {"old": "globex__org"}
 
-    async def test_a_fold_does_not_carry_the_folded_nodes_dedup_state(self):
-        """The fold flags the survivor itself; the folded node's failure count
-        would cut the survivor's retries short."""
+    async def test_a_fold_does_not_carry_the_folded_nodes_identity_or_vector(self):
+        """The id, the name vector and the stub flag are each node's own."""
         from graphrag_sdk.storage.deduplicator import properties_to_carry
         from graphrag_sdk.storage.graph_store import GraphStore
 
-        dup = {"id": "old", "dedup_pending": True, "dedup_attempts": 2, "role": "engineer"}
+        dup = {"id": "old", "embedding": [0.1], "is_stub": True, "role": "engineer"}
         carried = properties_to_carry(
             {"id": "new"}, dup, never=GraphStore._NEVER_CARRY_ON_RECONCILE
         )
