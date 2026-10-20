@@ -250,6 +250,26 @@ class TestFalkorDBConnectionTLS:
             assert "connection_class" not in kwargs
             assert "ssl_cert_reqs" not in kwargs
 
+    @pytest.mark.parametrize(
+        ("query_timeout_ms", "socket_timeout"),
+        [(10_000, 15.0), (2_000, 7.0), (None, None)],
+    )
+    def test_pool_waits_past_the_server_query_timeout(self, query_timeout_ms, socket_timeout):
+        """redis-py's 5 s default fired before the server's 10 s query
+        timeout, so a 7 s read failed as a socket error, three times over."""
+        conn = FalkorDBConnection(
+            ConnectionConfig(host="h", port=1, query_timeout_ms=query_timeout_ms)
+        )
+        with (
+            patch("redis.asyncio.BlockingConnectionPool") as mock_pool,
+            patch("falkordb.asyncio.FalkorDB") as mock_falkor,
+        ):
+            mock_falkor.return_value.select_graph = MagicMock()
+            conn._ensure_client()
+            kwargs = mock_pool.call_args.kwargs
+        assert kwargs["socket_timeout"] == socket_timeout
+        assert kwargs["socket_connect_timeout"] == 5.0
+
     def test_pool_passes_ssl_kwargs_when_enabled(self):
         from redis.asyncio.connection import SSLConnection
 

@@ -367,6 +367,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   breaker, so two such statements in a row opened it and refused every caller
   for the recovery timeout, on 4.x as well as 6.0.x. See **Changed** for the
   error type it now raises.
+- **Reads slower than 5 seconds always failed.** redis-py stops waiting for a
+  reply after 5 s unless told otherwise, and the SDK never told it, so a read
+  needing 5–10 s failed on the client before the server's 10 s
+  `query_timeout_ms` could answer. Each attempt was retried, counted against
+  the circuit breaker and left running on the server: a 7 s query failed after
+  about 15 s, and two of them opened the breaker. The client now waits
+  `query_timeout_ms` plus 5 s (no limit when `query_timeout_ms` is `None`);
+  connecting still gives up after 5 s.
 - `drop_chunk_vector_index()`, `drop_entity_vector_index()` and
   `drop_relates_vector_index()` called `db.idx.vector.drop`, which exists on no
   FalkorDB version, so nothing was dropped. They now use `DROP VECTOR INDEX`, and

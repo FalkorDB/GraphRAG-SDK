@@ -25,7 +25,7 @@ This document is the comprehensive configuration reference for GraphRAG SDK v2. 
 | `retry_count`      | `int`             | `3`                 | Attempts per query for transient failures, first try included (`1` disables retries). |
 | `retry_delay`      | `float`           | `1.0`               | Base delay (seconds) for exponential backoff with jitter: `retry_delay * 2^attempt * random(0.5, 1.5)`. |
 | `pool_timeout`     | `float`           | `30.0`              | Timeout (seconds) waiting to acquire a connection from the pool.    |
-| `query_timeout_ms` | `int \| None`     | `10_000`            | Per-query timeout in milliseconds forwarded to FalkorDB. Set to `None` to disable. |
+| `query_timeout_ms` | `int \| None`     | `10_000`            | Per-query timeout in milliseconds forwarded to FalkorDB. The client waits this long plus 5 s for the reply. Set to `None` to disable both. |
 
 ### Creating from a URL
 

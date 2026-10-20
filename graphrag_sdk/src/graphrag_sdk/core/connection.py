@@ -114,6 +114,18 @@ class FalkorDBConnection:
             "max_connections": self.config.max_connections,
             "timeout": self.config.pool_timeout,
             "decode_responses": True,
+            # redis-py stops waiting for a reply after 5 s unless told
+            # otherwise, before the server's own query timeout (10 s by
+            # default) can answer. A slower read then failed as a socket
+            # timeout: retried, counted against the breaker, and left running
+            # on the server. Wait for the server's answer plus a margin; past
+            # that the server missed its own deadline, a real health signal.
+            "socket_timeout": (
+                self.config.query_timeout_ms / 1000 + 5.0 if self.config.query_timeout_ms else None
+            ),
+            # Otherwise redis-py connects with the socket timeout above, which
+            # can be None: keep connecting to a dead host bounded.
+            "socket_connect_timeout": 5.0,
         }
         if self.config.ssl:
             from redis.asyncio.connection import SSLConnection
@@ -170,6 +182,8 @@ class FalkorDBConnection:
             cypher: The Cypher query string.
             params: Optional query parameters.
             timeout: Optional per-query timeout (ms) forwarded to FalkorDB.
+                The client stops waiting at ``query_timeout_ms`` + 5 s, so a
+                larger value here is cut short there.
             expected_errors: Lower-case substrings identifying non-transient
                 failures the caller anticipates and handles itself (e.g.
                 ``"already indexed"`` for an idempotent ``CREATE INDEX``). Such
