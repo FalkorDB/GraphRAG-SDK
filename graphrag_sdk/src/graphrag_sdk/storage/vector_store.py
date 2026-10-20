@@ -91,6 +91,7 @@ class VectorStore:
         self.embedding_dimension = embedding_dimension
         self._indices_ensured: bool = False
         self._id_indices_ensured: bool = False
+        self._warned_relates_scan: bool = False
 
     # ── Index Management ─────────────────────────────────────────
     #
@@ -151,9 +152,10 @@ class VectorStore:
         )
         return await self._try_create_index(query, "[RELATES].embedding", "vector")
 
-    # Fulltext indexes use the DDL form. FalkorDB 6.0.x rejects the multi-field
-    # ``db.idx.fulltext.createNodeIndex(label, field, ...)`` procedure ("expected
-    # at most 1" argument); the DDL works on 4.x and 6.x alike and answers an
+    # Fulltext indexes use the DDL form. FalkorDB 6.0.x rejects
+    # ``db.idx.fulltext.createNodeIndex(label, field, ...)`` with any second
+    # argument, a single field included ("expected at most 1" argument); the
+    # DDL works on 4.x and 6.x alike and answers an
     # existing index — including one the procedure created — with "already
     # indexed".
 
@@ -466,9 +468,14 @@ class VectorStore:
     ) -> list[dict[str, Any]]:
         """Vector similarity search on RELATES edges.
 
-        Uses the RELATES edge vector index for retrieval. Falls back to
-        a Cypher-based cosine distance scan if edge vector queries
-        are not supported.
+        Queries the RELATES edge vector index first. Falls back to a Cypher
+        cosine-distance scan over every embedded RELATES edge when that query
+        fails (FalkorDB 4.x raises for a missing index), or when it returns no
+        rows and ``db.indexes()`` does not show a vector index on
+        ``RELATES.embedding`` (FalkorDB 6.0.x answers a missing index with no
+        rows). With the index in place an empty answer is returned as is.
+        The scan reads every embedded edge; ``ensure_indices()`` creates the
+        index.
 
         Args:
             query_vector: The query embedding vector.
@@ -520,6 +527,15 @@ class VectorStore:
             logger.debug("Edge vector query returned nothing, falling back to Cypher scan")
         except Exception as exc:
             logger.debug(f"Edge vector query not available, falling back to Cypher scan: {exc}")
+
+        # The scan reads every embedded edge, so on a large graph each search
+        # costs far more than the index. Say so once, where it can be seen.
+        if not self._warned_relates_scan:
+            self._warned_relates_scan = True
+            logger.warning(
+                "No usable RELATES vector index: relationship search scans every "
+                "embedded edge instead. Run ensure_indices() to create the index."
+            )
 
         # Fallback: Cypher-based cosine distance scan
         fallback_query = (
