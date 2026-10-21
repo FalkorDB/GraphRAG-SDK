@@ -377,8 +377,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Results cut by a `LIMIT` or a cap depended on the engine's row order.**
   FalkorDB 4.x and 6.0.x list unordered rows differently, so these returned
   different data after an upgrade, and now order before cutting:
-  `get_connected_entities()` (which 50 entities, with `max_hops=1`; beyond one
-  hop an order would need every path first, so the engine's order stays),
+  `get_connected_entities()` (which 50 entities it returns; only with
+  `max_hops=1`, since beyond one hop an order would need every path first, so
+  the engine's order stays),
   `list_chunks_for_relation_pattern_backfill()` (which pairs the cap shows the
   LLM), `search_chunks()` / `search_entities()` (which of equally close nodes:
   ties are cut by id, fetching 2×`top_k` and more while the cut is still a tie),
