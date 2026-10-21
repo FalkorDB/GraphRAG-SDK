@@ -246,7 +246,7 @@ class TestRegisterRelationShape:
         open_merges = [
             c
             for c in fake_graph.calls
-            if c[0].startswith("MERGE (r:Relation {label: $rel_label}) SET")
+            if c[0].startswith("MERGE (r:Relation {label: $rel_label}) ")
         ]
         assert len(open_merges) == 1
         # Open-mode property attaches to a Relation that lacks SOURCE.

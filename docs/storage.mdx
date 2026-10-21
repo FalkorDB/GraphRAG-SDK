@@ -168,19 +168,21 @@ RELATES edges with a `fact` property but no embedding are batch-embedded:
 
 **Vector search on Chunk nodes:**
 ```cypher
-CALL db.idx.vector.queryNodes('Chunk', 'embedding', $top_k, vecf32($vector))
+CALL db.idx.vector.queryNodes('Chunk', 'embedding', $fetch_k, vecf32($vector))
 YIELD node, score
 RETURN node.id AS id, node.text AS text, (1-score) AS score
-ORDER BY score DESC
+ORDER BY score DESC, id
 ```
 
 **Vector search on Entity nodes:**
 ```cypher
-CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $top_k, vecf32($vector))
+CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $fetch_k, vecf32($vector))
 YIELD node, score
 RETURN node.id AS id, node.name AS name, node.description AS description, (1-score) AS score
-ORDER BY score DESC
+ORDER BY score DESC, id
 ```
+
+Equally close nodes are cut by id, not by the order the engine lists them (FalkorDB 4.x and 6.0.x differ). To see every tie at the cut, the query asks the index for `$fetch_k` = 2×`top_k` nodes, and asks again for twice as many (up to 1024) while the score at the cut still equals the score of the last node fetched, since the tie may continue past it.
 
 **Vector search on RELATES edges (with fallback):**
 ```cypher
@@ -205,8 +207,10 @@ The scan runs when the server rejects the primary query (FalkorDB 4.x does when 
 CALL db.idx.fulltext.queryNodes('Chunk', $query_text)
 YIELD node, score
 RETURN node.id AS id, node.text AS text, score
-ORDER BY score DESC LIMIT $top_k
+ORDER BY score DESC, id LIMIT $top_k
 ```
+
+Entity fulltext search ranks by name before score. The index covers `name` and `description` alike, so for a common term every hit can score the same, and an entity named by the query would rank no higher than the ones whose descriptions merely mention it. Results come back in this order: an exact name match (case-insensitive, ignoring surrounding spaces), then names containing the query, then by score, then by id.
 
 Special characters in fulltext queries are escaped for RediSearch compatibility (commas, brackets, operators, etc.).
 

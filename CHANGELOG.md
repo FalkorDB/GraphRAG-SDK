@@ -173,6 +173,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Entity fulltext search returns name matches first.** The `__Entity__`
+  index covers `name` and `description` alike, so for a common term every hit
+  scored the same and `LIMIT` kept arbitrary rows: "Northwind Robotics" returned
+  dates whose descriptions mention it, not the company. Results are now ordered
+  by exact name match, then name containing the query (both case-insensitive,
+  ignoring surrounding spaces), then score, then id.
+- **A relation keeps its first (declared) description.** When a relation's
+  patterns carry different descriptions, `OntologyStore.load()` now reports the
+  oldest one instead of whichever row the engine listed last, so a description
+  derived from a table no longer replaces the one the user declared. A new
+  pattern copies properties from its oldest sibling. Relation nodes get a
+  creation stamp, since FalkorDB reuses the ids of deleted nodes.
 - **A query the server rejects, or one the server stops with "Query timed
   out", raises `DatabaseError` on its first attempt, not
   `DatabaseUnavailableError` after the retries.** Everything that is not a
@@ -362,6 +374,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves more concurrent questions.
 
 ### Fixed
+- **Results cut by a `LIMIT` or a cap depended on the engine's row order.**
+  FalkorDB 4.x and 6.0.x list unordered rows differently, so these returned
+  different data after an upgrade, and now order before cutting:
+  `get_connected_entities()` (which 50 entities it returns; only with
+  `max_hops=1`, since beyond one hop an order would need every path first, so
+  the engine's order stays),
+  `list_chunks_for_relation_pattern_backfill()` (which pairs the cap shows the
+  LLM), `search_chunks()` / `search_entities()` (which of equally close nodes:
+  ties are cut by id, fetching 2×`top_k` and more while the cut is still a tie),
+  `GraphVisualizer.sample_nodes()` and `add_relation_pattern_node()`.
 - **FalkorDB 6.0.x: fulltext indexes were never created.** 6.0.x rejects the
   multi-argument `db.idx.fulltext.createNodeIndex(label, field, ...)` procedure,
   so `ensure_indices()` left `Chunk(text)` and `__Entity__(name, description)`

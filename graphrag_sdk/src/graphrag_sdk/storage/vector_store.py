@@ -45,6 +45,11 @@ _MISSING_VECTOR_INDEX_MARKERS = (
 _REDISEARCH_SPECIAL = set(r""",./<>{}[]\"':;!@#$%^&*()-+=~|""")
 
 
+# Upper bound on how many neighbours a vector search asks the index for while
+# widening to take in a whole tie at its cutoff (see _nearest_rows).
+_MAX_TIE_FETCH = 1024
+
+
 def _escape_fulltext_query(text: str) -> str:
     """Escape special characters for RediSearch fulltext queries.
 
@@ -387,6 +392,33 @@ class VectorStore:
 
     # ── Search ───────────────────────────────────────────────────
 
+    async def _nearest_rows(
+        self, query: str, vector: list[float], top_k: int, *, score_col: int
+    ) -> list[list[Any]]:
+        """The ``top_k`` rows of a ``$fetch_k`` vector query, cut by score then id.
+
+        The index decides which of several equally close nodes make its top
+        ``k``, and FalkorDB 4.x and 6.0.x decide differently. So ask for more
+        than ``top_k`` and, while the score at the cutoff is still the score of
+        the last row fetched — the tie may continue past it — ask for twice as
+        many, up to ``_MAX_TIE_FETCH``. ``query`` must return rows ordered by
+        score descending, then id.
+        """
+        if top_k <= 0:
+            return []
+        fetch_k = top_k * 2
+        while True:
+            result = await self._conn.query(query, {"fetch_k": fetch_k, "vector": vector})
+            rows = list(result.result_set or [])
+            if (
+                len(rows) <= top_k
+                or len(rows) < fetch_k
+                or fetch_k >= _MAX_TIE_FETCH
+                or rows[top_k - 1][score_col] != rows[-1][score_col]
+            ):
+                return rows[:top_k]
+            fetch_k = min(fetch_k * 2, _MAX_TIE_FETCH)
+
     async def search_chunks(
         self,
         query_vector: list[float],
@@ -402,21 +434,14 @@ class VectorStore:
             List of dicts with id, text, and similarity score (higher is closer).
         """
         query = (
-            "CALL db.idx.vector.queryNodes('Chunk', 'embedding', $top_k, vecf32($vector)) "
+            "CALL db.idx.vector.queryNodes('Chunk', 'embedding', $fetch_k, vecf32($vector)) "
             "YIELD node, score "
             "RETURN node.id AS id, node.text AS text, (1-score) AS score "
-            "ORDER BY score DESC"
+            "ORDER BY score DESC, id"
         )
         try:
-            result = await self._conn.query(
-                query,
-                {
-                    "top_k": top_k,
-                    "vector": query_vector,
-                },
-            )
             results: list[dict[str, Any]] = []
-            for row in result.result_set:
+            for row in await self._nearest_rows(query, query_vector, top_k, score_col=2):
                 results.append(
                     {
                         "id": row[0],
@@ -439,22 +464,15 @@ class VectorStore:
         Returned scores are similarities, so higher values indicate closer matches.
         """
         query = (
-            "CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $top_k, vecf32($vector)) "
+            "CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $fetch_k, vecf32($vector)) "
             "YIELD node, score "
             "RETURN node.id AS id, node.name AS name, node.description AS description, "
             "(1-score) AS score "
-            "ORDER BY score DESC"
+            "ORDER BY score DESC, id"
         )
         try:
-            result = await self._conn.query(
-                query,
-                {
-                    "top_k": top_k,
-                    "vector": query_vector,
-                },
-            )
             results: list[dict[str, Any]] = []
-            for row in result.result_set:
+            for row in await self._nearest_rows(query, query_vector, top_k, score_col=3):
                 results.append(
                     {
                         "id": row[0],
@@ -627,7 +645,9 @@ class VectorStore:
             "CALL db.idx.fulltext.queryNodes('Chunk', $query_text) "
             "YIELD node, score "
             "RETURN node.id AS id, node.text AS text, score "
-            "ORDER BY score DESC LIMIT $top_k"
+            # The id breaks score ties; without it which chunks survive the
+            # LIMIT depends on the engine's row order.
+            "ORDER BY score DESC, id LIMIT $top_k"
         )
         try:
             result = await self._conn.query(
@@ -666,17 +686,37 @@ class VectorStore:
             List of dicts with id, text (name), score.
         """
         escaped_text = _escape_fulltext_query(query_text)
+        # The index covers name and description alike, so an entity named by the
+        # query scores no higher than every entity whose description mentions
+        # it — and a term most descriptions contain scores 0 for all of them.
+        # Ranking by score alone then returned whichever rows the engine listed
+        # first: "Northwind Robotics" found three dates whose descriptions name
+        # the company, and not the company. An exact name match ranks first, a
+        # name containing the query next; the score and then the id order the
+        # rest, so the result no longer depends on engine row order.
         query = (
             "CALL db.idx.fulltext.queryNodes('__Entity__', $query_text) "
             "YIELD node, score "
-            "RETURN node.id AS id, node.name AS text, score "
-            "ORDER BY score DESC LIMIT $top_k"
+            # toString() rejects a list or map name, and the C engine type-checks
+            # every CASE branch, so non-scalar names become null first.
+            "WITH node, score, CASE WHEN typeOf(node.name) IN "
+            "['String', 'Integer', 'Float', 'Boolean'] THEN node.name END AS raw "
+            # Both sides are trimmed and lowercased here, by the same engine:
+            # Python's lower() differs from toLower() on letters such as 'İ'.
+            "WITH node, score, toLower(trim(coalesce(toString(raw), ''))) AS name, "
+            "toLower(trim($name)) AS wanted "
+            "WITH node, score, "
+            "CASE WHEN name = wanted THEN 0 WHEN name CONTAINS wanted THEN 1 ELSE 2 END "
+            "AS name_rank "
+            "ORDER BY name_rank, score DESC, node.id LIMIT $top_k "
+            "RETURN node.id AS id, node.name AS text, score"
         )
         try:
             result = await self._conn.query(
                 query,
                 {
                     "query_text": escaped_text,
+                    "name": query_text,
                     "top_k": top_k,
                 },
             )

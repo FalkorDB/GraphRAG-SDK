@@ -813,16 +813,24 @@ class GraphStore:
 
         Args:
             chunk_id: ID of the chunk node.
-            max_hops: Maximum traversal depth (default: 1).
+            max_hops: Maximum traversal depth (default: 1). With 1, the 50
+                entities kept are those with the lowest ids; beyond one hop,
+                which 50 are kept follows the engine's row order.
 
         Returns:
             List of entity dicts with id, label, properties.
         """
         max_hops = max(1, min(max_hops, 5))
+        # Without an order, which 50 survive the LIMIT is the engine's row
+        # order — newest-first on FalkorDB 4.x, oldest-first on 6.0.x. Only one
+        # hop is ordered: an order needs every path before the LIMIT, and paths
+        # multiply with each hop — 3 hops over 40k nodes went from 0.2 s to
+        # 16.6 s on 4.x and timed out.
+        order = "ORDER BY id " if max_hops == 1 else ""
         query = (
             f"MATCH (c {{id: $chunk_id}})-[*1..{max_hops}]-(e:__Entity__) "
             f"RETURN DISTINCT e.id AS id, labels(e) AS labels, properties(e) AS props "
-            f"LIMIT 50"
+            f"{order}LIMIT 50"
         )
         try:
             result = await self._conn.query(query, {"chunk_id": chunk_id})
@@ -2135,10 +2143,14 @@ class GraphStore:
             f"MATCH (t:`{safe_tgt}`)-[:MENTIONED_IN]->(c) "
             "WHERE s <> t "
             "AND NOT $op IN coalesce(c.extracted_ops, []) "
+            # Order before collecting: the cap keeps the first pairs, and
+            # collect() order is otherwise the engine's row order, so a capped
+            # chunk showed the LLM different pairs on FalkorDB 4.x and 6.0.x.
+            "WITH c, s, t ORDER BY s.id, t.id "
             "WITH c, collect(DISTINCT {src_id: s.id, src_name: s.name, "
             "tgt_id: t.id, tgt_name: t.name}) AS pairs "
-            f"RETURN c.id AS chunk_id, c.text AS chunk_text, pairs[0..{cap}] AS pairs"
-            f"{limit_clause}",
+            f"RETURN c.id AS chunk_id, c.text AS chunk_text, pairs[0..{cap}] AS pairs "
+            f"ORDER BY chunk_id{limit_clause}",
             {"op": op_id},
         )
         return [
