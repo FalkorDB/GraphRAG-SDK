@@ -323,9 +323,9 @@ db.idx.vector.queryRelationships('RELATES', 'embedding', $top_k, vecf32($vector)
 
 For fast graph deletion, use `GRAPH.DELETE` (the Redis-level command):
 ```python
-await rag.graph_store.delete_all()  # Uses GRAPH.DELETE internally
+await rag.delete_all()  # Uses GRAPH.DELETE internally
 ```
-This is much faster than `MATCH (n) DETACH DELETE n` on large graphs.
+This is much faster than `MATCH (n) DETACH DELETE n` on large graphs. `delete_all()` is irreversible. It also drops the paired `<graph_name>__ontology` graph, so the next `ingest()` starts from a clean graph and re-registers your ontology.
 
 ### Retry Behavior
 

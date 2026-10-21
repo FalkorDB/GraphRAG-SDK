@@ -484,14 +484,20 @@ extractor = GraphExtraction(llm=my_llm, max_concurrency=6)
 | `rel_top_k`          | `int` | `15`    | RELATES edge vector search results to retrieve.       |
 | `keyword_limit`      | `int` | `10`    | Maximum keywords extracted from the question.         |
 
+`GraphRAG` keeps its stores private. To build your own retriever, create a `FalkorDBConnection`, pass it to `GraphRAG`, and build the retriever's `GraphStore` and `VectorStore` on the same connection. Both are thin wrappers over the connection, so they read the same graph `rag` writes:
+
 ```python
+from graphrag_sdk import ConnectionConfig, FalkorDBConnection, GraphRAG, GraphStore, VectorStore
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 
+conn = FalkorDBConnection(ConnectionConfig(host="localhost", graph_name="novels"))
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder)
+
 retriever = MultiPathRetrieval(
-    graph_store=rag.graph_store,
-    vector_store=rag.vector_store,
-    embedder=rag.embedder,
-    llm=rag.llm,
+    graph_store=GraphStore(conn),
+    vector_store=VectorStore(conn, embedder=embedder),
+    embedder=embedder,
+    llm=llm,
     chunk_top_k=20,           # more passages for complex questions
     max_entities=40,          # wider entity coverage
     max_relationships=30,     # more graph context
@@ -596,12 +602,27 @@ merged_count = await rag.deduplicate_entities(
 
 **Phase 2 (optional, `fuzzy=True`): Embedding-based match.** Re-fetches all surviving entities, batch-embeds their names, computes pairwise cosine similarity in memory-efficient blocks (1000 entities per block), and merges near-duplicates above the threshold.
 
+### Running a Single Step
+
+`backfill_entity_embeddings()`, `embed_relationships()` and `ensure_indices()` are `VectorStore` methods, and `GraphRAG` keeps its stores private. To run one of them without the rest of `finalize()`, build a `VectorStore` on the same `FalkorDBConnection` you passed to `GraphRAG`, with the same embedder and `embedding_dimension`:
+
+```python
+from graphrag_sdk import ConnectionConfig, FalkorDBConnection, GraphRAG, VectorStore
+
+conn = FalkorDBConnection(ConnectionConfig(host="localhost", graph_name="novels"))
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, embedding_dimension=256)
+
+vector_store = VectorStore(conn, embedder=embedder, embedding_dimension=256)
+```
+
+The dimension matters for `ensure_indices()`, which creates the vector indexes with it.
+
 ### `backfill_entity_embeddings()` -- Entity Vector Backfill
 
 Embeds `__Entity__` nodes that are missing embeddings. Queries entities where `embedding IS NULL`, batch-embeds the entity `name`, and stores vectors. Safe for incremental runs.
 
 ```python
-count = await rag.vector_store.backfill_entity_embeddings(batch_size=500)
+count = await vector_store.backfill_entity_embeddings(batch_size=500)
 ```
 
 ### `embed_relationships()` -- RELATES Edge Embeddings
@@ -609,7 +630,7 @@ count = await rag.vector_store.backfill_entity_embeddings(batch_size=500)
 Batch-embeds all RELATES edges that have a `fact` property but are missing embeddings. These edge embeddings power the RELATES vector search path in retrieval.
 
 ```python
-count = await rag.vector_store.embed_relationships(batch_size=500)
+count = await vector_store.embed_relationships(batch_size=500)
 ```
 
 ### `ensure_indices()` -- Index Creation
@@ -625,7 +646,7 @@ Creates all standard indexes (idempotent -- safe to call repeatedly):
 | Fulltext    | `__Entity__`   | `name`, `description`  |
 
 ```python
-results = await rag.vector_store.ensure_indices()
+results = await vector_store.ensure_indices()
 ```
 
 Note: `ensure_indices()` is called automatically after each `ingest()` call. The `finalize()` method resets the internal `_indices_ensured` flag and re-runs it to catch any newly needed indexes. It returns once FalkorDB reports every index built (up to 10 minutes), since a vector search on an index still being built finds nothing.
@@ -637,8 +658,8 @@ Note: `ensure_indices()` is called automatically after each `ingest()` call. The
 | After ingesting all documents               | `await rag.finalize()`                |
 | After incremental ingestion (new documents) | `await rag.finalize()`                |
 | Only need dedup (embeddings already exist)  | `await rag.deduplicate_entities()`    |
-| Only need entity embeddings                 | `await rag.vector_store.backfill_entity_embeddings()` |
-| Only need RELATES edge embeddings           | `await rag.vector_store.embed_relationships()`        |
-| Only need indexes                           | `await rag.vector_store.ensure_indices()`             |
+| Only need entity embeddings                 | `await vector_store.backfill_entity_embeddings()` |
+| Only need RELATES edge embeddings           | `await vector_store.embed_relationships()`        |
+| Only need indexes                           | `await vector_store.ensure_indices()`             |
 
 Do **not** call `backfill_entity_embeddings()` inside an ingestion loop (i.e., after each document). It re-scans all entities and is slow when called repeatedly. Instead, ingest all documents first, then call `finalize()` once.
