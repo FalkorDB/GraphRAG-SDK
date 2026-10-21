@@ -34,6 +34,15 @@ RELEASE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 PINNED = {"C": "v4.22.2", "Rust": "6.0.2"}
 
 
+def release(tag: str) -> tuple[int, int, int]:
+    """The release number of a tag: ``v4.22.2`` and ``4.22.2`` are one release."""
+    match = RELEASE.match(tag)
+    if not match:
+        raise ValueError(f"not a release tag: {tag!r}")
+    major, minor, patch = (int(part) for part in match.groups())
+    return major, minor, patch
+
+
 def engine_of(major: int) -> str | None:
     # Exactly these release lines. A new major (7.x, ...) is a deliberate
     # change to make here, not something CI should start testing on its own.
@@ -78,7 +87,9 @@ def newest_per_engine(tags: list[str]) -> dict[str, str]:
 
 def build_matrix(newest: bool) -> list[dict[str, str]]:
     if not newest:
-        return [{"engine": engine, "version": PINNED[engine]} for engine in ("C", "Rust")]
+        return [
+            {"engine": engine, "version": PINNED[engine]} for engine in ("C", "Rust")
+        ]
     try:
         found = newest_per_engine(fetch_tags())
     except Exception as exc:  # network, rate limit, malformed reply
@@ -98,11 +109,17 @@ def build_matrix(newest: bool) -> list[dict[str, str]]:
                 file=sys.stderr,
             )
             tag = PINNED[engine]
-        elif tag != PINNED[engine]:
+        elif release(tag) > release(PINNED[engine]):
             print(
                 f"::warning::FalkorDB {engine} {tag} is newer than the pinned "
                 f"{PINNED[engine]}; if this run passes, bump PINNED in "
                 ".github/scripts/falkordb_versions.py",
+                file=sys.stderr,
+            )
+        elif release(tag) < release(PINNED[engine]):
+            print(
+                f"::warning::The newest FalkorDB {engine} release on Docker Hub, {tag}, "
+                f"is older than the pinned {PINNED[engine]}; check PINNED",
                 file=sys.stderr,
             )
         matrix.append({"engine": engine, "version": tag})
