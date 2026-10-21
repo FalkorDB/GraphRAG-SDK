@@ -415,7 +415,10 @@ class TestVectorStoreFulltextSearch:
         await vector_store.fulltext_search_entities("  Northwind Robotics ")
         cypher, params = mock_connection.query.call_args[0][:2]
         assert "ORDER BY name_rank, score DESC, node.id" in cypher
-        assert params["name"] == "northwind robotics"
+        # Trimmed and lowercased in Cypher, next to the stored name: Python's
+        # lower() differs from toLower() on letters such as 'İ'.
+        assert params["name"] == "  Northwind Robotics "
+        assert "toLower(trim($name))" in cypher
 
     async def test_fulltext_search_chunks_breaks_score_ties_by_id(
         self, vector_store, mock_connection

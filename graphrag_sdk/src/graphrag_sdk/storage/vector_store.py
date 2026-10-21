@@ -701,9 +701,12 @@ class VectorStore:
             # every CASE branch, so non-scalar names become null first.
             "WITH node, score, CASE WHEN typeOf(node.name) IN "
             "['String', 'Integer', 'Float', 'Boolean'] THEN node.name END AS raw "
-            "WITH node, score, toLower(coalesce(toString(raw), '')) AS name "
+            # Both sides are trimmed and lowercased here, by the same engine:
+            # Python's lower() differs from toLower() on letters such as 'İ'.
+            "WITH node, score, toLower(trim(coalesce(toString(raw), ''))) AS name, "
+            "toLower(trim($name)) AS wanted "
             "WITH node, score, "
-            "CASE WHEN name = $name THEN 0 WHEN name CONTAINS $name THEN 1 ELSE 2 END "
+            "CASE WHEN name = wanted THEN 0 WHEN name CONTAINS wanted THEN 1 ELSE 2 END "
             "AS name_rank "
             "ORDER BY name_rank, score DESC, node.id LIMIT $top_k "
             "RETURN node.id AS id, node.name AS text, score"
@@ -713,7 +716,7 @@ class VectorStore:
                 query,
                 {
                     "query_text": escaped_text,
-                    "name": query_text.strip().lower(),
+                    "name": query_text,
                     "top_k": top_k,
                 },
             )

@@ -288,6 +288,24 @@ class TestEntityFulltextRanking:
             "id"
         ] == "northwind_robotics__organization"
         await conn.query("MATCH (n {id: 'odd'}) DELETE n")
+        # A stored name with stray spaces still matches exactly, and both sides
+        # are lowercased by the engine ('İ' lowercases differently in Python).
+        # The wrong entity has the lower id, so an id tie-break cannot rescue it.
+        await conn.query(
+            "CREATE (:__Entity__ {id: 'acme_corp', name: 'Acme Corp ', "
+            "description: 'Acme Corp, a company'}), "
+            "(:__Entity__ {id: 'aa_acme_logistics', name: 'Acme Corp Logistics', "
+            "description: 'Logistics arm of Acme Corp, Acme Corp and Acme Corp again'}), "
+            "(:__Entity__ {id: 'ist_city', name: 'İstanbul', description: 'A city'}), "
+            "(:__Entity__ {id: 'ist_airport', name: 'İstanbul Airport', "
+            "description: 'The airport of İstanbul, İstanbul'})"
+        )
+        assert (await store.fulltext_search_entities("Acme Corp", top_k=1))[0]["id"] == "acme_corp"
+        assert (await store.fulltext_search_entities("İstanbul", top_k=1))[0]["id"] == "ist_city"
+        await conn.query(
+            "MATCH (n) WHERE n.id IN $ids DELETE n",
+            {"ids": ["acme_corp", "aa_acme_logistics", "ist_city", "ist_airport"]},
+        )
         # Entities that only mention it are ordered by score, then id.
         rest = await store.fulltext_search_entities("Northwind Robotics", top_k=14)
         assert [r["id"] for r in rest][2:] == [f"{y}__date" for y in range(2000, 2012)]
@@ -300,8 +318,9 @@ class TestVectorSearchTies:
         store = VectorStore(conn, embedding_dimension=3)
         assert await store.create_entity_vector_index()
         await conn.query(
-            "CREATE (:__Entity__ {id: 'p1', name: 'A', embedding: vecf32([1.0, 0.0, 0.0])}), "
-            "(:__Entity__ {id: 'p2', name: 'A', embedding: vecf32([1.0, 0.0, 0.0])}), "
+            # p2 first: the index lists ties in creation order on both engines.
+            "CREATE (:__Entity__ {id: 'p2', name: 'A', embedding: vecf32([1.0, 0.0, 0.0])}), "
+            "(:__Entity__ {id: 'p1', name: 'A', embedding: vecf32([1.0, 0.0, 0.0])}), "
             "(:__Entity__ {id: 'p0', name: 'Far', embedding: vecf32([0.0, 1.0, 0.0])})"
         )
 

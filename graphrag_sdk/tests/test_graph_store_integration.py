@@ -7,6 +7,7 @@ C engine (FalkorDB 4.x) and the Rust engine (6.0.x).
 from __future__ import annotations
 
 import os
+import random
 from uuid import uuid4
 
 import pytest
@@ -18,7 +19,7 @@ from graphrag_sdk.storage.graph_store import GraphStore
 
 @pytest.fixture
 async def store():
-    if not os.getenv("RUN_INTEGRATION"):
+    if os.getenv("RUN_INTEGRATION") != "1":
         pytest.skip("Set RUN_INTEGRATION=1 to run real-FalkorDB integration tests")
     connection = FalkorDBConnection(
         ConnectionConfig(
@@ -43,14 +44,17 @@ class TestResultsDoNotDependOnEngineRowOrder:
 
     async def test_connected_entities_beyond_the_limit_are_the_lowest_ids(self, store):
         ids = [f"m{i:02d}" for i in range(60)]
+        # Neither creation order nor its reverse is id order.
+        shuffled = ids[:]
+        random.Random(7).shuffle(shuffled)
         await store.upsert_nodes(
             [GraphNode(id="big", label="Chunk", properties={"text": "t"})]
-            + [GraphNode(id=i, label="Thing", properties={"name": i}) for i in ids]
+            + [GraphNode(id=i, label="Thing", properties={"name": i}) for i in shuffled]
         )
         await store.upsert_relationships(
             [
                 GraphRelationship(start_node_id=i, end_node_id="big", type="MENTIONED_IN")
-                for i in ids
+                for i in shuffled
             ]
         )
 
@@ -83,11 +87,15 @@ class TestResultsDoNotDependOnEngineRowOrder:
             ("p2", "ca"),
         ]
 
-    async def test_sample_nodes_returns_the_first_created(self, store):
+    async def test_sample_nodes_are_the_lowest_ids(self, store):
         from graphrag_sdk.utils.graph_viz import GraphVisualizer
 
+        # Neither creation order nor its reverse is id order.
         await store.upsert_nodes(
-            [GraphNode(id=f"n{i}", label="Thing", properties={"name": f"n{i}"}) for i in range(6)]
+            [
+                GraphNode(id=f"n{i}", label="Thing", properties={"name": f"n{i}"})
+                for i in (3, 0, 5, 1, 4, 2)
+            ]
         )
         viz = GraphVisualizer(store._conn)
 

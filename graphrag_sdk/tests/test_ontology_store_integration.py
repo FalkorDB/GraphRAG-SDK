@@ -19,7 +19,7 @@ from graphrag_sdk.storage.ontology_store import OntologyStore
 
 @pytest.fixture
 async def onto():
-    if not os.getenv("RUN_INTEGRATION"):
+    if os.getenv("RUN_INTEGRATION") != "1":
         pytest.skip("Set RUN_INTEGRATION=1 to run real-FalkorDB integration tests")
     name = f"test_os_{uuid4().hex[:8]}"
     connection = FalkorDBConnection(
