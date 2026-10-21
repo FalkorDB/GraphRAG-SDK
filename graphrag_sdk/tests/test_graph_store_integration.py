@@ -104,3 +104,71 @@ class TestResultsDoNotDependOnEngineRowOrder:
 
         assert [row["node"].properties["id"] for row in sample] == ["n0", "n1", "n2"]
         assert [row["node"].properties["id"] for row in unlabelled] == ["n0", "n1", "n2"]
+
+
+class TestOneKeyTwiceInOneCall:
+    async def test_an_entity_written_twice_keeps_both_chunks_and_the_last_values(self, store):
+        await store.upsert_nodes(
+            [
+                GraphNode(
+                    id="x", label="Person", properties={"name": "A", "source_chunk_ids": ["c1"]}
+                ),
+                GraphNode(
+                    id="x", label="Person", properties={"name": "B", "source_chunk_ids": ["c2"]}
+                ),
+            ]
+        )
+
+        rows = (
+            await store.query_raw("MATCH (n:Person {id: 'x'}) RETURN n.name, n.source_chunk_ids")
+        ).result_set
+        assert rows == [["B", ["c1", "c2"]]]
+
+    async def test_a_fact_written_twice_keeps_both_chunks(self, store):
+        await store.upsert_nodes(
+            [GraphNode(id=i, label="Person", properties={"name": i}) for i in ("a", "b")]
+        )
+        await store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={"rel_type": "KNOWS", "source_chunk_ids": [c], "w": w},
+                )
+                for c, w in (("c1", 1), ("c2", 2))
+            ]
+        )
+
+        rows = (
+            await store.query_raw(
+                "MATCH (:Person {id: 'a'})-[r:RELATES]->(:Person {id: 'b'}) "
+                "RETURN r.rel_type, r.w, r.source_chunk_ids"
+            )
+        ).result_set
+        assert rows == [["KNOWS", 2, ["c1", "c2"]]]
+
+    async def test_numerically_equal_rel_types_are_one_fact(self, store):
+        """MERGE treats rel_type 5 and 5.0 as one key; both writes' chunks stay."""
+        await store.upsert_nodes(
+            [GraphNode(id=i, label="Person", properties={"name": i}) for i in ("a", "b")]
+        )
+        await store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={"rel_type": rel_type, "source_chunk_ids": [chunk]},
+                )
+                for rel_type, chunk in ((5, "c1"), (5.0, "c2"), (True, "c3"))
+            ]
+        )
+
+        rows = (
+            await store.query_raw(
+                "MATCH (:Person {id: 'a'})-[r:RELATES]->(:Person {id: 'b'}) "
+                "RETURN r.source_chunk_ids ORDER BY size(r.source_chunk_ids) DESC"
+            )
+        ).result_set
+        assert rows == [[["c1", "c2"]], [["c3"]]]

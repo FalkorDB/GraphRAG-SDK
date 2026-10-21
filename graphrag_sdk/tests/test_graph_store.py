@@ -157,6 +157,207 @@ class TestUpsertNodesKeepsProvenance:
         assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in fallback[0]
 
 
+class TestOneKeyTwiceInOneCall:
+    """A batch holding one key twice gave engine-dependent values and dropped
+    one write's chunks, so writes sharing a key are folded before sending."""
+
+    async def test_duplicate_entity_ids_become_one_row(self, graph_store, mock_connection):
+        count = await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="x", label="Person", properties={"name": "A", "source_chunk_ids": ["c1"]}
+                ),
+                GraphNode(id="y", label="Person", properties={"name": "Y"}),
+                GraphNode(
+                    id="x",
+                    label="Person",
+                    properties={"name": "B", "age": 3, "source_chunk_ids": ["c2", "c1"]},
+                ),
+                GraphNode(id="x", label="Person", properties={"source_chunk_ids": []}),
+            ]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert batch == [
+            {"id": "x", "properties": {"name": "B", "age": 3, "source_chunk_ids": ["c1", "c2"]}},
+            {"id": "y", "properties": {"name": "Y"}},
+        ]
+        assert count == 4
+
+    async def test_a_structural_label_keeps_the_last_list(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(id="c", label="Chunk", properties={"source_chunk_ids": ["a"]}),
+                GraphNode(id="c", label="Chunk", properties={"source_chunk_ids": ["b"]}),
+            ]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert batch == [{"id": "c", "properties": {"source_chunk_ids": ["b"]}}]
+
+    async def test_duplicate_relates_keys_become_one_row(self, graph_store, mock_connection):
+        def rel(rel_type, chunks, **extra):
+            return GraphRelationship(
+                start_node_id="a",
+                end_node_id="b",
+                type="RELATES",
+                properties={"rel_type": rel_type, "source_chunk_ids": chunks, **extra},
+            )
+
+        count = await graph_store.upsert_relationships(
+            [rel("KNOWS", ["c1"], w=1), rel("WORKS_AT", ["c9"]), rel("KNOWS", ["c2"], w=2)]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert [item["properties"] for item in batch] == [
+            {"rel_type": "KNOWS", "source_chunk_ids": ["c1", "c2"], "w": 2},
+            {"rel_type": "WORKS_AT", "source_chunk_ids": ["c9"]},
+        ]
+        assert count == 3
+
+    async def test_rel_type_keys_compare_like_the_merge(self, graph_store, mock_connection):
+        """FalkorDB's MERGE treats 5 and 5.0 as one key but keeps true apart
+        from 1 and "5" apart from 5; the fold must agree or a batch still
+        carries one MERGE key twice."""
+
+        def rel(rel_type, chunk):
+            return GraphRelationship(
+                start_node_id="a",
+                end_node_id="b",
+                type="RELATES",
+                properties={"rel_type": rel_type, "source_chunk_ids": [chunk]},
+            )
+
+        await graph_store.upsert_relationships(
+            [rel(5, "c1"), rel(5.0, "c2"), rel(True, "c3"), rel(1, "c4"), rel("5", "c5")]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert [item["properties"]["source_chunk_ids"] for item in batch] == [
+            ["c1", "c2"],  # 5 and 5.0: one key
+            ["c3"],  # true
+            ["c4"],  # 1
+            ["c5"],  # "5"
+        ]
+
+    async def test_other_edge_types_are_keyed_by_the_pair(self, graph_store, mock_connection):
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a", end_node_id="b", type="LIKES", properties={"w": 1}
+                ),
+                GraphRelationship(
+                    start_node_id="a", end_node_id="b", type="LIKES", properties={"w": 2}
+                ),
+            ]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert batch == [{"start_id": "a", "end_id": "b", "properties": {"w": 2}}]
+
+    @staticmethod
+    def _fail_batches(mock_connection):
+        """Fail every UNWIND batch, so each key goes through the per-item path."""
+
+        async def query(cypher, params=None):
+            if "UNWIND" in cypher:
+                raise Exception("batch fail")
+            result = MagicMock()
+            result.result_set = []
+            return result
+
+        mock_connection.query = AsyncMock(side_effect=query)
+
+    @staticmethod
+    def _per_item_calls(mock_connection):
+        return [
+            call[0]
+            for call in mock_connection.query.call_args_list
+            if "UNWIND" not in call[0][0] and not _is_index_housekeeping(call[0][0])
+        ]
+
+    async def test_the_per_item_fallback_sends_each_node_key_once(
+        self, graph_store, mock_connection
+    ):
+        """A failed batch falls back to one query per row; a key that appeared
+        twice must still be one write carrying both writes' chunks."""
+        self._fail_batches(mock_connection)
+
+        count = await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="x", label="Person", properties={"name": "A", "source_chunk_ids": ["c1"]}
+                ),
+                GraphNode(
+                    id="x", label="Person", properties={"name": "B", "source_chunk_ids": ["c2"]}
+                ),
+            ]
+        )
+
+        calls = self._per_item_calls(mock_connection)
+        assert [params["properties"] for _, params in calls] == [
+            {"name": "B", "source_chunk_ids": ["c1", "c2"]}
+        ]
+        assert count == 2
+
+    async def test_the_per_item_fallback_sends_each_edge_key_once(
+        self, graph_store, mock_connection
+    ):
+        self._fail_batches(mock_connection)
+
+        def rel(rel_type, chunks):
+            return GraphRelationship(
+                start_node_id="a",
+                end_node_id="b",
+                type="RELATES",
+                properties={"rel_type": rel_type, "source_chunk_ids": chunks},
+            )
+
+        count = await graph_store.upsert_relationships(
+            [rel("KNOWS", ["c1"]), rel("WORKS_AT", ["c9"]), rel("KNOWS", ["c2"])]
+        )
+
+        calls = self._per_item_calls(mock_connection)
+        assert sorted(
+            (params["properties"]["rel_type"], params["properties"]["source_chunk_ids"])
+            for _, params in calls
+        ) == [("KNOWS", ["c1", "c2"]), ("WORKS_AT", ["c9"])]
+        assert count == 3
+
+    def test_repeats_extend_one_list_and_reuse_one_seen_set(self):
+        """Copying and scanning the chunk list on every repeat cost O(n²): one
+        edge repeated on 100,000 table rows took 28 s, blocking the event loop.
+        Each repeat must extend the same list and reuse the same set."""
+        merged, seen = GraphStore._fold_properties(
+            {"source_chunk_ids": ["c1"]}, {"source_chunk_ids": ["c2"]}, union_provenance=True
+        )
+        chunk_ids = merged["source_chunk_ids"]
+
+        merged, seen_again = GraphStore._fold_properties(
+            merged, {"source_chunk_ids": ["c3", "c1"]}, union_provenance=True, seen=seen
+        )
+
+        assert seen_again is seen
+        assert merged["source_chunk_ids"] is chunk_ids
+        assert chunk_ids == ["c1", "c2", "c3"]
+        assert seen == {"c1", "c2", "c3"}
+
+    async def test_a_key_repeated_on_every_row_keeps_every_chunk_in_order(
+        self, graph_store, mock_connection
+    ):
+        rels = [
+            GraphRelationship(
+                start_node_id="store",
+                end_node_id="region",
+                type="RELATES",
+                properties={"rel_type": "IN_REGION", "source_chunk_ids": [f"row{i}"]},
+            )
+            for i in range(5_000)
+        ]
+
+        count = await graph_store.upsert_relationships(rels)
+
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert len(batch) == 1
+        assert batch[0]["properties"]["source_chunk_ids"] == [f"row{i}" for i in range(5_000)]
+        assert count == 5_000
+
+
 class TestUpsertReferenceNodes:
     """A link's target is keyed always and named only ON CREATE."""
 
