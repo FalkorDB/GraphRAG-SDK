@@ -827,18 +827,24 @@ class GraphStore:
 
         Args:
             chunk_id: ID of the chunk node.
-            max_hops: Maximum traversal depth (default: 1).
+            max_hops: Maximum traversal depth (default: 1). With 1, the 50
+                entities kept are those with the lowest ids; beyond one hop,
+                which 50 are kept follows the engine's row order.
 
         Returns:
             List of entity dicts with id, label, properties.
         """
         max_hops = max(1, min(max_hops, 5))
+        # Without an order, which 50 survive the LIMIT is the engine's row
+        # order — newest-first on FalkorDB 4.x, oldest-first on 6.0.x. Only one
+        # hop is ordered: an order needs every path before the LIMIT, and paths
+        # multiply with each hop — 3 hops over 40k nodes went from 0.2 s to
+        # 16.6 s on 4.x and timed out.
+        order = "ORDER BY id " if max_hops == 1 else ""
         query = (
             f"MATCH (c {{id: $chunk_id}})-[*1..{max_hops}]-(e:__Entity__) "
             f"RETURN DISTINCT e.id AS id, labels(e) AS labels, properties(e) AS props "
-            # Without an order, which 50 survive the LIMIT is the engine's row
-            # order — newest-first on FalkorDB 4.x, oldest-first on 6.0.x.
-            f"ORDER BY id LIMIT 50"
+            f"{order}LIMIT 50"
         )
         try:
             result = await self._conn.query(query, {"chunk_id": chunk_id})
