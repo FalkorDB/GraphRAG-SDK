@@ -407,6 +407,34 @@ async def test_without_the_judge_the_check_stays_owed(graph):
     assert await records(graph) == []
 
 
+async def test_a_hand_off_needs_no_second_query_when_nothing_was_pending(graph, monkeypatch):
+    """A dedup_all run checks entities no record lists; one whose check fails
+    must become pending. With no record to append to, the new one is written
+    in the query that ticks the decisions — a separate write afterwards could
+    be lost to a crash, and the entity would look checked forever."""
+    await graph.query_raw(
+        "CREATE VECTOR INDEX FOR (n:__Entity__) ON (n.embedding) "
+        "OPTIONS {dimension: 4, similarityFunction: 'cosine'}"
+    )
+    await graph.query_raw(
+        "CREATE (:__Entity__:Person {id: 'tim', name: 'Tim Cook', description: 'Apple CEO', "
+        "embedding: vecf32([1.0, 0.0, 0.0, 0.0])}), "
+        "(:__Entity__:Person {id: 'timothy', name: 'Timothy Cook', "
+        "description: 'chief executive of Apple', embedding: vecf32([0.97, 0.2, 0.0, 0.0])})"
+    )
+
+    async def no_second_write(self, ids):
+        raise AssertionError(f"pending records written outside the tick: {ids}")
+
+    monkeypatch.setattr(SystemStore, "add_pending", no_second_write)
+    dd = dedup(graph)
+    judge = Judge([TIM], fail={"Timothy Cook"})
+    assert await dd.deduplicate(judge_llm=judge, dedup_all=True) == 0
+    assert judge.prompts, "the pair was judged; the judge failed it"
+    (pending,) = [r for r in await records(graph) if r[0] == "pending"]
+    assert sorted(pending[1]) == ["tim", "timothy"] and dd.last_report.pending == 2
+
+
 # ── attributes ───────────────────────────────────────────────────
 
 

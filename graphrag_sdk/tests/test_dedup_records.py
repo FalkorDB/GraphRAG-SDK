@@ -501,3 +501,18 @@ async def test_a_decimal_read_back_rounded_does_not_block_the_merge(graph):
     )
     assert score == pytest.approx(0.3) and dropped == [0.75]
     assert weight == pytest.approx(0.3) and series == [pytest.approx(0.3), 1]
+
+
+async def test_a_hand_off_with_no_pending_record_is_written_with_the_tick(graph):
+    """Entities that become pending when no record exists to take them get a
+    new record in the query that ticks the decision page: a crash cannot leave
+    the page done and them unlisted, looking checked. A replay adds nothing."""
+    store = await held(graph)
+    await store.write_plan([], Decisions(handoff=["h1", "h2"]))
+    plan = await store.sealed_plan()
+    created = PendingPage(0, ["h1", "h2"], [0, 0], ["", ""])
+    assert await store.apply_decisions(plan.plan_run, 0, [], created) is True
+    assert [(p.page, p.ids) for p in await store.pending_pages()] == [(0, ["h1", "h2"])]
+    assert await store.apply_decisions(plan.plan_run, 0, [], created) is False
+    assert len(await store.pending_pages()) == 1
+    assert (await store.sealed_plan()).decision_done == [True]

@@ -1825,13 +1825,9 @@ class EntityDeduplicator:
             if done:
                 continue
             records = await store.pending_pages()
-            updates, cleared = _decide_records(records, decided, recheck)
-            if await store.apply_decisions(plan.plan_run, page, updates):
+            updates, created, cleared = _decide_records(records, decided, recheck)
+            if await store.apply_decisions(plan.plan_run, page, updates, created):
                 self.last_report.checked += cleared
-            if decided.handoff and not records:
-                # Every record was cleared before this page, so none could take
-                # the hand-off in the same query.
-                await store.add_pending(decided.handoff)
 
     async def _summarise(self, store: SystemStore) -> None:
         pages = await store.pending_pages()
@@ -2271,11 +2267,13 @@ def _any_decision(decisions: Decisions) -> bool:
 
 def _decide_records(
     records: list[PendingPage], decided: Decisions, recheck: set[str]
-) -> tuple[list[PendingPage], int]:
-    """The pending records as one decision page leaves them, and how many
-    entities it clears. Only records it changes are returned. ``recheck`` are
-    the members of groups with a changed operation: kept pending whatever the
-    page says."""
+) -> tuple[list[PendingPage], PendingPage | None, int]:
+    """The pending records as one decision page leaves them, a new record for
+    a hand-off no existing record can take, and how many entities it clears.
+    Only records it changes are returned. ``recheck`` are the members of
+    groups with a changed operation: kept pending whatever the page says. The
+    hand-off goes on the last record, or — with none left — on a new one;
+    either way it is written in the query that ticks the page."""
     clear = set(decided.clear) - recheck
     reasons = dict(zip(decided.retry, decided.reasons))
     reasons.update(dict.fromkeys(set(decided.clear) & recheck, "changed during the run"))
@@ -2303,16 +2301,20 @@ def _decide_records(
             updates.append(PendingPage(rec.page, ids, attempts, why, rec.claimed_run))
     listed = {eid for rec in records for eid in rec.ids}
     handoff = [eid for eid in decided.handoff if eid not in listed]
-    if handoff and records:
-        last = next((u for u in updates if u.page == records[-1].page), None)
-        if last is None:
-            rec = records[-1]
-            last = PendingPage(rec.page, list(rec.ids), list(rec.attempts), list(rec.reasons))
-            updates.append(last)
-        last.ids += handoff
-        last.attempts += [0] * len(handoff)
-        last.reasons += [""] * len(handoff)
-    return updates, cleared
+    if not handoff:
+        return updates, None, cleared
+    if not records:
+        created = PendingPage(0, handoff, [0] * len(handoff), [""] * len(handoff))
+        return updates, created, cleared
+    last = next((u for u in updates if u.page == records[-1].page), None)
+    if last is None:
+        rec = records[-1]
+        last = PendingPage(rec.page, list(rec.ids), list(rec.attempts), list(rec.reasons))
+        updates.append(last)
+    last.ids += handoff
+    last.attempts += [0] * len(handoff)
+    last.reasons += [""] * len(handoff)
+    return updates, None, cleared
 
 
 def _primary_label(labels: list[str], absorbed: list[str]) -> str:

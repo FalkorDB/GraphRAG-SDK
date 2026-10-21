@@ -587,14 +587,23 @@ class SystemStore:
             )
         return plan
 
-    async def apply_decisions(self, plan_run: str, page: int, updates: list[PendingPage]) -> bool:
+    async def apply_decisions(
+        self,
+        plan_run: str,
+        page: int,
+        updates: list[PendingPage],
+        created: PendingPage | None = None,
+    ) -> bool:
         """Apply one decision page to the pending records, and tick it, in one
         query — so a crash and a replay can never clear or refund twice.
 
         ``updates`` are the pending records as they must read afterwards
         (computed by the caller from the records and this page's lists); a
-        record left with no ids is deleted. Returns ``False`` when the page was
-        already applied."""
+        record left with no ids is deleted. ``created`` is a new record for
+        entities that become pending when no record exists to take them (a
+        hand-off): written in the same query, so a crash cannot leave the page
+        ticked and them unlisted — looking checked. Returns ``False`` when the
+        page was already applied."""
         rows = await self.fenced(
             f"OPTIONAL MATCH (d:{PROCESSING_LABEL} "
             f"{{kind: '{PLAN_IDS}', plan_run: $plan_run, page: $dpage}}) WHERE owned "
@@ -606,6 +615,9 @@ class SystemStore:
             "SET p.ids = $ids[toString(p.page)], p.attempts = $attempts[toString(p.page)], "
             "p.reasons = $reasons[toString(p.page)]) "
             "FOREACH (p IN [x IN recs WHERE size($ids[toString(x.page)]) = 0] | DELETE p) "
+            "FOREACH (_ IN CASE WHEN my_turn AND $new_page IS NOT NULL THEN [1] ELSE [] END | "
+            f"CREATE (:{PROCESSING_LABEL} {{kind: '{PENDING}', page: $new_page, ids: $new_ids, "
+            "attempts: $new_attempts, reasons: $new_reasons})) "
             "FOREACH (_ IN CASE WHEN my_turn THEN [1] ELSE [] END | SET d.next = 1) "
             "RETURN owned, my_turn",
             {
@@ -615,6 +627,10 @@ class SystemStore:
                 "ids": {str(u.page): u.ids for u in updates},
                 "attempts": {str(u.page): u.attempts for u in updates},
                 "reasons": {str(u.page): u.reasons for u in updates},
+                "new_page": created.page if created else None,
+                "new_ids": created.ids if created else [],
+                "new_attempts": created.attempts if created else [],
+                "new_reasons": created.reasons if created else [],
             },
         )
         return bool(rows[0][1])
