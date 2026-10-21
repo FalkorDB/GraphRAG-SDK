@@ -25,7 +25,6 @@ from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
-from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import RESERVED_NODE_LABELS
 from graphrag_sdk.core.providers import Embedder
 from graphrag_sdk.core.tables import RESERVED_PROPERTY_NAMES
@@ -91,8 +90,6 @@ _MAX_PAGINATION_ITERATIONS = 10_000
 
 # Who holds a dedup lock, for whoever finds it held.
 _OWNER = f"{platform.node()}:{os.getpid()}"
-# FalkorDB before 4.20.0 lost vector-index entries on writes to embedded nodes.
-_MIN_FALKORDB = (4, 20, 0)
 # Name vectors per write, and reads of a merge before it is recorded changed.
 _VECTOR_BATCH = 500
 _STALE_READS = 3
@@ -641,26 +638,6 @@ def _fold_for_ranking(survivor: dict[str, Any], dup: dict[str, Any]) -> None:
         survivor["is_stub"] = dup["is_stub"]
 
 
-async def _require_falkordb(graph: Any) -> None:
-    """Refuse FalkorDB before 4.20: it degraded the vector index on every
-    write to a node holding a vector (fixed by FalkorDB PR #2197), and a dedup
-    run writes vectors and merges into vector-indexed nodes. Measured on
-    4.18: ``queryNodes`` returned 2-3 of 6 neighbours after one such write."""
-    probe = getattr(graph, "server_version", None)
-    if probe is None:
-        return
-    version = await probe()
-    if version is None:
-        logger.warning("Could not read the FalkorDB version; entity dedup needs 4.20 or later")
-    elif version < _MIN_FALKORDB:
-        found = ".".join(str(v) for v in version)
-        raise DatabaseError(
-            f"Entity deduplication needs FalkorDB 4.20 or later; this server is {found}. "
-            "Earlier versions lose vector-index entries on every write to an embedded "
-            "node, and dedup writes to them on every run."
-        )
-
-
 class EntityDeduplicator:
     """Incremental, crash-safe deduplication of the entities whose check is
     pending, against the rest of the graph reached through the entity vector
@@ -767,9 +744,10 @@ class EntityDeduplicator:
 
         Raises:
             DedupRunActiveError: another live run holds this graph's dedup lock.
-            DatabaseError: FalkorDB is older than 4.20, or a write failed. A
-                failure after the plan was sealed leaves the plan for the next
-                run, which finishes it before anything else.
+            DatabaseError: a write failed. A failure after the plan was sealed
+                leaves the plan for the next run, which finishes it before
+                anything else. ``FalkorDBVersionError``, one of these, when
+                the server is older than 4.20 (refused by the connection).
         """
         self._declared_labels = {label.strip().lower() for label in (declared_labels or set())}
         self._ambiguous_mentions = []
@@ -785,7 +763,6 @@ class EntityDeduplicator:
         self.names_embedded = 0
         self._name_embedded_ids = set()
         self._schema = AttributeSchema.from_ontology(ontology)
-        await _require_falkordb(self._graph)
 
         store = SystemStore(self._graph)
         await store.ensure_indexes()

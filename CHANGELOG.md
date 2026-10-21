@@ -240,9 +240,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     existing `__GraphRAGConfig__`: `__GraphRAGProcessing__` records (the lock,
     pending, unresolved and deleted records, the plan), with no edges and no
     vector; `get_statistics()` does not count them.
-  - **Requires FalkorDB 4.20 or later**, refused with a clear error before:
-    earlier versions left a stale vector-index entry on every write to an
-    embedded node. CI and `docker-compose.yml` run `v4.20.4`.
+  - **Requires FalkorDB 4.20 or later.** Earlier versions left a stale
+    vector-index entry on every write to an embedded node, so search and dedup
+    missed entities. Each connection asks the server its version once, before
+    its first query, and refuses an older one with `FalkorDBVersionError` (a
+    `DatabaseError`): `ingest()`, `query()`, `finalize()` and the rest fail
+    before anything is written. A server that does not report its version is
+    let through with a warning. CI, `docker-compose.yml` and the docs' `docker
+    run` lines use `v4.20.4`.
   - `finalize()` no longer calls `backfill_entity_embeddings()`: dedup writes
     every entity's name vector, listing the entity first, and a backfill after
     it would embed entities ingested meanwhile without a check.
@@ -252,9 +257,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `fuzzy=True` raises `ValueError`. Finalize dedup is the exact phase plus
     the judge. Ingest-time resolvers
     (`ingest(resolver=...)`) are unchanged.
-  - **Upgrading:** entities a graph built by an earlier release already holds
-    vectors for count as checked; the new ones are checked by the next
-    `finalize()`. To check every entity once, run `finalize(dedup_all=True)`.
+  - **Upgrading:** upgrade the FalkorDB server to 4.20 or later first — 1.4.0
+    ran on older servers, this release refuses them. Entities a graph built by
+    an earlier release already holds vectors for count as checked; the new ones
+    are checked by the next `finalize()`. To check every entity once, run
+    `finalize(dedup_all=True)`.
 - **CI runs the FalkorDB-backed tests.** The integration job used to run one
   file (`tests/test_integration.py`); the whole suite now runs with
   `RUN_INTEGRATION=1`, so every test that needs a live graph is exercised on

@@ -266,7 +266,7 @@ They live beside the data, not in a graph of their own, because a dedup write mu
 
 ### Version
 
-Entity deduplication requires **FalkorDB 4.20 or later** and refuses older servers with a clear error: before 4.20.0 every write to a node holding a vector left a stale copy in the vector index, and searches returned fewer neighbours than asked for (measured: 2–3 of 6 after one write) — a dedup run writes vectors and merges into embedded nodes on every run.
+GraphRAG SDK requires **FalkorDB 4.20 or later**. Before 4.20.0 every write to a node holding a vector left a stale copy in the vector index, and searches returned fewer neighbours than asked for (measured: 2–3 of 6 after one write) — and ingest, `update()` and dedup all write to such nodes. Each connection asks the server its version once, before its first query, and refuses an older one with `FalkorDBVersionError` (a `DatabaseError`), so nothing is written to it: `ingest()`, `query()`, `finalize()` and the rest fail at once, with the version found and how to upgrade. A server that does not report its version (`MODULE LIST` refused) is let through with a warning; one that cannot be reached is asked again on the next query.
 
 ### Vector Storage
 

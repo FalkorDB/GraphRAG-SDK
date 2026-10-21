@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redis.exceptions import ResponseError
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
-from graphrag_sdk.core.exceptions import DatabaseError
+from graphrag_sdk.core.exceptions import (
+    DatabaseError,
+    DatabaseUnavailableError,
+    FalkorDBVersionError,
+)
 
 
 class TestConnectionConfig:
@@ -408,3 +414,48 @@ class TestDriverErrorsBecomeDatabaseError:
         ):
             mock_falkor.side_effect = RedisConnectionError("Connection refused")
             assert await conn.ping() is False
+
+
+class TestServerVersion:
+    """A connection refuses a FalkorDB server older than 4.20, once, before
+    its first query: nothing is sent to it."""
+
+    @staticmethod
+    def _conn(**modules):
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=1, retry_delay=0.0))
+        conn._graph = MagicMock()
+        conn._graph.query = AsyncMock(return_value="ok")
+        conn._driver = MagicMock()
+        conn._driver.execute_command = AsyncMock(**modules)
+        return conn
+
+    async def test_an_older_server_is_refused_and_nothing_is_sent(self):
+        conn = self._conn(return_value=[["name", "graph", "ver", 41802]])
+        for _ in range(2):  # every query, not only the first
+            with pytest.raises(FalkorDBVersionError, match="is 4.18.2; GraphRAG SDK needs"):
+                await conn.query("CREATE (:X)")
+        conn._graph.query.assert_not_awaited()
+        assert issubclass(FalkorDBVersionError, DatabaseError)
+
+    async def test_a_current_server_is_asked_once(self):
+        conn = self._conn(return_value=[{"name": "graph", "ver": 42004}])
+        assert await conn.server_version() == (4, 20, 4)
+        conn._driver.execute_command.reset_mock()
+        await asyncio.gather(*(conn.query("RETURN 1") for _ in range(50)))
+        assert conn._driver.execute_command.await_count == 1
+        assert conn._graph.query.await_count == 50
+
+    async def test_a_server_that_does_not_say_is_let_through_with_one_warning(self, caplog):
+        conn = self._conn(side_effect=ResponseError("NOPERM this user has no permissions"))
+        with caplog.at_level("WARNING", logger="graphrag_sdk.core.connection"):
+            assert await conn.query("RETURN 1") == "ok"
+            assert await conn.query("RETURN 1") == "ok"
+        assert caplog.text.count("Could not read the FalkorDB server version") == 1
+
+    async def test_an_unreachable_server_is_asked_again_and_the_query_reports_it(self):
+        conn = self._conn(side_effect=[ConnectionError("down"), [{"name": "graph", "ver": 42004}]])
+        conn._graph.query = AsyncMock(side_effect=[ConnectionError("down"), "ok"])
+        with pytest.raises(DatabaseUnavailableError):
+            await conn.query("RETURN 1")
+        assert await conn.query("RETURN 1") == "ok"
+        assert conn._driver.execute_command.await_count == 2

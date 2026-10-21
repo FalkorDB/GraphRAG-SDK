@@ -21,6 +21,7 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import (
     DocumentNotFoundError,
+    FalkorDBVersionError,
     GraphRAGError,
     LatencyBudgetExceededError,
 )
@@ -162,6 +163,7 @@ __all__ = [
     "DeleteDocumentResult",
     "DocumentInfo",
     "DocumentNotFoundError",
+    "FalkorDBVersionError",
     "Attribute",
     "DocumentOutput",
     "DocumentRecord",

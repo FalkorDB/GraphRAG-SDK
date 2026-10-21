@@ -17,8 +17,8 @@ from uuid import uuid4
 
 import pytest
 
-from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
-from graphrag_sdk.core.exceptions import DatabaseError
+from graphrag_sdk.core.connection import MIN_SERVER_VERSION, ConnectionConfig, FalkorDBConnection
+from graphrag_sdk.core.exceptions import FalkorDBVersionError
 from graphrag_sdk.core.models import Attribute, Entity, GraphNode, GraphRelationship, Ontology
 from graphrag_sdk.core.providers.base import LLMBatchItem
 from graphrag_sdk.storage.dedup_judges import LLMJudge
@@ -527,14 +527,24 @@ async def test_a_merge_whose_reply_was_lost_still_counts_and_its_group_is_rename
 # ── the server ───────────────────────────────────────────────────
 
 
-async def test_falkordb_before_4_20_is_refused(graph, monkeypatch):
-    async def old():
-        return (4, 18, 0)
+async def test_the_server_says_a_version_the_sdk_works_with(graph):
+    """Read from the real server, as the connection does before its first
+    query."""
+    version = await graph._conn.server_version()
+    assert version is not None and version >= MIN_SERVER_VERSION
 
-    monkeypatch.setattr(graph, "server_version", old)
-    with pytest.raises(DatabaseError, match="4.20 or later"):
-        await dedup(graph).deduplicate(judge=AllDifferentJudge())
-    assert await records(graph) == [], "refused before the lock"
+
+async def test_an_older_server_is_refused_before_anything_is_written(graph, monkeypatch):
+    conn = FalkorDBConnection(graph._conn.config)  # its version not yet checked
+
+    async def old():
+        return (4, 18, 2)
+
+    monkeypatch.setattr(conn, "server_version", old)
+    with pytest.raises(FalkorDBVersionError, match="is 4.18.2; GraphRAG SDK needs FalkorDB 4.20"):
+        await GraphStore(conn).query_raw("CREATE (:Probe {id: 'p'})")
+    await conn.close()
+    assert (await graph.query_raw("MATCH (n:Probe) RETURN count(n)")).result_set == [[0]]
 
 
 async def test_statistics_do_not_count_system_nodes(graph):

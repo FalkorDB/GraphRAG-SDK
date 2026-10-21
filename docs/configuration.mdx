@@ -546,7 +546,7 @@ The recommended approach is to call `finalize()` after all ingestion is complete
 3. `embed_relationships()` -- embed fact text on RELATES edges.
 4. `ensure_indices()` -- create all 5 standard indexes (idempotent).
 
-Deduplication requires FalkorDB 4.20 or later. One `finalize()` runs per graph at a time; a second raises `DedupRunActiveError`. `update()` and deletes may run meanwhile.
+GraphRAG SDK requires FalkorDB 4.20 or later (see [Storage](/storage#version)). One `finalize()` runs per graph at a time; a second raises `DedupRunActiveError`. `update()` and deletes may run meanwhile.
 
 ```python
 # After ingesting all documents:

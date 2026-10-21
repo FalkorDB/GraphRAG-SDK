@@ -859,10 +859,6 @@ class GraphStore:
             logger.warning(f"Failed to get entities for chunk {chunk_id}: {exc}")
             return []
 
-    async def server_version(self) -> tuple[int, int, int] | None:
-        """The FalkorDB version this store talks to; ``None`` if unknown."""
-        return await self._conn.server_version()
-
     async def query_raw(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
         """Execute a raw Cypher query.
 

@@ -11,9 +11,20 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-from graphrag_sdk.core.exceptions import DatabaseError, DatabaseUnavailableError
+from graphrag_sdk.core.exceptions import (
+    DatabaseError,
+    DatabaseUnavailableError,
+    FalkorDBVersionError,
+)
 
 logger = logging.getLogger(__name__)
+
+#: The oldest FalkorDB server the SDK works with. Before 4.20 a write to a node
+#: holding a vector dropped vector-index entries (fixed by FalkorDB PR #2197):
+#: measured on 4.18, ``queryNodes`` returned 2-3 of 6 neighbours after one such
+#: write, so search and dedup miss entities. Ingest, update and dedup all write
+#: to such nodes.
+MIN_SERVER_VERSION = (4, 20, 0)
 
 
 @dataclass
@@ -78,6 +89,7 @@ class FalkorDBConnection:
     - ``redis.asyncio.BlockingConnectionPool`` for bounded pooling
     - Automatic retries with exponential backoff on transient failures
     - Lazy initialisation — no I/O until the first query
+    - A server older than ``MIN_SERVER_VERSION`` refused at the first query
 
     Example::
 
@@ -94,6 +106,9 @@ class FalkorDBConnection:
         self._driver: Any | None = None
         self._graph: Any | None = None
         self._breaker = CircuitBreaker()
+        # Set once the server's version passed (see _check_server_version).
+        self._version_checked = False
+        self._version_lock = asyncio.Lock()
 
     def _ensure_client(self) -> None:
         """Lazy-init the async FalkorDB driver and graph handle."""
@@ -196,6 +211,7 @@ class FalkorDBConnection:
                 "Circuit breaker is open — FalkorDB connection is unhealthy. "
                 "Requests will resume after recovery timeout."
             )
+        await self._check_server_version()
 
         effective_timeout = timeout if timeout is not None else self.config.query_timeout_ms
 
@@ -296,15 +312,16 @@ class FalkorDBConnection:
 
     async def server_version(self) -> tuple[int, int, int] | None:
         """The FalkorDB module version, e.g. ``(4, 20, 4)``; ``None`` when the
-        server does not say (``MODULE LIST`` refused, or no graph module)."""
+        server does not say (``MODULE LIST`` refused, or no graph module). A
+        server that cannot be reached raises."""
         self._ensure_client()
-        from redis.asyncio import Redis
+        assert self._driver is not None  # for type-checkers
+        from redis.exceptions import ResponseError
 
-        redis: Redis = Redis(connection_pool=self._pool)
         try:
-            modules = await redis.execute_command("MODULE", "LIST")
-        except Exception:
-            logger.debug("MODULE LIST failed", exc_info=True)
+            modules = await self._driver.execute_command("MODULE", "LIST")
+        except ResponseError:
+            logger.debug("MODULE LIST refused", exc_info=True)
             return None
         for module in modules or []:
             info = module if isinstance(module, dict) else dict(zip(module[::2], module[1::2]))
@@ -316,6 +333,40 @@ class FalkorDBConnection:
                     return None
                 return ver // 10000, ver // 100 % 100, ver % 100
         return None
+
+    async def _check_server_version(self) -> None:
+        """Refuse a server older than :data:`MIN_SERVER_VERSION`, once per
+        connection and before its first query, so nothing is written to it.
+
+        A server that does not say its version is let through with a warning:
+        refusing it would lock out a managed server that may be current. One
+        that cannot be reached is asked again on the next query; this query
+        reports the outage itself."""
+        if self._version_checked:
+            return
+        async with self._version_lock:
+            if self._version_checked:
+                return
+            try:
+                version = await self.server_version()
+            except Exception:
+                logger.debug("Could not ask FalkorDB for its version", exc_info=True)
+                return
+            needed = ".".join(str(v) for v in MIN_SERVER_VERSION[:2])
+            if version is None:
+                logger.warning(
+                    "Could not read the FalkorDB server version; GraphRAG SDK needs %s or later",
+                    needed,
+                )
+            elif version < MIN_SERVER_VERSION:
+                found = ".".join(str(v) for v in version)
+                raise FalkorDBVersionError(
+                    f"This FalkorDB server is {found}; GraphRAG SDK needs FalkorDB {needed} or "
+                    "later. Earlier versions drop vector-index entries on every write to a node "
+                    "that holds a vector, so search and dedup miss entities. Upgrade the "
+                    "server, e.g. docker pull falkordb/falkordb:v4.20.4"
+                )
+            self._version_checked = True
 
     async def delete_graph(self) -> None:
         """Delete the entire graph using ``GRAPH.DELETE`` (fast).

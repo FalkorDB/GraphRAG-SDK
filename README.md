@@ -77,9 +77,11 @@ Vectors match similar chunks. The graph traverses relationships. Every answer ci
 
 ```bash
 pip install graphrag-sdk[litellm]
-docker run -d -p 6379:6379 -p 3000:3000 --name falkordb falkordb/falkordb:latest
+docker run -d -p 6379:6379 -p 3000:3000 --name falkordb falkordb/falkordb:v4.20.4
 export OPENAI_API_KEY="sk-..."
 ```
+
+> GraphRAG SDK needs a FalkorDB server **4.20 or later** and refuses an older one at its first query, with `FalkorDBVersionError`. Keep the image tag: a bare `falkordb/falkordb` reuses whatever image Docker has cached, which may be older.
 
 > For PDF ingestion, install the `pdf` extra instead: `pip install graphrag-sdk[litellm,pdf]`.
 > Ingestion sanitizes unsupported control characters in IDs and string properties before graph upserts, which helps avoid FalkorDB Cypher parse errors on noisy PDFs.
