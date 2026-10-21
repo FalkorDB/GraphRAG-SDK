@@ -382,6 +382,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the batch, as if they were written one at a time: later properties win and
   chunk lists are combined. On 4.x a repeated key now keeps its last values
   instead of its first.
+- **Entity resolution dropped a merged fact's sources.** Merging `acme_corp`
+  into `acme` turns `Alice WORKS_AT Acme Corp` (chunk 1) and `Alice WORKS_AT
+  Acme` (chunk 2) into one edge; `remap_relationships()` kept the first edge
+  and its `source_chunk_ids` only, so the graph forgot chunk 2, and deleting
+  chunk 1's document deleted the fact. The kept edge now also gets the
+  dropped duplicates' chunks; its other properties are still the first edge's.
 - **Results cut by a `LIMIT` or a cap depended on the engine's row order.**
   FalkorDB 4.x and 6.0.x list unordered rows differently, so these returned
   different data after an upgrade, and now order before cutting:

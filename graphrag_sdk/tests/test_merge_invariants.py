@@ -553,3 +553,67 @@ class TestRemapChainsAreFlattened:
         ]
         out = remap_relationships(rels, {"dup": "A", "A": "B"})
         assert [(r.start_node_id, r.end_node_id) for r in out] == [("B", "x")]
+
+
+class TestRemapKeepsEveryDuplicatesSources:
+    """Merging ``acme_corp`` into ``acme`` turns two facts from two chunks into
+    one edge. Keeping only the first edge's ``source_chunk_ids`` forgot the
+    other chunk, so deleting the first chunk's document deleted the fact."""
+
+    @staticmethod
+    def _works_at(target, chunks, fact):
+        return GraphRelationship(
+            start_node_id="alice",
+            end_node_id=target,
+            type="RELATES",
+            properties={"rel_type": "WORKS_AT", "source_chunk_ids": chunks, "fact": fact},
+        )
+
+    def test_a_merged_duplicate_adds_its_chunks_to_the_kept_edge(self):
+        rels = [
+            self._works_at("acme_corp", ["c1"], "Alice works at Acme Corp"),
+            self._works_at("acme", ["c2", "c1"], "Alice works at Acme"),
+        ]
+
+        out = remap_relationships(rels, {"acme_corp": "acme"})
+
+        assert len(out) == 1
+        assert out[0].properties["source_chunk_ids"] == ["c1", "c2"]
+        # Everything else is still the first edge's.
+        assert out[0].properties["fact"] == "Alice works at Acme Corp"
+
+    def test_the_input_relationships_are_not_modified(self):
+        rels = [
+            self._works_at("acme_corp", ["c1"], "a"),
+            self._works_at("acme", ["c2"], "b"),
+        ]
+
+        remap_relationships(rels, {"acme_corp": "acme"})
+
+        assert rels[0].properties["source_chunk_ids"] == ["c1"]
+        assert rels[1].properties["source_chunk_ids"] == ["c2"]
+
+    def test_different_facts_between_the_same_pair_stay_apart(self):
+        founded = GraphRelationship(
+            start_node_id="alice",
+            end_node_id="acme",
+            type="RELATES",
+            properties={"rel_type": "FOUNDED", "source_chunk_ids": ["c3"]},
+        )
+        rels = [self._works_at("acme_corp", ["c1"], "a"), founded]
+
+        out = remap_relationships(rels, {"acme_corp": "acme"})
+
+        assert [r.properties["source_chunk_ids"] for r in out] == [["c1"], ["c3"]]
+
+    def test_many_duplicates_fold_in_linear_time(self):
+        import time
+
+        rels = [self._works_at(f"alias{i}", [f"c{i}"], "f") for i in range(30_000)]
+        remap = {f"alias{i}": "acme" for i in range(30_000)}
+
+        started = time.monotonic()
+        out = remap_relationships(rels, remap)
+
+        assert time.monotonic() - started < 3.0
+        assert out[0].properties["source_chunk_ids"] == [f"c{i}" for i in range(30_000)]
