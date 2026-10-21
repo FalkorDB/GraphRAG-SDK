@@ -4,15 +4,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 from graphrag_sdk.core.connection import FalkorDBConnection
+from graphrag_sdk.core.exceptions import DatabaseUnavailableError
 from graphrag_sdk.core.models import TextChunks
 
 logger = logging.getLogger(__name__)
 
 _MAX_EMBEDDING_DIMENSION = 8192
+
+# How long ensure_indices() waits for FalkorDB to finish building indexes over
+# existing data before it gives up with a warning. 10,000 chunks at 1536
+# dimensions take about a minute on FalkorDB 4.x.
+_INDEX_BUILD_WAIT_S = 600.0
 
 # Pagination safety net for IS-NULL streaming loops. At batch_size=500
 # this covers 5M items — large enough for any realistic graph. Trips
@@ -25,6 +32,14 @@ _MAX_PAGINATION_ITERATIONS = 10_000
 # subset — both markers indicate the operation is already done, so we
 # treat them as idempotent success rather than a creation failure.
 _INDEX_EXISTS_MARKERS = ("already indexed", "already exists")
+
+# How FalkorDB 4.x answers a vector query on a label or relationship type with
+# no vector index (or, on an empty graph, no such attribute). The caller falls
+# back to a scan, so these are expected rather than errors worth logging.
+_MISSING_VECTOR_INDEX_MARKERS = (
+    "invalid arguments for procedure",
+    "attempted to access undefined attribute",
+)
 
 # Characters that RediSearch treats as syntax in fulltext queries.
 _REDISEARCH_SPECIAL = set(r""",./<>{}[]\"':;!@#$%^&*()-+=~|""")
@@ -83,6 +98,7 @@ class VectorStore:
         self.embedding_dimension = embedding_dimension
         self._indices_ensured: bool = False
         self._id_indices_ensured: bool = False
+        self._warned_relates_scan: bool = False
 
     # ── Index Management ─────────────────────────────────────────
     #
@@ -143,45 +159,66 @@ class VectorStore:
         )
         return await self._try_create_index(query, "[RELATES].embedding", "vector")
 
+    # Fulltext indexes use the DDL form. FalkorDB 6.0.x rejects
+    # ``db.idx.fulltext.createNodeIndex(label, field, ...)`` with any second
+    # argument, a single field included ("expected at most 1" argument); the
+    # DDL works on 4.x and 6.x alike and answers an
+    # existing index — including one the procedure created — with "already
+    # indexed".
+
     async def create_chunk_fulltext_index(self) -> bool:
         """Create the fulltext index on ``Chunk.text``."""
         return await self._try_create_index(
-            "CALL db.idx.fulltext.createNodeIndex('Chunk', 'text')",
+            "CREATE FULLTEXT INDEX FOR (n:Chunk) ON (n.text)",
             "Chunk(text)",
             "fulltext",
         )
 
     async def create_entity_fulltext_index(self) -> bool:
-        """Create the fulltext index on ``__Entity__(name, description)``."""
-        return await self._try_create_index(
-            "CALL db.idx.fulltext.createNodeIndex('__Entity__', 'name', 'description')",
-            "__Entity__(name, description)",
-            "fulltext",
-        )
+        """Create the fulltext index on ``__Entity__(name, description)``.
+
+        One statement per field: a single ``ON (n.name, n.description)`` fails
+        as a whole with "already indexed" when ``name`` is indexed on its own,
+        which reads as success while ``description`` never gets indexed.
+        """
+        created = [
+            await self._try_create_index(
+                f"CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.{field})",
+                f"__Entity__({field})",
+                "fulltext",
+            )
+            for field in ("name", "description")
+        ]
+        return all(created)
+
+    # There is no ``db.idx.vector.drop`` procedure on any FalkorDB version; the
+    # DDL is the only way to drop a vector index. It leaves a fulltext index on
+    # the same label in place.
+
+    async def _drop_vector_index(self, query: str, descriptor: str) -> None:
+        try:
+            await self._conn.query(query)
+            logger.info(f"Dropped vector index on {descriptor}")
+            # ensure_indices() would otherwise skip recreating it on this store.
+            self._indices_ensured = False
+        except Exception as exc:
+            logger.warning(f"Could not drop vector index on {descriptor}: {exc}")
 
     async def drop_chunk_vector_index(self) -> None:
         """Drop the ``Chunk`` vector index."""
-        try:
-            await self._conn.query("CALL db.idx.vector.drop('Chunk')")
-            logger.info("Dropped vector index on Chunk")
-        except Exception as exc:
-            logger.warning(f"Could not drop vector index on Chunk: {exc}")
+        await self._drop_vector_index("DROP VECTOR INDEX FOR (n:Chunk) ON (n.embedding)", "Chunk")
 
     async def drop_entity_vector_index(self) -> None:
         """Drop the ``__Entity__`` vector index."""
-        try:
-            await self._conn.query("CALL db.idx.vector.drop('__Entity__')")
-            logger.info("Dropped vector index on __Entity__")
-        except Exception as exc:
-            logger.warning(f"Could not drop vector index on __Entity__: {exc}")
+        await self._drop_vector_index(
+            "DROP VECTOR INDEX FOR (n:__Entity__) ON (n.embedding)", "__Entity__"
+        )
 
     async def drop_relates_vector_index(self) -> None:
         """Drop the ``RELATES`` edge vector index."""
-        try:
-            await self._conn.query("CALL db.idx.vector.drop('RELATES')")
-            logger.info("Dropped vector index on RELATES")
-        except Exception as exc:
-            logger.warning(f"Could not drop vector index on RELATES: {exc}")
+        await self._drop_vector_index(
+            "DROP VECTOR INDEX FOR ()-[e:RELATES]->() ON (e.embedding)", "RELATES"
+        )
 
     # ── Indexing ─────────────────────────────────────────────────
 
@@ -438,9 +475,14 @@ class VectorStore:
     ) -> list[dict[str, Any]]:
         """Vector similarity search on RELATES edges.
 
-        Uses the RELATES edge vector index for retrieval. Falls back to
-        a Cypher-based cosine distance scan if edge vector queries
-        are not supported.
+        Queries the RELATES edge vector index first. Falls back to a Cypher
+        cosine-distance scan over every embedded RELATES edge when that query
+        fails (FalkorDB 4.x raises for a missing index), or when it returns no
+        rows and ``db.indexes()`` does not show a vector index on
+        ``RELATES.embedding`` (FalkorDB 6.0.x answers a missing index with no
+        rows). With the index in place an empty answer is returned as is.
+        The scan reads every embedded edge; ``ensure_indices()`` creates the
+        index.
 
         Args:
             query_vector: The query embedding vector.
@@ -466,8 +508,9 @@ class VectorStore:
                     "top_k": top_k,
                     "vector": query_vector,
                 },
+                expected_errors=_MISSING_VECTOR_INDEX_MARKERS,
             )
-            return [
+            rows = [
                 {
                     "src_name": row[0] if row[0] else "",
                     "type": row[1] if len(row) > 1 and row[1] else "",
@@ -477,8 +520,39 @@ class VectorStore:
                 }
                 for row in result.result_set
             ]
+            if rows:
+                return rows
+            # With the index in place an empty answer is genuine: nothing to
+            # scan for. Asked of the graph, not taken from _indices_ensured,
+            # which only says what this store did — another store or process
+            # may have dropped the index since.
+            if await self._relates_vector_index_exists():
+                return rows
+            # FalkorDB 4.x raises when the RELATES vector index is missing;
+            # 6.0.x answers with no rows. Either way the scan below is the only
+            # way to reach edges that carry an embedding but no index.
+            logger.debug("Edge vector query returned nothing, falling back to Cypher scan")
         except Exception as exc:
+            # Unreachable, breaker open, or the index query ran out of time: a
+            # scan of every edge would fail the same way or take longer still,
+            # and the index is not to blame.
+            if isinstance(exc, DatabaseUnavailableError) or "query timed out" in str(exc).lower():
+                logger.warning(f"Relationship vector search failed: {exc}")
+                return []
             logger.debug(f"Edge vector query not available, falling back to Cypher scan: {exc}")
+
+        # The index may have been dropped after this store ensured it; forget
+        # that, so the ensure_indices() the warning asks for recreates it.
+        self._indices_ensured = False
+        # The scan reads every embedded edge, so on a large graph each search
+        # costs far more than the index. Say so once, where it can be seen.
+        if not self._warned_relates_scan:
+            self._warned_relates_scan = True
+            logger.warning(
+                "RELATES vector index missing, still building, or rejecting the query: "
+                "relationship search scans every embedded edge instead. If it is "
+                "missing, ensure_indices() creates it."
+            )
 
         # Fallback: Cypher-based cosine distance scan
         fallback_query = (
@@ -510,6 +584,29 @@ class VectorStore:
         except Exception as exc:
             logger.warning(f"Relationship vector search failed: {exc}")
             return []
+
+    async def _relates_vector_index_exists(self) -> bool:
+        """Whether the graph has a vector index on ``RELATES.embedding`` edges.
+
+        False when it cannot tell (including a graph that does not exist yet),
+        so the caller keeps its scan fallback. A node label named ``RELATES``
+        with its own vector index does not count, nor does an index still
+        being built (FalkorDB 6.0.x answers a query on it with no rows).
+        """
+        try:
+            result = await self._conn.query(
+                "CALL db.indexes() YIELD label, types, entitytype, status "
+                "WHERE label = 'RELATES' AND entitytype = 'RELATIONSHIP' "
+                "AND status = 'OPERATIONAL' RETURN types",
+                expected_errors=("empty key",),
+            )
+        except Exception:
+            return False
+        return any(
+            "VECTOR" in ((row[0] or {}).get("embedding") or [])
+            for row in result.result_set or []
+            if row and isinstance(row[0], dict)
+        )
 
     async def fulltext_search_chunks(
         self,
@@ -630,6 +727,56 @@ class VectorStore:
         self._id_indices_ensured = ok
         return ok
 
+    async def _wait_for_index_builds(self, deadline: float | None = None) -> bool:
+        """Wait until FalkorDB reports every index in the graph built.
+
+        ``CREATE ... INDEX`` returns while the index is still being built over
+        the existing data. Until the build ends, FalkorDB 4.x answers a vector
+        query on that label with an error and 6.0.x with no or partial rows, so
+        a search right after ``ensure_indices()`` found nothing on a large
+        graph. ``db.indexes()`` reports progress without waiting for it.
+
+        Returns ``True`` once nothing is being built; ``False`` when
+        ``deadline`` (a ``loop.time()`` value, default ``_INDEX_BUILD_WAIT_S``
+        from now) passed first or the status could not be read.
+        """
+        loop = asyncio.get_running_loop()
+        if deadline is None:
+            deadline = loop.time() + _INDEX_BUILD_WAIT_S
+        next_log = loop.time() + 10.0
+        delay = 0.05
+        while True:
+            try:
+                result = await self._conn.query(
+                    "CALL db.indexes() YIELD label, status RETURN label, status",
+                    expected_errors=("empty key",),
+                )
+            except Exception:
+                return False  # cannot tell; do not hold up the caller
+            # 4.x and 6.0.x both report "[Indexing] x/y: UNDER CONSTRUCTION"
+            # during a build and "OPERATIONAL" after it.
+            building = [
+                f"{row[0]} {row[1]}"
+                for row in result.result_set or []
+                if len(row) > 1 and "UNDER CONSTRUCTION" in str(row[1])
+            ]
+            if not building:
+                return True
+            now = loop.time()
+            if now >= deadline:
+                logger.warning(
+                    "Indexes still building after the %.0fs wait; searches on them "
+                    "may return nothing until they finish: %s",
+                    _INDEX_BUILD_WAIT_S,
+                    "; ".join(building),
+                )
+                return False
+            if now >= next_log:
+                logger.info("Waiting for index builds: %s", "; ".join(building))
+                next_log = now + 10.0
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 1.0)
+
     async def ensure_indices(self) -> dict[str, bool]:
         """Create all standard vector and fulltext indices (idempotent).
 
@@ -663,17 +810,24 @@ class VectorStore:
             ("fulltext_Chunk", self.create_chunk_fulltext_index),
             ("fulltext_Entity", self.create_entity_fulltext_index),
         ]
+        # One deadline for the whole call, not one per statement.
+        deadline = asyncio.get_running_loop().time() + _INDEX_BUILD_WAIT_S
+        builds_done = True
         for key, fn in creators:
             try:
                 results[key] = await fn()
             except Exception:
                 logger.debug("Index creation failed for %s", key, exc_info=True)
                 results[key] = False
+            # Before the next statement: it would wait for this build on the
+            # server, past the client's socket timeout on a large graph.
+            if builds_done:
+                builds_done = await self._wait_for_index_builds(deadline)
 
-        # Only mark indices as ensured if everything actually succeeded —
-        # otherwise the next call to ensure_indices() would skip retrying
-        # transient failures.
-        if all(results.values()):
+        # Only mark indices as ensured if everything actually succeeded and
+        # finished building — otherwise the next call to ensure_indices()
+        # would skip retrying transient failures, or waiting for the build.
+        if all(results.values()) and builds_done:
             self._indices_ensured = True
         logger.info(f"ensure_indices complete: {results}")
         return results

@@ -57,32 +57,54 @@ class TestVectorStoreIndex:
     async def test_create_chunk_fulltext_index(self, vector_store, mock_connection):
         await vector_store.create_chunk_fulltext_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "fulltext.createNodeIndex" in cypher
-        assert "'Chunk'" in cypher
-        assert "'text'" in cypher
+        # The DDL form: FalkorDB 6.0.x rejects the multi-argument procedure.
+        assert cypher == "CREATE FULLTEXT INDEX FOR (n:Chunk) ON (n.text)"
 
     async def test_create_entity_fulltext_index(self, vector_store, mock_connection):
         await vector_store.create_entity_fulltext_index()
-        cypher = mock_connection.query.call_args[0][0]
-        assert "'__Entity__'" in cypher
-        assert "'name'" in cypher
-        assert "'description'" in cypher
+        issued = [c.args[0] for c in mock_connection.query.call_args_list]
+        # One field per statement, so an existing index on one field cannot
+        # stop the other from being indexed.
+        assert issued == [
+            "CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.name)",
+            "CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.description)",
+        ]
+
+    async def test_entity_fulltext_index_reports_a_failed_field(
+        self, vector_store, mock_connection
+    ):
+        mock_connection.query = AsyncMock(side_effect=[MagicMock(), Exception("boom")])
+        assert await vector_store.create_entity_fulltext_index() is False
+
+    async def test_fulltext_index_already_existing_is_success(self, vector_store, mock_connection):
+        mock_connection.query.side_effect = Exception("Attribute 'text' is already indexed")
+        assert await vector_store.create_chunk_fulltext_index() is True
 
     async def test_drop_chunk_vector_index(self, vector_store, mock_connection):
         await vector_store.drop_chunk_vector_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "vector.drop" in cypher
-        assert "Chunk" in cypher
+        # No FalkorDB version has a db.idx.vector.drop procedure.
+        assert cypher == "DROP VECTOR INDEX FOR (n:Chunk) ON (n.embedding)"
 
     async def test_drop_entity_vector_index(self, vector_store, mock_connection):
         await vector_store.drop_entity_vector_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "__Entity__" in cypher
+        assert cypher == "DROP VECTOR INDEX FOR (n:__Entity__) ON (n.embedding)"
 
     async def test_drop_relates_vector_index(self, vector_store, mock_connection):
         await vector_store.drop_relates_vector_index()
         cypher = mock_connection.query.call_args[0][0]
-        assert "RELATES" in cypher
+        assert cypher == "DROP VECTOR INDEX FOR ()-[e:RELATES]->() ON (e.embedding)"
+
+    async def test_drop_lets_ensure_indices_recreate(self, vector_store, mock_connection):
+        await vector_store.ensure_indices()
+        await vector_store.drop_chunk_vector_index()
+        mock_connection.query.reset_mock()
+
+        await vector_store.ensure_indices()
+
+        issued = [c.args[0] for c in mock_connection.query.call_args_list]
+        assert any("CREATE VECTOR INDEX FOR (n:Chunk)" in q for q in issued)
 
     async def test_create_index_error_handled(self, vector_store, mock_connection):
         mock_connection.query = AsyncMock(side_effect=Exception("index exists"))
@@ -236,6 +258,66 @@ class TestVectorStoreSearch:
         fallback_cypher = mock_connection.query.call_args_list[1][0][0]
         assert "(1-dist) AS score" in fallback_cypher
 
+    async def test_search_relationships_falls_back_when_the_index_answers_nothing(
+        self, vector_store, mock_connection
+    ):
+        """FalkorDB 6.0.x answers a missing RELATES index with no rows rather
+        than an error, so an empty answer must reach the scan too."""
+        empty, no_index, fallback_result = MagicMock(), MagicMock(), MagicMock()
+        empty.result_set = []
+        no_index.result_set = []  # db.indexes(): no RELATES index
+        fallback_result.result_set = [["Alice", "WORKS_AT", "Acme", "self-match", 1.0]]
+        mock_connection.query = AsyncMock(side_effect=[empty, no_index, fallback_result])
+
+        results = await vector_store.search_relationships(query_vector=[0.1] * 8, top_k=5)
+
+        assert [r["fact"] for r in results] == ["self-match"]
+        assert mock_connection.query.await_count == 3
+
+    async def test_search_relationships_trusts_an_empty_answer_when_the_index_exists(
+        self, vector_store, mock_connection
+    ):
+        """With the RELATES index in place, no rows means no match; scanning
+        every edge on each such search would be wasted work."""
+        empty, has_index = MagicMock(), MagicMock()
+        empty.result_set = []
+        has_index.result_set = [[{"embedding": ["VECTOR"]}]]
+        mock_connection.query = AsyncMock(side_effect=[empty, has_index])
+
+        assert await vector_store.search_relationships(query_vector=[0.1] * 8) == []
+        assert mock_connection.query.await_count == 2
+        assert "db.indexes()" in mock_connection.query.call_args_list[1].args[0]
+
+    async def test_search_relationships_scans_when_the_index_is_gone_despite_the_flag(
+        self, vector_store, mock_connection
+    ):
+        """_indices_ensured only says what this store did; another store may
+        have dropped the shared index since, so it is not trusted."""
+        vector_store._indices_ensured = True
+        empty, no_index, fallback_result = MagicMock(), MagicMock(), MagicMock()
+        empty.result_set = []
+        no_index.result_set = []
+        fallback_result.result_set = [["Alice", "WORKS_AT", "Acme", "self-match", 1.0]]
+        mock_connection.query = AsyncMock(side_effect=[empty, no_index, fallback_result])
+
+        results = await vector_store.search_relationships(query_vector=[0.1] * 8)
+
+        assert [r["fact"] for r in results] == ["self-match"]
+
+    async def test_search_relationships_expects_the_missing_index_reply(
+        self, vector_store, mock_connection
+    ):
+        """FalkorDB 4.x answers a missing RELATES index with an error the scan
+        handles; it is passed as expected so it is not logged as an ERROR."""
+        empty = MagicMock()
+        empty.result_set = []
+        mock_connection.query = AsyncMock(return_value=empty)
+
+        await vector_store.search_relationships(query_vector=[0.1] * 8)
+
+        expected = mock_connection.query.call_args_list[0].kwargs["expected_errors"]
+        assert "invalid arguments for procedure" in expected
+
     async def test_search_chunks_empty(self, vector_store, mock_connection):
         result_mock = MagicMock()
         result_mock.result_set = []
@@ -342,3 +424,110 @@ class TestEnsureIndicesSkip:
     async def test_ensure_indices_flag_starts_false(self, mock_connection, embedder):
         store = VectorStore(mock_connection, embedder=embedder)
         assert store._indices_ensured is False
+
+
+class TestRelationshipSearchDuringAnOutage:
+    async def test_an_unreachable_server_is_not_blamed_on_the_index(
+        self, vector_store, mock_connection
+    ):
+        """With the server down the scan fails the same way; running it, and
+        warning that the index is missing, sent operators to the wrong place."""
+        from graphrag_sdk.core.exceptions import DatabaseUnavailableError
+
+        vector_store._indices_ensured = True
+        mock_connection.query = AsyncMock(side_effect=DatabaseUnavailableError("breaker open"))
+
+        assert await vector_store.search_relationships(query_vector=[0.1] * 8) == []
+        assert mock_connection.query.await_count == 1
+        assert vector_store._indices_ensured is True
+        assert vector_store._warned_relates_scan is False
+
+    async def test_a_timed_out_index_query_is_not_followed_by_a_full_scan(
+        self, vector_store, mock_connection
+    ):
+        """A scan of every edge after the index query ran out of time takes
+        longer still; the search gives up instead."""
+        from graphrag_sdk.core.exceptions import DatabaseError
+
+        mock_connection.query = AsyncMock(
+            side_effect=DatabaseError("FalkorDB query failed: Query timed out")
+        )
+
+        assert await vector_store.search_relationships(query_vector=[0.1] * 8) == []
+        assert mock_connection.query.await_count == 1
+        assert vector_store._warned_relates_scan is False
+
+
+class TestEnsureIndicesWaitsForBuilds:
+    async def test_waits_while_an_index_is_under_construction(self, vector_store, mock_connection):
+        """CREATE INDEX returns before the build over existing data ends; a
+        search sent then found nothing on a large graph."""
+        building, built, other = MagicMock(), MagicMock(), MagicMock()
+        building.result_set = [["Chunk", "[Indexing] 10/2000: UNDER CONSTRUCTION"]]
+        built.result_set = [["Chunk", "OPERATIONAL"]]
+        other.result_set = []
+        status_replies = iter([building, building] + [built] * 20)
+
+        async def query(cypher, *args, **kwargs):
+            if "YIELD label, status" in cypher:
+                return next(status_replies)
+            return other
+
+        mock_connection.query = AsyncMock(side_effect=query)
+
+        results = await vector_store.ensure_indices()
+
+        assert all(results.values())
+        status_calls = [
+            c for c in mock_connection.query.call_args_list if "YIELD label, status" in c.args[0]
+        ]
+        assert len(status_calls) == len(results) + 2  # two extra polls during the build
+
+
+class TestEnsureIndicesBuildWaitBounds:
+    async def test_one_deadline_covers_the_whole_call(
+        self, vector_store, mock_connection, monkeypatch
+    ):
+        """The limit restarted for each of the six statements, so a build that
+        never finished held ensure_indices() for six times the limit."""
+        import time
+
+        import graphrag_sdk.storage.vector_store as vs_module
+
+        monkeypatch.setattr(vs_module, "_INDEX_BUILD_WAIT_S", 0.3)
+        stuck, other = MagicMock(), MagicMock()
+        stuck.result_set = [["Chunk", "[Indexing] 1/9: UNDER CONSTRUCTION"]]
+        other.result_set = []
+
+        async def query(cypher, *args, **kwargs):
+            return stuck if "YIELD label, status" in cypher else other
+
+        mock_connection.query = AsyncMock(side_effect=query)
+
+        started = time.monotonic()
+        results = await vector_store.ensure_indices()
+
+        assert time.monotonic() - started < 1.0  # six restarts would take 1.8 s
+        assert all(results.values())
+        # Not marked done, so the next call waits for the build again.
+        assert vector_store._indices_ensured is False
+
+    async def test_an_unreadable_build_status_leaves_the_store_unensured(
+        self, vector_store, mock_connection
+    ):
+        """Treating a failed status read as "built" let the store skip every
+        later check while the indexes were still being built."""
+        other = MagicMock()
+        other.result_set = []
+
+        async def query(cypher, *args, **kwargs):
+            if "YIELD label, status" in cypher:
+                raise RuntimeError("status unavailable")
+            return other
+
+        mock_connection.query = AsyncMock(side_effect=query)
+
+        results = await vector_store.ensure_indices()
+
+        assert all(results.values())
+        assert vector_store._indices_ensured is False
