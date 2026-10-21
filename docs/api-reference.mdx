@@ -59,7 +59,7 @@ GraphRAG(
 | `enable_cypher` | `bool` | `False` | Add text-to-Cypher retrieval, which answers counts and aggregates over declared columns. One extra LLM call per question. |
 | `schema` | `Ontology \| None` | `None` | Deprecated; use `ontology=` |
 
-**Public attributes:** `llm`, `embedder`, `schema`, `graph_store`, `vector_store`
+**Public attributes:** `llm`, `embedder`, `ontology` (`schema` is a deprecated alias of `ontology`). The graph and vector stores are private; use `query()`, `get_statistics()` and `delete_all()` on the facade.
 
 ### ingest()
 
@@ -133,6 +133,7 @@ async def completion(
     strategy: RetrievalStrategy | None = None,
     reranker: RerankingStrategy | None = None,
     prompt_template: str | None = None,
+    rewrite_question_with_history: bool = False,
     return_context: bool = False,
     ctx: Context | None = None,
 ) -> RagResult
@@ -146,7 +147,8 @@ Full RAG pipeline: retrieve context and generate an answer. When `history` is pr
 | `history` | `list[ChatMessage \| dict] \| None` | `None` | Conversation history (see below) |
 | `strategy` | `RetrievalStrategy \| None` | `None` | Override retrieval strategy |
 | `reranker` | `RerankingStrategy \| None` | `None` | Optional reranking after retrieval |
-| `prompt_template` | `str \| None` | `None` | Custom prompt for single-turn (must contain `{context}` and `{question}`). Ignored when `history` is provided. |
+| `prompt_template` | `str \| None` | `None` | Custom prompt wrapping the current turn (must contain `{context}` and `{question}`). Applied with or without `history`. |
+| `rewrite_question_with_history` | `bool` | `False` | With `history`, rewrite the question into a standalone form with one extra LLM call before retrieval |
 | `return_context` | `bool` | `False` | Include retriever results in output |
 | `ctx` | `Context \| None` | `None` | Execution context |
 
@@ -154,7 +156,7 @@ Full RAG pipeline: retrieve context and generate an answer. When `history` is pr
 
 **Conversation history:**
 
-History accepts a list of `ChatMessage` objects or plain dicts with `role` and `content` keys. Supported roles: `"system"`, `"user"`, `"assistant"`. Invalid roles raise `ValueError`.
+History accepts a list of `ChatMessage` objects or plain dicts with `role` and `content` keys. Supported roles: `"system"`, `"user"`, `"assistant"`. A dict with an invalid role, a missing key or non-string content raises `ValueError`; any other item type raises `TypeError`.
 
 ```python
 from graphrag_sdk import ChatMessage
@@ -178,7 +180,7 @@ result = await rag.completion(
 )
 ```
 
-When history is provided, `completion()` builds a native messages list: `[system_prompt, *history, user_question]` and calls `LLMInterface.ainvoke_messages()`. Without history, it uses the single-turn `ainvoke()` path.
+`completion()` always builds a native messages list, `[system_prompt, *history, user_question]`, and calls `LLMInterface.ainvoke_messages()`; without history the list is just the system prompt and the question. If the first history message has `role="system"`, it replaces the SDK's system prompt instead of being added after it.
 
 ### query()
 
@@ -245,7 +247,7 @@ async def finalize(
 ) -> FinalizeResult
 ```
 
-Run all post-ingestion steps after all documents and tables are ingested. Bundles:
+Run all post-ingestion steps after all documents and tables are ingested. First removes legacy entities with a `NULL` name (counted in `null_stubs_removed`), then bundles:
 1. `deduplicate_entities(resolver=..., judge=..., judge_llm=..., judge_vote=...)` -- canonical-name dedup, then the resolver across sources, then the LLM-judged cross-document phase (which embeds and stores the names it reads)
 2. `backfill_entity_embeddings()` -- name embeddings on every entity still missing one, after dedup so a duplicate about to be removed is not embedded first; `entities_embedded` counts this step's vectors plus the judge's
 3. `embed_relationships()` -- fact text embeddings on RELATES edges
@@ -265,15 +267,18 @@ Run all post-ingestion steps after all documents and tables are ingested. Bundle
 ### Sync Wrappers
 
 ```python
-def retrieve_sync(question: str, **kwargs) -> RetrieverResult
-def completion_sync(question: str, **kwargs) -> RagResult
-def ingest_sync(source: str | list[str], **kwargs) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult
+def retrieve_sync(question: str, *, strategy=None, reranker=None, ctx=None) -> RetrieverResult
+def completion_sync(question: str, *, history=None, strategy=None, reranker=None, prompt_template=None, rewrite_question_with_history=False, return_context=False, ctx=None) -> RagResult
+def ingest_sync(source: str | list[str] | None = None, *, text=None, document_id=None, loader=None, chunker=None, extractor=None, resolver=None, max_concurrency=3, record_loader=None, strict_mapping=False, ctx=None) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult
 def finalize_sync(*, resolver=None, resolve=True, judge=True, judge_llm=None, judge_vote=True) -> FinalizeResult
+def update_sync(source: str | None = None, *, text=None, document_id=None, loader=None, chunker=None, extractor=None, resolver=None, cache_unchanged_chunks=False, if_missing="error", force=False, record_loader=None, strict_mapping=False, ctx=None) -> UpdateResult
+def delete_document_sync(document_id: str, *, if_missing="error") -> DeleteDocumentResult
+def apply_changes_sync(*, added=None, modified=None, deleted=None, loader=None, chunker=None, extractor=None, resolver=None, cache_unchanged_chunks=False, max_concurrency=3, update_concurrency=1, ctx=None) -> ApplyChangesResult
 def query_sync(cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]
 def drop_table_sync(source: str) -> Ontology
 ```
 
-Convenience methods that run the async versions in `asyncio.run()`.
+Convenience methods that run the async versions in `asyncio.run()`, with the same parameters. `update()`, `delete_document()` and `apply_changes()` are documented in [Incremental Updates](/incremental-updates).
 
 ---
 
@@ -296,8 +301,18 @@ class ConnectionConfig:
     max_connections: int = 16
     retry_count: int = 3
     retry_delay: float = 1.0
-    query_timeout_ms: int = 10_000
-    pool_timeout: int = 30
+    pool_timeout: float = 30.0
+    query_timeout_ms: int | None = 10_000
+    # TLS; ignored unless ssl=True
+    ssl: bool = False
+    ssl_cert_reqs: str = "required"
+    ssl_ca_certs: str | None = None
+    ssl_certfile: str | None = None
+    ssl_keyfile: str | None = None
+    ssl_check_hostname: bool = True
+
+    @classmethod
+    def from_url(cls, url: str, **kwargs) -> ConnectionConfig  # redis:// or rediss:// (rediss sets ssl=True)
 ```
 
 ### FalkorDBConnection
@@ -308,9 +323,14 @@ FalkorDBConnection(config: ConnectionConfig | None = None)
 
 | Method | Description |
 |--------|-------------|
-| `await conn.query(cypher, params=None, timeout=None)` | Execute a Cypher query |
+| `await conn.query(cypher, params=None, *, timeout=None, expected_errors=())` | Execute a Cypher query with retry |
+| `await conn.ping()` | `True` if the server answers; `False` instead of raising |
+| `await conn.delete_graph()` | Delete the whole graph (`GRAPH.DELETE`) |
 | `await conn.close()` | Close the connection pool |
 | `conn.graph` | Lazy property returning the AsyncGraph handle |
+| `conn.config` | The `ConnectionConfig` in use |
+
+Also an async context manager: `async with FalkorDBConnection(config) as conn:` closes the pool on exit.
 
 ---
 
@@ -330,11 +350,14 @@ LLMInterface(model_name: str, model_params: dict | None = None, max_concurrency:
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `invoke` | `(prompt: str, **kwargs) -> LLMResponse` | Sync text generation (abstract) |
-| `ainvoke` | `(prompt: str, *, max_retries=3, **kwargs) -> LLMResponse` | Async with retry + backoff |
-| `ainvoke_messages` | `(messages: list[ChatMessage], *, max_retries=3, **kwargs) -> LLMResponse` | Multi-turn native messages (see below) |
-| `invoke_with_model` | `(prompt: str, response_model: Type[BaseModel], **kwargs) -> BaseModel` | Structured output |
-| `ainvoke_with_model` | `(prompt: str, response_model: Type[BaseModel], *, max_retries=3) -> BaseModel` | Async structured output |
-| `abatch_invoke` | `(prompts: list[str], *, max_concurrency=None, max_retries=3) -> list[LLMBatchItem]` | Concurrent batch |
+| `ainvoke` | `(prompt: str, *, max_retries=3, timeout=None, **kwargs) -> LLMResponse` | Async with retry + backoff |
+| `ainvoke_messages` | `(messages: list[ChatMessage], *, max_retries=3, timeout=None, **kwargs) -> LLMResponse` | Multi-turn native messages (see below) |
+| `astream` | `(prompt: str, *, timeout=None, **kwargs) -> AsyncIterator[str]` | Async streaming (default: the whole response as one chunk) |
+| `invoke_with_model` | `(prompt: str, response_model: type[BaseModel], **kwargs) -> BaseModel` | Structured output |
+| `ainvoke_with_model` | `(prompt: str, response_model: type[BaseModel], *, max_retries=3, timeout=None, **kwargs) -> BaseModel` | Async structured output |
+| `abatch_invoke` | `(prompts: list[str], *, max_concurrency=None, max_retries=3, timeout=None, **kwargs) -> list[LLMBatchItem]` | Concurrent batch |
+
+`timeout` is in seconds; `None` means no timeout.
 
 `ainvoke_messages()` is used by `completion()` when conversation history is provided. The default implementation concatenates messages into a single prompt string and calls `ainvoke()`, so custom providers work without changes. `LiteLLM` and `OpenRouterLLM` override this with native multi-turn implementations.
 
@@ -344,9 +367,9 @@ LLMInterface(model_name: str, model_params: dict | None = None, max_concurrency:
 |--------|-----------|-------------|
 | `model_name` | `@property -> str` | Embedding model identifier (abstract) |
 | `embed_query` | `(text: str, **kwargs) -> list[float]` | Single text embedding (abstract) |
-| `aembed_query` | `(text: str, **kwargs) -> list[float]` | Async single (default: thread pool) |
+| `aembed_query` | `(text: str, *, timeout=None, **kwargs) -> list[float]` | Async single (default: thread pool) |
 | `embed_documents` | `(texts: list[str], **kwargs) -> list[list[float]]` | Batch (default: sequential) |
-| `aembed_documents` | `(texts: list[str], **kwargs) -> list[list[float]]` | Async batch (default: thread pool) |
+| `aembed_documents` | `(texts: list[str], *, timeout=None, **kwargs) -> list[list[float]]` | Async batch (default: thread pool) |
 
 ### LLMBatchItem
 
@@ -370,7 +393,7 @@ LiteLLM(model: str, *, api_key=None, api_base=None, api_version=None, temperatur
 ### LiteLLMEmbedder
 
 ```python
-LiteLLMEmbedder(model: str, *, api_key=None, api_base=None, api_version=None, **kwargs)
+LiteLLMEmbedder(model: str, *, api_key=None, api_base=None, api_version=None, batch_size=2048, **kwargs)
 ```
 
 ### OpenRouterLLM
@@ -382,7 +405,7 @@ OpenRouterLLM(model: str, *, api_key=None, temperature=0.0, max_tokens=None, ext
 ### OpenRouterEmbedder
 
 ```python
-OpenRouterEmbedder(model: str, *, api_key=None, extra_headers=None)
+OpenRouterEmbedder(model: str, *, api_key=None, batch_size=2048, extra_headers=None)
 ```
 
 ---
@@ -427,6 +450,16 @@ class GraphRelationship(DataModel):
 class GraphData(DataModel):
     nodes: list[GraphNode] = []
     relationships: list[GraphRelationship] = []
+    mentions: list[EntityMention] = []
+    extracted_entities: list[ExtractedEntity] = []
+    extracted_relations: list[ExtractedRelation] = []
+    chunks_attempted: int = 0
+    chunks_skipped: int = 0
+    failed_chunks: list[str] = []                        # Chunk uids whose entity extraction failed
+    relation_failed_chunks: list[str] = []               # Chunk uids whose relationship step failed
+
+    @property
+    def extraction_failed(self) -> bool                  # True when every attempted chunk failed entity extraction
 ```
 
 ### TextChunk
@@ -461,6 +494,7 @@ class DocumentInfo(DataModel):
 class DocumentOutput(DataModel):
     text: str
     document_info: DocumentInfo = DocumentInfo()
+    elements: list[DocumentElement] | None = None        # Structural elements (sections, paragraphs, tables), when the loader parses them
 ```
 
 ### IngestionResult
@@ -480,7 +514,7 @@ class IngestionResult(DataModel):
 class RagResult(DataModel):
     answer: str
     retriever_result: RetrieverResult | None = None      # Populated when return_context=True
-    metadata: dict[str, Any] = {}                        # Contains model, num_context_items, strategy
+    metadata: dict[str, Any] = {}                        # Contains model, num_context_items, strategy, has_history, retrieval_query
 ```
 
 ### RetrieverResult
@@ -507,6 +541,7 @@ class ResolutionResult(DataModel):
     nodes: list[GraphNode] = []
     relationships: list[GraphRelationship] = []
     merged_count: int = 0
+    remap: dict[str, str] = {}                           # Merged-away entity id -> survivor id
 ```
 
 ### ChatMessage
@@ -523,7 +558,7 @@ class ChatMessage(DataModel):
 
 Validated message type for multi-turn conversations. Used by `completion(history=...)` and `LLMInterface.ainvoke_messages()`. Invalid roles raise a validation error on construction.
 
-`LLMMessage` is a backward-compatible alias for `ChatMessage`.
+`LLMMessage` is a backward-compatible alias for `ChatMessage`, importable from `graphrag_sdk.core.models` (not from the top-level package).
 
 ### LLMResponse
 
@@ -550,6 +585,7 @@ class ExtractedEntity(DataModel):
     type: str
     description: str = ""
     source_chunk_ids: list[str] = []
+    attributes: dict[str, Any] = {}
 
 class ExtractedRelation(DataModel):
     source: str
@@ -559,6 +595,7 @@ class ExtractedRelation(DataModel):
     description: str = ""
     weight: float = 1.0
     source_chunk_ids: list[str] = []
+    attributes: dict[str, Any] = {}
 
 class EntityMention(DataModel):
     chunk_id: str
@@ -573,6 +610,8 @@ class ExtractionOutput(DataModel):
 ### compute_entity_id()
 
 ```python
+from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import compute_entity_id
+
 def compute_entity_id(name: str, entity_type: str = "") -> str
 ```
 
@@ -583,44 +622,60 @@ Deterministic entity ID from normalized name and optional type. When `entity_typ
 ## Schema
 
 ```python
-from graphrag_sdk import GraphSchema, EntityType, RelationType
+from graphrag_sdk import Ontology, Entity, Relation, Attribute
 ```
 
-### EntityType
+The pre-1.2 names `GraphSchema`, `EntityType`, `RelationType` and `PropertyType` still import, as deprecated aliases of these four classes, and emit a `DeprecationWarning`.
+
+### Entity
 
 ```python
-class EntityType(DataModel):
+class Entity(DataModel):
     label: str                            # e.g. "Person"
     description: str | None = None        # Helps LLM understand what to extract
-    properties: list[PropertyType] = []   # Optional property definitions
+    properties: list[Attribute] = []      # Optional property definitions
 ```
 
-### RelationType
+### Relation
 
 ```python
-class RelationType(DataModel):
+class Relation(DataModel):
     label: str                            # e.g. "WORKS_AT"
     description: str | None = None
-    patterns: list[tuple[str, str]] = []  # Allowed (source_label, target_label) pairs
+    patterns: list[tuple[str, str]] = []  # Allowed (source_label, target_label) pairs; empty = any
+    properties: list[Attribute] = []
 ```
 
-### PropertyType
+### Attribute
 
 ```python
-class PropertyType(DataModel):
+class Attribute(DataModel):
     name: str
     type: str = "STRING"                  # STRING, INTEGER, FLOAT, BOOLEAN, DATE, LIST
     description: str | None = None
-    required: bool = False
+    structured: bool = False              # True when a table mapping declared it (signed name, e.g. employees__title)
 ```
 
-### GraphSchema
+`type` is upper-cased on construction; any other value raises `ValueError`.
+
+### Ontology
 
 ```python
-class GraphSchema(DataModel):
-    entities: list[EntityType] = []
-    relations: list[RelationType] = []
+class Ontology(DataModel):
+    entities: list[Entity] = []
+    relations: list[Relation] = []
+    tables: list[TableMapping] = []       # See Structured Ingestion
 ```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `from_file` | `(path: str) -> Ontology` | Class method: load from a JSON file |
+| `save_to_file` | `(path: str, *, indent: int = 2) -> None` | Write to `path` as JSON |
+| `from_sources` | `(sources, llm=None, *, method="llm", ...) -> Ontology` | Async class method: discover an ontology from documents (see [Ontology Discovery](/ontology-discovery)) |
+| `merge` | `(other: Ontology) -> Ontology` | Union by label; for a property in both, `other` wins |
+| `tables_naming` | `(label: str) -> dict[str, str]` | `source -> how` for every table mapping that names `label` |
+
+Construction raises `ValueError` for two tables with the same `source`, a table whose new label connects to nothing, or two tables whose signatures collide.
 
 ---
 
@@ -634,7 +689,7 @@ class LoaderStrategy(ABC):
     async def load(self, source: str, ctx: Context) -> DocumentOutput: ...
 ```
 
-**Built-in:** `TextLoader(encoding="utf-8")`, `PdfLoader()`
+**Built-in:** `TextLoader(encoding="utf-8")`, `PdfLoader()`, `MarkdownLoader(encoding="utf-8")`. Only `TextLoader` is exported from `graphrag_sdk`; import the other two from `graphrag_sdk.ingestion.loaders`.
 
 ### ChunkingStrategy (ABC)
 
@@ -642,16 +697,23 @@ class LoaderStrategy(ABC):
 class ChunkingStrategy(ABC):
     @abstractmethod
     async def chunk(self, text: str, ctx: Context) -> TextChunks: ...
+
+    async def chunk_document(self, document: DocumentOutput, ctx: Context) -> TextChunks: ...  # default: chunk(document.text)
 ```
 
-**Built-in:** `FixedSizeChunking(chunk_size=1000, chunk_overlap=100)`
+**Built-in:**
+- `SentenceTokenCapChunking(max_tokens=384, overlap_sentences=2, encoding_name="cl100k_base")` -- `ingest()`'s default
+- `FixedSizeChunking(chunk_size=1000, chunk_overlap=100)`
+- `CallableChunking(fn, *, strategy_name="custom")` -- wraps a plain function
+- `ContextualChunking(llm, base_chunker=None, max_tokens=384, overlap_sentences=2, encoding_name="cl100k_base", max_document_tokens=16_000)` -- the three sizing kwargs build the base chunker and cannot be combined with `base_chunker`
+- `StructuralChunking(fallback_chunker=None, max_tokens=384, encoding_name="cl100k_base", overlap_sentences=2)` -- same rule for `fallback_chunker`; import from `graphrag_sdk.ingestion.chunking_strategies.structural_chunking`
 
 ### ExtractionStrategy (ABC)
 
 ```python
 class ExtractionStrategy(ABC):
     @abstractmethod
-    async def extract(self, chunks: TextChunks, schema: GraphSchema, ctx: Context) -> GraphData: ...
+    async def extract(self, chunks: TextChunks, ontology: Ontology, ctx: Context) -> GraphData: ...
 ```
 
 **Built-in:**
@@ -660,7 +722,11 @@ class ExtractionStrategy(ABC):
 **Entity Extractors** (step 1 backends for `GraphExtraction`):
 - `GLiNERExtractor(threshold=None, model_name=None, window_tokens=None, window_overlap=48, candidate_threshold=<25 % below threshold>)` -- default, local NER. `model_name=None` selects `urchade/gliner_medium-v2.1`; `threshold=None` selects the measured per-model value (0.75 for that model). Spans scoring between `candidate_threshold` and `threshold` are returned as `"Unknown"`; pass `candidate_threshold=None` to disable. Chunks longer than `window_tokens` (derived from the model's `max_len` when `None`) are processed as overlapping windows.
 - `LLMExtractor(llm, threshold=0.75)` -- LLM-based NER
+- `SpacyExtractor(model_name=None, labels=None, confidence=None)` -- spaCy NER
+- `CompositeExtractor(extractors, suppress_overlaps=True)` -- runs several extractors in priority order; `suppress_overlaps` resolves colliding spans
 - Subclass `EntityExtractor` for custom backends
+
+`coref_resolver` takes a `CorefResolver`; the built-in is `FastCorefResolver(model_name="biu-nlp/lingmess-coref")`. `CachedChunkExtraction(inner, graph_store, document_id)` wraps another `ExtractionStrategy` and is used by `update(cache_unchanged_chunks=True)`.
 
 ### ResolutionStrategy (ABC)
 
@@ -671,7 +737,7 @@ class ResolutionStrategy(ABC):
 ```
 
 **Built-in:**
-- `ExactMatchResolution(llm=None, resolve_property="name", cross_label_merge=True)` — `ingest()`'s default is `ExactMatchResolution(llm=None, cross_label_merge=False)`
+- `ExactMatchResolution(resolve_property="name", *, llm=None, force_summary_threshold=3, max_summary_tokens=500, cross_label_merge=False, cross_label_min_descriptions=3)` — `ingest()`'s default
 - `LLMVerifiedResolution(llm=None, embedder=None, *, hard_threshold=0.95, soft_threshold=0.65, max_llm_pairs=500, max_llm_concurrency=None, force_summary_threshold=3, max_summary_tokens=500, ann_top_k=50, batch_verification=True, verification_token_budget=4000, verification_max_pairs_per_call=5, cross_label_merge=True, cross_label_vector_door=0.60, cross_label_rank_floor=0.55, cross_label_max_pairs=200, cross_label_min_descriptions=3, unified_stage=True, unified_threshold=0.65, label_family_gate=True, cross_label_vote=True)` — opt-in at `ingest()`; `finalize()`'s default cross-source resolver
 
 ---
@@ -690,14 +756,15 @@ IngestionPipeline(
     resolver: ResolutionStrategy,
     graph_store: GraphStore,
     vector_store: VectorStore,
-    schema: GraphSchema | None = None,
-    embedder: Embedder | None = None,
+    ontology: Ontology | None = None,
+    *,
+    schema: Ontology | None = None,  # deprecated alias of ontology=
 )
 ```
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `run` | `(source, ctx=None, *, text=None, document_info=None) -> IngestionResult` | Execute the full 9-step pipeline |
+| `run` | `(source, ctx=None, *, text=None, loaded_document=None, document_info=None) -> IngestionResult` | Execute the full 9-step pipeline. `loaded_document` skips the loader with an already loaded `DocumentOutput`; it cannot be combined with `text` |
 
 ---
 
@@ -745,6 +812,7 @@ class TableMapping:
     properties: dict[str, Column | str] = field(default_factory=dict)  # property_name -> Column; a str means STRING
     links: list[Link] = field(default_factory=list)                    # columns that point at other entities
     standalone: bool = False                     # a new label that deliberately relates to nothing
+    derived: bool = False                        # set on a mapping the SDK proposed, not one you declared
     description: str | None = None
 ```
 
@@ -762,7 +830,7 @@ class TableMapping:
 ### Column
 
 ```python
-@dataclass
+@dataclass(frozen=True)
 class Column:
     name: str                     # the column in the source record
     type: str = "STRING"          # one of COLUMN_TYPES
@@ -780,7 +848,7 @@ class Link:
     to: str                                      # label of the target
     by: str                                      # column holding the target's key
     name: str | None = None                      # column holding the target's display name, if denormalised
-    properties: dict[str, Column | str] = {}     # columns written onto the edge
+    properties: dict[str, Column | str] = field(default_factory=dict)  # columns written onto the edge
     description: str | None = None
 ```
 
@@ -820,6 +888,8 @@ Returned by `ingest()` for a table (`graphrag_sdk.ingestion.structured_pipeline.
 | `replaced_existing`, `no_op` | The source was already in the graph. `no_op` when the content hash — rows and mapping — was unchanged. |
 | `chunks_deleted`, `entities_deleted` | On a re-sync: rows gone from the export and entities nothing mentions any more. |
 | `entities_moved`, `identity_moved` | Nodes moved to the id their name now gives them — a renamed row, or a placeholder a row filled in — and the `old_id -> new_id` map. |
+| `content_hash` | Hash of the rows and mapping, recorded on the Document so an unchanged re-ingest is a `no_op`. |
+| `incomplete_writes` | Writes the store reported short. Any entry means the hash is withheld and the next ingest of the file re-runs in full. |
 | `references_ambiguous` | `(label, key)` pairs a foreign key named that more than one existing node answers to — two tables numbering one label from 1. The edge was left on a placeholder carrying the key rather than given to either. |
 
 ### How a table is written
@@ -854,8 +924,12 @@ class RetrievalStrategy(ABC):
 ### LocalRetrieval
 
 ```python
+from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
+
 LocalRetrieval(graph_store, vector_store, embedder, top_k=5, include_entities=True)
 ```
+
+Not exported from `graphrag_sdk`.
 
 ### MultiPathRetrieval
 
@@ -868,8 +942,13 @@ MultiPathRetrieval(
     max_relationships=20,
     rel_top_k=15,
     keyword_limit=10,
+    enable_cypher=False,
+    ontology=None,
+    schema=None,  # deprecated alias of ontology=
 )
 ```
+
+`enable_cypher` adds the text-to-Cypher path; `ontology` is the schema it generates Cypher against (the facade keeps it current through `set_ontology()`).
 
 ---
 
@@ -906,7 +985,7 @@ GraphStore(connection: FalkorDBConnection)
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `upsert_nodes` | `(nodes: list[GraphNode]) -> int` | Batched MERGE, returns count |
-| `upsert_relationships` | `(rels: list[GraphRelationship]) -> int` | Batched MERGE with label hints |
+| `upsert_relationships` | `(relationships: list[GraphRelationship]) -> int` | Batched MERGE with label hints |
 | `get_connected_entities` | `(chunk_id, max_hops=1) -> list[dict]` | N-hop entity traversal |
 | `query_raw` | `(cypher, params=None) -> Any` | Raw Cypher execution |
 | `get_statistics` | `() -> dict` | Node/edge counts, types, density |
@@ -915,22 +994,35 @@ GraphStore(connection: FalkorDBConnection)
 ### VectorStore
 
 ```python
-VectorStore(connection, embedder=None, index_name="chunk_embeddings", embedding_dimension=256, similarity_function="cosine")
+VectorStore(connection: FalkorDBConnection, embedder: Embedder | None = None, embedding_dimension: int = 256)
 ```
+
+`embedding_dimension` must be between 1 and 8192, or the constructor raises `ValueError`. Index labels, properties and the similarity function (cosine) are fixed; each index has its own method. Without an `embedder`, the indexing and embedding methods log a warning and do nothing.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `create_vector_index` | `(label="Chunk", property="embedding") -> None` | Create vector index |
-| `create_entity_vector_index` | `() -> None` | Create entity vector index |
-| `create_fulltext_index` | `(label="Chunk", *properties) -> None` | Create fulltext index |
-| `ensure_indices` | `() -> None` | Create all standard indices |
-| `index_chunks` | `(chunks: TextChunks) -> int` | Embed and store chunk vectors |
-| `backfill_entity_embeddings` | `() -> int` | Embed all entities missing vectors |
-| `embed_relationships` | `() -> int` | Embed fact text on RELATES edges |
-| `search` | `(query_vector, top_k=5, label="Chunk") -> list[dict]` | Vector similarity search |
-| `search_entities` | `(query_vector, top_k=5) -> list[dict]` | Entity vector search |
-| `search_relationships` | `(query_vector, top_k=15) -> list[dict]` | RELATES edge vector search |
-| `fulltext_search` | `(query, top_k=5, label="Chunk") -> list[dict]` | Fulltext keyword search |
+| `create_chunk_vector_index` | `() -> bool` | Vector index on `Chunk.embedding` |
+| `create_entity_vector_index` | `() -> bool` | Vector index on `__Entity__.embedding` |
+| `create_relates_vector_index` | `() -> bool` | Vector index on `RELATES.embedding` edges |
+| `create_chunk_fulltext_index` | `() -> bool` | Fulltext index on `Chunk.text` |
+| `create_entity_fulltext_index` | `() -> bool` | Fulltext index on `__Entity__(name, description)` |
+| `create_id_range_indices` | `() -> bool` | Range index on `id` for `Document`, `Chunk` and `__Entity__`; attempted once per instance |
+| `ensure_indices` | `() -> dict[str, bool]` | Create all of the above (idempotent); see below |
+| `drop_chunk_vector_index` | `() -> None` | Drop the `Chunk` vector index |
+| `drop_entity_vector_index` | `() -> None` | Drop the `__Entity__` vector index |
+| `drop_relates_vector_index` | `() -> None` | Drop the `RELATES` edge vector index |
+| `index_chunks` | `(chunks: TextChunks) -> int \| None` | Embed and store chunk vectors; `None` when no embedder is configured |
+| `backfill_entity_embeddings` | `(batch_size: int = 500) -> int` | Embed the name of every entity missing a vector |
+| `embed_relationships` | `(batch_size: int = 500) -> int` | Embed fact text on RELATES edges missing a vector |
+| `search_chunks` | `(query_vector: list[float], top_k: int = 5) -> list[dict]` | Chunk vector search: `id`, `text`, `score` |
+| `search_entities` | `(query_vector: list[float], top_k: int = 5) -> list[dict]` | Entity vector search: `id`, `name`, `description`, `score` |
+| `search_relationships` | `(query_vector: list[float], top_k: int = 15) -> list[dict]` | RELATES edge vector search: `src_name`, `type`, `tgt_name`, `fact`, `score` |
+| `fulltext_search_chunks` | `(query_text: str, top_k: int = 5) -> list[dict]` | Chunk fulltext search: `id`, `text`, `score` |
+| `fulltext_search_entities` | `(query_text: str, top_k: int = 5) -> list[dict]` | Entity fulltext search on name and description: `id`, `text` (the name), `score` |
+
+Each `create_*` method returns `True` when the index exists afterwards, whether it was just created or already there. `ensure_indices()` returns one entry per index group — `range_ids`, `vector_Chunk`, `vector_Entity`, `vector_RELATES`, `fulltext_Chunk`, `fulltext_Entity` — and `{}` once an earlier call on the same instance has created them all. `finalize()` always re-runs it, so `FinalizeResult.indexes` has all six keys.
+
+Vector search scores are similarities, so higher is closer. A failed search logs a warning and returns `[]`.
 
 ---
 
@@ -943,30 +1035,55 @@ from graphrag_sdk import Context
 Execution context for logging and budget tracking.
 
 ```python
-Context(tenant_id: str = "default", latency_budget_ms: float = 60000.0)
+@dataclass
+class Context:
+    tenant_id: str = "default"
+    trace_id: str = <new uuid4>
+    latency_budget_ms: float | None = None   # None = no budget
+    metadata: dict[str, Any] = {}
 ```
 
 | Method/Property | Description |
 |----------------|-------------|
-| `ctx.log(message, log_level=logging.INFO)` | Log a message |
-| `ctx.budget_exceeded` | True if elapsed time > latency_budget_ms |
+| `ctx.log(message, level=logging.INFO)` | Log a message |
+| `ctx.elapsed_ms` | Milliseconds since the context was created |
+| `ctx.remaining_budget_ms` / `ctx.remaining_budget_seconds` | Budget left, or `None` without a budget |
+| `ctx.budget_exceeded` | True if a budget is set and has run out; always False without one |
+| `ctx.ensure_budget(operation)` | Raise `LatencyBudgetExceededError` if the budget has run out |
+| `ctx.provider_timeout_seconds(operation, *, min_remaining_ms=1.0)` | Remaining budget in seconds for a provider call (`None` without a budget); raises `LatencyBudgetExceededError` if too little is left |
+| `ctx.child(**overrides)` | New context with the same tenant and trace, the remaining budget, and merged metadata |
 
 ---
 
 ## Exceptions
 
 ```python
-from graphrag_sdk import GraphRAGError
+from graphrag_sdk import GraphRAGError, LatencyBudgetExceededError, DocumentNotFoundError
+from graphrag_sdk.core.exceptions import DatabaseError, LoaderError  # ...and the rest of the hierarchy
 ```
 
 | Exception | When Raised |
 |-----------|------------|
-| `GraphRAGError` | Base exception for all SDK errors |
-| `LoaderError` | File loading failures |
-| `ChunkingError` | Text splitting failures |
-| `ExtractionError` | LLM extraction or JSON parsing failures |
-| `ResolutionError` | Entity deduplication failures |
-| `RetrieverError` | Retrieval execution failures |
-| `DatabaseError` | FalkorDB connection or query failures |
+| `GraphRAGError` | Base of the classes below |
+| `LatencyBudgetExceededError` | `Context` latency budget exhausted before an operation starts |
+| `LLMError` / `LLMTimeoutError` | LLM provider failures / an LLM call over its `timeout` |
+| `EmbeddingError` / `EmbeddingTimeoutError` | Embedding provider failures / an embedding call over its `timeout` |
 | `IngestionError` | Pipeline orchestration failures |
-| `SchemaValidationError` | Schema constraint violations |
+| `LoaderError` | File loading failures (subclass of `IngestionError`) |
+| `ChunkingError`, `ExtractionError`, `ResolutionError` | Subclasses of `IngestionError`; not raised by the built-in strategies |
+| `RetrieverError` | Retrieval execution failures, or an empty query |
+| `DatabaseError` | FalkorDB query failures, and inconsistent graph state found by `update()` or `delete_document()` |
+| `DatabaseUnavailableError` | FalkorDB could not be reached (subclass of `DatabaseError`) |
+| `DocumentNotFoundError` | `update()` or `delete_document()` with an unknown id and `if_missing="error"` |
+| `ConfigError` | The embedder's model or vector size does not match the graph or `embedding_dimension` |
+| `SchemaValidationError` | Defined but not raised by the SDK |
+
+These are exported from `graphrag_sdk` but do **not** subclass `GraphRAGError`:
+
+| Exception | Base | When Raised |
+|-----------|------|------------|
+| `MappingError` | `ValueError` | A table mapping does not fit its source |
+| `OntologyContradictionError` | `ValueError` | An incoming ontology re-types an existing property |
+| `OntologyModificationNotAllowedError` | `ValueError` | An incoming ontology adds attributes or patterns to an already registered label |
+| `OntologyEvolutionError` | `RuntimeError` | An evolution call could not finish its data migration |
+| `OntologyDiscoveryError` | `RuntimeError` | `Ontology.from_sources()` could not propose an ontology |

@@ -527,7 +527,7 @@ rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, retrieval_strategy=r
 class GlobalRetrieval(RetrievalStrategy):
     async def _execute(self, query, ctx, **kwargs):
         # Your custom retrieval logic
-        results = await self.vector_store.search(query_vector, top_k=20)
+        results = await self._vector.search_chunks(query_vector, top_k=20)
         return RawSearchResult(records=results)
 
 rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, retrieval_strategy=GlobalRetrieval())

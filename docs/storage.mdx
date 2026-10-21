@@ -220,7 +220,7 @@ During retrieval, the `rerank_chunks()` function uses **stored embeddings** when
 
 ### ensure_indices()
 
-Creates all 5 standard indexes in one call. Tracks state internally (`_indices_ensured`) to avoid redundant creation. Called automatically after each `ingest()` call, and re-run during `finalize()` (which resets the flag).
+Creates the `id` range indexes on `Document`, `Chunk` and `__Entity__` and the 5 vector and fulltext indexes in one call, returning a `dict[str, bool]` keyed `range_ids`, `vector_Chunk`, `vector_Entity`, `vector_RELATES`, `fulltext_Chunk`, `fulltext_Entity`. Tracks state internally (`_indices_ensured`) to avoid redundant creation. Called automatically after each `ingest()` call, and re-run during `finalize()` (which resets the flag).
 
 FalkorDB builds an index over existing data in the background after `CREATE ... INDEX` returns, and a vector search on it finds nothing until the build ends. `ensure_indices()` therefore waits until `db.indexes()` reports every index built before it returns (up to 10 minutes, logging progress every 10 s), so a search right after `ingest()` sees the data. On a large first ingest this wait is most of the time `ingest()` spends after extraction.
 
