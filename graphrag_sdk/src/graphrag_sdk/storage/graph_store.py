@@ -210,16 +210,18 @@ class GraphStore:
                 await self._ensure_label_id_index("__Entity__")
             # One row per id: see _fold_properties. Each row keeps how many
             # input nodes it stands for, so the returned count is unchanged.
-            folded: dict[str, tuple[GraphNode, dict[str, Any], int]] = {}
+            folded: dict[str, tuple[GraphNode, dict[str, Any], int, set[Any] | None]] = {}
             for n, cid in cleaned_group:
                 props = self._clean_properties(n.properties)
                 if cid in folded:
-                    first, acc, weight = folded[cid]
-                    props = self._fold_properties(acc, props, union_provenance=is_entity)
-                    folded[cid] = (first, props, weight + 1)
+                    first, acc, weight, seen = folded[cid]
+                    props, seen = self._fold_properties(
+                        acc, props, union_provenance=is_entity, seen=seen
+                    )
+                    folded[cid] = (first, props, weight + 1, seen)
                 else:
-                    folded[cid] = (n, props, 1)
-            rows = [(n, cid, props, weight) for cid, (n, props, weight) in folded.items()]
+                    folded[cid] = (n, props, 1, None)
+            rows = [(n, cid, props, weight) for cid, (n, props, weight, _) in folded.items()]
             # Process in batches
             for start in range(0, len(rows), self._BATCH_SIZE):
                 batch = rows[start : start + self._BATCH_SIZE]
@@ -697,20 +699,25 @@ class GraphStore:
             # see _fold_properties. Each row keeps how many input relationships
             # it stands for, so the returned count is unchanged.
             is_relates = rel_type == "RELATES"
-            folded: dict[tuple[str, str, Any], tuple[GraphRelationship, dict[str, Any], int]] = {}
+            folded: dict[
+                tuple[str, str, Any],
+                tuple[GraphRelationship, dict[str, Any], int, set[Any] | None],
+            ] = {}
             for rel, sid, eid in cleaned_group:
                 props = self._clean_properties(rel.properties)
                 rel_key = self._merge_key_value(props.get("rel_type", "")) if is_relates else ""
                 key = (sid, eid, rel_key)
                 if key in folded:
-                    first, acc, weight = folded[key]
-                    props = self._fold_properties(acc, props, union_provenance=is_relates)
-                    folded[key] = (first, props, weight + 1)
+                    first, acc, weight, seen = folded[key]
+                    props, seen = self._fold_properties(
+                        acc, props, union_provenance=is_relates, seen=seen
+                    )
+                    folded[key] = (first, props, weight + 1, seen)
                 else:
-                    folded[key] = (rel, props, 1)
+                    folded[key] = (rel, props, 1, None)
             rows = [
                 (rel, sid, eid, props, weight)
-                for (sid, eid, _), (rel, props, weight) in folded.items()
+                for (sid, eid, _), (rel, props, weight, _) in folded.items()
             ]
             for start in range(0, len(rows), self._BATCH_SIZE):
                 batch = rows[start : start + self._BATCH_SIZE]
@@ -2228,8 +2235,12 @@ class GraphStore:
 
     @staticmethod
     def _fold_properties(
-        acc: dict[str, Any], props: dict[str, Any], *, union_provenance: bool
-    ) -> dict[str, Any]:
+        acc: dict[str, Any],
+        props: dict[str, Any],
+        *,
+        union_provenance: bool,
+        seen: set[Any] | None = None,
+    ) -> tuple[dict[str, Any], set[Any] | None]:
         """Apply a later write of the same key on top of an earlier one.
 
         Mirrors what the MERGE ... SET statements do row by row: later
@@ -2242,6 +2253,12 @@ class GraphStore:
         engine (6.0.x) the last; and on both, each row reads
         ``source_chunk_ids`` before any row's SET, so the union kept one row's
         chunks and dropped the others'.
+
+        ``seen`` holds the ids already in ``acc``'s ``source_chunk_ids`` list;
+        pass back the set the previous fold of the same key returned. Copying
+        and scanning the list on every repeat made a key written n times cost
+        O(n²): 28 s for one edge repeated on 100,000 rows of a table. The list
+        is extended in place; it is the fresh copy ``_clean_properties`` made.
         """
         merged = {**acc, **props}
         old = acc.get("source_chunk_ids")
@@ -2249,9 +2266,17 @@ class GraphStore:
         if union_provenance and isinstance(old, list):
             if not contrib:
                 merged["source_chunk_ids"] = old
-            elif isinstance(contrib, list):
-                merged["source_chunk_ids"] = old + [c for c in contrib if c not in old]
-        return merged
+                return merged, seen
+            if isinstance(contrib, list):
+                if seen is None:
+                    seen = set(old)
+                for chunk_id in contrib:
+                    if chunk_id not in seen:
+                        seen.add(chunk_id)
+                        old.append(chunk_id)
+                merged["source_chunk_ids"] = old
+                return merged, seen
+        return merged, None
 
     @classmethod
     def _clean_properties(cls, props: dict[str, Any]) -> dict[str, Any]:
