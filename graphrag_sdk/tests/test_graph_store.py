@@ -512,6 +512,18 @@ class TestGraphStoreGetConnectedEntities:
         cypher = mock_connection.query.call_args[0][0]
         assert "*1..3" in cypher
 
+    @pytest.mark.parametrize(("max_hops", "ordered"), [(1, True), (2, False), (5, False)])
+    async def test_only_one_hop_is_ordered(self, graph_store, mock_connection, max_hops, ordered):
+        """An order needs every path before the LIMIT; beyond one hop the
+        paths multiply, and 3 hops over 40k nodes took 16.6 s on 4.x."""
+        result_mock = MagicMock()
+        result_mock.result_set = []
+        mock_connection.query = AsyncMock(return_value=result_mock)
+        await graph_store.get_connected_entities("c1", max_hops=max_hops)
+        cypher = mock_connection.query.call_args[0][0]
+        assert ("ORDER BY id LIMIT 50" in cypher) is ordered
+        assert cypher.endswith("LIMIT 50")
+
 
 class TestGraphStoreQueryRaw:
     async def test_raw_query(self, graph_store, mock_connection):
