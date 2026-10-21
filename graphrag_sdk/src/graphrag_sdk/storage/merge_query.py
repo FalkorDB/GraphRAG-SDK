@@ -40,9 +40,13 @@ OUT, IN = "out", "in"
 
 #: What a plan operation did.
 APPLIED = "applied"  # written and ticked
-DONE = "done"  # ticked by an earlier attempt: a replay, nothing written
 CHANGED = "changed"  # an entity is gone, renamed or deleted since judging: recorded, ticked
 STALE = "stale"  # the read is out of date: nothing written, read again
+# Ticked by an earlier attempt — a reply lost after the server applied it, and
+# the connection's retry sent it again — so this one wrote nothing. Which of
+# the two the earlier attempt did is on the plan page: a skip is in ``changed``.
+ALREADY_APPLIED = "already applied"
+ALREADY_CHANGED = "already changed"
 
 
 class PlanStateError(GraphRAGError):
@@ -161,14 +165,15 @@ def _split_decimals(
 
 
 def outcome(row: list[Any], op: int) -> str:
-    """:data:`APPLIED`, :data:`DONE`, :data:`CHANGED` or :data:`STALE` from a
-    plan query's row (ownership is checked by ``SystemStore.fenced``)."""
-    _owned, plan_found, nxt, my_turn, present, fresh, unhandled = row
+    """:data:`APPLIED`, :data:`CHANGED`, :data:`STALE`, or for an operation an
+    earlier attempt ticked, :data:`ALREADY_APPLIED` / :data:`ALREADY_CHANGED`,
+    from a plan query's row (ownership is checked by ``SystemStore.fenced``)."""
+    _owned, plan_found, nxt, my_turn, present, fresh, unhandled, was_changed = row
     if not plan_found:
         raise PlanStateError(f"The merge plan page of operation {op} is missing")
     if not my_turn:
         if int(nxt) > op:
-            return DONE
+            return ALREADY_CHANGED if was_changed else ALREADY_APPLIED
         raise PlanStateError(f"Operation {op} ran before its turn (the page is at {nxt})")
     if not present:
         return CHANGED
@@ -178,8 +183,8 @@ def outcome(row: list[Any], op: int) -> str:
 # ── the queries ──────────────────────────────────────────────────
 #
 # Each continues from ``SystemStore``'s fence (``WITH _run, owned``) and
-# returns ``owned, plan_found, next, my_turn, present, fresh, unhandled``.
-# ``next`` is the pointer as found, before this query moves it.
+# returns ``owned, plan_found, next, my_turn, present, fresh, unhandled,
+# was_changed``. ``next`` is the pointer as found, before this query moves it.
 
 # The plan page, and whether this operation is the next one due.
 _TURN = (
@@ -197,7 +202,10 @@ _TICK = (
     "FOREACH (_ IN CASE WHEN my_turn AND (NOT present OR ok) THEN [1] ELSE [] END | "
     "SET p.next = $op + 1) "
 )
-_RETURN = "RETURN owned, plan_found, next, my_turn, present, fresh, unhandled"
+_RETURN = (
+    "RETURN owned, plan_found, next, my_turn, present, fresh, unhandled, "
+    "$op IN coalesce(p.changed, []) AS was_changed"
+)
 
 #: How far a stored decimal may be from the value read for it and still count
 #: as unchanged, relative to its size. Rounding to 15 digits moves a value by

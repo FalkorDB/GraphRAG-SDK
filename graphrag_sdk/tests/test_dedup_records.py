@@ -15,9 +15,10 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.merge_query import (
+    ALREADY_APPLIED,
+    ALREADY_CHANGED,
     APPLIED,
     CHANGED,
-    DONE,
     SKIP_QUERY,
     STALE,
     PlanStateError,
@@ -236,9 +237,10 @@ async def test_an_absorb_moves_every_edge_once_and_deletes_the_duplicate(graph):
     assert survivor == [[["c1", "c2"], ["Timothy Cook"]]]
     assert (await store.sealed_plan()).nexts == [1]
 
-    # A replay (a lost reply, a resumed run) writes nothing.
+    # A replay (a lost reply, a resumed run) writes nothing, and says the
+    # earlier attempt applied it.
     read = await read_for_merge(graph, "s", "jobs")  # any read: the turn is checked first
-    assert await absorb(store, graph, plan_run, read=read) == DONE
+    assert await absorb(store, graph, plan_run, read=read) == ALREADY_APPLIED
 
 
 async def test_an_edge_type_the_query_was_not_built_for_stops_the_merge(graph):
@@ -309,6 +311,8 @@ async def test_an_entity_deleted_or_renamed_since_judging_is_recorded_as_changed
     ) == [[2]]
     plan = await store.sealed_plan()
     assert plan.changed == [[0, 1]] and plan.nexts == [2]
+    # Sent again (a lost reply), a skipped operation says it was skipped.
+    assert await absorb(store, graph, plan_run) == ALREADY_CHANGED
 
 
 async def test_an_operation_out_of_turn_or_without_its_page_is_an_error(graph):

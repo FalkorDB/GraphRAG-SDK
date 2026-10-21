@@ -566,3 +566,25 @@ def test_decimals_read_for_a_merge_are_compared_within_a_tolerance():
         assert f"all(k IN keys(${side}_near_list) WHERE size(" in q
     # FalkorDB evaluates every CASE branch: no branch may do arithmetic.
     assert "THEN s[k] -" not in q and "THEN d[k] -" not in q
+
+
+def test_an_operation_an_earlier_attempt_ticked_says_what_that_attempt_did():
+    """A merge whose reply was lost comes back, through the connection's
+    retry, as "not my turn". The plan page says whether the earlier attempt
+    applied it or skipped it as changed."""
+    import pytest
+
+    from graphrag_sdk.storage.merge_query import (
+        ALREADY_APPLIED,
+        ALREADY_CHANGED,
+        APPLIED,
+        PlanStateError,
+        outcome,
+    )
+
+    # owned, plan_found, next, my_turn, present, fresh, unhandled, was_changed
+    assert outcome([True, True, 6, False, None, None, None, False], 5) == ALREADY_APPLIED
+    assert outcome([True, True, 6, False, None, None, None, True], 5) == ALREADY_CHANGED
+    assert outcome([True, True, 5, True, True, True, 0, False], 5) == APPLIED
+    with pytest.raises(PlanStateError):
+        outcome([True, True, 4, False, None, None, None, False], 5)

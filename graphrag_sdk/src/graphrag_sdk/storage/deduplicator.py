@@ -44,6 +44,8 @@ from graphrag_sdk.storage.judge_dedup import (
     pick_group_name,
 )
 from graphrag_sdk.storage.merge_query import (
+    ALREADY_APPLIED,
+    ALREADY_CHANGED,
     APPLIED,
     CHANGED,
     SKIP_QUERY,
@@ -1601,7 +1603,9 @@ class EntityDeduplicator:
     async def _apply(self, store: SystemStore, plan: Plan) -> int:
         """Apply a sealed plan from each page's pointer; returns the absorbs
         applied by this call. Each operation is one query that ticks itself
-        off, so a crash, a lost reply or a takeover resumes exactly here."""
+        off, so a crash, a lost reply or a takeover resumes exactly here. A
+        reply lost after the server applied an operation comes back from the
+        connection's retry as "already applied", and counts as applied."""
         merged = 0
         # A rename names the group its judged absorbs formed; with none of them
         # applied (every one found its entities changed) there is no such group.
@@ -1617,7 +1621,7 @@ class EntityDeduplicator:
                 op = ops[i]
                 if op.op == ABSORB:
                     state = await self._apply_absorb(store, plan.plan_run, page, i, op)
-                    if state == APPLIED:
+                    if state in (APPLIED, ALREADY_APPLIED):
                         merged += 1
                         self._name_embedded_ids.discard(op.dup)
                         if op.policy == JUDGE:
@@ -1626,7 +1630,7 @@ class EntityDeduplicator:
                     state = await self._apply_rename(
                         store, plan.plan_run, page, i, op, apply=op.group in judged
                     )
-                if state == CHANGED:
+                if state in (CHANGED, ALREADY_CHANGED):
                     self.last_report.changed += 1
                     logger.info(
                         "Planned %s of %s skipped: an entity changed during the run; "
@@ -1663,7 +1667,8 @@ class EntityDeduplicator:
                 {**fold.params, **where, "handled": handled(read.kinds)},
             )
             state = outcome(rows[0], i)
-            if state == APPLIED:
+            if state in (APPLIED, ALREADY_APPLIED):
+                # Already applied: by this same query, whose reply was lost.
                 self.last_report.collisions.extend(
                     f"{op.survivor_name}: {c.key} kept {c.kept!r}"
                     f"{' (judge)' if c.by_judge else ''}, dropped {c.dropped!r} from {op.dup_name}"
@@ -1792,7 +1797,7 @@ class EntityDeduplicator:
             },
         )
         state = outcome(rows[0], i)
-        if state == APPLIED and apply:
+        if state in (APPLIED, ALREADY_APPLIED) and apply:
             logger.info("Judge named merged %r -> %r", op.survivor_name, op.rename_to)
             if vector:
                 self._name_embedded_ids.add(op.survivor)

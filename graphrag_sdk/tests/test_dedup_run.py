@@ -54,9 +54,11 @@ class Judge:
     """Answers by name: ``same`` are the name groups that are one entity.
     ``fail`` names an entity whose sets get no answer, every time."""
 
-    def __init__(self, same=(), fail=(), keep=None):
+    def __init__(self, same=(), fail=(), keep=None, name=None):
         self.same = [set(g) for g in same]
         self.fail = set(fail)
+        # the name every merged group is given; by default its first member's
+        self.name = name
         # attribute -> the name of the member whose value a merged group keeps
         self.keep = dict(keep or {})
         self.prompts: list[str] = []
@@ -87,7 +89,7 @@ class Judge:
                         if n in grp and nm == owner
                     ]
                     lines.append(
-                        f"SET {si} GROUP: {', '.join(grp)} | NAME: {name}"
+                        f"SET {si} GROUP: {', '.join(grp)} | NAME: {self.name or name}"
                         + (f" | KEEP: {'; '.join(keep)}" if keep else "")
                     )
                 if not any(line.startswith(f"SET {si} ") for line in lines):
@@ -444,6 +446,56 @@ async def test_the_judge_sees_the_ontologys_attributes_and_picks_the_value(graph
     assert dd.last_report.collisions == [
         "Timothy Cook: born kept 1961 (judge), dropped 1960 from Tim Cook"
     ]
+
+
+async def test_a_merge_whose_reply_was_lost_still_counts_and_its_group_is_renamed(
+    graph, monkeypatch
+):
+    """The server applies a merge and the reply is lost; the connection sends
+    the query again, which finds it already ticked. That is a merge this run
+    made: it counts, its collision is reported, and the group's rename — which
+    runs only after a judged merge applied — still happens (Naseem's review)."""
+    ontology = Ontology(
+        entities=[Entity(label="Person", properties=[Attribute(name="born", type="INTEGER")])]
+    )
+    await graph.query_raw(
+        "CREATE (:__Entity__:Person {id: 'tim', name: 'Tim Cook', description: 'Apple CEO', "
+        "born: 1961, embedding: vecf32([1.0, 0.0, 0.0, 0.0])})"
+    )
+    await graph.upsert_nodes(
+        [
+            GraphNode(
+                id="timothy",
+                label="Person",
+                properties={
+                    "name": "Timothy Cook",
+                    "description": "chief executive of Apple",
+                    "born": 1960,
+                },
+            )
+        ]
+    )
+    real = graph.query_raw
+    lost: list[str] = []
+
+    async def reply_lost_once(cypher, params=None):
+        if "DETACH DELETE d" in cypher or "SET s.name = $name" in cypher:
+            await real(cypher, params)  # applied on the server; the reply never arrives
+            lost.append(cypher)
+        return await real(cypher, params)  # the connection's retry
+
+    monkeypatch.setattr(graph, "query_raw", reply_lost_once)
+    dd = dedup(graph)
+    judge = Judge([TIM], keep={"born": "Tim Cook"}, name="Tim Cook")
+    assert await dd.deduplicate(judge_llm=judge, ontology=ontology) == 1
+    assert len(lost) == 2, "the merge and the rename were each sent twice"
+    assert await rows(
+        graph, "MATCH (e:__Entity__) RETURN e.id, e.name, e.aliases, e.born, e.born__dropped"
+    ) == [["timothy", "Tim Cook", ["Timothy Cook"], 1961, [1960]]]
+    assert dd.last_report.collisions == [
+        "Timothy Cook: born kept 1961 (judge), dropped 1960 from Tim Cook"
+    ]
+    assert dd.last_report.changed == 0 and await records(graph) == []
 
 
 # ── the server ───────────────────────────────────────────────────
