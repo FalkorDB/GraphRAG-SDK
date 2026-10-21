@@ -442,6 +442,21 @@ class TestRelationshipSearchDuringAnOutage:
         assert vector_store._indices_ensured is True
         assert vector_store._warned_relates_scan is False
 
+    async def test_a_timed_out_index_query_is_not_followed_by_a_full_scan(
+        self, vector_store, mock_connection
+    ):
+        """A scan of every edge after the index query ran out of time takes
+        longer still; the search gives up instead."""
+        from graphrag_sdk.core.exceptions import DatabaseError
+
+        mock_connection.query = AsyncMock(
+            side_effect=DatabaseError("FalkorDB query failed: Query timed out")
+        )
+
+        assert await vector_store.search_relationships(query_vector=[0.1] * 8) == []
+        assert mock_connection.query.await_count == 1
+        assert vector_store._warned_relates_scan is False
+
 
 class TestEnsureIndicesWaitsForBuilds:
     async def test_waits_while_an_index_is_under_construction(self, vector_store, mock_connection):
@@ -467,3 +482,52 @@ class TestEnsureIndicesWaitsForBuilds:
             c for c in mock_connection.query.call_args_list if "YIELD label, status" in c.args[0]
         ]
         assert len(status_calls) == len(results) + 2  # two extra polls during the build
+
+
+class TestEnsureIndicesBuildWaitBounds:
+    async def test_one_deadline_covers_the_whole_call(
+        self, vector_store, mock_connection, monkeypatch
+    ):
+        """The limit restarted for each of the six statements, so a build that
+        never finished held ensure_indices() for six times the limit."""
+        import time
+
+        import graphrag_sdk.storage.vector_store as vs_module
+
+        monkeypatch.setattr(vs_module, "_INDEX_BUILD_WAIT_S", 0.3)
+        stuck, other = MagicMock(), MagicMock()
+        stuck.result_set = [["Chunk", "[Indexing] 1/9: UNDER CONSTRUCTION"]]
+        other.result_set = []
+
+        async def query(cypher, *args, **kwargs):
+            return stuck if "YIELD label, status" in cypher else other
+
+        mock_connection.query = AsyncMock(side_effect=query)
+
+        started = time.monotonic()
+        results = await vector_store.ensure_indices()
+
+        assert time.monotonic() - started < 1.0  # six restarts would take 1.8 s
+        assert all(results.values())
+        # Not marked done, so the next call waits for the build again.
+        assert vector_store._indices_ensured is False
+
+    async def test_an_unreadable_build_status_leaves_the_store_unensured(
+        self, vector_store, mock_connection
+    ):
+        """Treating a failed status read as "built" let the store skip every
+        later check while the indexes were still being built."""
+        other = MagicMock()
+        other.result_set = []
+
+        async def query(cypher, *args, **kwargs):
+            if "YIELD label, status" in cypher:
+                raise RuntimeError("status unavailable")
+            return other
+
+        mock_connection.query = AsyncMock(side_effect=query)
+
+        results = await vector_store.ensure_indices()
+
+        assert all(results.values())
+        assert vector_store._indices_ensured is False

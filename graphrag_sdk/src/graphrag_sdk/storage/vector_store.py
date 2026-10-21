@@ -532,12 +532,13 @@ class VectorStore:
             # 6.0.x answers with no rows. Either way the scan below is the only
             # way to reach edges that carry an embedding but no index.
             logger.debug("Edge vector query returned nothing, falling back to Cypher scan")
-        except DatabaseUnavailableError as exc:
-            # The server is unreachable or the breaker is open: the scan would
-            # fail the same way, and the index is not to blame.
-            logger.warning(f"Relationship vector search failed: {exc}")
-            return []
         except Exception as exc:
+            # Unreachable, breaker open, or the index query ran out of time: a
+            # scan of every edge would fail the same way or take longer still,
+            # and the index is not to blame.
+            if isinstance(exc, DatabaseUnavailableError) or "query timed out" in str(exc).lower():
+                logger.warning(f"Relationship vector search failed: {exc}")
+                return []
             logger.debug(f"Edge vector query not available, falling back to Cypher scan: {exc}")
 
         # The index may have been dropped after this store ensured it; forget
@@ -726,7 +727,7 @@ class VectorStore:
         self._id_indices_ensured = ok
         return ok
 
-    async def _wait_for_index_builds(self) -> None:
+    async def _wait_for_index_builds(self, deadline: float | None = None) -> bool:
         """Wait until FalkorDB reports every index in the graph built.
 
         ``CREATE ... INDEX`` returns while the index is still being built over
@@ -734,9 +735,14 @@ class VectorStore:
         query on that label with an error and 6.0.x with no or partial rows, so
         a search right after ``ensure_indices()`` found nothing on a large
         graph. ``db.indexes()`` reports progress without waiting for it.
+
+        Returns ``True`` once nothing is being built; ``False`` when
+        ``deadline`` (a ``loop.time()`` value, default ``_INDEX_BUILD_WAIT_S``
+        from now) passed first or the status could not be read.
         """
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + _INDEX_BUILD_WAIT_S
+        if deadline is None:
+            deadline = loop.time() + _INDEX_BUILD_WAIT_S
         next_log = loop.time() + 10.0
         delay = 0.05
         while True:
@@ -746,7 +752,7 @@ class VectorStore:
                     expected_errors=("empty key",),
                 )
             except Exception:
-                return  # cannot tell; do not hold up the caller
+                return False  # cannot tell; do not hold up the caller
             # 4.x and 6.0.x both report "[Indexing] x/y: UNDER CONSTRUCTION"
             # during a build and "OPERATIONAL" after it.
             building = [
@@ -755,16 +761,16 @@ class VectorStore:
                 if len(row) > 1 and "UNDER CONSTRUCTION" in str(row[1])
             ]
             if not building:
-                return
+                return True
             now = loop.time()
             if now >= deadline:
                 logger.warning(
-                    "Indexes still building after %.0fs; searches on them may "
-                    "return nothing until they finish: %s",
+                    "Indexes still building after the %.0fs wait; searches on them "
+                    "may return nothing until they finish: %s",
                     _INDEX_BUILD_WAIT_S,
                     "; ".join(building),
                 )
-                return
+                return False
             if now >= next_log:
                 logger.info("Waiting for index builds: %s", "; ".join(building))
                 next_log = now + 10.0
@@ -804,6 +810,9 @@ class VectorStore:
             ("fulltext_Chunk", self.create_chunk_fulltext_index),
             ("fulltext_Entity", self.create_entity_fulltext_index),
         ]
+        # One deadline for the whole call, not one per statement.
+        deadline = asyncio.get_running_loop().time() + _INDEX_BUILD_WAIT_S
+        builds_done = True
         for key, fn in creators:
             try:
                 results[key] = await fn()
@@ -812,12 +821,13 @@ class VectorStore:
                 results[key] = False
             # Before the next statement: it would wait for this build on the
             # server, past the client's socket timeout on a large graph.
-            await self._wait_for_index_builds()
+            if builds_done:
+                builds_done = await self._wait_for_index_builds(deadline)
 
-        # Only mark indices as ensured if everything actually succeeded —
-        # otherwise the next call to ensure_indices() would skip retrying
-        # transient failures.
-        if all(results.values()):
+        # Only mark indices as ensured if everything actually succeeded and
+        # finished building — otherwise the next call to ensure_indices()
+        # would skip retrying transient failures, or waiting for the build.
+        if all(results.values()) and builds_done:
             self._indices_ensured = True
         logger.info(f"ensure_indices complete: {results}")
         return results
