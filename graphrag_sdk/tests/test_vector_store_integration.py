@@ -197,9 +197,11 @@ class TestRelationshipSearch:
         assert results[0]["score"] == pytest.approx(1.0, abs=1e-6)
 
     async def test_edges_are_found_through_the_index(self, conn, monkeypatch):
-        await self._graph_with_embedded_edges(conn)
+        # Index first, then data: an index built over existing nodes fills in
+        # the background, and a search right away can see only part of it.
         store = VectorStore(conn, embedding_dimension=3)
         assert await store.create_relates_vector_index()
+        await self._graph_with_embedded_edges(conn)
         await _wait_until_operational(conn, "RELATES")
         sent: list[str] = []
         real_query = conn.query
@@ -250,6 +252,114 @@ class TestRelationshipSearch:
         store = VectorStore(conn, embedding_dimension=3)
         assert await store.search_relationships([1.0, 0.0, 0.0]) == []
         assert await conn._breaker.allow_request()
+
+
+class TestEntityFulltextRanking:
+    async def test_the_named_entity_outranks_entities_that_only_mention_it(self, conn):
+        # Every description mentions the company, so the fulltext score cannot
+        # tell the company from the rest: it is 0 for all of them.
+        await conn.query(
+            "UNWIND range(2000, 2011) AS y "
+            "CREATE (:__Entity__ {id: toString(y) + '__date', name: toString(y), "
+            "description: 'The year Northwind Robotics did something'})"
+        )
+        await conn.query(
+            "CREATE (:__Entity__ {id: 'northwind_robotics__organization', "
+            "name: 'Northwind Robotics', description: 'A robotics company in Rotterdam'}), "
+            "(:__Entity__ {id: 'nw_lab__organization', name: 'Northwind Robotics Lab', "
+            "description: 'Research arm of Northwind Robotics'})"
+        )
+        store = VectorStore(conn, embedding_dimension=8)
+        await store.ensure_indices()
+
+        exact = await store.fulltext_search_entities("Northwind Robotics", top_k=3)
+        assert [r["id"] for r in exact][:2] == [
+            "northwind_robotics__organization",
+            "nw_lab__organization",
+        ]
+        lower = await store.fulltext_search_entities("northwind robotics", top_k=1)
+        assert lower[0]["id"] == "northwind_robotics__organization"
+        # A non-string name neither breaks the search nor matches.
+        await conn.query(
+            "CREATE (:__Entity__ {id: 'odd', name: ['Northwind Robotics'], "
+            "description: 'Northwind Robotics alias list'})"
+        )
+        assert (await store.fulltext_search_entities("Northwind Robotics", top_k=1))[0][
+            "id"
+        ] == "northwind_robotics__organization"
+        await conn.query("MATCH (n {id: 'odd'}) DELETE n")
+        # A stored name with stray spaces still matches exactly, and both sides
+        # are lowercased by the engine ('İ' lowercases differently in Python).
+        # The wrong entity has the lower id, so an id tie-break cannot rescue it.
+        await conn.query(
+            "CREATE (:__Entity__ {id: 'acme_corp', name: 'Acme Corp ', "
+            "description: 'Acme Corp, a company'}), "
+            "(:__Entity__ {id: 'aa_acme_logistics', name: 'Acme Corp Logistics', "
+            "description: 'Logistics arm of Acme Corp, Acme Corp and Acme Corp again'}), "
+            "(:__Entity__ {id: 'ist_city', name: 'İstanbul', description: 'A city'}), "
+            "(:__Entity__ {id: 'ist_airport', name: 'İstanbul Airport', "
+            "description: 'The airport of İstanbul, İstanbul'})"
+        )
+        assert (await store.fulltext_search_entities("Acme Corp", top_k=1))[0]["id"] == "acme_corp"
+        assert (await store.fulltext_search_entities("İstanbul", top_k=1))[0]["id"] == "ist_city"
+        await conn.query(
+            "MATCH (n) WHERE n.id IN $ids DELETE n",
+            {"ids": ["acme_corp", "aa_acme_logistics", "ist_city", "ist_airport"]},
+        )
+        # Entities that only mention it are ordered by score, then id.
+        rest = await store.fulltext_search_entities("Northwind Robotics", top_k=14)
+        assert [r["id"] for r in rest][2:] == [f"{y}__date" for y in range(2000, 2012)]
+
+
+class TestVectorSearchTies:
+    async def test_equally_close_entities_are_cut_by_id(self, conn):
+        # Index first, then data: an index built over existing nodes fills in
+        # the background, and a search right away can see only part of it.
+        store = VectorStore(conn, embedding_dimension=3)
+        assert await store.create_entity_vector_index()
+        await conn.query(
+            # p2 first: the index lists ties in creation order on both engines.
+            "CREATE (:__Entity__ {id: 'p2', name: 'A', embedding: vecf32([1.0, 0.0, 0.0])}), "
+            "(:__Entity__ {id: 'p1', name: 'A', embedding: vecf32([1.0, 0.0, 0.0])}), "
+            "(:__Entity__ {id: 'p0', name: 'Far', embedding: vecf32([0.0, 1.0, 0.0])})"
+        )
+
+        top = await store.search_entities([1.0, 0.0, 0.0], top_k=1)
+        both = await store.search_entities([1.0, 0.0, 0.0], top_k=2)
+
+        assert [r["id"] for r in top] == ["p1"]
+        assert [r["id"] for r in both] == ["p1", "p2"]
+
+    async def test_a_tie_wider_than_the_first_fetch_is_still_cut_by_id(self, conn):
+        # Twelve equally close entities, inserted highest id first: the index
+        # alone would hand back an arbitrary subset of them.
+        # Index first, then data: an index built over existing nodes fills in
+        # the background, and a search right away can see only part of it.
+        store = VectorStore(conn, embedding_dimension=3)
+        assert await store.create_entity_vector_index()
+        await conn.query(
+            "UNWIND range(11, 0, -1) AS i "
+            "CREATE (:__Entity__ {id: 'e' + right('0' + toString(i), 2), name: 'x', "
+            "embedding: vecf32([1.0, 0.0, 0.0])})"
+        )
+
+        top = await store.search_entities([1.0, 0.0, 0.0], top_k=1)
+        three = await store.search_entities([1.0, 0.0, 0.0], top_k=3)
+
+        assert [r["id"] for r in top] == ["e00"]
+        assert [r["id"] for r in three] == ["e00", "e01", "e02"]
+
+    async def test_equally_close_chunks_are_cut_by_id(self, conn):
+        # Index first, then data: an index built over existing nodes fills in
+        # the background, and a search right away can see only part of it.
+        store = VectorStore(conn, embedding_dimension=3)
+        assert await store.create_chunk_vector_index()
+        await conn.query(
+            "CREATE (:Chunk {id: 'c2', text: 'b', embedding: vecf32([1.0, 0.0, 0.0])}), "
+            "(:Chunk {id: 'c1', text: 'a', embedding: vecf32([1.0, 0.0, 0.0])})"
+        )
+
+        assert [r["id"] for r in await store.search_chunks([1.0, 0.0, 0.0], top_k=1)] == ["c1"]
 
 
 class TestIndexBuilds:
