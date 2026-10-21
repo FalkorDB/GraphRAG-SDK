@@ -198,7 +198,7 @@ RETURN r.src_name AS src, r.rel_type AS type, r.tgt_name AS tgt, r.fact AS fact,
 ORDER BY dist ASC LIMIT $top_k
 ```
 
-The scan runs when the server rejects the primary query (FalkorDB 4.x does when there is no `RELATES` vector index, or while it is still being built), or when it returns no rows and `db.indexes()` shows no built vector index on `RELATES.embedding` (FalkorDB 6.0.x answers a missing index with no rows). With the index in place, an empty answer is returned as is. If FalkorDB is unreachable, the search returns no results without scanning. The scan reads every embedded edge, so the SDK logs a warning the first time a store falls back to it.
+The scan runs when the server rejects the primary query (FalkorDB 4.x does when there is no `RELATES` vector index, or while it is still being built), or when it returns no rows and `db.indexes()` shows no built vector index on `RELATES.embedding` (FalkorDB 6.0.x answers a missing index with no rows). With the index in place, an empty answer is returned as is. If FalkorDB is unreachable, or the primary query runs past its timeout, the search returns no results without scanning: the scan would fail the same way or take longer still. The scan reads every embedded edge, so the SDK logs a warning the first time a store falls back to it.
 
 **Fulltext search:**
 ```cypher

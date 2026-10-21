@@ -173,16 +173,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **A query the server rejects, or one that runs past its timeout, raises
-  `DatabaseError` on its first attempt, not `DatabaseUnavailableError` after the
-  retries.** Everything that is not a server reply is still retried, as before:
-  a lost connection, a socket timeout, `LOADING`, an error raised in the driver.
+- **A query the server rejects, or one the server stops with "Query timed
+  out", raises `DatabaseError` on its first attempt, not
+  `DatabaseUnavailableError` after the retries.** Everything that is not a
+  server reply is still retried, as before: a lost connection, a client-side
+  socket timeout (no reply in time), `LOADING`, an error raised in the driver.
   Of the server's replies only the temporary ones are: a full query queue,
   `BUSY`, `NOREPLICAS`, `MISCONF`, cluster redirect/failover, a read-only
-  replica, out of memory. A rejection counts as a
-  healthy answer for the circuit breaker: it resets the failure count and closes
-  a half-open breaker. A timed-out query is not tried again, since each attempt
-  costs the full timeout, and two of them opened the breaker for every caller.
+  replica, out of memory. A rejection counts as a healthy answer for the circuit
+  breaker: it resets the failure count and closes a half-open breaker. The
+  server's "Query timed out" reply is not tried again, since each attempt costs
+  the full timeout, and two of them opened the breaker for every caller.
   If you catch `DatabaseUnavailableError` to detect an outage, these errors no
   longer reach that handler; catch `DatabaseError` for them.
   `update(cache_unchanged_chunks=True)` now falls back to extraction on such an
@@ -191,10 +192,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hits at once; the old retries (about 1.5–4.5 s) could outlast a short build,
   but counted each attempt against the breaker. In the process that builds the
   index, `ensure_indices()` now waits for the build (see **Fixed**).
-- **On a server that accepts connections but never answers, a query takes about
-  three times `query_timeout_ms` + 5 s (about 47 s at the defaults, was about
-  18 s) to raise `DatabaseUnavailableError`**, the price of waiting long enough
-  for a slow query to finish. Lower `query_timeout_ms` or `retry_count` to fail
+- **On a server that accepts connections but never answers, a query takes
+  longer to raise `DatabaseUnavailableError`: about 47 s at the defaults, was
+  about 18 s.** Each of the `retry_count` attempts waits `query_timeout_ms` +
+  5 s for a reply, plus the backoff between them; that is the price of waiting
+  long enough for a slow query to finish. Lower `query_timeout_ms` or `retry_count` to fail
   sooner. `ping()` still answers within 5 s.
 - **CI runs the FalkorDB-backed tests.** The integration job used to run one
   file (`tests/test_integration.py`); the whole suite now runs with
