@@ -537,3 +537,32 @@ class TestAcronymMerge:
         )
         (write,) = sim.writes
         assert write.params["aliases"] == ["A.I.H.S.", "AIHS", "Ashford Society"]
+
+
+def test_decimals_read_for_a_merge_are_compared_within_a_tolerance():
+    """FalkorDB sends decimals to the client rounded to 15 digits, so a value
+    read and compared back with ``=`` never matched and the merge was stale
+    forever. Decimals, and lists holding one, go to their own checks."""
+    from graphrag_sdk.storage.merge_query import MergeRead, snapshot_params
+
+    read = MergeRead(
+        keep={"score": 0.3, "rank": 2, "tags": ["a"]},
+        dup={"weight": 0.3, "series": [0.3, 1], "label": "x"},
+        keep_labels=[],
+        dup_labels=[],
+        kinds=[],
+    )
+    params = snapshot_params(
+        read, {"weight": 0.3, "series": [0.3, 1], "label": "x"}, ["score", "rank", "tags"]
+    )
+    assert params["s_seen"] == {"rank": 2, "tags": ["a"]}
+    assert params["s_near"] == {"score": 0.3} and params["s_near_list"] == {}
+    assert params["d_seen"] == {"label": "x"}
+    assert params["d_near"] == {"weight": 0.3}
+    assert params["d_near_list"] == {"series": [0.3, 1]}
+    q = absorb_query([], [], [])
+    for side in ("s", "d"):
+        assert f"WHERE coalesce(abs((CASE WHEN typeOf({side}[k]) IN" in q
+        assert f"all(k IN keys(${side}_near_list) WHERE size(" in q
+    # FalkorDB evaluates every CASE branch: no branch may do arithmetic.
+    assert "THEN s[k] -" not in q and "THEN d[k] -" not in q

@@ -438,3 +438,62 @@ async def test_a_collision_keeps_the_chosen_value_and_the_other_in_dropped(graph
     assert await rows(graph, "MATCH (s:__Entity__ {id: 's'}) RETURN s.born, s.born__dropped") == [
         [1960, [1959, 1961]]
     ]
+
+
+async def test_a_decimal_read_back_rounded_does_not_block_the_merge(graph):
+    """``0.1 + 0.2`` is stored as 0.30000000000000004 and read back as 0.3.
+    Compared exactly, the merge was stale on every read and never applied
+    (Naseem's review of #355). Within the tolerance it applies; a real change,
+    or a number turned into text, after the read still stops it."""
+    await tim_cook(graph)
+    await graph.query_raw(
+        "MATCH (s:__Entity__ {id: 's'}), (d:__Entity__ {id: 'd'}) "
+        "SET s.score = 0.1 + 0.2, d.score = 0.75, "
+        "d.weight = 0.1 + 0.2, d.series = [0.1 + 0.2, 1]"
+    )
+    store = await held(graph)
+    op = PlanOp(ABSORB, 0, "s", "Tim Cook", dup="d", dup_name="Timothy Cook")
+    plan_run = await store.write_plan([op], Decisions())
+    where = {
+        "plan_run": plan_run,
+        "page": 0,
+        "op": 0,
+        "dup": "d",
+        "dup_name": "Timothy Cook",
+        "survivor": "s",
+        "survivor_name": "Tim Cook",
+    }
+
+    async def apply(read):
+        fold = EntityDeduplicator(graph, None)._fold(op, read)
+        result = await store.fenced(
+            absorb_query(read.kinds, fold.sets, fold.labels),
+            {**fold.params, **where, "handled": handled(read.kinds)},
+        )
+        return outcome(result[0], 0)
+
+    for change in (
+        "SET s.score = 0.31",  # a real edit
+        "SET s.score = 'high'",  # a number turned into text: no crash
+        "SET d.weight = 0.4",
+        "SET d.series = 5",  # a list turned into a number
+        "SET d.series = [0.1 + 0.2, 2]",
+    ):
+        read = await read_for_merge(graph, "s", "d")
+        assert read.keep["score"] == 0.3  # rounded on the way out
+        await graph.query_raw(
+            f"MATCH (s:__Entity__ {{id: 's'}}), (d:__Entity__ {{id: 'd'}}) {change}"
+        )
+        assert await apply(read) == STALE, change
+        await graph.query_raw(
+            "MATCH (s:__Entity__ {id: 's'}), (d:__Entity__ {id: 'd'}) "
+            "SET s.score = 0.1 + 0.2, d.weight = 0.1 + 0.2, d.series = [0.1 + 0.2, 1]"
+        )
+
+    assert await apply(await read_for_merge(graph, "s", "d")) == APPLIED
+    ((score, dropped, weight, series),) = await rows(
+        graph,
+        "MATCH (s:__Entity__ {id: 's'}) RETURN s.score, s.score__dropped, s.weight, s.series",
+    )
+    assert score == pytest.approx(0.3) and dropped == [0.75]
+    assert weight == pytest.approx(0.3) and series == [pytest.approx(0.3), 1]

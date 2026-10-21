@@ -115,10 +115,15 @@ def snapshot_params(
     seen = list(seen)
     params: dict[str, Any] = {
         "carry": carry,
-        "s_seen": {k: read.keep[k] for k in seen if read.keep.get(k) is not None},
-        "d_seen": {k: read.dup[k] for k in (*carry, *seen) if read.dup.get(k) is not None},
         "s_absent": [*carry, *(k for k in seen if read.keep.get(k) is None)],
     }
+    s_read = {k: read.keep[k] for k in seen if read.keep.get(k) is not None}
+    d_read = {k: read.dup[k] for k in (*carry, *seen) if read.dup.get(k) is not None}
+    for side, values in (("s", s_read), ("d", d_read)):
+        exact, near, near_lists = _split_decimals(values)
+        params[f"{side}_seen"] = exact
+        params[f"{side}_near"] = near
+        params[f"{side}_near_list"] = near_lists
     for side, props in (("s", read.keep), ("d", read.dup)):
         for param, key, empty in (
             ("desc", "description", ""),
@@ -129,6 +134,30 @@ def snapshot_params(
             value = props.get(key)
             params[f"{side}_{param}"] = empty if value is None else value
     return params
+
+
+def _split_decimals(
+    values: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, float], dict[str, list[Any]]]:
+    """``values`` as ``(compared exactly, decimals, lists holding a decimal)``.
+
+    FalkorDB sends a decimal to the client rounded to 15 significant digits:
+    ``0.1 + 0.2`` is stored as ``0.30000000000000004`` and read as ``0.3``. A
+    value read that way and compared with ``=`` against the stored one is
+    never equal, so every merge touching it was stale forever. Decimals are
+    compared within :data:`DECIMAL_TOLERANCE` instead; everything else, which
+    survives the round trip, exactly."""
+    exact: dict[str, Any] = {}
+    near: dict[str, float] = {}
+    near_lists: dict[str, list[Any]] = {}
+    for key, value in values.items():
+        if isinstance(value, float):
+            near[key] = value
+        elif isinstance(value, list) and any(isinstance(item, float) for item in value):
+            near_lists[key] = value
+        else:
+            exact[key] = value
+    return exact, near, near_lists
 
 
 def outcome(row: list[Any], op: int) -> str:
@@ -170,6 +199,40 @@ _TICK = (
 )
 _RETURN = "RETURN owned, plan_found, next, my_turn, present, fresh, unhandled"
 
+#: How far a stored decimal may be from the value read for it and still count
+#: as unchanged, relative to its size. Rounding to 15 digits moves a value by
+#: about one part in 10^15; a real edit (0.30 -> 0.31) by percents.
+DECIMAL_TOLERANCE = 1e-9
+
+
+def _number(value: str) -> str:
+    """Cypher: ``value`` when it is a number, else null. FalkorDB evaluates
+    every ``CASE`` branch, whatever the condition, so a guard written as
+    ``CASE WHEN <is a number> THEN value - x`` still fails on text; only the
+    value itself may sit in a branch, and arithmetic on null is null."""
+    return f"(CASE WHEN typeOf({value}) IN ['Float', 'Integer'] THEN {value} ELSE null END)"
+
+
+def _near(stored: str, read: str) -> str:
+    """Cypher: ``stored`` still equals ``read`` — within the tolerance when
+    both are numbers, exactly otherwise (a number ingest turned into text is
+    then simply not equal)."""
+    s, r = _number(stored), _number(read)
+    return f"coalesce(abs({s} - {r}) <= {DECIMAL_TOLERANCE} * (1 + abs({r})), {stored} = {read})"
+
+
+def _unchanged_decimals(node: str) -> str:
+    """Cypher: every decimal read on ``node`` (``s`` or ``d``) is still the
+    value read, and every list holding one still matches item by item."""
+    stored = f"coalesce(CASE WHEN typeOf({node}[k]) = 'List' THEN {node}[k] ELSE null END, [])"
+    read = f"${node}_near_list[k]"
+    return (
+        f"AND all(k IN keys(${node}_near) WHERE {_near(f'{node}[k]', f'${node}_near[k]')}) "
+        f"AND all(k IN keys(${node}_near_list) WHERE size({stored}) = size({read}) "
+        f"AND all(i IN range(0, size({read}) - 1) WHERE {_near(f'{stored}[i]', f'{read}[i]')})) "
+    )
+
+
 # Only ``deleted`` records carry ``eid``, so the lookup is one index seek. Each
 # entity is aggregated to one node: there is no uniqueness constraint on
 # ``__Entity__.id``, and no write below may run once per copy.
@@ -191,7 +254,9 @@ _ABSORB_HEAD = (
     "AND coalesce(d.aliases, []) = $d_aliases AND coalesce(d.merged_labels, '') = $d_merged "
     "AND all(k IN keys($s_seen) WHERE s[k] = $s_seen[k]) "
     "AND all(k IN keys($d_seen) WHERE d[k] = $d_seen[k]) "
-    "AND all(k IN $s_absent WHERE s[k] IS NULL OR s[k] = '' OR s[k] = []) AS fresh "
+    + _unchanged_decimals("s")
+    + _unchanged_decimals("d")
+    + "AND all(k IN $s_absent WHERE s[k] IS NULL OR s[k] = '' OR s[k] = []) AS fresh "
     # Every relationship type the duplicate has must have a block below. The
     # parentheses matter: ``a + CASE ... END IN l`` parses as ``a + (... IN l)``.
     "OPTIONAL MATCH (d)-[x]-() WHERE present "
