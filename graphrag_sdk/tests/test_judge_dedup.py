@@ -18,12 +18,15 @@ from graphrag_sdk.storage.deduplicator import (
     _picked_values,
 )
 from graphrag_sdk.storage.judge_dedup import (
+    JUDGE_MIN_OUTPUT_TOKENS,
     MAX_DESC_CHARS,
     MAX_NAME_CHARS,
     PROMPT_TOKEN_BUDGET,
     REASKS,
     AttributeSchema,
     NameNeighbourIndex,
+    _output_room,
+    cut_set,
     different_pairs_from_response,
     group_keeps_from_response,
     make_groups_dense,
@@ -204,6 +207,19 @@ def test_none_after_a_sets_groups_means_no_further_group():
     assert parse_groups(text, [3]) == {0: [[0, 2], [1]]}
 
 
+def test_an_answer_without_its_end_line_leaves_its_last_grouped_set_in_doubt():
+    """An answer that stopped after a group line reads like a set whose other
+    members are all different; only the END line tells the two apart. A last
+    NONE line closed its set, so a forgotten END costs nothing there."""
+    cut = "SET 1 NONE\nSET 2 GROUP: 1, 2 | NAME: IBM"
+    assert cut_set(cut, 3) == 1
+    assert cut_set(cut + "\nEND", 3) is None and cut_set(cut + "\n**END.**", 3) is None
+    assert cut_set("SET 1 GROUP: 1, 2\nSET 1 NONE", 2) is None
+    assert cut_set("SET 1 GROUP: 1, 2\nSET 9 GROUP: 1, 2", 2) == 0
+    assert cut_set("GROUP: 1, 2", 1) == 0 and cut_set("NONE", 1) is None
+    assert cut_set("", 2) is None
+
+
 def test_pack_prompts_lists_every_set():
     ents = [{"name": f"E{i}", "label": "Person", "description": "d" * 50} for i in range(6)]
     prompts, orders = pack_prompts([[0, 1], [2, 3, 4], [5, 0]], ents)
@@ -247,16 +263,19 @@ def test_pack_prompts_keeps_an_oversized_set_within_budget():
 class ScriptedLLM:
     """Oracle judge: answers by entity NAME. ``per_pass[n]`` is the n-th
     round's answer — the name groups that are one entity; ``None`` makes every
-    call of that round fail; a ``str`` is returned verbatim. Rounds past the
-    list answer like the last one, so ``[None]`` fails every re-ask too."""
+    call of that round fail; a ``str`` is returned verbatim, so it carries its
+    own ``END``. Rounds past the list answer like the last one, so ``[None]``
+    fails every re-ask too."""
 
     def __init__(self, per_pass):
         self.per_pass = list(per_pass)
         self.prompts: list[str] = []
         self.pass_no = 0
+        self.kw: dict = {}
 
     async def abatch_invoke(self, prompts, **kw):
         self.prompts.extend(prompts)
+        self.kw = kw
         same = self.per_pass[min(self.pass_no, len(self.per_pass) - 1)]
         self.pass_no += 1
         out = []
@@ -281,6 +300,7 @@ class ScriptedLLM:
                         used.update(grp)
                         groups.append(f"SET {si} GROUP: {', '.join(grp)} | NAME: {name}")
                 lines += groups or [f"SET {si} NONE"]
+            lines.append("END")
             out.append(LLMBatchItem(index=i, response=SimpleNamespace(content="\n".join(lines))))
         return out
 
@@ -335,6 +355,50 @@ def test_a_failed_call_merges_nothing_and_its_set_is_asked_again_alone():
     sim = _sim(judge=llm)
     assert sim.groups == [["e1", "e2"]], "the re-ask answered"
     assert "--- Set 2 ---" not in llm.prompts[-1]
+
+
+def test_a_set_an_answer_stopped_in_is_asked_again_and_the_sets_before_it_count(
+    monkeypatch, caplog
+):
+    """An answer cut after "IBM = International Business Machines" would say
+    Big Blue is a different company. Without its END line that set is asked
+    again, alone; the set the answer finished still counts."""
+    import logging
+
+    rows = [
+        ["a", "Meta", "Owner of Instagram.", ["Organization"]],
+        ["b", "Facebook", "Social network company.", ["Organization"]],
+        ["c", "IBM", "Computer company.", ["Organization"]],
+        ["d", "International Business Machines", "Armonk firm.", ["Organization"]],
+        ["e", "Big Blue", "IBM's nickname.", ["Organization"]],
+    ]
+    monkeypatch.setattr(
+        "graphrag_sdk.storage.judge_dedup.make_groups_dense",
+        lambda edges, **kw: [[0, 1], [2, 3, 4]],
+    )
+    cut = "SET 1 GROUP: 1, 2 | NAME: Meta\nSET 2 GROUP: 1, 2 | NAME: IBM"
+    llm = ScriptedLLM([cut, [IBM | {"Big Blue"}]])
+    with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.judge_dedup"):
+        sim = _sim(rows, judge=llm)
+    assert sorted(map(sorted, sim.groups)) == [["a", "b"], ["c", "d", "e"]]
+    assert sim.dedup.last_judge_stats["llm_calls"] == 2
+    assert "Big Blue" in llm.prompts[1] and "Facebook" not in llm.prompts[1]
+    assert any("before END" in r.getMessage() for r in caplog.records)
+
+
+def test_the_judge_lifts_a_low_output_limit_and_never_sets_one():
+    """An output limit set on the LLM for short RAG answers would cut a judge
+    answer, so the judge raises it for its own calls. It never sets one of its
+    own: a reasoning model spends output on thought and needs the full room."""
+    assert _output_room(SimpleNamespace(_max_tokens=256)) == {"max_tokens": JUDGE_MIN_OUTPUT_TOKENS}
+    assert _output_room(SimpleNamespace(_max_tokens=None)) == {}
+    assert _output_room(SimpleNamespace(_max_tokens=32_000)) == {}
+    assert _output_room(SimpleNamespace()) == {}
+
+    llm = ScriptedLLM([[IBM]])
+    llm._max_tokens = 256
+    _sim(judge=llm)
+    assert llm.kw["max_tokens"] == JUDGE_MIN_OUTPUT_TOKENS
 
 
 def test_an_answer_that_is_not_a_clean_partition_is_not_a_verdict():
@@ -423,9 +487,9 @@ def test_a_group_a_failed_set_could_change_is_held_and_the_neighbour_refunded(mo
                 lines = item.response.content.splitlines()
                 blocks = re.split(r"--- Set \d+ ---\n", prompts[item.index])[1:]
                 spoiled = {si for si, block in enumerate(blocks, 1) if "Tim Cooke" in block}
-                item.response.content = "\n".join(
-                    line for line in lines if int(line.split()[1]) not in spoiled
-                ) + "".join(f"\nSET {si} GROUP: 1, 9 | NAME: x" for si in spoiled)
+                kept = [line for line in lines[:-1] if int(line.split()[1]) not in spoiled]
+                spoilt = [f"SET {si} GROUP: 1, 9 | NAME: x" for si in spoiled]
+                item.response.content = "\n".join(kept + spoilt + ["END"])
             return out
 
     sim = _sim(rows, judge=NeverAnswersTheSecondSet([[{"Tim Cook", "Timothy Cook"}]]))
@@ -563,7 +627,7 @@ def test_the_judges_name_is_the_groups_last_operation():
         ["s", "Tim Cook", "Apple CEO", ["Person"], None, None, 3],
         ["d", "Timothy D. Cook", "chief executive of Apple", ["Person"]],
     ]
-    answer = "SET 1 GROUP: 1, 2 | NAME: Timothy D. Cook"
+    answer = "SET 1 GROUP: 1, 2 | NAME: Timothy D. Cook\nEND"
     sim = _sim(rows, judge=ScriptedLLM([answer]))
     assert [op.op for op in sim.ops] == ["absorb", "rename"]
     assert (sim.ops[0].survivor, sim.ops[1].survivor) == ("s", "s"), "the better connected"
@@ -749,7 +813,7 @@ def test_a_spoiled_answer_is_warned_about_once(caplog):
     reading of the answer."""
     import logging
 
-    llm = ScriptedLLM(["SET 1 GROUP: 1 | NAME: IBM\nSET 1 GROUP: 2"])
+    llm = ScriptedLLM(["SET 1 GROUP: 1 | NAME: IBM\nSET 1 GROUP: 2\nEND"])
     with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.judge_dedup"):
         _sim(judge=llm)
     spoiled = [r for r in caplog.records if "asked again" in r.getMessage()]
@@ -820,7 +884,7 @@ TIMS = [
 
 
 def test_the_judge_chooses_the_value_and_the_other_is_kept_in_dropped():
-    llm = ScriptedLLM(["SET 1 GROUP: 1, 2 | NAME: Tim Cook | KEEP: born=2"])
+    llm = ScriptedLLM(["SET 1 GROUP: 1, 2 | NAME: Tim Cook | KEEP: born=2\nEND"])
     sim = _sim(
         TIMS,
         judge=llm,

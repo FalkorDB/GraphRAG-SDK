@@ -368,7 +368,7 @@ class TestJudgeMergeSite:
             self.prompts.extend(prompts)
             return [
                 SimpleNamespace(
-                    ok=True, index=i, response=SimpleNamespace(content="SET 1 GROUP: 1, 2")
+                    ok=True, index=i, response=SimpleNamespace(content="SET 1 GROUP: 1, 2\nEND")
                 )
                 for i in range(len(prompts))
             ]

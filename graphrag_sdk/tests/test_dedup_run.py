@@ -94,6 +94,7 @@ class Judge:
                     )
                 if not any(line.startswith(f"SET {si} ") for line in lines):
                     lines.append(f"SET {si} NONE")
+            lines.append("END")
             out.append(LLMBatchItem(index=i, response=SimpleNamespace(content="\n".join(lines))))
         return out
 

@@ -59,6 +59,12 @@ KNN_BATCH = 250
 KNN_ROWS_PER_QUERY = 2_500
 #: A set without a usable answer is asked again, on its own, this many times.
 REASKS = 2
+#: The least room a judge answer gets. The judge reuses the caller's LLM, and
+#: an output limit set there for short RAG answers would cut a judge answer
+#: mid-set; a lower limit is raised to this for judge calls. Never imposed:
+#: with no limit set, the provider's own maximum applies, which a reasoning
+#: model, spending output tokens on thought, needs. Answers run ~150-300.
+JUDGE_MIN_OUTPUT_TOKENS = 4_096
 #: Internal node ids per window of the scan for entities without a name vector.
 SCAN_WINDOW = 10_000
 #: How long a run waits for a vector index FalkorDB is still building.
@@ -149,10 +155,12 @@ JUDGE_PROMPT = (
     'the merged entity, separated by ";" (attribute names as shown). A member '
     "in no group is a different entity from every other member: do not list "
     'it. For a set with no group, write the one line "SET <set number> NONE". '
+    'After the last set, write the line "END". '
     "Example for a set of 4, a set of 3 and a set of 2:\n"
     "  SET 1 GROUP: 1, 4 | NAME: International Business Machines\n"
     "  SET 2 NONE\n"
     "  SET 3 GROUP: 1, 2 | NAME: Marie Curie | KEEP: born=1\n"
+    "  END\n"
     "Every set must have at least one line, including the last set. No other "
     "text.\n\n"
     "Answer:"
@@ -358,6 +366,34 @@ def pack_prompts(
 _ANSWER_LINE = re.compile(r"^[\s\-*#>`|]*SET\s*(\d+)\b", re.IGNORECASE)
 _NONE_LINE = re.compile(r"^[\s\-*#>`|]*SET\s*(\d+)\s*:?\s*NONE\b", re.IGNORECASE)
 _BARE_NONE_LINE = re.compile(r"^[\s\-*#>`|]*()NONE\s*$", re.IGNORECASE)
+_END_LINE = re.compile(r"^[\s\-*#>`|]*END[\s.*`]*$", re.IGNORECASE)
+
+
+def cut_set(text: str, n_sets: int) -> int | None:
+    """The set an answer stopped in, when it stopped before its ``END`` line.
+
+    An answer lists only groups, so one cut after a group line cannot be told
+    from one whose remaining members are all different — except by its end
+    marker. Without it, the set of a last group line may have lost groups. A
+    last ``NONE`` line closed its set; the sets after it have no line and are
+    unanswered anyway. ``None`` when nothing is in doubt."""
+    last: int | None = None
+    for line in text.splitlines():
+        if _END_LINE.match(line):
+            return None
+        if _NONE_LINE.match(line) or (n_sets == 1 and _BARE_NONE_LINE.match(line)):
+            last = None
+            continue
+        if "GROUP" not in line.upper():
+            continue
+        m = _ANSWER_LINE.match(line)
+        if m and 0 <= int(m.group(1)) - 1 < n_sets:
+            last = int(m.group(1)) - 1
+        elif not m and n_sets == 1 and _BARE_GROUP_LINE.match(line):
+            last = 0
+    return last
+
+
 # The parts after a group's members, each up to the next "|".
 _NAME_PART = re.compile(r"\|\s*NAME\s*:\s*([^|]*?)\s*(?=\||$)", re.IGNORECASE)
 _KEEP_PART = re.compile(r"\|\s*KEEP\s*:\s*([^|]*?)\s*(?=\||$)", re.IGNORECASE)
@@ -1010,7 +1046,9 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
             first.append(pos)
             pos += len(order)
         try:
-            results = await self._llm.abatch_invoke(prompts, max_concurrency=self._conc)
+            results = await self._llm.abatch_invoke(
+                prompts, max_concurrency=self._conc, **_output_room(self._llm)
+            )
         except Exception as exc:
             logger.warning("judge dedup: %d judge calls failed: %s", len(prompts), exc)
             verdicts.calls += len(prompts)
@@ -1028,6 +1066,11 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
                 continue
             content = item.response.content or ""
             answered = parse_groups(content, [len(members) for members in order])
+            cut = cut_set(content, len(order))
+            if cut is not None and answered.pop(cut, None) is not None:
+                logger.warning(
+                    "judge dedup: answer stopped in set %d, before END; asked again", cut + 1
+                )
             unanswered.extend(
                 first[item.index] + si for si in range(len(order)) if si not in answered
             )
@@ -1039,3 +1082,14 @@ class LLMJudgeDeduplicator(NameNeighbourIndex):
             if p not in answered_prompts:  # no result came back for the prompt at all
                 unanswered.extend(range(first[p], first[p] + len(order)))
         return sorted(set(unanswered))
+
+
+def _output_room(llm: Any) -> dict[str, int]:
+    """Per-call arguments that lift a low output limit set on ``llm`` to
+    :data:`JUDGE_MIN_OUTPUT_TOKENS`; none when it sets no limit or a higher
+    one. A per-call ``max_tokens`` wins over the instance's in the SDK's
+    providers."""
+    limit = getattr(llm, "_max_tokens", None)
+    if isinstance(limit, int) and limit < JUDGE_MIN_OUTPUT_TOKENS:
+        return {"max_tokens": JUDGE_MIN_OUTPUT_TOKENS}
+    return {}
