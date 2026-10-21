@@ -139,9 +139,10 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 | **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader` | Auto-detect by extension |
 | **Chunking** | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` | `FixedSizeChunking` |
 | **Extraction** | `ExtractionStrategy` | `GraphExtraction` (GLiNER2 + LLM) | `GraphExtraction` |
-| **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `LLMVerifiedResolution` | `ExactMatch` at ingest; incremental LLM-judged cross-document dedup in `finalize()` (`LLMVerifiedResolution` opt-in) |
+| **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `LLMVerifiedResolution` | `ExactMatch` at ingest; incremental judged cross-document dedup in `finalize()` (`LLMVerifiedResolution` opt-in) |
 | **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | `MultiPath` (5-path) |
 | **Reranking** | `RerankingStrategy` | `CosineReranker` | Cosine |
+| **Dedup judging** | `DedupJudge` | `LLMJudge` | `LLMJudge` with the GraphRAG LLM, in `finalize()` |
 
 ### LLM & Embedding Providers
 

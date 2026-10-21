@@ -25,6 +25,7 @@ from graphrag_sdk import (
 from graphrag_sdk.ingestion.mapping import MappingError
 
 from .conftest import MockLLM
+from .dedup_sim import AllDifferentJudge
 
 
 @pytest.fixture
@@ -172,8 +173,8 @@ class TestNothingIsDeletedWithoutSaying:
         await rag.ingest(str(path))
         await rag.ingest(text="John Smith presented the roadmap.", document_id="note.txt")
 
-        # No judge: this is about what the name rule alone may do.
-        summary = await rag.finalize(judge=False)
+        # Nothing judged the same: this is about what the name rule alone may do.
+        summary = await rag.finalize(judge=AllDifferentJudge())
 
         rows = await rag.query(
             "MATCH (p:Person {name:'John Smith'}) RETURN p.people__employee_id, p.description"
@@ -445,7 +446,7 @@ class TestTwoTablesOwningOneLabelStayApart:
         await rag.ingest(str(hr))
         await rag.ingest(str(crm))
         await rag.ingest(str(hr))
-        await rag.finalize(judge=False)
+        await rag.finalize(judge=AllDifferentJudge())
 
         rows = await rag.query(
             "MATCH (p:Person) RETURN p.name, p.hr__employee_id, p.crm__contact_id ORDER BY p.name"

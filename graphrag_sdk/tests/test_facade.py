@@ -29,6 +29,7 @@ from graphrag_sdk.core.models import (
     UpdateResult,
 )
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
+from graphrag_sdk.storage.dedup_judges import DedupJudge, LLMJudge
 
 from .conftest import MockEmbedder, MockLLM
 
@@ -293,50 +294,37 @@ class TestGraphRAGDeduplicateEntities:
 
         monkeypatch.setattr(g._deduplicator, "deduplicate", fake_dedup)
         g._ensure_ontology_initialized = AsyncMock()
-        count = await g.deduplicate_entities(judge=False, release_unjudged=True, dedup_all=True)
+        count = await g.deduplicate_entities(dedup_all=True)
         assert count == 1
-        assert seen["judge_llm"] is None and seen["release_unjudged"] is True
-        assert seen["dedup_all"] is True
+        assert isinstance(seen["judge"], LLMJudge) and seen["dedup_all"] is True
 
-    async def test_deduplicate_entities_judge_is_opt_in(
-        self, mock_conn, embedder, llm, monkeypatch, caplog
-    ):
-        """The standalone ``deduplicate_entities()`` makes no LLM call unless
-        asked — a caller running it after every ingest batch must not start
-        paying for judge calls with no source change. ``judge=True`` uses
-        the facade's LLM unless ``judge_llm`` is given; ``finalize()`` is where
-        the judge is on by default."""
+    async def test_every_dedup_run_has_a_judge(self, mock_conn, embedder, llm, monkeypatch):
+        """There is no dedup without a judge: ``LLMJudge`` over the facade's
+        LLM by default, or any ``DedupJudge`` given. Anything else — the old
+        ``judge=False`` among them — is refused before a run starts."""
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
-        seen: dict = {}
+        seen: list[dict] = []
 
         async def fake_dedup(**kw):
-            seen.update(kw)
+            seen.append(kw)
             return 0
 
         monkeypatch.setattr(g._deduplicator, "deduplicate", fake_dedup)
         await g.deduplicate_entities()
-        assert seen["judge_llm"] is None and "resolver" not in seen
+        assert isinstance(seen[0]["judge"], LLMJudge) and seen[0]["judge"]._llm is g.llm
 
-        seen.clear()
-        await g.deduplicate_entities(judge=True)
-        assert seen["judge_llm"] is g.llm
+        class Mine(DedupJudge):
+            async def judge(self, sets, *, retry=False):
+                return [None] * len(sets)
 
-        other = MagicMock()
-        seen.clear()
-        await g.deduplicate_entities(judge=True, judge_llm=other)
-        assert seen["judge_llm"] is other
+        mine = Mine()
+        await g.deduplicate_entities(judge=mine)
+        assert seen[1]["judge"] is mine
 
-        # judge_llm alone does not switch the phase on — but a judge model is
-        # an unambiguous signal the caller wanted the judge, so it says so
-        seen.clear()
-        with caplog.at_level("WARNING", logger="graphrag_sdk.api.main"):
-            await g.deduplicate_entities(judge_llm=other)
-        assert seen["judge_llm"] is None
-        assert "judge_llm was given but judge=False" in caplog.text
-        caplog.clear()
-        with caplog.at_level("WARNING", logger="graphrag_sdk.api.main"):
-            await g.deduplicate_entities(judge=True, judge_llm=other)
-        assert "judge_llm was given" not in caplog.text
+        for wrong in (False, True, g.llm):
+            with pytest.raises(TypeError, match="every dedup run has a judge"):
+                await g.deduplicate_entities(judge=wrong)
+        assert len(seen) == 2
 
     async def test_the_removed_fuzzy_arguments_are_deprecated_not_broken(
         self, mock_conn, embedder, llm, monkeypatch
@@ -385,10 +373,12 @@ class TestGraphRAGDeduplicateEntities:
         g._vector_store.embed_relationships = AsyncMock(return_value=0)
         g._vector_store.ensure_indices = AsyncMock(return_value={})
         await g.finalize()
-        assert seen["judge_llm"] is g.llm and "resolver" not in seen
-        seen.clear()
-        await g.finalize(judge=False)
-        assert seen["judge_llm"] is None
+        assert isinstance(seen["judge"], LLMJudge) and seen["judge"]._llm is g.llm
+        assert "resolver" not in seen
+        queries = g._graph_store.query_raw.await_count
+        with pytest.raises(TypeError, match="every dedup run has a judge"):
+            await g.finalize(judge=False)
+        assert g._graph_store.query_raw.await_count == queries, "refused before any work"
 
     async def test_finalize_writes_entity_vectors_only_through_dedup(
         self, mock_conn, embedder, llm
@@ -2751,24 +2741,23 @@ class TestDefaultResolver:
             return 0
 
         monkeypatch.setattr(graphrag._deduplicator, "deduplicate", fake_dedup)
-        graphrag._deduplicator.last_judge_stats = {"merged": 2, "llm_calls": 4}
+        graphrag._deduplicator.last_judge_stats = {"merged": 2, "judge_calls": 4}
         graphrag._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[[0]]))
         graphrag._vector_store.backfill_entity_embeddings = AsyncMock(side_effect=fake_backfill)
         graphrag._vector_store.embed_relationships = AsyncMock(return_value=0)
         graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
 
         result = await graphrag.finalize()
-        assert seen["judge_llm"] is graphrag.llm
-        assert result.judge_llm_calls == 4
-        assert result.judge_stats == {"merged": 2, "llm_calls": 4}
+        assert isinstance(seen["judge"], LLMJudge) and seen["judge"]._llm is graphrag.llm
+        assert result.judge_calls == 4
+        assert result.judge_stats == {"merged": 2, "judge_calls": 4}
         # Dedup writes every entity vector itself, listing each entity first;
         # no backfill runs after it.
         assert order == ["dedup"]
 
-        seen.clear()
-        result = await graphrag.finalize(judge=False)
-        assert seen["judge_llm"] is None
-        assert result.judge_stats == {} and result.judge_llm_calls == 0
+        other = LLMJudge(MagicMock())
+        await graphrag.finalize(judge=other)
+        assert seen["judge"] is other
 
     async def test_explicit_resolver_is_honoured(self, graphrag, monkeypatch):
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (

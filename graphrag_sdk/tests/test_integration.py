@@ -8,6 +8,8 @@ import pytest
 
 from graphrag_sdk.core.providers import Embedder
 
+from .dedup_sim import SameSpellingJudge
+
 
 class TestTopLevelImports:
     """Verify all public API exports are importable."""
@@ -938,7 +940,7 @@ class TestIncrementalUpdateInvariants:
         dedup = EntityDeduplicator(rag._graph_store, embedder)
         # Hand-written without a name vector, so pending like any entity
         # ingest writes: nothing has to mark them.
-        merged = await dedup.deduplicate()
+        merged = await dedup.deduplicate(judge=SameSpellingJudge())
         assert merged >= 1, "test setup: dedup should have merged alice-1/alice-2"
 
         # Survivor edge should carry BOTH chunk ids — the union.
@@ -1085,7 +1087,7 @@ class TestIncrementalUpdateInvariants:
         dedup = EntityDeduplicator(rag._graph_store, embedder)
         # Hand-written without a name vector, so pending like any entity
         # ingest writes: nothing has to mark them.
-        merged = await dedup.deduplicate()
+        merged = await dedup.deduplicate(judge=SameSpellingJudge())
         assert merged >= 1, "test setup: dedup should have merged alice-1/alice-2"
 
         # Which Alice survives is the ranking's call (the better-connected one);
@@ -1166,7 +1168,7 @@ class TestIncrementalUpdateInvariants:
         dedup = EntityDeduplicator(rag._graph_store, embedder)
         # Hand-written without a name vector, so pending like any entity
         # ingest writes: nothing has to mark them.
-        merged = await dedup.deduplicate()
+        merged = await dedup.deduplicate(judge=SameSpellingJudge())
         assert merged >= 1, "test setup: dedup should have merged alice-1/alice-2"
 
         result = await conn.query(
@@ -1229,7 +1231,7 @@ class TestIncrementalUpdateInvariants:
         dedup = EntityDeduplicator(rag._graph_store, embedder)
         # Hand-written without a name vector, so pending like any entity
         # ingest writes: nothing has to mark them.
-        merged = await dedup.deduplicate()
+        merged = await dedup.deduplicate(judge=SameSpellingJudge())
         assert merged >= 1, (
             "an untyped RELATES edge must not abort the remap — the duplicate "
             "was left un-merged, which is how a null-keyed MERGE fails."

@@ -30,11 +30,11 @@ from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchR
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
-from graphrag_sdk.storage.judge_dedup import LLMJudgeDeduplicator
+from graphrag_sdk.storage.dedup_judges import DedupJudge, LLMJudge
 from graphrag_sdk.storage.merge_query import absorb_query
 
 from .conftest import MockLLM
-from .dedup_sim import simulate
+from .dedup_sim import AllSameJudge, simulate
 from .test_llm_verified_resolution import ControlledEmbedder, _angle
 
 
@@ -250,7 +250,7 @@ class TestLLMVerifiedMergeSites:
         assert set(res.nodes[0].properties["descriptions"]) == {"D1", "D2", "D3"}
 
 
-class TestFinalizeExactPhase:
+class TestFinalizeMergeFold:
     """Rules 1 and 3 through ``EntityDeduplicator._fold``, the write every
     finalize phase (exact, adoption, judge) merges through, and the merge query
     that carries it."""
@@ -269,7 +269,7 @@ class TestFinalizeExactPhase:
         return [w for w in sim.writes if "s.descriptions = $descs" in w.sets]
 
     async def test_three_rules(self):
-        sim = await simulate(self._ROWS, stored=self._STORED)
+        sim = await simulate(self._ROWS, stored=self._STORED, judge=AllSameJudge())
         assert sim.merged == 1
         (write,) = self._description_writes(sim)
         # rule 1: list + joined string; survivor = longest description (e2), whose
@@ -293,7 +293,7 @@ class TestFinalizeExactPhase:
             ["e1", "Maya Ellison", "CEO | founder of Acme", "Person"],
             ["e2", "maya ellison", "born 1970", "Person"],
         ]
-        sim = await simulate(rows)
+        sim = await simulate(rows, judge=AllSameJudge())
         assert sim.merged == 1
         (write,) = self._description_writes(sim)
         assert write.op.survivor == "e1"
@@ -310,7 +310,7 @@ class TestFinalizeExactPhase:
             ["e1", "Alice", "an engineer", "Person"],
             ["e2", "alice", "an engineer", "Person"],
         ]
-        sim = await simulate(rows)
+        sim = await simulate(rows, judge=AllSameJudge())
         assert sim.merged == 1
         (write,) = self._description_writes(sim)
         assert write.params["descs"] == ["an engineer"]
@@ -324,7 +324,11 @@ class TestFinalizeExactPhase:
             ["e1", "Cape Morrow Light", "a lighthouse | first lit 1871", "Location"],
             ["e2", "cape morrow light", "first lit 1871", "Location"],
         ]
-        sim = await simulate(rows, stored={"e1": {"props": {"descriptions": ["a lighthouse"]}}})
+        sim = await simulate(
+            rows,
+            stored={"e1": {"props": {"descriptions": ["a lighthouse"]}}},
+            judge=AllSameJudge(),
+        )
         assert sim.merged == 1
         (write,) = self._description_writes(sim)
         assert write.op.survivor == "e1"
@@ -339,7 +343,9 @@ class TestFinalizeExactPhase:
             ["e1", "Alice", "an engineer", "Person"],
             ["e2", "alice", "born 1970", "Person"],
         ]
-        sim = await simulate(rows, stored={"e1": {"props": {"descriptions": []}}})
+        sim = await simulate(
+            rows, stored={"e1": {"props": {"descriptions": []}}}, judge=AllSameJudge()
+        )
         assert sim.merged == 1
         (write,) = self._description_writes(sim)
         assert write.params["descs"] == ["an engineer", "born 1970"]
@@ -395,12 +401,14 @@ class TestJudgeMergeSite:
         assert sim.nodes["b"]["labels"] == ["Company", "Organization"]
 
     def test_the_judge_writes_nothing(self):
-        """The judge has no merge site to call: it returns verdicts, and the
-        deduplicator decides and writes every merge from a sealed plan."""
+        """A judge has no merge site to call, nor a graph: it is given sets and
+        returns verdicts, and the deduplicator decides and writes every merge
+        from a sealed plan."""
         import inspect
 
-        assert "merge_group" not in inspect.signature(LLMJudgeDeduplicator).parameters
-        assert inspect.signature(LLMJudgeDeduplicator.judge).return_annotation == "Verdicts"
+        assert list(inspect.signature(DedupJudge.judge).parameters) == ["self", "sets", "retry"]
+        assert inspect.signature(DedupJudge.judge).return_annotation == "list[SetVerdict | None]"
+        assert list(inspect.signature(LLMJudge).parameters) == ["llm", "max_concurrency"]
 
 
 class TestRemapChainsAreFlattened:

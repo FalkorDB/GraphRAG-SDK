@@ -9,8 +9,29 @@ from types import SimpleNamespace
 
 import pytest
 
-from graphrag_sdk.core.models import Attribute, Entity, Ontology
+from graphrag_sdk.core.models import (
+    Attribute,
+    Entity,
+    JudgeEntity,
+    JudgeGroup,
+    JudgeSet,
+    Ontology,
+    SetVerdict,
+)
 from graphrag_sdk.core.providers.base import LLMBatchItem
+from graphrag_sdk.storage.dedup_judges import DedupJudge
+from graphrag_sdk.storage.dedup_judges.llm_judge import (
+    JUDGE_MIN_OUTPUT_TOKENS,
+    JUDGE_PROMPT,
+    MAX_DESC_CHARS,
+    MAX_NAME_CHARS,
+    PROMPT_TOKEN_BUDGET,
+    _output_room,
+    cut_set,
+    pack_prompts,
+    parse_answer,
+    render_set,
+)
 from graphrag_sdk.storage.deduplicator import (
     EntityDeduplicator,
     _collisions,
@@ -18,22 +39,13 @@ from graphrag_sdk.storage.deduplicator import (
     _picked_values,
 )
 from graphrag_sdk.storage.judge_dedup import (
-    JUDGE_MIN_OUTPUT_TOKENS,
-    MAX_DESC_CHARS,
-    MAX_NAME_CHARS,
-    PROMPT_TOKEN_BUDGET,
     REASKS,
     AttributeSchema,
     NameNeighbourIndex,
-    _output_room,
-    cut_set,
-    different_pairs_from_response,
-    group_keeps_from_response,
+    Verdicts,
+    _usable,
+    judge_sets,
     make_groups_dense,
-    pack_prompts,
-    pairs_by_set_from_response,
-    parse_groups,
-    render_set,
 )
 from graphrag_sdk.storage.merge_query import MergeRead
 from graphrag_sdk.storage.system_store import ABSORB, JUDGE, PlanOp
@@ -43,8 +55,39 @@ from .dedup_sim import SimGraph, simulate
 # ── pure helpers ────────────────────────────────────────────────────────────
 
 
+def _verdicts(text, order):
+    """What a run takes from an LLM answer about the sets ``order`` (entity
+    indices per set): the parsed verdict of each set, where it passes the
+    run's check. The answer is ended; an answer cut short is tested on its
+    own."""
+    verdicts = Verdicts()
+    sizes = [len(members) for members in order]
+    for si, verdict in parse_answer(text + "\nEND", sizes).items():
+        groups = _usable(verdict, sizes[si])
+        if groups is not None:
+            verdicts.record(order[si], groups)
+    return verdicts
+
+
+def parse_groups(text, sizes):
+    """Each usable set's full partition, one-member groups included, from an
+    ended answer."""
+    out = {}
+    for si, verdict in parse_answer(text + "\nEND", sizes).items():
+        groups = _usable(verdict, sizes[si])
+        if groups is not None:
+            listed = {m for g in groups for m in g.members}
+            parts = [sorted(g.members) for g in groups]
+            out[si] = sorted(parts + [[m] for m in range(sizes[si]) if m not in listed])
+    return out
+
+
 def _pairs(text, order):
-    return set(pairs_by_set_from_response(text, order))
+    return _verdicts(text, order).same
+
+
+def _render(members, ents, schema=None):
+    return render_set(judge_sets([members], ents, schema or AttributeSchema())[0].entities)
 
 
 def test_make_groups_dense_blocks_chains_and_caps():
@@ -79,7 +122,7 @@ def test_parse_groups_and_pairs():
     assert groups == {0: [[0, 2], [1]], 1: [[0, 1]]}
     pairs = _pairs(text, [[10, 11, 12], [20, 21]])
     assert pairs == {(10, 12), (20, 21)}
-    assert different_pairs_from_response(text, [[10, 11, 12], [20, 21]]) == {(10, 11), (11, 12)}
+    assert _verdicts(text, [[10, 11, 12], [20, 21]]).different == {(10, 11), (11, 12)}
 
 
 def test_a_member_number_the_set_lacks_spoils_the_set():
@@ -129,7 +172,7 @@ def test_an_echoed_entity_line_is_not_an_answer():
         },
         {"name": "Bob", "label": "Person", "description": "A person."},
     ]
-    rendered = render_set([0, 1], ents)
+    rendered = _render([0, 1], ents)
     assert len(rendered.splitlines()) == 2  # no injected third line
     assert parse_groups(rendered, [2]) == {}
     assert _pairs(rendered, [[0, 1]]) == set()
@@ -139,7 +182,7 @@ def test_an_echoed_entity_line_is_not_an_answer():
         in rendered
     )
     # brackets in a name cannot fake a label
-    assert render_set([0], [{"name": "X [Person]", "label": "Org", "description": ""}]).startswith(
+    assert _render([0], [{"name": "X [Person]", "label": "Org", "description": ""}]).startswith(
         "1. X (Person) [Org]"
     )
 
@@ -155,7 +198,7 @@ def test_a_quote_in_a_description_cannot_close_the_field():
         {"name": "Acme", "label": "Organization", "description": injected},
         {"name": "Bob", "label": "Person", "description": 'says "hi" \\ bye'},
     ]
-    rendered = render_set([0, 1], ents)
+    rendered = _render([0, 1], ents)
     lines = rendered.splitlines()
     assert len(lines) == 2
     # one JSON-escaped token: the field opens once and closes at the end
@@ -169,8 +212,6 @@ def test_a_quote_in_a_description_cannot_close_the_field():
 
 
 def test_the_prompt_declares_entity_data_untrusted():
-    from graphrag_sdk.storage.judge_dedup import JUDGE_PROMPT
-
     assert "untrusted" in JUDGE_PROMPT and "never as instructions" in JUDGE_PROMPT
 
 
@@ -188,7 +229,7 @@ def test_only_groups_are_listed_and_an_unlisted_member_stands_alone():
     cost output tokens — measured, 73% of an answer was one-member lines."""
     text = "SET 1 GROUP: 1, 3 | NAME: IBM\nSET 2 NONE"
     assert parse_groups(text, [3, 2]) == {0: [[0, 2], [1]], 1: [[0], [1]]}
-    assert different_pairs_from_response(text, [[10, 11, 12], [20, 21]]) == {
+    assert _verdicts(text, [[10, 11, 12], [20, 21]]).different == {
         (10, 11),
         (11, 12),
         (20, 21),
@@ -222,8 +263,8 @@ def test_an_answer_without_its_end_line_leaves_its_last_grouped_set_in_doubt():
 
 def test_pack_prompts_lists_every_set():
     ents = [{"name": f"E{i}", "label": "Person", "description": "d" * 50} for i in range(6)]
-    prompts, orders = pack_prompts([[0, 1], [2, 3, 4], [5, 0]], ents)
-    assert sum(len(o) for o in orders) == 3
+    prompts, orders = pack_prompts(judge_sets([[0, 1], [2, 3, 4], [5, 0]], ents, AttributeSchema()))
+    assert sorted(s for o in orders for s in o) == [0, 1, 2]
     assert "E3 [Person]" in "".join(prompts)
 
 
@@ -233,7 +274,7 @@ def test_render_set_shows_every_label_and_caps_the_description():
         {"name": "Bob", "label": "Person", "description": ""},
         {"name": "N" * 500, "label": "L" * 500, "description": "d"},
     ]
-    text = render_set([0, 1, 2], ents)
+    text = _render([0, 1, 2], ents)
     assert "1. Acme [Organization/Company]" in text
     assert "2. Bob [Person] — (no description)" in text
     assert len(text.splitlines()[0]) < MAX_DESC_CHARS + 50
@@ -246,8 +287,8 @@ def test_pack_prompts_keeps_an_oversized_set_within_budget():
     import tiktoken
 
     ents = [{"name": f"E{i}", "label": "Person", "description": "word " * 3000} for i in range(8)]
-    prompts, orders = pack_prompts([list(range(8))], ents)
-    assert len(prompts) == 1 and orders == [[list(range(8))]]
+    prompts, orders = pack_prompts(judge_sets([list(range(8))], ents, AttributeSchema()))
+    assert len(prompts) == 1 and orders == [[0]]
     enc = tiktoken.get_encoding("cl100k_base")
     assert len(enc.encode(prompts[0])) <= PROMPT_TOKEN_BUDGET
 
@@ -335,7 +376,7 @@ def test_an_agreed_pair_merges_once():
     llm = ScriptedLLM([[IBM]])
     sim = _sim(judge=llm)
     # one round: the IBM pair is judged once and merged once
-    assert sim.dedup.last_judge_stats["llm_calls"] == 1
+    assert sim.dedup.last_judge_stats["judge_calls"] == 1
     assert sim.groups == [["e1", "e2"]] and sim.merged == 1
     assert set(sim.decisions.clear) == {"e1", "e2", "e3"}
 
@@ -347,7 +388,8 @@ def test_a_failed_call_merges_nothing_and_its_set_is_asked_again_alone():
     llm = ScriptedLLM([None])
     sim = _sim(judge=llm)
     stats = sim.dedup.last_judge_stats
-    assert sim.merged == 0 and stats["llm_failed"] == stats["llm_calls"] == 1 + REASKS
+    assert sim.merged == 0 and stats["judge_calls"] == len(llm.prompts) == 1 + REASKS
+    assert stats["unanswered_sets"] == 1 and stats["judge_failed"] == 0
     assert _retried(sim) == {"e1": "no usable verdict", "e2": "no usable verdict"}
     assert sim.run.charged == {"e1", "e2"} and sim.decisions.clear == ["e3"]
 
@@ -381,7 +423,7 @@ def test_a_set_an_answer_stopped_in_is_asked_again_and_the_sets_before_it_count(
     with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.judge_dedup"):
         sim = _sim(rows, judge=llm)
     assert sorted(map(sorted, sim.groups)) == [["a", "b"], ["c", "d", "e"]]
-    assert sim.dedup.last_judge_stats["llm_calls"] == 2
+    assert sim.dedup.last_judge_stats["judge_calls"] == 2
     assert "Big Blue" in llm.prompts[1] and "Facebook" not in llm.prompts[1]
     assert any("before END" in r.getMessage() for r in caplog.records)
 
@@ -543,7 +585,7 @@ def test_keyed_rows_are_never_asked_about_each_other():
     llm = ScriptedLLM([[IBM]])
     sim = _sim(_keyed(ROWS, {"e1", "e2", "e3"}), judge=llm)
     stats = sim.dedup.last_judge_stats
-    assert stats["llm_calls"] == 0 and stats["candidates"] == 0 and sim.groups == []
+    assert stats["judge_calls"] == 0 and stats["candidates"] == 0 and sim.groups == []
     assert llm.prompts == []
     # Only the rows are protected: Watson is still judged against IBM, but the
     # two rows are never put in one set nor in one group.
@@ -571,9 +613,11 @@ def test_a_protected_pair_is_never_grouped_through_a_third_member():
 
 
 def test_exact_phase_joins_descriptions_and_records_aliases():
+    """A table row absorbs a mention of its name in the exact phase (two
+    mentions go to the judge instead)."""
     sim = _sim(
         [
-            ["a", "Globex Limited", "Maker of widgets.", "Organization"],
+            ["a", "Globex Limited", "Maker of widgets.", "Organization", None, False],
             ["b", "Globex Ltd", "Founded 1990.", "Organization"],
         ]
     )
@@ -593,9 +637,9 @@ def test_an_entity_with_no_name_vector_is_not_looked_up_and_stays_pending():
 
 
 def test_more_same_name_entities_than_one_lookup_returns_are_all_found():
-    """Fourteen existing "John Smith" mentions and one new one: the first lookup
-    returns ten, all of them matches, so it is widened until it is not; every
-    one is grouped with the new mention."""
+    """Fourteen existing "John Smith" mentions and a new table row of that
+    name: the first lookup returns ten, all of them matches, so it is widened
+    until it is not; the row absorbs every one."""
     ks = []
 
     class Recording(SimGraph):
@@ -605,6 +649,7 @@ def test_more_same_name_entities_than_one_lookup_returns_are_all_found():
             return await super().query_raw(cypher, params)
 
     rows = [[f"js{i}", "John Smith", f"Mention {i}.", "Person"] for i in range(15)]
+    rows[0] += [None, False]
     sim = asyncio.run(simulate(rows, pending=["js0"], graph_class=Recording))
     assert sim.merged == 14 and set(sim.nodes) == {sim.writes[0].op.survivor}
     assert ks[0] == 11 and max(ks) > 11, ks
@@ -636,11 +681,12 @@ def test_the_judges_name_is_the_groups_last_operation():
     assert sim.nodes["s"]["props"]["aliases"] == ["Tim Cook"]
 
 
-@pytest.mark.parametrize("judge", [False, True])
-def test_entity_deduplicator_judge_toggle(judge):
-    sim = _sim(judge=ScriptedLLM([[IBM]]) if judge else None)
-    assert sim.merged == (1 if judge else 0)
-    assert bool(sim.dedup.last_judge_stats) is judge
+def test_without_the_judge_two_extracted_mentions_never_merge_on_the_name():
+    """The exact phase hands a group of extracted mentions only to the judge:
+    the same spelling is evidence, not proof. Unjudged, they stay apart."""
+    rows = [["a", "Acme", "anvils", "Organization"], ["b", "ACME", "a band", "Organization"]]
+    assert _sim(rows).merged == 0
+    assert _sim(rows, judge=ScriptedLLM([[{"Acme", "ACME"}]])).merged == 1
 
 
 def test_a_judged_merge_folds_descriptions_aliases_and_the_losers_label():
@@ -684,7 +730,7 @@ def test_two_keyed_rows_are_not_asked_and_a_mention_between_them_is_not_moved():
     sim = _sim(rows, judge=llm)
     assert sim.merged == 0 and llm.prompts == []
     stats = sim.dedup.last_judge_stats
-    assert stats["llm_calls"] == 0 and stats["candidates"] == 0
+    assert stats["judge_calls"] == 0 and stats["candidates"] == 0
 
 
 def _fold(dup_labels, *, keep_labels=("Organization",), policy=JUDGE, keep=None, dup=None):
@@ -717,9 +763,9 @@ def test_a_merge_admits_every_label_the_repository_does():
 def test_a_judge_label_union_survives_a_later_exact_merge():
     """Run 1: the judge merges ``Airbus`` [Organization] into ``Airbus SE``
     [Company]; the survivor gains ``Organization`` as a label and on record.
-    Run 2: a same-name ``Airbus SE`` [Company] with a higher rank absorbs
-    that survivor through the exact phase — which reads one primary label —
-    and must inherit ``Organization`` too, or the earlier union is gone."""
+    Run 2: a same-name ``Airbus SE`` [Company] table row absorbs that
+    survivor through the exact phase — which reads one primary label — and
+    must inherit ``Organization`` too, or the earlier union is gone."""
     rows = [
         ["a", "Airbus", "Planemaker.", ["Organization"]],
         ["b", "Airbus SE", "Toulouse group.", ["Company"]],
@@ -729,10 +775,10 @@ def test_a_judge_label_union_survives_a_later_exact_merge():
     assert set(first.nodes) == {"b"} and b["labels"] == ["Company", "Organization"]
     assert b["props"]["merged_labels"] == "Organization"
 
-    # a second run: a better-connected Airbus SE [Company] arrives
+    # a second run: an Airbus SE [Company] table row arrives
     rows = [
         ["b", "Airbus SE", b["props"]["description"], b["labels"]],
-        ["c", "Airbus SE", "European aerospace company.", ["Company"], None, None, 5],
+        ["c", "Airbus SE", "European aerospace company.", ["Company"], None, False, 5],
     ]
     second = _sim(rows, stored={"b": {"props": {"merged_labels": "Organization"}}})
     assert set(second.nodes) == {"c"}
@@ -816,7 +862,7 @@ def test_a_spoiled_answer_is_warned_about_once(caplog):
     llm = ScriptedLLM(["SET 1 GROUP: 1 | NAME: IBM\nSET 1 GROUP: 2\nEND"])
     with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.judge_dedup"):
         _sim(judge=llm)
-    spoiled = [r for r in caplog.records if "asked again" in r.getMessage()]
+    spoiled = [r for r in caplog.records if "has no verdict" in r.getMessage()]
     assert len(spoiled) == 1 + REASKS
 
 
@@ -847,7 +893,7 @@ def test_each_entity_shows_its_own_types_attributes_under_a_schema_header():
         {"name": "Tim Cook", "labels": ["Person"], "values": [("born", 1960), ("role", "CEO")]},
         {"name": "Apple", "labels": ["Organization"], "values": [("founded", 1976)]},
     ]
-    (prompt,), _ = pack_prompts([[0, 1]], ents, schema=schema)
+    (prompt,), _ = pack_prompts(judge_sets([[0, 1]], ents, schema))
     assert '1. Tim Cook [Person] — (no description) | born: 1960; role: "CEO"' in prompt
     assert "2. Apple [Organization] — (no description) | founded: 1976" in prompt
     header = prompt.split("TYPES AND THEIR ATTRIBUTES\n")[1].split("\n\n")[0]
@@ -855,7 +901,7 @@ def test_each_entity_shows_its_own_types_attributes_under_a_schema_header():
         "Organization. Attributes: founded (INTEGER)",
         "Person — a human being. Attributes: born (INTEGER): year of birth; role (STRING)",
     ], "only the types in the prompt, each with its own attributes"
-    (bare,), _ = pack_prompts([[0, 1]], ents)
+    (bare,), _ = pack_prompts(judge_sets([[0, 1]], ents, AttributeSchema()))
     assert "TYPES AND THEIR ATTRIBUTES" not in bare
 
 
@@ -871,9 +917,9 @@ def test_keep_names_members_and_an_attribute_ending_in_a_digit_is_not_one():
     text = "SET 1 GROUP: 1, 3 | NAME: Tim Cook | KEEP: address2=3; born=1; role=2\nSET 1 GROUP: 2"
     order = [[10, 11, 12]]
     assert parse_groups(text, [3]) == {0: [[0, 2], [1]]}
-    assert group_keeps_from_response(text, order) == {
-        frozenset((10, 12)): {"address2": 12, "born": 10}
-    }, "member 2 is not in the group: its pick is dropped"
+    assert _verdicts(text, order).keeps == {frozenset((10, 12)): {"address2": 12, "born": 10}}, (
+        "member 2 is not in the group: its pick is dropped"
+    )
     assert parse_groups("SET 1 GROUP: 1 | KEEP: born=1\nSET 1 GROUP: 2", [2]) == {}
 
 
@@ -972,3 +1018,98 @@ def test_a_wide_lookup_asks_for_fewer_entities_per_query():
     assert [n for k, n in batches if k == 6] == [250, 50]
     wide = [n for k, n in batches if k == 1001]
     assert max(wide) * 1001 <= 2_500 and sum(wide) == 300
+
+
+# ── any judge: what it is given, and what of its answer counts ──────────────
+
+
+class RecordingJudge(DedupJudge):
+    """Answers round ``n`` with ``rounds[n]`` (the last repeats): a list of
+    verdicts, or an exception to raise. Records every call."""
+
+    def __init__(self, *rounds):
+        self.rounds = list(rounds)
+        self.asked: list[tuple[list[JudgeSet], bool]] = []
+
+    async def judge(self, sets, *, retry=False):
+        self.asked.append((sets, retry))
+        answer = self.rounds[min(len(self.asked), len(self.rounds)) - 1]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def test_a_judge_gets_each_set_as_declared_and_answers_by_position():
+    """A judge sees each member's name, labels, other names, description and
+    declared attribute values, with the set's types; it names the merged
+    entity and picks a value by member position."""
+    tim = JudgeGroup(members=[0, 1], name="Timothy Cook", keep={"born": 1})
+    judge = RecordingJudge([SetVerdict(groups=[tim])])
+    sim = _sim(
+        TIMS,
+        judge=judge,
+        ontology=PEOPLE,
+        stored={"s": {"props": {"born": 1961, "role": "CEO"}}, "d": {"props": {"born": 1960}}},
+    )
+    ((sets, retry),) = judge.asked
+    (asked,) = sets
+    assert retry is False
+    assert asked.entities == [
+        JudgeEntity(
+            name="Tim Cook",
+            labels=["Person"],
+            description="Apple CEO",
+            attributes={"born": 1961, "role": "CEO"},
+        ),
+        JudgeEntity(
+            name="Timothy Cook",
+            labels=["Person"],
+            description="chief executive of Apple",
+            attributes={"born": 1960},
+        ),
+    ]
+    ((person),) = asked.types
+    assert person.label == "Person" and [a.name for a in person.attributes] == ["born", "role"]
+    props = sim.nodes["s"]["props"]
+    assert props["name"] == "Timothy Cook" and props["aliases"] == ["Tim Cook"]
+    assert props["born"] == 1960 and props["born__dropped"] == [1961]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        SetVerdict(groups=[JudgeGroup(members=[0, 1]), JudgeGroup(members=[1])]),
+        SetVerdict(groups=[JudgeGroup(members=[0, 2])]),
+        SetVerdict(groups=[JudgeGroup(members=[0, 0])]),
+        SetVerdict(groups=[JudgeGroup(members=[0], name="IBM")]),
+        {"groups": [[0, 1]]},
+    ],
+    ids=["overlapping", "a member the set lacks", "listed twice", "named alone", "not a verdict"],
+)
+def test_whatever_the_judge_an_answer_counts_only_when_clean(answer):
+    """The run checks every judge's answer; one that fails is no verdict, and
+    the set is asked again with ``retry=True``."""
+    clean = SetVerdict(groups=[JudgeGroup(members=[0, 1])])
+    judge = RecordingJudge([answer], [clean])
+    sim = _sim(judge=judge)
+    assert [retry for _, retry in judge.asked] == [False, True]
+    assert sim.groups == [["e1", "e2"]]
+
+
+@pytest.mark.parametrize(
+    "first", [RuntimeError("model down"), [], [SetVerdict(), SetVerdict()]], ids=repr
+)
+def test_a_judge_call_that_raises_or_miscounts_answers_none_of_its_sets(first):
+    judge = RecordingJudge(first, [SetVerdict(groups=[JudgeGroup(members=[0, 1])])])
+    sim = _sim(judge=judge)
+    stats = sim.dedup.last_judge_stats
+    assert stats["judge_failed"] == 1 and stats["judge_calls"] == 2
+    assert sim.groups == [["e1", "e2"]]
+
+
+def test_a_set_no_round_answers_stays_pending():
+    sim = _sim(judge=RecordingJudge([None]))
+    stats = sim.dedup.last_judge_stats
+    assert stats["judge_calls"] == 1 + REASKS and stats["unanswered_sets"] == 1
+    assert _retried(sim) == {"e1": "no usable verdict", "e2": "no usable verdict"}
+    assert sim.merged == 0

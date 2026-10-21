@@ -40,6 +40,11 @@ from graphrag_sdk.core.models import (
     GraphNode,
     GraphRelationship,
     IngestionResult,
+    JudgeAttribute,
+    JudgeEntity,
+    JudgeGroup,
+    JudgeSet,
+    JudgeType,
     Ontology,
     RagResult,
     Relation,
@@ -47,6 +52,7 @@ from graphrag_sdk.core.models import (
     RetrieverResult,
     RetrieverResultItem,
     SearchType,
+    SetVerdict,
     TextChunk,
     TextChunks,
     UpdateResult,
@@ -130,6 +136,8 @@ from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 
 # ── Storage ─────────────────────────────────────────────────────
+from graphrag_sdk.storage.dedup_judges.base import DedupJudge
+from graphrag_sdk.storage.dedup_judges.llm_judge import LLMJudge
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.ontology_store import (
     OntologyContradictionError,
@@ -176,6 +184,12 @@ __all__ = [
     "OpenRouterLLM",
     "RagResult",
     "Relation",
+    "JudgeAttribute",
+    "JudgeEntity",
+    "JudgeGroup",
+    "JudgeSet",
+    "JudgeType",
+    "SetVerdict",
     "ResolutionResult",
     "RetrieverResult",
     "RetrieverResultItem",
@@ -219,6 +233,8 @@ __all__ = [
     "RerankingStrategy",
     "RetrievalStrategy",
     # Storage
+    "DedupJudge",
+    "LLMJudge",
     "GraphStore",
     "OntologyContradictionError",
     "OntologyModificationNotAllowedError",

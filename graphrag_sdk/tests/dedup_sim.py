@@ -18,6 +18,8 @@ from typing import Any
 
 import numpy as np
 
+from graphrag_sdk.core.models import JudgeGroup, SetVerdict
+from graphrag_sdk.storage.dedup_judges import DedupJudge, LLMJudge
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator, _entity_from_row, _Run
 from graphrag_sdk.storage.judge_dedup import AttributeSchema
 from graphrag_sdk.storage.merge_query import MergeRead
@@ -153,6 +155,39 @@ class SimGraph:
         raise AssertionError(f"the simulation does not answer: {cypher[:80]}")
 
 
+class AllSameJudge(DedupJudge):
+    """Finds each set's members to be one entity: for tests of how a merge is
+    written, whoever decided it. Rows on the simulation's default vector are
+    all each other's nearest names, so a test using it holds one entity's
+    rows."""
+
+    async def judge(self, sets, *, retry=False):
+        return [SetVerdict(groups=[JudgeGroup(members=list(range(len(s.entities))))]) for s in sets]
+
+
+class AllDifferentJudge(DedupJudge):
+    """Finds every member of a set a different entity: for tests of what the
+    rules alone do, with nothing judged the same."""
+
+    async def judge(self, sets, *, retry=False):
+        return [SetVerdict() for _ in sets]
+
+
+class SameSpellingJudge(DedupJudge):
+    """Finds members one entity when their names are one spelling, ignoring
+    case and spacing — what a name rule alone would merge."""
+
+    async def judge(self, sets, *, retry=False):
+        verdicts = []
+        for s in sets:
+            by_name: dict[str, list[int]] = {}
+            for i, ent in enumerate(s.entities):
+                by_name.setdefault(" ".join(ent.name.casefold().split()), []).append(i)
+            groups = [JudgeGroup(members=m) for m in by_name.values() if len(m) > 1]
+            verdicts.append(SetVerdict(groups=groups))
+        return verdicts
+
+
 class _Store:
     """The records a judged run writes before its plan: the claim only."""
 
@@ -206,11 +241,13 @@ async def simulate(
     label or [labels], aliases, is_stub, degree, embedding]``, trailing
     fields optional — with every row a pending entity. ``stored`` adds, per
     id, ``props`` (``descriptions``, ``merged_labels`` ...), ``labels`` or an
-    ``embedding`` the row does not carry. ``judge`` is an LLM double; without
-    it the run is exact-phase only. ``pending`` names the rows that are new
-    (the rest are the graph's): only they are query points, and the exact
-    phase finds the others through the nearest-name search, as a real run
-    does; by default every row is a query point, ``dedup_all``-style."""
+    ``embedding`` the row does not carry. ``judge`` is a ``DedupJudge`` or an
+    LLM double, judged through ``LLMJudge``; without it the judged phase is
+    left out, so only the exact phase and the adoption decide. ``pending``
+    names the rows that are new (the rest are the graph's): only they are
+    query points, and the exact phase finds the others through the
+    nearest-name search, as a real run does; by default every row is a query
+    point, ``dedup_all``-style."""
     stored = stored or {}
     nodes = {row[0]: _node(row, stored.get(row[0], {})) for row in rows}
     graph = (graph_class or SimGraph)(nodes)
@@ -218,7 +255,7 @@ async def simulate(
     dedup._declared_labels = {label.lower() for label in declared_labels or set()}
     dedup._schema = AttributeSchema.from_ontology(ontology)
     dedup._dedup_all = pending is None
-    run = _Run(judged=judge is not None)
+    run = _Run()
     points = list(nodes) if pending is None else list(pending)
     run.points = [_entity_from_row(graph._entity_row(eid)) for eid in points]
     run.listed = set(points)
@@ -233,10 +270,11 @@ async def simulate(
             NearMiss("", a, b, a, b, "test", bridges_a_declared_source=False)
             for a, b in (sorted(pair) for pair in skip_pairs)
         ]
-    await dedup._exact_phase(run, 500, defer_to_judge=judge is not None)
+    await dedup._exact_phase(run, 500)
     if judge is not None:
-        await dedup._judge_phase(_Store(), run, judge, 500)
-    ops, decisions = dedup._plan(run, release_unjudged=False)
+        judging = judge if isinstance(judge, DedupJudge) else LLMJudge(judge)
+        await dedup._judge_phase(_Store(), run, judging, 500)
+    ops, decisions = dedup._plan(run)
 
     writes: list[Write] = []
     renames: list[PlanOp] = []

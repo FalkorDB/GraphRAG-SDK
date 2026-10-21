@@ -5,10 +5,10 @@
 # the entity vector index, never by reading every entity. Nothing is written
 # on an entity to mark it: ingest writes entities without a vector, and a run
 # lists them before it gives them one. Phases: exact name match and the
-# LLM-judged cross-document phase (``judge_dedup.LLMJudgeDeduplicator``: the
-# vector index nominates, the LLM decides). Every merge of the run is decided
-# first, written as a sealed plan, and applied one atomic query per merge
-# (``merge_query``), so a crash at any point resumes where it stopped.
+# judged cross-document phase (``judge_dedup``: the vector index nominates, a
+# ``DedupJudge`` decides). Every merge of the run is decided first, written as
+# a sealed plan, and applied one atomic query per merge (``merge_query``), so a
+# crash at any point resumes where it stopped.
 # Preserves label-aware grouping to prevent cross-type merging.
 
 from __future__ import annotations
@@ -27,20 +27,22 @@ from typing import Any, NamedTuple
 
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import RESERVED_NODE_LABELS
-from graphrag_sdk.core.providers import Embedder, LLMInterface
+from graphrag_sdk.core.providers import Embedder
 from graphrag_sdk.core.tables import RESERVED_PROPERTY_NAMES
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import DEFAULT_ENTITY_TYPES
 from graphrag_sdk.ingestion.resolution_strategies.base import description_list
+from graphrag_sdk.storage.dedup_judges.base import DedupJudge
 from graphrag_sdk.storage.identity import NearMiss, canonical_key, find_near_misses
 from graphrag_sdk.storage.judge_dedup import (
     NEIGHBOUR_GATE,
     NEIGHBOUR_K,
     AttributeSchema,
     Hit,
-    LLMJudgeDeduplicator,
     NameNeighbourIndex,
     UnionFind,
     Verdicts,
+    ask_judge,
+    candidate_sets,
     pick_group_name,
 )
 from graphrag_sdk.storage.merge_query import (
@@ -567,8 +569,7 @@ class DedupReport:
 
     #: Pending entities whose check completed this run.
     checked: int = 0
-    #: Entities still pending afterwards: a failed or held check, or a run
-    #: without the judge.
+    #: Entities still pending afterwards: a failed or held check.
     pending: int = 0
     #: Entities no longer retried after ``MAX_JUDGED_ATTEMPTS`` judged runs.
     unresolved: dict[str, Unresolved] = field(default_factory=dict)
@@ -587,7 +588,6 @@ class _Run:
     """What one run has decided so far. Nothing in it is written until the
     plan is sealed; a crash before that loses only judging work."""
 
-    judged: bool
     unresolved: dict[str, Unresolved] = field(default_factory=dict)
     #: Ids in the pending records when the run loaded them.
     listed: set[str] = field(default_factory=set)
@@ -680,9 +680,9 @@ class EntityDeduplicator:
        ``(canonical_name, label)`` (an acronym joins its unique same-label long
        form), the survivor :func:`_survivor_rank` picks (a table row over a
        mention, the long form over an acronym, then the best-connected and
-       best-described); with a judge, a group of extracted mentions only is put
-       to it instead. Then the LLM-judged phase (``judge_llm``): candidate sets
-       from the nearest names, partitioned by the judge, unioned across sets
+       best-described); a group of extracted mentions only is put to the
+       judge instead. Then the judged phase: candidate sets from the nearest
+       names, partitioned by the judge (a ``DedupJudge``), unioned across sets
        but never through a pair it — or a declared key — kept apart. A group a
        failed set could still change is held, not merged;
     4. writes all of it as a merge plan, seals it, and applies it: one atomic
@@ -716,8 +716,7 @@ class EntityDeduplicator:
         # sharing their name. Folded into near_misses by _report_near_misses, and
         # held apart through the later phases (see _undecidable_pairs).
         self._ambiguous_mentions: list[NearMiss] = []
-        # Stats of the last LLM-judged phase; {"skipped_reason": ...} when the
-        # phase was asked for and did not run.
+        # Stats of the last judged phase.
         self.last_judge_stats: dict[str, int | str] = {}
         self.last_report = DedupReport()
         # This run's query points, and every entity it looked at (them plus
@@ -740,11 +739,10 @@ class EntityDeduplicator:
     async def deduplicate(
         self,
         *,
+        judge: DedupJudge,
         batch_size: int = 500,
         declared_labels: set[str] | None = None,
-        judge_llm: LLMInterface | None = None,
         dedup_all: bool = False,
-        release_unjudged: bool = False,
         ontology: Any = None,
     ) -> int:
         """Run deduplication and return the number of duplicates merged.
@@ -759,12 +757,10 @@ class EntityDeduplicator:
         treated as authoritative about type, which lets the one safe kind of
         cross-label merge happen: see :meth:`_plan_adoption`.
 
-        ``judge_llm``, when given, runs the LLM-judged cross-document phase
-        after the exact phase (see class docstring). Stats of the last run are
-        in ``self.last_judge_stats``, and what it left pending in
-        ``self.last_report``. Without it, only spelling variants merge and the
-        pending entities stay pending — the judge still owes them a check —
-        unless ``release_unjudged=True`` marks them checked.
+        ``judge`` decides identity in the cross-document phase after the
+        exact phase (see class docstring); every run has one. Stats of the
+        last run are in ``self.last_judge_stats``, and what it left pending in
+        ``self.last_report``.
 
         A run with nothing pending does no work. ``dedup_all=True`` checks
         every entity instead, and retries the unresolved ones.
@@ -802,11 +798,10 @@ class EntityDeduplicator:
         merged = 0
         try:
             merged = self.last_report.resumed = await self._recover(store)
-            run = await self._start(store, judged=judge_llm is not None, batch_size=batch_size)
-            await self._exact_phase(run, batch_size, defer_to_judge=judge_llm is not None)
-            if judge_llm is not None:
-                await self._judge_phase(store, run, judge_llm, batch_size)
-            ops, decisions = self._plan(run, release_unjudged=release_unjudged)
+            run = await self._start(store, batch_size=batch_size)
+            await self._exact_phase(run, batch_size)
+            await self._judge_phase(store, run, judge, batch_size)
+            ops, decisions = self._plan(run)
             if ops or _any_decision(decisions):
                 await store.set_blocked_with(
                     {eid: " | ".join(sorted(names)) for eid, names in run.blocked.items()}
@@ -895,8 +890,8 @@ class EntityDeduplicator:
 
     # ── 1. publish and load ──
 
-    async def _start(self, store: SystemStore, *, judged: bool, batch_size: int) -> _Run:
-        run = _Run(judged=judged)
+    async def _start(self, store: SystemStore, *, batch_size: int) -> _Run:
+        run = _Run()
         run.unresolved = await store.unresolved()
         if self._dedup_all and run.unresolved:
             # Listed again first: a crash in between leaves them pending, which
@@ -1027,7 +1022,7 @@ class EntityDeduplicator:
 
     # ── 2-3. the exact phase ──
 
-    async def _exact_phase(self, run: _Run, batch_size: int, *, defer_to_judge: bool) -> None:
+    async def _exact_phase(self, run: _Run, batch_size: int) -> None:
         """Decide the exact-name merges: the pending entities, plus their
         nearest names already in the graph (vector index), which is where an
         existing spelling of the same name is. Two old entities were folded
@@ -1065,22 +1060,21 @@ class EntityDeduplicator:
         merged_groups = self._merge_acronym_groups(
             list(groups.values()), ambiguous_out=ambiguous_acronyms
         )
-        if defer_to_judge:
-            # An acronym that spells several long forms is not folded on its
-            # own; the judge, which sees descriptions, can still decide it.
-            for short, long_ in ambiguous_acronyms:
-                self._judge_pairs.extend(
-                    (a["id"], b["id"])
-                    for a in short
-                    for b in long_
-                    if a.get("is_stub") is None and b.get("is_stub") is None
-                )
+        # An acronym that spells several long forms is not folded on its own;
+        # the judge, which sees descriptions, can still decide it.
+        for short, long_ in ambiguous_acronyms:
+            self._judge_pairs.extend(
+                (a["id"], b["id"])
+                for a in short
+                for b in long_
+                if a.get("is_stub") is None and b.get("is_stub") is None
+            )
 
         decided = 0
         for group in merged_groups:
             if len(group) < 2:
                 continue
-            if defer_to_judge and all(ent.get("is_stub") is None for ent in group):
+            if all(ent.get("is_stub") is None for ent in group):
                 # Extracted mentions only: the same spelling is evidence, not
                 # proof. The judge sees their descriptions and decides; a table
                 # row (keyed) still absorbs its mentions here by the rules below.
@@ -1189,30 +1183,31 @@ class EntityDeduplicator:
         ]
         return list((await self._fetch_entities_by_ids(wanted, batch_size)).values())
 
-    # ── 3. the LLM-judged phase ──
+    # ── 3. the judged phase ──
 
     async def _judge_phase(
-        self, store: SystemStore, run: _Run, judge_llm: LLMInterface, batch_size: int
+        self, store: SystemStore, run: _Run, judge: DedupJudge, batch_size: int
     ) -> None:
         """Let the judge decide identity for the pending entities; decide the
         merges by our rules.
 
-        The judge (:class:`LLMJudgeDeduplicator`) partitions small sets of
-        each pending entity and its nearest names. What it hands back is
-        *identity*; *how to merge* stays here — the survivor is the one
-        :func:`_survivor_rank` picks, two keyed rows never fold into each
-        other, and a mention two rows could own stays apart. It works on the
-        graph as the exact phase's decisions will leave it: an entity those
-        absorb is represented by its survivor.
+        The judge partitions small sets of each pending entity and its
+        nearest names, and :func:`ask_judge` checks every answer. What it
+        hands back is *identity*; *how to merge* stays here — the survivor is
+        the one :func:`_survivor_rank` picks, two keyed rows never fold into
+        each other, and a mention two rows could own stays apart. It works on
+        the graph as the exact phase's decisions will leave it: an entity
+        those absorb is represented by its survivor.
         """
-        judge = LLMJudgeDeduplicator(self._graph, self._embedder, judge_llm)
+        index = NameNeighbourIndex(self._graph, self._embedder)
         stats = self.last_judge_stats = {
             "entities": 0,
             "neighbours": 0,
             "candidates": 0,
             "sets": 0,
-            "llm_calls": 0,
-            "llm_failed": 0,
+            "judge_calls": 0,
+            "judge_failed": 0,
+            "unanswered_sets": 0,
             "agreed_pairs": 0,
             "merged": 0,
         }
@@ -1223,7 +1218,7 @@ class EntityDeduplicator:
         ]
         missing = [ent["id"] for ent in points if ent["id"] not in run.hits]
         if missing:
-            found, failed = await judge.discover(missing, NEIGHBOUR_K)
+            found, failed = await index.discover(missing, NEIGHBOUR_K)
             run.hits.update(found)
             run.unsearched.update(dict.fromkeys(failed, "nearest-name lookup failed"))
             points = [ent for ent in points if ent["id"] not in failed]
@@ -1255,7 +1250,7 @@ class EntityDeduplicator:
         wanted |= {i for pair in extra for i in pair}
         rows = {
             row["id"]: row
-            for row in await judge.fetch_by_ids(sorted(wanted - point_ids), batch_size)
+            for row in await index.fetch_by_ids(sorted(wanted - point_ids), batch_size)
         }
         skip = self._undecidable_pairs
 
@@ -1266,7 +1261,7 @@ class EntityDeduplicator:
                 a.get("is_stub") is not None and b.get("is_stub") is not None
             )
 
-        ents, sets, candidates = judge.candidate_sets(
+        ents, sets, candidates = candidate_sets(
             points, neighbours, rows, extra_pairs=extra, protected=protected
         )
         stats["neighbours"] = len(ents) - len(points)
@@ -1276,7 +1271,7 @@ class EntityDeduplicator:
             return
         if self._schema.keys:
             shown = sorted({i for members in sets for i in members})
-            stored = await judge.attribute_values(
+            stored = await index.attribute_values(
                 [ents[i]["id"] for i in shown], self._schema.keys, batch_size
             )
             for i in shown:
@@ -1285,9 +1280,10 @@ class EntityDeduplicator:
                 ents[i]["attrs"] = {f.shown.casefold(): (f.key, value) for f, value in held}
         run.charged = {ents[i]["id"] for members in sets for i in members} & run.listed
         await self._claim(store, run)
-        verdicts = await judge.judge(sets, ents, self._schema)
-        stats["llm_calls"] = verdicts.calls
-        stats["llm_failed"] = verdicts.failed_calls
+        verdicts = await ask_judge(judge, sets, ents, self._schema)
+        stats["judge_calls"] = verdicts.calls
+        stats["judge_failed"] = verdicts.failed_calls
+        stats["unanswered_sets"] = verdicts.unanswered
         await self._resolve(run, ents, verdicts, protected, batch_size)
 
     async def _claim(self, store: SystemStore, run: _Run) -> None:
@@ -1520,7 +1516,7 @@ class EntityDeduplicator:
 
     # ── 4. the plan ──
 
-    def _plan(self, run: _Run, *, release_unjudged: bool) -> tuple[list[PlanOp], Decisions]:
+    def _plan(self, run: _Run) -> tuple[list[PlanOp], Decisions]:
         """The run's merges as plan operations, and what each pending entity's
         check came to.
 
@@ -1565,7 +1561,6 @@ class EntityDeduplicator:
                 )
 
         decisions = Decisions()
-        handoff: set[str] = set()
 
         def retry(eid: str, why: str) -> None:
             decisions.retry.append(eid)
@@ -1576,36 +1571,24 @@ class EntityDeduplicator:
                 decisions.clear.append(eid)
             elif eid in run.unsearched:
                 retry(eid, run.unsearched[eid])
-            elif run.judged:
-                if eid in run.failed:
-                    retry(eid, "no usable verdict")
-                elif eid in run.held:
-                    # Held only because of a neighbour's failure: not its own
-                    # failed attempt, so the claim's charge is given back.
-                    retry(eid, "held with a set that got no verdict")
-                    if eid in run.charged:
-                        decisions.refund.append(eid)
-                else:
-                    decisions.clear.append(eid)
-            elif release_unjudged:
+            elif eid in run.failed:
+                retry(eid, "no usable verdict")
+            elif eid in run.held:
+                # Held only because of a neighbour's failure: not its own
+                # failed attempt, so the claim's charge is given back.
+                retry(eid, "held with a set that got no verdict")
+                if eid in run.charged:
+                    decisions.refund.append(eid)
+            else:
                 decisions.clear.append(eid)
-            elif eid in run.into:
-                # Absorbed by name, its judged check still owed: the survivor
-                # holding it now owes it instead.
-                decisions.clear.append(eid)
-                handoff.add(run.resolve(eid))
-        if run.judged:
-            # A dedup_all run checks entities no record lists; one whose check
-            # did not complete becomes pending.
-            handoff |= {
-                ent["id"]
-                for ent in run.points
-                if ent["id"] not in run.listed
-                and (
-                    ent["id"] in run.failed or ent["id"] in run.held or ent["id"] in run.unsearched
-                )
-            }
-        decisions.handoff = sorted(handoff - run.listed)
+        # A dedup_all run checks entities no record lists; one whose check did
+        # not complete becomes pending.
+        decisions.handoff = sorted(
+            ent["id"]
+            for ent in run.points
+            if ent["id"] not in run.listed
+            and (ent["id"] in run.failed or ent["id"] in run.held or ent["id"] in run.unsearched)
+        )
         return ops, decisions
 
     # ── 4. apply ──
@@ -1846,8 +1829,8 @@ class EntityDeduplicator:
         if self.last_report.pending:
             logger.warning(
                 "%d entities are still pending a dedup check (a failed judge call or lookup, "
-                "a group held for one, a merge an update changed, or a run without the "
-                "judge); the next finalize() checks them",
+                "a group held for one, or a merge an update changed); the next finalize() "
+                "checks them",
                 self.last_report.pending,
             )
 

@@ -16,6 +16,8 @@ from graphrag_sdk import Column, Entity, ExactMatchResolution, Ontology, TableMa
 from graphrag_sdk.storage.deduplicator import _survivor_rank
 from graphrag_sdk.storage.identity import canonical_key, find_near_misses, why_same
 
+from .dedup_sim import AllDifferentJudge
+
 # The mapping is part of the ontology now, declared once and found by ``ingest``
 # on the file's basename — so the file each test writes must be named for it.
 _HR = TableMapping(
@@ -192,12 +194,12 @@ class TestFinalizeReports:
             "CREATE (:__Entity__:Person {id:'m_ellison__person', name:'M. Ellison', "
             "description:'an engineer who led the remediation plan'})"
         )
-        await rag.finalize(judge=False)
+        await rag.finalize(judge=AllDifferentJudge())
         path = tmp_path / "hr.csv"
         path.write_text("employee_id,full_name,age\nE-1,Maya Ellison,34\n")
         await rag.ingest(str(path))
 
-        summary = await rag.finalize(judge=False)
+        summary = await rag.finalize(judge=AllDifferentJudge())
 
         assert any(
             "Maya Ellison" in line and "M. Ellison" in line for line in summary.probable_duplicates
@@ -221,9 +223,9 @@ class TestFinalizeReports:
         path.write_text("employee_id,full_name,age\nE-1,Maya Ellison,34\n")
         await rag.ingest(str(path))
 
-        # No judge: this is about what the name rule alone does with the pair.
+        # Nothing judged the same: this is about what the name rule alone does.
         with caplog.at_level(logging.WARNING):
-            summary = await rag.finalize(judge=False)
+            summary = await rag.finalize(judge=AllDifferentJudge())
 
         assert any(
             "Maya Ellison" in line and "M. Ellison" in line for line in summary.probable_duplicates

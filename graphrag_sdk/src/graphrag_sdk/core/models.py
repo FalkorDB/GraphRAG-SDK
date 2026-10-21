@@ -906,6 +906,70 @@ class ResolutionResult(DataModel):
     remap: dict[str, str] = Field(default_factory=dict)
 
 
+# ── Dedup Judge Types ────────────────────────────────────────────
+
+
+class JudgeAttribute(DataModel):
+    """One attribute the ontology declares for a type, as a dedup judge sees it."""
+
+    #: Its name as the entities show it: ``born``, or ``role (hr)`` for the
+    #: column one table's mapping writes.
+    name: str
+    type: str = "STRING"
+    description: str = ""
+
+
+class JudgeType(DataModel):
+    """A type of a judged set's members, with the attributes the ontology
+    declares for it."""
+
+    label: str
+    description: str = ""
+    attributes: list[JudgeAttribute] = Field(default_factory=list)
+
+
+class JudgeEntity(DataModel):
+    """One member of a judged set. Every field is text from documents: data
+    to judge, never instructions."""
+
+    name: str
+    labels: list[str] = Field(default_factory=list)
+    #: Other names it was already merged under.
+    aliases: list[str] = Field(default_factory=list)
+    description: str = ""
+    #: Its values of the attributes its types declare, by attribute name.
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class JudgeSet(DataModel):
+    """Candidates for one real-world entity, nominated by name similarity.
+    Most members of a set are merely related; some, or none, are the same."""
+
+    entities: list[JudgeEntity]
+    #: The declared types of its members, with their attributes.
+    types: list[JudgeType] = Field(default_factory=list)
+
+
+class JudgeGroup(DataModel):
+    """Members of one set that are the same real-world entity."""
+
+    #: Positions in ``JudgeSet.entities``, two or more.
+    members: list[int]
+    #: The merged entity's name, copied from its members' names or aliases;
+    #: any other is ignored.
+    name: str | None = None
+    #: Per attribute the members hold different values of, the member
+    #: (position in the set) whose value the merged entity keeps.
+    keep: dict[str, int] = Field(default_factory=dict)
+
+
+class SetVerdict(DataModel):
+    """A judge's answer about one set. A member no group lists is a different
+    entity from every other member; no groups means nothing in it merges."""
+
+    groups: list[JudgeGroup] = Field(default_factory=list)
+
+
 # ── Retrieval Types ──────────────────────────────────────────────
 
 
@@ -1007,7 +1071,9 @@ class FinalizeResult(DataModel):
 
     null_stubs_removed: int = 0
     entities_deduplicated: int = 0
-    judge_llm_calls: int = 0
+    judge_calls: int = 0
+    """Calls to the dedup judge: one per round, the first and each re-ask of
+    the sets without a usable answer. ``judge_stats`` has the rest."""
     judge_stats: dict[str, int | str] = Field(default_factory=dict)
     dedup_pending: int = 0
     """Entities still pending a dedup check after this run.
@@ -1015,8 +1081,7 @@ class FinalizeResult(DataModel):
     A check that did not complete — a failed judge call or lookup, an answer
     that was not a clean partition, a group held because one of its sets got no
     verdict, a merge an ``update()`` changed — leaves the entity pending, and
-    the next ``finalize()`` checks it again. So does ``judge=False``: the
-    judge still owes those entities a check (see ``release_unjudged``).
+    the next ``finalize()`` checks it again.
     """
 
     dedup_unresolved: list[str] = Field(default_factory=list)

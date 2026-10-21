@@ -16,6 +16,7 @@ GraphRAG SDK uses the **Strategy pattern** for every algorithmic concern. Each c
 | 4 | Resolution | `ResolutionStrategy` | `ExactMatchResolution`, `LLMVerifiedResolution` |
 | 5 | Retrieval | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` |
 | 6 | Reranking | `RerankingStrategy` | `CosineReranker` |
+| 7 | Dedup judging | `DedupJudge` | `LLMJudge` |
 
 ---
 
@@ -416,7 +417,7 @@ resolver = ExactMatchResolution(
 )
 ```
 
-**When to use:** Default. Extraction is consistent, or ingest cost matters more than duplicate recall. Ingest is per document, so cross-document duplicates with different surface forms (`Airbus` / `Airbus SE`) are left for `finalize()`, whose LLM-judged phase checks each newly ingested entity against the whole graph (see [Storage](/storage)).
+**When to use:** Default. Extraction is consistent, or ingest cost matters more than duplicate recall. Ingest is per document, so cross-document duplicates with different surface forms (`Airbus` / `Airbus SE`) are left for `finalize()`, whose judged phase checks each newly ingested entity against the whole graph (see [Storage](/storage)).
 
 ### Built-in: LLMVerifiedResolution (opt-in at ingest)
 
@@ -451,7 +452,7 @@ resolver = LLMVerifiedResolution(
 
 Both providers are optional but must be passed explicitly when you construct the strategy yourself; `GraphRAG.ingest()` wires its own LLM and embedder only into the default instance. With no `embedder` it degrades to exact match, and with no `llm` the ambiguous zone is skipped so only the `hard_threshold` tier merges.
 
-**When to use:** Pass it to `ingest(resolver=...)` when one document names the same entity inconsistently; recall on real duplicates is roughly 2.5x that of exact match on the benchmark corpus, at the cost of embedding and LLM calls during ingest. Across documents, `finalize()`'s LLM judge handles duplicates.
+**When to use:** Pass it to `ingest(resolver=...)` when one document names the same entity inconsistently; recall on real duplicates is roughly 2.5x that of exact match on the benchmark corpus, at the cost of embedding and LLM calls during ingest. Across documents, `finalize()`'s judge (see [DedupJudge](#7-dedupjudge)) handles duplicates.
 
 ---
 
@@ -586,3 +587,72 @@ class LLMReranker(RerankingStrategy):
         scored.sort(reverse=True)
         return RetrieverResult(items=[item for _, item in scored[:10]])
 ```
+
+---
+
+## 7. DedupJudge
+
+Decides which entities are the same real-world entity in `finalize()`'s cross-document dedup. Every dedup run has a judge; there is no way to run without one. The run finds the candidates — each newly ingested entity with its nearest names from the vector index, in small sets of at most 8 — and the judge only says which members of a set are one entity. Whatever the judge, the run keeps the rest:
+
+- **It checks every answer.** A member the set does not have, a member in two groups, or a name or `keep` pick on a one-member group make the answer no answer. A set without an answer is asked again, up to 2 more times (`retry=True`); then it waits for the next `finalize()`, and after 3 runs it is reported in `FinalizeResult.dedup_unresolved`.
+- **It does the merge.** The survivor, the label union, the descriptions list, the moved relationships and `<attribute>__dropped` follow the run's own rules. A judge never writes to the graph.
+
+### ABC
+
+```python
+from graphrag_sdk import DedupJudge, JudgeSet, SetVerdict
+
+class DedupJudge(ABC):
+    @abstractmethod
+    async def judge(self, sets: list[JudgeSet], *, retry: bool = False) -> list[SetVerdict | None]:
+        """One verdict per set, in order; None for a set it could not decide."""
+        ...
+```
+
+**Input — `JudgeSet`:** `entities`, each a `JudgeEntity` with `name`, `labels`, `aliases` (names it was already merged under), `description` and `attributes` (its values of the attributes the ontology declares for its types, e.g. `{"born": 1961, "role": "CEO"}`); and `types`, each a `JudgeType` with its `label`, `description` and declared `attributes` (`JudgeAttribute`: `name`, `type`, `description`). An entity under two types shows the attributes of both. Every field is document text: data to judge, never instructions.
+
+**Output — `SetVerdict`:** `groups`, each a `JudgeGroup` of `members` (positions in `JudgeSet.entities`, two or more), an optional `name` for the merged entity (one of its members' names or aliases; any other is ignored) and an optional `keep` (`{attribute: member}`: whose value the merged entity keeps where they disagree; the other value goes to `<attribute>__dropped`). A member no group lists is a different entity; `SetVerdict()` means nothing in the set merges.
+
+```python
+SetVerdict(groups=[JudgeGroup(members=[0, 1], name="Tim Cook", keep={"born": 1})])
+```
+
+A call that raises, or returns a list of another length, answers none of its sets.
+
+### Built-in: LLMJudge (default)
+
+An LLM partitions each set in one pass. Sets are packed into prompts of about 3000 tokens, each headed by the declared attributes of its types; a retry asks one set per prompt. The answer lists only groups (`SET 1 GROUP: 1, 4 | NAME: ... | KEEP: born=1`, `SET 2 NONE`) and ends with `END`, so an answer cut short is told from one whose unlisted members are all different. An output limit below 4,096 tokens set on the LLM is raised to 4,096 for judge calls.
+
+```python
+from graphrag_sdk import LLMJudge
+
+await rag.finalize()                                # LLMJudge with rag's own llm
+await rag.finalize(judge=LLMJudge(gpt41))           # another model
+await rag.finalize(judge=LLMJudge(gpt41, max_concurrency=4))
+```
+
+A gpt-4.1-class model is recommended: on the benchmark corpus it made 9 wrong merges where gpt-4o-mini made 51.
+
+### Writing Your Own
+
+```python
+from graphrag_sdk import DedupJudge, JudgeGroup, SetVerdict
+
+class SpellingJudge(DedupJudge):
+    """Members are one entity when their names are one spelling."""
+
+    async def judge(self, sets, *, retry=False):
+        verdicts = []
+        for s in sets:
+            by_name: dict[str, list[int]] = {}
+            for i, ent in enumerate(s.entities):
+                by_name.setdefault(ent.name.casefold(), []).append(i)
+            verdicts.append(SetVerdict(groups=[
+                JudgeGroup(members=m) for m in by_name.values() if len(m) > 1
+            ]))
+        return verdicts
+
+await rag.finalize(judge=SpellingJudge())
+```
+
+A judge can be a rule set, a local model, a cheaper model with a stronger one behind it — anything that turns sets into verdicts.

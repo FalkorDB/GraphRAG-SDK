@@ -222,9 +222,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     time with them. Where a merged group's members disagree, the judge picks
     whose value stays (`KEEP: born=1`); the other value is kept on the merged
     entity in `<property>__dropped` (a list), and `FinalizeResult.dedup_collisions`
-    names each. Merges without the judge keep the survivor's value the same way.
-  - `finalize(judge=False)` keeps the pending entities pending — the judge still
-    owes them a check — and `release_unjudged=True` marks them checked instead.
+    names each. A merge by rule (a table row absorbing a mention) keeps the
+    survivor's value the same way.
+  - **The judge is a pluggable component, and every run has one.**
+    `finalize(judge=...)` and `deduplicate_entities(judge=...)` take any
+    `DedupJudge`; the default is `LLMJudge` with the instance's `llm`, and
+    `LLMJudge(other_llm)` picks another model. A judge is given each candidate
+    set as a `JudgeSet` (each member's name, labels, aliases, description and
+    declared attribute values, with its types' declared attributes) and returns
+    a `SetVerdict` per set (groups of member positions, the merged entity's
+    name, `keep` picks), or `None` for a set it could not decide. The run
+    checks every judge's answer with the rules above and asks a set without
+    a usable one again (`retry=True`); the merge stays the run's. There is no
+    run without a judge: `judge=False` raises `TypeError`, so no entity waits
+    for a judged run that may never come.
   - The bookkeeping lives in SDK system nodes in the data graph, beside the
     existing `__GraphRAGConfig__`: `__GraphRAGProcessing__` records (the lock,
     pending, unresolved and deleted records, the plan), with no edges and no
@@ -257,8 +268,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`drop_entity()` refuses a label a table maps rows to or links to**, naming
   the table and pointing at `drop_table()`: the mapping would re-register the
   label on the next load, so the drop could only be undone.
-- **`finalize()` now also runs an LLM-judged cross-document dedup phase**
-  (`storage/judge_dedup.py`, `finalize(judge=True)` — the default) after the
+- **`finalize()` now also runs a judged cross-document dedup phase**
+  (`storage/judge_dedup.py`; the judge is a `DedupJudge`, `LLMJudge` by default) after the
   exact-name phase; see the incremental-dedup entry under Changed for how it
   picks candidates. Ingest keeps `ExactMatchResolution` as its default: a
   resolver at ingest only ever sees one document, so the cross-document
@@ -271,12 +282,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   survivor additionally gains every member's label, recorded in
   `merged_labels` as well as set as Cypher labels. Two keyed rows and a
   mention two rows could own are never put to the judge. `FinalizeResult`
-  gains `judge_llm_calls` and `judge_stats`. Use a gpt-4.1-class `judge_llm`
-  (defaults to the instance's `llm`): on the benchmark corpus it made 9 wrong
-  merges where gpt-4o-mini made 51. `finalize(judge=False)` keeps finalize
-  LLM-free. On the standalone `deduplicate_entities()` the judge is opt-in
-  (`judge=True`), and `judge_llm=...` without it warns that the judge did not
-  run. The entity text in the
+  gains `judge_calls` and `judge_stats`. Give the default `LLMJudge` a
+  gpt-4.1-class model (`finalize(judge=LLMJudge(gpt41))`; it defaults to the
+  instance's `llm`): on the benchmark corpus it made 9 wrong merges where
+  gpt-4o-mini made 51. The entity text in the
   judge prompt is flattened, quoted and declared untrusted. A label holding
   `|` — the separator of the `merged_labels` record — is refused by a mapping
   and by a merge. An adoption into a declared label drops the labels the

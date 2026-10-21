@@ -15,7 +15,7 @@ import pytest
 from graphrag_sdk.storage.deduplicator import _REMAP_QUERIES, EntityDeduplicator
 from graphrag_sdk.storage.merge_query import absorb_query
 
-from .dedup_sim import simulate
+from .dedup_sim import AllSameJudge, simulate
 
 
 def _result(rows):
@@ -371,7 +371,8 @@ class TestMergePreservesDescriptions:
             [
                 ["e1", "Cape Morrow Light", "a lighthouse on Cape Morrow", "Location"],
                 ["e2", "cape morrow light", "first lit in 1871", "Location"],
-            ]
+            ],
+            judge=AllSameJudge(),
         )
         assert sim.merged == 1
         writes = self._description_writes(sim)
@@ -382,7 +383,7 @@ class TestMergePreservesDescriptions:
     async def test_same_name_different_label_is_not_merged(self):
         sim = await simulate(
             [
-                ["e1", "Paris", "the capital of France", "Location"],
+                ["e1", "Paris", "the capital of France", "Location", None, False],
                 ["e2", "Paris", "a prince of Troy", "Person"],
             ]
         )
@@ -397,7 +398,8 @@ class TestMergePreservesDescriptions:
             [
                 ["e1", "Alice", "an engineer", "Person"],
                 ["e2", "alice", "an engineer", "Person"],
-            ]
+            ],
+            judge=AllSameJudge(),
         )
         assert self._description_writes(sim) == ["an engineer"]
         (write,) = sim.writes
@@ -408,7 +410,8 @@ class TestMergePreservesDescriptions:
             [
                 ["e1", "Bob", "a physicist", "Person"],
                 ["e2", "bob", "", "Person"],
-            ]
+            ],
+            judge=AllSameJudge(),
         )
         for w in self._description_writes(sim):
             assert not w.startswith(" | ") and not w.endswith(" | ")
@@ -428,6 +431,7 @@ class TestMergePreservesDescriptions:
                 ["e2", "cape morrow light", "first lit in 1871", "Location"],
             ],
             stored={"e1": {"props": {"descriptions": ["a lighthouse", "first lit in 1871"]}}},
+            judge=AllSameJudge(),
         )
         assert sim.merged == 1
         assert self._description_writes(sim) == []
@@ -442,7 +446,8 @@ class TestMergePreservesDescriptions:
             [
                 ["e1", "Maya Ellison", "CEO | founder of Acme", "Person"],
                 ["e2", "maya ellison", "born 1970", "Person"],
-            ]
+            ],
+            judge=AllSameJudge(),
         )
         assert sim.merged == 1
         (write,) = sim.writes
@@ -457,6 +462,7 @@ class TestMergePreservesDescriptions:
                 ["e3", "Cape  Morrow  Light", "first lit in 1871 | automated in 1960", "Location"],
             ],
             stored={"e3": {"props": {"descriptions": ["first lit in 1871", "automated in 1960"]}}},
+            judge=AllSameJudge(),
         )
         # e3 has the longest description and survives; the others fold in
         # once, each merge building on the one before.
@@ -501,7 +507,8 @@ class TestAcronymMerge:
                     "Organization",
                 ],
                 ["b", "Ashford Island Historical Society", "short", "Organization"],
-            ]
+            ],
+            judge=AllSameJudge(),
         )
         assert sim.merged == 1
         (write,) = sim.writes
@@ -512,7 +519,8 @@ class TestAcronymMerge:
             [
                 ["a", "AIHS", "", "Organization"],
                 ["b", "Ashford Island Historical Society", "", "Organization"],
-            ]
+            ],
+            judge=AllSameJudge(),
         )
         (write,) = sim.writes
         assert "s.aliases = $aliases" in write.sets
@@ -523,7 +531,8 @@ class TestAcronymMerge:
             [
                 ["e1", "Cape Morrow Light", "", "Location"],
                 ["e2", "cape morrow light", "", "Location"],
-            ]
+            ],
+            judge=AllSameJudge(),
         )
         (write,) = sim.writes
         assert "aliases" not in write.params
@@ -533,7 +542,8 @@ class TestAcronymMerge:
             [
                 ["b", "Ashford Island Historical Society", "", "Organization", ["A.I.H.S."]],
                 ["a", "AIHS", "", "Organization", ["Ashford Society"]],
-            ]
+            ],
+            judge=AllSameJudge(),
         )
         (write,) = sim.writes
         assert write.params["aliases"] == ["A.I.H.S.", "AIHS", "Ashford Society"]

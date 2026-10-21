@@ -21,6 +21,7 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import Attribute, Entity, GraphNode, GraphRelationship, Ontology
 from graphrag_sdk.core.providers.base import LLMBatchItem
+from graphrag_sdk.storage.dedup_judges import LLMJudge
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.system_store import (
@@ -28,6 +29,8 @@ from graphrag_sdk.storage.system_store import (
     OwnershipLostError,
     SystemStore,
 )
+
+from .dedup_sim import AllDifferentJudge
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_INTEGRATION") != "1", reason="Requires RUN_INTEGRATION=1"
@@ -198,7 +201,7 @@ async def test_a_run_checks_only_what_is_new_and_leaves_no_records(graph):
     ], "ingest marks nothing on an entity"
 
     dd = dedup(graph)
-    merged = await dd.deduplicate(judge_llm=Judge([TIM, APPLE]))
+    merged = await dd.deduplicate(judge=LLMJudge(Judge([TIM, APPLE])))
     assert merged == 2 and dd.last_report.checked == 3 and dd.last_report.pending == 0
     assert await records(graph) == [], "a completed run leaves no system record"
     assert await rows(graph, "MATCH (e:__Entity__) WHERE e.embedding IS NULL RETURN e") == []
@@ -213,7 +216,7 @@ async def test_a_run_checks_only_what_is_new_and_leaves_no_records(graph):
     ) == [[survivor[0][0]]]
 
     judge = Judge([TIM, APPLE])
-    assert await dedup(graph).deduplicate(judge_llm=judge) == 0
+    assert await dedup(graph).deduplicate(judge=LLMJudge(judge)) == 0
     assert judge.prompts == [], "nothing pending: no work"
 
 
@@ -229,7 +232,7 @@ async def test_an_entity_listed_before_a_crash_is_embedded_and_checked_by_the_ne
     await graph.query_raw("MATCH (r:__GraphRAGProcessing__ {kind: 'run'}) SET r.heartbeat_at = 0")
 
     dd = dedup(graph)
-    merged = await dd.deduplicate(judge_llm=Judge([TIM, APPLE]))
+    merged = await dd.deduplicate(judge=LLMJudge(Judge([TIM, APPLE])))
     assert merged == 2 and await records(graph) == []
 
 
@@ -249,7 +252,7 @@ async def test_a_crash_after_sealing_is_finished_by_the_next_run(graph, monkeypa
 
     monkeypatch.setattr(EntityDeduplicator, "_apply_absorb", dies_on_the_second)
     with pytest.raises(RuntimeError, match="killed"):
-        await dedup(graph).deduplicate(judge_llm=Judge([TIM, APPLE]))
+        await dedup(graph).deduplicate(judge=LLMJudge(Judge([TIM, APPLE])))
     assert len(await entity_ids(graph)) == 4, "one of the two merges was applied"
     # The lock is left expired, not released: deletes still leave records.
     assert await rows(
@@ -261,7 +264,7 @@ async def test_a_crash_after_sealing_is_finished_by_the_next_run(graph, monkeypa
 
     monkeypatch.setattr(EntityDeduplicator, "_apply_absorb", real)
     dd = dedup(graph)
-    merged = await dd.deduplicate(judge_llm=Judge([TIM, APPLE]))
+    merged = await dd.deduplicate(judge=LLMJudge(Judge([TIM, APPLE])))
     assert merged == 1 and dd.last_report.resumed == 1, "the second merge, once"
     assert len(await entity_ids(graph)) == 3 and await records(graph) == []
 
@@ -275,7 +278,7 @@ async def test_a_crash_before_sealing_merges_nothing_and_is_judged_again(graph, 
     real = EntityDeduplicator._resolve
     monkeypatch.setattr(EntityDeduplicator, "_resolve", dies)
     with pytest.raises(RuntimeError):
-        await dedup(graph).deduplicate(judge_llm=Judge([TIM, APPLE]))
+        await dedup(graph).deduplicate(judge=LLMJudge(Judge([TIM, APPLE])))
     assert len(await entity_ids(graph)) == 5, "nothing merged"
     (pending,) = [r for r in await records(graph) if r[0] == "pending"]
     assert sorted(pending[1]) == ["apple-inc", "jobs", "timothy"]
@@ -287,7 +290,7 @@ async def test_a_crash_before_sealing_merges_nothing_and_is_judged_again(graph, 
     assert await rows(graph, "MATCH (r:__GraphRAGProcessing__ {kind: 'run'}) RETURN r") == []
 
     monkeypatch.setattr(EntityDeduplicator, "_resolve", real)
-    assert await dedup(graph).deduplicate(judge_llm=Judge([TIM, APPLE])) == 2
+    assert await dedup(graph).deduplicate(judge=LLMJudge(Judge([TIM, APPLE]))) == 2
     assert await records(graph) == []
 
 
@@ -303,7 +306,7 @@ async def test_a_run_that_lost_its_lock_stops_and_writes_nothing_more(graph, mon
 
     monkeypatch.setattr(EntityDeduplicator, "_claim", taken_over)
     with pytest.raises(OwnershipLostError):
-        await dedup(graph).deduplicate(judge_llm=Judge([TIM, APPLE]))
+        await dedup(graph).deduplicate(judge=LLMJudge(Judge([TIM, APPLE])))
     assert len(await entity_ids(graph)) == 5
     assert await rows(graph, "MATCH (r:__GraphRAGProcessing__ {kind: 'run'}) RETURN r.owner") == [
         ["another worker"]
@@ -315,7 +318,7 @@ async def test_a_second_run_at_once_is_refused(graph):
     await store.ensure_indexes()
     await store.acquire("first")
     with pytest.raises(DedupRunActiveError):
-        await dedup(graph).deduplicate()
+        await dedup(graph).deduplicate(judge=AllDifferentJudge())
 
 
 # ── concurrent writes ────────────────────────────────────────────
@@ -339,7 +342,7 @@ async def test_an_entity_an_update_deletes_mid_run_is_not_merged_and_its_group_r
 
     monkeypatch.setattr(SystemStore, "write_plan", then_an_update_deletes)
     dd = dedup(graph)
-    merged = await dd.deduplicate(judge_llm=Judge([TIM, APPLE]))
+    merged = await dd.deduplicate(judge=LLMJudge(Judge([TIM, APPLE])))
     assert merged == 1 and dd.last_report.changed == 1
     assert "tim" not in await entity_ids(graph) and "timothy" in await entity_ids(graph)
     (pending,) = [r for r in await records(graph) if r[0] == "pending"]
@@ -359,7 +362,7 @@ async def test_a_failed_check_stays_pending_and_three_make_it_unresolved(graph):
     await checked_graph(graph)
     for attempt in (1, 2, 3):
         dd = dedup(graph)
-        assert await dd.deduplicate(judge_llm=Judge([APPLE], fail={"Timothy Cook"})) == (
+        assert await dd.deduplicate(judge=LLMJudge(Judge([APPLE], fail={"Timothy Cook"}))) == (
             1 if attempt == 1 else 0
         )
         (pending,) = [r for r in await records(graph) if r[0] == "pending"]
@@ -371,21 +374,21 @@ async def test_a_failed_check_stays_pending_and_three_make_it_unresolved(graph):
     await graph.upsert_nodes(
         [GraphNode(id="tim2", label="Person", properties={"name": "Tim Cooke", "description": "?"})]
     )
-    await dd.deduplicate(judge_llm=judge)
+    await dd.deduplicate(judge=LLMJudge(judge))
     assert set(dd.last_report.unresolved) == {"timothy"}
     assert not any("Timothy Cook" in p for p in judge.prompts), "left out of every set"
     (unresolved,) = [r for r in await records(graph) if r[0] == "unresolved"]
     assert unresolved[1] == ["timothy"] and unresolved[3] == ["no usable verdict"]
 
     dd = dedup(graph)
-    assert await dd.deduplicate(judge_llm=Judge([TIM]), dedup_all=True) == 1
+    assert await dd.deduplicate(judge=LLMJudge(Judge([TIM])), dedup_all=True) == 1
     assert dd.last_report.unresolved == {}, "dedup_all retries it"
 
 
-async def test_without_the_judge_the_check_stays_owed(graph):
-    """``judge=False`` merges spellings and leaves the judged check owed: the
-    pending entities stay pending, and one absorbed into an entity already
-    checked hands its debt to that survivor. ``release_unjudged`` clears it."""
+async def test_a_same_spelling_is_the_judges_to_merge_and_every_check_completes(graph):
+    """Two extracted mentions of one spelling are put to the judge, never
+    merged on the name alone. A judge that keeps them apart has still checked
+    them: nothing stays pending for a later run."""
     await graph.query_raw(
         "CREATE (o:__Entity__:Organization {id: 'acme', name: 'Acme Corporation', "
         "description: 'anvils', embedding: vecf32([0.0, 0.0, 0.0, 1.0])})"
@@ -397,14 +400,8 @@ async def test_without_the_judge_the_check_stays_owed(graph):
             GraphNode(id="jobs", label="Person", properties={"name": "Steve Jobs"}),
         ]
     )
-    dd = dedup(graph)
-    assert await dd.deduplicate() == 1, "the exact phase still merges spellings"
-    assert await entity_ids(graph) == ["acme", "jobs"]
-    (pending,) = [r for r in await records(graph) if r[0] == "pending"]
-    assert sorted(pending[1]) == ["acme", "jobs"]
-
-    dd = dedup(graph)
-    await dd.deduplicate(release_unjudged=True)
+    assert await dedup(graph).deduplicate(judge=AllDifferentJudge()) == 0
+    assert await entity_ids(graph) == ["acme", "acme-2", "jobs"]
     assert await records(graph) == []
 
 
@@ -430,7 +427,7 @@ async def test_a_hand_off_needs_no_second_query_when_nothing_was_pending(graph, 
     monkeypatch.setattr(SystemStore, "add_pending", no_second_write)
     dd = dedup(graph)
     judge = Judge([TIM], fail={"Timothy Cook"})
-    assert await dd.deduplicate(judge_llm=judge, dedup_all=True) == 0
+    assert await dd.deduplicate(judge=LLMJudge(judge), dedup_all=True) == 0
     assert judge.prompts, "the pair was judged; the judge failed it"
     (pending,) = [r for r in await records(graph) if r[0] == "pending"]
     assert sorted(pending[1]) == ["tim", "timothy"] and dd.last_report.pending == 2
@@ -465,7 +462,7 @@ async def test_the_judge_sees_the_ontologys_attributes_and_picks_the_value(graph
     )
     judge = Judge([TIM], keep={"born": "Tim Cook"})
     dd = dedup(graph)
-    assert await dd.deduplicate(judge_llm=judge, ontology=ontology) == 1
+    assert await dd.deduplicate(judge=LLMJudge(judge), ontology=ontology) == 1
     assert "TYPES AND THEIR ATTRIBUTES\nPerson. Attributes: born (INTEGER)" in judge.prompts[0]
     assert "| born: 1961" in judge.prompts[0] and "| born: 1960" in judge.prompts[0]
     # Timothy Cook survives (the longer description); the judge kept Tim's year.
@@ -516,7 +513,7 @@ async def test_a_merge_whose_reply_was_lost_still_counts_and_its_group_is_rename
     monkeypatch.setattr(graph, "query_raw", reply_lost_once)
     dd = dedup(graph)
     judge = Judge([TIM], keep={"born": "Tim Cook"}, name="Tim Cook")
-    assert await dd.deduplicate(judge_llm=judge, ontology=ontology) == 1
+    assert await dd.deduplicate(judge=LLMJudge(judge), ontology=ontology) == 1
     assert len(lost) == 2, "the merge and the rename were each sent twice"
     assert await rows(
         graph, "MATCH (e:__Entity__) RETURN e.id, e.name, e.aliases, e.born, e.born__dropped"
@@ -536,7 +533,7 @@ async def test_falkordb_before_4_20_is_refused(graph, monkeypatch):
 
     monkeypatch.setattr(graph, "server_version", old)
     with pytest.raises(DatabaseError, match="4.20 or later"):
-        await dedup(graph).deduplicate()
+        await dedup(graph).deduplicate(judge=AllDifferentJudge())
     assert await records(graph) == [], "refused before the lock"
 
 
