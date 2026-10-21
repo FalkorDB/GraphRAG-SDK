@@ -675,11 +675,18 @@ class TestGraphRAGRetrieve:
         mock_strategy.search = AsyncMock(return_value=RetrieverResult())
         g._retrieval_strategy = mock_strategy
 
-        with pytest.raises(LatencyBudgetExceededError, match="retrieval strategy search"):
+        with pytest.raises(LatencyBudgetExceededError, match="graph config embedder probe"):
             await g.retrieve("test", ctx=ctx)
 
-        assert embedder.call_count == 1
+        assert g._graph_store.query_raw.call_count == 1
+        assert embedder.call_count == 0
         mock_strategy.search.assert_not_awaited()
+
+        await g.retrieve("test", ctx=Context(latency_budget_ms=1000.0))
+
+        assert g._graph_store.query_raw.call_count == 1
+        assert embedder.call_count == 1
+        mock_strategy.search.assert_awaited_once()
 
     async def test_retrieve_checks_budget_before_config_query(
         self, mock_conn, embedder, monkeypatch
@@ -1561,7 +1568,9 @@ class TestGraphRAGConcurrentLazyInitialization:
         assert not task.done()
         release_query.set()
         await task
-        assert g._config_validated is True
+        assert g._config_query_validated is True
+        assert g._config_validated is False
+        g.embedder.aembed_query.assert_not_awaited()
 
     async def test_graph_config_creator_timeout_does_not_poison_unbudgeted_waiter(
         self, mock_conn, embedder, llm

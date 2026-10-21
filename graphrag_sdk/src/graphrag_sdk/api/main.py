@@ -335,9 +335,11 @@ class GraphRAG:
         self.ontology = ontology or Ontology()
         self._embedding_dimension = embedding_dimension
         self._config_validated = False
+        self._config_query_validated = False
         self._config_validation_lock: asyncio.Lock | None = None
         self._config_validation_loop: asyncio.AbstractEventLoop | None = None
         self._config_validation_task: asyncio.Task[bool] | None = None
+        self._config_validation_task_stage: Literal["query", "probe"] | None = None
         self._config_validation_retry_at = 0.0
         self._config_validation_generation = 0
 
@@ -1767,10 +1769,12 @@ class GraphRAG:
             # Invalidate before dropping data so an in-flight attempt cannot
             # publish a result for the graph being deleted.
             self._config_validated = False
+            self._config_query_validated = False
             self._config_validation_generation += 1
             self._config_validation_retry_at = 0.0
             task = self._config_validation_task
             self._config_validation_task = None
+            self._config_validation_task_stage = None
             if task is not None and task.get_loop() is asyncio.get_running_loop():
                 if not task.done():
                     task.cancel()
@@ -4413,7 +4417,9 @@ class GraphRAG:
     async def _validate_graph_config(self, *, ctx: Context | None = None) -> None:
         """Check that the current embedder matches the graph's stored config.
 
-        Two checks, both cached after first run:
+        The stored configuration query and embedder probe are separate shared
+        stages. The query result is cached independently so each caller can
+        enforce its own latency budget before starting the probe.
 
         1. Cross-session: stored ``embedding_model`` / ``embedding_dimension``
            on the ``__GraphRAGConfig__`` node must match what the current
@@ -4430,11 +4436,6 @@ class GraphRAG:
         """
         if self._config_validated:
             return
-        if ctx is not None:
-            # A caller with no budget left must not create shared work. A
-            # caller that joins an existing task is checked here as well;
-            # only the shared task itself is budget-independent.
-            ctx.ensure_budget("graph config validation")
         loop = asyncio.get_running_loop()
         for attempt in range(2):
             created_task = False
@@ -4442,18 +4443,31 @@ class GraphRAG:
                 if self._config_validated:
                     return
 
+                stage: Literal["query", "probe"] = (
+                    "query" if not self._config_query_validated else "probe"
+                )
+                if ctx is not None:
+                    ctx.ensure_budget(
+                        "graph config validation"
+                        if stage == "query"
+                        else "graph config embedder probe"
+                    )
+
                 task = self._config_validation_task
-                if task is None or task.cancelled() or task.get_loop() is not loop:
+                if (
+                    task is None
+                    or task.cancelled()
+                    or task.get_loop() is not loop
+                    or self._config_validation_task_stage != stage
+                ):
                     task = loop.create_task(
-                        self._validate_graph_config_once(
-                            # Shared validation must not inherit one caller's
-                            # latency budget. Each caller applies its own
-                            # budget while awaiting this shielded task below.
-                            ctx=None,
+                        self._validate_graph_config_stage(
+                            stage,
                             generation=self._config_validation_generation,
                         )
                     )
                     self._config_validation_task = task
+                    self._config_validation_task_stage = stage
                     created_task = True
                 elif task.done():
                     try:
@@ -4463,22 +4477,24 @@ class GraphRAG:
                         # retry them for a later caller instead of replaying a
                         # completed exception forever.
                         task = loop.create_task(
-                            self._validate_graph_config_once(
-                                ctx=None,
+                            self._validate_graph_config_stage(
+                                stage,
                                 generation=self._config_validation_generation,
                             )
                         )
                         self._config_validation_task = task
+                        self._config_validation_task_stage = stage
                         created_task = True
                     else:
                         if result or loop.time() >= self._config_validation_retry_at:
                             task = loop.create_task(
-                                self._validate_graph_config_once(
-                                    ctx=None,
+                                self._validate_graph_config_stage(
+                                    stage,
                                     generation=self._config_validation_generation,
                                 )
                             )
                             self._config_validation_task = task
+                            self._config_validation_task_stage = stage
                             created_task = True
 
             task_error: LatencyBudgetExceededError | None = None
@@ -4486,39 +4502,49 @@ class GraphRAG:
             try:
                 if timeout is None:
                     await asyncio.shield(task)
-                elif timeout <= 0 and created_task:
-                    # Let a newly-created task report its own pre-query budget
-                    # error so it is observed instead of left un-awaited.
-                    await asyncio.shield(task)
-                elif timeout <= 0:
-                    assert ctx is not None
-                    ctx.ensure_budget("graph config validation")
                 else:
                     await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
             except asyncio.TimeoutError as exc:
                 raise LatencyBudgetExceededError(
-                    "Latency budget exceeded waiting for graph config validation"
+                    f"Latency budget exceeded waiting for graph config validation {stage}"
                 ) from exc
             except LatencyBudgetExceededError as exc:
                 task_error = exc
 
-            if task_error is None:
-                return
-            if created_task or attempt > 0:
-                raise task_error
-            if ctx is not None:
-                ctx.ensure_budget("graph config validation")
+            if task_error is not None:
+                if created_task or attempt > 0:
+                    raise task_error
+                if ctx is not None:
+                    ctx.ensure_budget(
+                        "graph config validation"
+                        if not self._config_query_validated
+                        else "graph config embedder probe"
+                    )
+                continue
 
-    async def _validate_graph_config_once(
+            if not task.result():
+                return
+            if stage == "query":
+                continue
+            return
+
+    async def _validate_graph_config_stage(
         self,
+        stage: Literal["query", "probe"],
         *,
-        ctx: Context | None = None,
         generation: int,
     ) -> bool:
-        """Run one configuration validation attempt for concurrent callers."""
+        if stage == "query":
+            return await self._validate_graph_config_query(generation=generation)
+        return await self._validate_graph_config_probe(generation=generation)
+
+    async def _validate_graph_config_query(
+        self,
+        *,
+        generation: int,
+    ) -> bool:
+        """Validate and cache the graph's stored embedding configuration."""
         try:
-            if ctx is not None:
-                ctx.ensure_budget("graph config query")
             result = await self._graph_store.query_raw(
                 "MATCH (c:__GraphRAGConfig__ {id: 'default'}) "
                 "RETURN c.embedding_model, c.embedding_dimension"
@@ -4553,20 +4579,17 @@ class GraphRAG:
         if generation != self._config_validation_generation:
             return False
 
+        self._config_query_validated = True
+        self._config_validation_retry_at = 0.0
+        return True
+
+    async def _validate_graph_config_probe(self, *, generation: int) -> bool:
+        """Probe the embedder after a caller has passed its budget check."""
         # Probe the embedder once: confirm it produces vectors of the
         # configured dimension. Catches user error like
         # ``embedding_dimension=256`` paired with a 1536-dim model.
-        if ctx is not None:
-            ctx.ensure_budget("graph config embedder probe")
         try:
-            probe = await self.embedder.aembed_query(
-                "dim_check",
-                timeout=(
-                    ctx.provider_timeout_seconds("graph config embedder probe")
-                    if ctx is not None
-                    else None
-                ),
-            )
+            probe = await self.embedder.aembed_query("dim_check", timeout=None)
         except LatencyBudgetExceededError:
             raise
         except Exception:
