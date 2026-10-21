@@ -1,15 +1,19 @@
-"""Print the CI matrix of FalkorDB images: the newest C engine and the newest Rust engine.
+"""Print the CI matrix of FalkorDB images: one C engine and one Rust engine.
 
 FalkorDB ships two engines: 4.x is the C engine, 6.x the Rust engine. They
 differ in index DDL, procedures, error text and row order, so the integration
-suite runs against the newest stable release of each. Release tags are read
-from Docker Hub; only plain release tags count (``v4.22.1``, ``6.0.2``), not
-``latest``, ``edge*`` or per-platform variants such as ``v4.22.1-alpine``.
+suite runs against both.
 
-If Docker Hub cannot be reached the pinned fallbacks below are used, with a
-warning, so a Docker Hub outage cannot fail CI by itself.
+Pushes and pull requests test the versions pinned in ``PINNED``, so the same
+commit always tests the same servers and a FalkorDB release cannot turn CI red
+for code that did not change. ``--newest`` (the weekly run) tests the newest
+release of each engine instead, read from Docker Hub, and warns when it is
+newer than the pin: that is the cue to bump ``PINNED`` in a PR. Only plain
+release tags count (``v4.22.1``, ``6.0.2``), not ``latest``, ``edge*`` or
+per-platform variants such as ``v4.22.1-alpine``. If Docker Hub cannot be
+reached the pins are used, with a warning.
 
-Usage: ``python falkordb_versions.py`` prints ``matrix=<json>`` for
+Usage: ``python falkordb_versions.py [--newest]`` prints ``matrix=<json>`` for
 ``$GITHUB_OUTPUT``; ``--json`` prints only the JSON.
 """
 
@@ -26,8 +30,8 @@ TAGS_URL = "https://hub.docker.com/v2/repositories/falkordb/falkordb/tags?page_s
 MAX_PAGES = 500
 RELEASE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 
-# Used only when Docker Hub cannot be read.
-FALLBACK = {"C": "v4.22.1", "Rust": "6.0.2"}
+# The versions pushes and pull requests test. Bump deliberately, in a PR.
+PINNED = {"C": "v4.22.2", "Rust": "6.0.2"}
 
 
 def engine_of(major: int) -> str | None:
@@ -72,32 +76,43 @@ def newest_per_engine(tags: list[str]) -> dict[str, str]:
     return {engine: tag for engine, (_, tag) in newest.items()}
 
 
-def build_matrix() -> list[dict[str, str]]:
+def build_matrix(newest: bool) -> list[dict[str, str]]:
+    if not newest:
+        return [{"engine": engine, "version": PINNED[engine]} for engine in ("C", "Rust")]
     try:
         found = newest_per_engine(fetch_tags())
     except Exception as exc:  # network, rate limit, malformed reply
         print(
             f"::warning::Could not read FalkorDB tags from Docker Hub ({exc}); "
-            f"using pinned versions {FALLBACK}",
+            f"using pinned versions {PINNED}",
             file=sys.stderr,
         )
-        found = dict(FALLBACK)
+        found = dict(PINNED)
     matrix = []
     for engine in ("C", "Rust"):
         tag = found.get(engine)
         if tag is None:
             print(
                 f"::warning::No {engine} engine release found on Docker Hub; "
-                f"using {FALLBACK[engine]}",
+                f"using {PINNED[engine]}",
                 file=sys.stderr,
             )
-            tag = FALLBACK[engine]
+            tag = PINNED[engine]
+        elif tag != PINNED[engine]:
+            print(
+                f"::warning::FalkorDB {engine} {tag} is newer than the pinned "
+                f"{PINNED[engine]}; if this run passes, bump PINNED in "
+                ".github/scripts/falkordb_versions.py",
+                file=sys.stderr,
+            )
         matrix.append({"engine": engine, "version": tag})
     return matrix
 
 
 def main() -> None:
-    matrix = json.dumps(build_matrix())
+    matrix = json.dumps(build_matrix(newest="--newest" in sys.argv))
+    # Also to the log: $GITHUB_OUTPUT alone does not show what was chosen.
+    print(f"FalkorDB matrix: {matrix}", file=sys.stderr)
     print(matrix if "--json" in sys.argv else f"matrix={matrix}")
 
 

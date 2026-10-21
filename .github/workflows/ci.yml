@@ -57,14 +57,29 @@ jobs:
       matrix: ${{ steps.resolve.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Newest C (4.x) and Rust (6.x) engine releases
+      - name: C (4.x) and Rust (6.x) engine versions
         id: resolve
-        run: python3 .github/scripts/falkordb_versions.py >> "$GITHUB_OUTPUT"
+        # Pushes and pull requests test the pinned versions, so a FalkorDB
+        # release cannot turn CI red for code that did not change. The weekly
+        # run tests the newest releases instead, as an early warning.
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = "schedule" ]; then
+            python3 .github/scripts/falkordb_versions.py --newest >> "$GITHUB_OUTPUT"
+          else
+            python3 .github/scripts/falkordb_versions.py >> "$GITHUB_OUTPUT"
+          fi
 
   integration:
-    name: Integration (FalkorDB ${{ matrix.engine }} ${{ matrix.version }})
+    # Named by engine only: a name with the version in it changes with every
+    # bump, so it could never be a required check.
+    name: Integration (FalkorDB ${{ matrix.engine }})
     needs: falkordb-versions
     runs-on: ubuntu-latest
+    # A full run takes a few minutes; a hung server must not hold a runner
+    # for the 6-hour default.
+    timeout-minutes: 20
     strategy:
       # Both engines run to the end: a failure on one says nothing about the
       # other, and the point is to see each engine's result.
