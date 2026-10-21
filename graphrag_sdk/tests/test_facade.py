@@ -196,6 +196,55 @@ class TestGraphRAGGraphAdmin:
         assert g._vector_store._indices_ensured is False
         assert g._vector_store._id_indices_ensured is False
 
+    async def test_delete_all_cancels_validation_and_blocks_new_attempts(
+        self, mock_conn, embedder, llm
+    ):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        query_started = asyncio.Event()
+        query_cancelled = asyncio.Event()
+        delete_started = asyncio.Event()
+        release_delete = asyncio.Event()
+        query_calls = 0
+
+        async def query_config(*args, **kwargs):
+            nonlocal query_calls
+            query_calls += 1
+            if query_calls == 1:
+                query_started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    query_cancelled.set()
+            return MagicMock(result_set=[])
+
+        async def delete_graph():
+            delete_started.set()
+            await release_delete.wait()
+
+        g._graph_store.query_raw = AsyncMock(side_effect=query_config)
+        g._graph_store.delete_all = AsyncMock(side_effect=delete_graph)
+        g._ontology_store.clear = AsyncMock()
+        g.embedder.aembed_query = AsyncMock(return_value=[0.1] * 8)
+
+        active_validation = asyncio.create_task(g._validate_graph_config())
+        await query_started.wait()
+        deleting = asyncio.create_task(g.delete_all())
+        await delete_started.wait()
+        assert query_cancelled.is_set()
+
+        next_validation = asyncio.create_task(g._validate_graph_config())
+        await asyncio.sleep(0)
+        assert query_calls == 1
+
+        release_delete.set()
+        await deleting
+        await next_validation
+        with pytest.raises(asyncio.CancelledError):
+            await active_validation
+
+        assert query_calls == 2
+        assert g._config_validated is True
+
 
 class TestGraphRAGIngest:
     async def test_ingest_text_file(self, graphrag, tmp_path):
@@ -626,10 +675,10 @@ class TestGraphRAGRetrieve:
         mock_strategy.search = AsyncMock(return_value=RetrieverResult())
         g._retrieval_strategy = mock_strategy
 
-        with pytest.raises(LatencyBudgetExceededError, match="graph config embedder probe"):
+        with pytest.raises(LatencyBudgetExceededError, match="retrieval strategy search"):
             await g.retrieve("test", ctx=ctx)
 
-        assert embedder.call_count == 0
+        assert embedder.call_count == 1
         mock_strategy.search.assert_not_awaited()
 
     async def test_retrieve_checks_budget_before_config_query(
@@ -644,11 +693,11 @@ class TestGraphRAGRetrieve:
         ctx = Context(latency_budget_ms=1000.0)
 
         def exhaust_budget(self: Context, operation: str) -> None:
-            if operation == "graph config query":
-                raise LatencyBudgetExceededError("budget exhausted before config query")
+            if operation == "graph config validation":
+                raise LatencyBudgetExceededError("budget exhausted before config validation")
 
         monkeypatch.setattr(Context, "ensure_budget", exhaust_budget)
-        with pytest.raises(LatencyBudgetExceededError, match="config query"):
+        with pytest.raises(LatencyBudgetExceededError, match="config validation"):
             await g.retrieve("test", ctx=ctx)
 
         g._graph_store.query_raw.assert_not_awaited()
@@ -1463,8 +1512,8 @@ class TestGraphRAGConcurrentLazyInitialization:
             probe_calls += 1
             if probe_calls == 1:
                 first_probe_started.set()
-                await asyncio.sleep(kwargs["timeout"] + 0.01)
-                raise LatencyBudgetExceededError("first request budget exceeded")
+                assert kwargs.get("timeout") is None
+                raise LatencyBudgetExceededError("Latency budget exceeded in shared probe")
             return [0.1] * 8
 
         g.embedder.aembed_query = AsyncMock(side_effect=probe_embedder)
@@ -1478,12 +1527,69 @@ class TestGraphRAGConcurrentLazyInitialization:
         waiter = asyncio.create_task(g._validate_graph_config(ctx=waiter_context))
         await asyncio.sleep(0)
 
-        with pytest.raises(LatencyBudgetExceededError, match="first request budget exceeded"):
+        with pytest.raises(LatencyBudgetExceededError, match="Latency budget exceeded"):
             await budgeted
         await waiter
 
         assert probe_calls == 2
         assert g._config_validated is True
+
+    async def test_graph_config_validation_enforces_creator_budget_while_waiting(
+        self, mock_conn, embedder, llm
+    ):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        query_started = asyncio.Event()
+        release_query = asyncio.Event()
+
+        async def query_config(*args, **kwargs):
+            query_started.set()
+            await release_query.wait()
+            return MagicMock(result_set=[])
+
+        g._graph_store.query_raw = AsyncMock(side_effect=query_config)
+        g.embedder.aembed_query = AsyncMock(return_value=[0.1] * 8)
+        validation = asyncio.create_task(
+            g._validate_graph_config(ctx=Context(latency_budget_ms=100.0))
+        )
+        await query_started.wait()
+
+        with pytest.raises(LatencyBudgetExceededError, match="waiting for graph config validation"):
+            await validation
+
+        task = g._config_validation_task
+        assert task is not None
+        assert not task.done()
+        release_query.set()
+        await task
+        assert g._config_validated is True
+
+    async def test_graph_config_creator_timeout_does_not_poison_unbudgeted_waiter(
+        self, mock_conn, embedder, llm
+    ):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        probe_started = asyncio.Event()
+        release_probe = asyncio.Event()
+
+        async def probe_embedder(*args, **kwargs):
+            probe_started.set()
+            await release_probe.wait()
+            return [0.1] * 8
+
+        g._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
+        g.embedder.aembed_query = AsyncMock(side_effect=probe_embedder)
+
+        creator = asyncio.create_task(g._validate_graph_config(ctx=Context(latency_budget_ms=30.0)))
+        await probe_started.wait()
+        waiter = asyncio.create_task(g._validate_graph_config())
+
+        with pytest.raises(LatencyBudgetExceededError, match="waiting for graph config validation"):
+            await creator
+        assert not waiter.done()
+
+        release_probe.set()
+        await waiter
+        assert g._config_validated is True
+        assert g.embedder.aembed_query.call_count == 1
 
     def test_graph_config_validation_lock_rebinds_after_delete_all(self, mock_conn, embedder, llm):
         """Config validation can contend again after sync wrappers create a new loop."""
@@ -1805,7 +1911,7 @@ class TestGraphRAGIngestValidation:
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
         g._graph_store.query_raw = AsyncMock()
 
-        with pytest.raises(LatencyBudgetExceededError, match="graph config query"):
+        with pytest.raises(LatencyBudgetExceededError, match="graph config validation"):
             await g.ingest(
                 text="hello",
                 document_id="d1",
@@ -1819,7 +1925,7 @@ class TestGraphRAGIngestValidation:
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
         g._graph_store.query_raw = AsyncMock()
 
-        with pytest.raises(LatencyBudgetExceededError, match="graph config query"):
+        with pytest.raises(LatencyBudgetExceededError, match="graph config validation"):
             await g.update(
                 text="hello",
                 document_id="d1",

@@ -1763,25 +1763,35 @@ class GraphRAG:
         index flags so a follow-up ``ingest()`` on the same instance re-runs
         validation, re-creates indexes, and re-registers the user's ontology.
         """
-        await self._graph_store.delete_all()
-        # Drop the ontology graph alongside the data graph so the two never
-        # outlive each other; a fresh ingest re-registers self.ontology from
-        # scratch via _ensure_ontology_initialized().
-        try:
-            await self._ontology_store.clear()
-        except Exception as exc:
-            logger.warning("Ontology graph clear failed during delete_all (continuing): %s", exc)
-        # Indexes were dropped along with the graph; force re-creation
-        # on the next ensure_indices() / create_id_range_indices() call.
-        self._vector_store._indices_ensured = False
-        self._vector_store._id_indices_ensured = False
-        # The __GraphRAGConfig__ node is gone too; re-validate next time.
-        self._config_validated = False
-        self._config_validation_generation += 1
-        self._config_validation_task = None
-        self._config_validation_retry_at = 0.0
-        # Force re-registration of self.ontology next call.
-        self._ontology_initialized = False
+        async with self._config_lock():
+            # Invalidate before dropping data so an in-flight attempt cannot
+            # publish a result for the graph being deleted.
+            self._config_validated = False
+            self._config_validation_generation += 1
+            self._config_validation_retry_at = 0.0
+            task = self._config_validation_task
+            self._config_validation_task = None
+            if task is not None and task.get_loop() is asyncio.get_running_loop():
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+            await self._graph_store.delete_all()
+            # Drop the ontology graph alongside the data graph so the two never
+            # outlive each other; a fresh ingest re-registers self.ontology from
+            # scratch via _ensure_ontology_initialized().
+            try:
+                await self._ontology_store.clear()
+            except Exception as exc:
+                logger.warning(
+                    "Ontology graph clear failed during delete_all (continuing): %s", exc
+                )
+            # Indexes were dropped along with the graph; force re-creation
+            # on the next ensure_indices() / create_id_range_indices() call.
+            self._vector_store._indices_ensured = False
+            self._vector_store._id_indices_ensured = False
+            # Force re-registration of self.ontology next call.
+            self._ontology_initialized = False
 
     # ── Ingestion ────────────────────────────────────────────────
 
@@ -4420,6 +4430,11 @@ class GraphRAG:
         """
         if self._config_validated:
             return
+        if ctx is not None:
+            # A caller with no budget left must not create shared work. A
+            # caller that joins an existing task is checked here as well;
+            # only the shared task itself is budget-independent.
+            ctx.ensure_budget("graph config validation")
         loop = asyncio.get_running_loop()
         for attempt in range(2):
             created_task = False
@@ -4431,7 +4446,10 @@ class GraphRAG:
                 if task is None or task.cancelled() or task.get_loop() is not loop:
                     task = loop.create_task(
                         self._validate_graph_config_once(
-                            ctx=ctx,
+                            # Shared validation must not inherit one caller's
+                            # latency budget. Each caller applies its own
+                            # budget while awaiting this shielded task below.
+                            ctx=None,
                             generation=self._config_validation_generation,
                         )
                     )
@@ -4446,7 +4464,7 @@ class GraphRAG:
                         # completed exception forever.
                         task = loop.create_task(
                             self._validate_graph_config_once(
-                                ctx=ctx,
+                                ctx=None,
                                 generation=self._config_validation_generation,
                             )
                         )
@@ -4456,7 +4474,7 @@ class GraphRAG:
                         if result or loop.time() >= self._config_validation_retry_at:
                             task = loop.create_task(
                                 self._validate_graph_config_once(
-                                    ctx=ctx,
+                                    ctx=None,
                                     generation=self._config_validation_generation,
                                 )
                             )
@@ -4464,27 +4482,25 @@ class GraphRAG:
                             created_task = True
 
             task_error: LatencyBudgetExceededError | None = None
-            if ctx is not None and not created_task:
-                timeout = ctx.provider_timeout_seconds("graph config validation")
-                if timeout is not None:
-                    try:
-                        await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
-                    except asyncio.TimeoutError as exc:
-                        raise LatencyBudgetExceededError(
-                            "Latency budget exceeded waiting for graph config validation"
-                        ) from exc
-                    except LatencyBudgetExceededError as exc:
-                        task_error = exc
-                else:
-                    try:
-                        await asyncio.shield(task)
-                    except LatencyBudgetExceededError as exc:
-                        task_error = exc
-            else:
-                try:
+            timeout = ctx.remaining_budget_seconds if ctx is not None else None
+            try:
+                if timeout is None:
                     await asyncio.shield(task)
-                except LatencyBudgetExceededError as exc:
-                    task_error = exc
+                elif timeout <= 0 and created_task:
+                    # Let a newly-created task report its own pre-query budget
+                    # error so it is observed instead of left un-awaited.
+                    await asyncio.shield(task)
+                elif timeout <= 0:
+                    assert ctx is not None
+                    ctx.ensure_budget("graph config validation")
+                else:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+            except asyncio.TimeoutError as exc:
+                raise LatencyBudgetExceededError(
+                    "Latency budget exceeded waiting for graph config validation"
+                ) from exc
+            except LatencyBudgetExceededError as exc:
+                task_error = exc
 
             if task_error is None:
                 return
