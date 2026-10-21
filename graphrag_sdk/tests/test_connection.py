@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
-from graphrag_sdk.core.exceptions import DatabaseError
+from graphrag_sdk.core.exceptions import DatabaseError, DatabaseUnavailableError
 
 
 class TestConnectionConfig:
@@ -250,6 +250,26 @@ class TestFalkorDBConnectionTLS:
             assert "connection_class" not in kwargs
             assert "ssl_cert_reqs" not in kwargs
 
+    @pytest.mark.parametrize(
+        ("query_timeout_ms", "socket_timeout"),
+        [(10_000, 15.0), (2_000, 7.0), (None, None)],
+    )
+    def test_pool_waits_past_the_server_query_timeout(self, query_timeout_ms, socket_timeout):
+        """redis-py's 5 s default fired before the server's 10 s query
+        timeout, so a 7 s read failed as a socket error, three times over."""
+        conn = FalkorDBConnection(
+            ConnectionConfig(host="h", port=1, query_timeout_ms=query_timeout_ms)
+        )
+        with (
+            patch("redis.asyncio.BlockingConnectionPool") as mock_pool,
+            patch("falkordb.asyncio.FalkorDB") as mock_falkor,
+        ):
+            mock_falkor.return_value.select_graph = MagicMock()
+            conn._ensure_client()
+            kwargs = mock_pool.call_args.kwargs
+        assert kwargs["socket_timeout"] == socket_timeout
+        assert kwargs["socket_connect_timeout"] == 5.0
+
     def test_pool_passes_ssl_kwargs_when_enabled(self):
         from redis.asyncio.connection import SSLConnection
 
@@ -373,6 +393,107 @@ class TestDriverErrorsBecomeDatabaseError:
 
         assert mock_graph.query.await_count == 1
 
+    @pytest.mark.parametrize(
+        "message",
+        [
+            # FalkorDB 6.0.x (Rust engine)
+            (
+                "Received 2 arguments to procedure 'db.idx.fulltext.createNodeIndex', "
+                + "expected at most 1"
+            ),
+            "Cannot merge a map with a non-map value",
+            # FalkorDB 4.x (C engine)
+            "Procedure `db.nope` is not registered",
+            "Unable to resolve filtered alias '(n)-[:R]->()'",
+            "Attempted to access undefined attribute",
+            # Both engines
+            "'zz' not defined",
+            "Division by zero",
+            "Unable to drop index on :Nope(x): no such index.",
+            "Cannot merge node using null property value for key 'id'",
+            # A rejection that quotes a word a temporary reply also uses
+            "'timeout' not defined",
+            "'busy' not defined",
+            # The query used its whole time budget: a retry costs as much again
+            "Query timed out",
+        ],
+    )
+    async def test_server_rejection_is_raised_once_and_spares_the_breaker(self, message):
+        """A query the server rejected fails the same way on every attempt.
+        Retrying it, and counting it against the breaker, turned one bad
+        statement into an outage for every caller."""
+        from redis.exceptions import ResponseError
+
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.001))
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=ResponseError(message))
+        conn._driver = MagicMock()
+        conn._graph = mock_graph
+
+        for _ in range(conn._breaker.failure_threshold + 1):
+            with pytest.raises(DatabaseError) as excinfo:
+                await conn.query("RETURN 1")
+            assert not isinstance(excinfo.value, DatabaseUnavailableError)
+
+        assert mock_graph.query.await_count == conn._breaker.failure_threshold + 1
+        assert await conn._breaker.allow_request()
+
+    async def test_a_rejected_half_open_probe_closes_the_breaker(self):
+        """After an outage the breaker lets one probe through. A rejection
+        proves the server answered; reporting nothing left the breaker
+        HALF_OPEN and every later query was refused for good."""
+        from redis.exceptions import ConnectionError as RedisConnectionError
+        from redis.exceptions import ResponseError
+
+        from graphrag_sdk.core.circuit_breaker import CircuitState
+
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=1, retry_delay=0.001))
+        conn._breaker.recovery_timeout = 0.0
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=RedisConnectionError("down"))
+        conn._driver = MagicMock()
+        conn._graph = mock_graph
+        for _ in range(conn._breaker.failure_threshold):
+            with pytest.raises(DatabaseError):
+                await conn.query("RETURN 1")
+        assert conn._breaker._state == CircuitState.OPEN
+
+        mock_graph.query = AsyncMock(side_effect=ResponseError("Division by zero"))
+        with pytest.raises(DatabaseError):
+            await conn.query("RETURN 1 / 0")  # the half-open probe
+
+        assert conn._breaker.state == CircuitState.CLOSED
+        mock_graph.query = AsyncMock(return_value="ok")
+        assert await conn.query("RETURN 1") == "ok"
+
+    @pytest.mark.parametrize(
+        ("error_type", "message"),
+        [
+            ("ResponseError", "Max pending queries exceeded"),
+            ("ResponseError", "BUSY Redis is busy running a script."),
+            ("ResponseError", "NOREPLICAS Not enough good replicas to write."),
+            ("ResponseError", "MISCONF Redis is configured to save RDB snapshots, but ..."),
+            ("BusyLoadingError", "Redis is loading the dataset in memory"),  # LOADING
+            ("TryAgainError", "TRYAGAIN"),
+            ("ReadOnlyError", "READONLY"),
+            ("OutOfMemoryError", "OOM"),
+        ],
+    )
+    async def test_temporary_server_replies_are_still_retried(self, error_type, message):
+        from redis import exceptions as rx
+
+        exc = getattr(rx, error_type)(message)
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.001))
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=exc)
+        conn._driver = MagicMock()
+        conn._graph = mock_graph
+
+        with pytest.raises(DatabaseUnavailableError):
+            await conn.query("RETURN 1")
+
+        assert mock_graph.query.await_count == 3
+
     async def test_wrapped_message_keeps_the_driver_text(self):
         """Index creation tolerates 'already indexed' by reading the message,
         so wrapping must not hide what the driver said."""
@@ -408,3 +529,44 @@ class TestDriverErrorsBecomeDatabaseError:
         ):
             mock_falkor.side_effect = RedisConnectionError("Connection refused")
             assert await conn.ping() is False
+
+    async def test_ping_reports_a_hung_server_within_the_probe_bound(self):
+        """PING went through the pool's socket timeout, sized for slow queries
+        (15 s by default, unbounded with query_timeout_ms=None), so a liveness
+        check on a hung server took that long or never answered."""
+        import asyncio
+
+        conn = FalkorDBConnection(ConnectionConfig(host="h", port=1, query_timeout_ms=None))
+        conn._PROBE_TIMEOUT_S = 0.05
+        conn._driver = MagicMock()
+
+        async def hang():
+            await asyncio.sleep(60)
+
+        with patch("redis.asyncio.Redis") as mock_redis:
+            mock_redis.return_value.ping = hang
+            assert await asyncio.wait_for(conn.ping(), timeout=2) is False
+
+    @pytest.mark.parametrize("fails", [False, True])
+    def test_driver_probes_with_the_short_bound_then_restores_the_query_one(self, fails):
+        """The driver's constructor probes the server with a blocking call that
+        copies the pool's socket timeout: a hung server stalled the event loop
+        for 11 x 15 s, or for good with query_timeout_ms=None."""
+        conn = FalkorDBConnection(ConnectionConfig(host="h", port=1))
+        seen: list[float | None] = []
+
+        def construct(connection_pool):
+            seen.append(connection_pool.connection_kwargs["socket_timeout"])
+            if fails:
+                raise ConnectionError("hung")
+            return MagicMock()
+
+        with patch("falkordb.asyncio.FalkorDB", side_effect=construct):
+            if fails:
+                with pytest.raises(DatabaseUnavailableError):
+                    conn._ensure_client()
+            else:
+                conn._ensure_client()
+
+        assert seen == [FalkorDBConnection._PROBE_TIMEOUT_S]
+        assert conn._pool.connection_kwargs["socket_timeout"] == 15.0
