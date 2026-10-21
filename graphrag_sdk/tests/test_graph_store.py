@@ -319,13 +319,27 @@ class TestOneKeyTwiceInOneCall:
         ) == [("KNOWS", ["c1", "c2"]), ("WORKS_AT", ["c9"])]
         assert count == 3
 
-    async def test_a_key_repeated_on_every_row_folds_in_linear_time(
+    def test_repeats_extend_one_list_and_reuse_one_seen_set(self):
+        """Copying and scanning the chunk list on every repeat cost O(n²): one
+        edge repeated on 100,000 table rows took 28 s, blocking the event loop.
+        Each repeat must extend the same list and reuse the same set."""
+        merged, seen = GraphStore._fold_properties(
+            {"source_chunk_ids": ["c1"]}, {"source_chunk_ids": ["c2"]}, union_provenance=True
+        )
+        chunk_ids = merged["source_chunk_ids"]
+
+        merged, seen_again = GraphStore._fold_properties(
+            merged, {"source_chunk_ids": ["c3", "c1"]}, union_provenance=True, seen=seen
+        )
+
+        assert seen_again is seen
+        assert merged["source_chunk_ids"] is chunk_ids
+        assert chunk_ids == ["c1", "c2", "c3"]
+        assert seen == {"c1", "c2", "c3"}
+
+    async def test_a_key_repeated_on_every_row_keeps_every_chunk_in_order(
         self, graph_store, mock_connection
     ):
-        """Copying and scanning the chunk list on every repeat cost O(n²): one
-        edge repeated on 100,000 table rows took 28 s, blocking the loop."""
-        import time
-
         rels = [
             GraphRelationship(
                 start_node_id="store",
@@ -333,18 +347,15 @@ class TestOneKeyTwiceInOneCall:
                 type="RELATES",
                 properties={"rel_type": "IN_REGION", "source_chunk_ids": [f"row{i}"]},
             )
-            for i in range(50_000)
+            for i in range(5_000)
         ]
 
-        started = time.monotonic()
         count = await graph_store.upsert_relationships(rels)
-        elapsed = time.monotonic() - started
 
         batch = upsert_calls(mock_connection)[0][0][1]["batch"]
         assert len(batch) == 1
-        assert batch[0]["properties"]["source_chunk_ids"] == [f"row{i}" for i in range(50_000)]
-        assert count == 50_000
-        assert elapsed < 3.0  # was about 7 s for 50,000 rows
+        assert batch[0]["properties"]["source_chunk_ids"] == [f"row{i}" for i in range(5_000)]
+        assert count == 5_000
 
 
 class TestUpsertReferenceNodes:

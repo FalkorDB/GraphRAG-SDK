@@ -379,9 +379,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   6.0.x the last, and on both only one row's `source_chunk_ids` survived, so an
   entity seen in two chunks stayed linked to one. `upsert_nodes()` and
   `upsert_relationships()` now merge writes that share a key before sending
-  the batch, as if they were written one at a time: later properties win and
-  chunk lists are combined. On 4.x a repeated key now keeps its last values
-  instead of its first.
+  the batch, as if they were written one at a time: later properties win, and
+  for entities and `RELATES` edges the chunk lists are combined (other labels
+  and edge types keep the last write's list, as before). On 4.x a repeated key
+  now keeps its last values instead of its first.
 - **Entity resolution dropped a merged fact's sources.** Merging `acme_corp`
   into `acme` turns `Alice WORKS_AT Acme Corp` (chunk 1) and `Alice WORKS_AT
   Acme` (chunk 2) into one edge; `remap_relationships()` kept the first edge
