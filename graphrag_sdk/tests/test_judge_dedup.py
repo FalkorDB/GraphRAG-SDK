@@ -869,3 +869,42 @@ def test_two_picks_of_different_values_for_one_attribute_cancel():
         frozenset((2, 3)): {"born": 0},  # not inside the group: ignored
     }
     assert _picked_values([0, 1, 2], keeps, ents) == {"role": "CEO"}
+
+
+def test_a_first_finalize_of_many_new_names_does_not_widen_every_lookup():
+    """Every entity new and every one nearest to every other: a neighbour is
+    asked whether it could share a group with the entity it is a neighbour
+    OF, not with any pending entity — asked the second way, every neighbour of
+    a large first finalize matched, every lookup widened to k=1000, and the
+    run timed out (Naseem's review of #355)."""
+    ks = []
+
+    class Recording(SimGraph):
+        async def query_raw(self, cypher, params=None):
+            if "db.idx.vector.queryNodes" in cypher:
+                ks.append(params["k"])
+            return await super().query_raw(cypher, params)
+
+    rows = [
+        [f"v{i:02d}", f"Vendor {i:02d}", f"Supplier number {i}.", "Organization"] for i in range(30)
+    ]
+    sim = asyncio.run(simulate(rows, pending=[r[0] for r in rows], graph_class=Recording))
+    assert sim.merged == 0
+    assert set(ks) == {11}, ks
+
+
+def test_a_wide_lookup_asks_for_fewer_entities_per_query():
+    batches = []
+
+    class Recording:
+        async def query_raw(self, cypher, params=None):
+            batches.append((params["k"], len(params["ids"])))
+            return SimpleNamespace(result_set=[])
+
+    index = NameNeighbourIndex(Recording(), None)
+    ids = [f"e{i}" for i in range(300)]
+    asyncio.run(index.discover(ids, 5))
+    asyncio.run(index.discover(ids, 1000))
+    assert [n for k, n in batches if k == 6] == [250, 50]
+    wide = [n for k, n in batches if k == 1001]
+    assert max(wide) * 1001 <= 2_500 and sum(wide) == 300

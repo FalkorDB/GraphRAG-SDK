@@ -52,8 +52,11 @@ Hit = tuple[str, float, Any]
 # the LLM calls for no F1 gain.
 NEIGHBOUR_K = 5
 NEIGHBOUR_GATE = 0.5
-# Pending entities per batched vector-index query.
+# Pending entities per batched vector-index query, and the most neighbour rows
+# one query may return: a wide lookup (k=1000) asks for fewer entities at once,
+# so every query stays far under FalkorDB's 1 s default timeout.
 KNN_BATCH = 250
+KNN_ROWS_PER_QUERY = 2_500
 #: A set without a usable answer is asked again, on its own, this many times.
 REASKS = 2
 #: Internal node ids per window of the scan for entities without a name vector.
@@ -841,8 +844,9 @@ class NameNeighbourIndex:
         """
         found: dict[str, list[Hit]] = {}
         failed: set[str] = set()
-        for b in range(0, len(ids), KNN_BATCH):
-            batch = ids[b : b + KNN_BATCH]
+        per_query = max(1, min(KNN_BATCH, KNN_ROWS_PER_QUERY // (k + 1)))
+        for b in range(0, len(ids), per_query):
+            batch = ids[b : b + per_query]
             try:
                 r = await self._graph.query_raw(
                     "UNWIND $ids AS id MATCH (e:__Entity__ {id: id}) "

@@ -1125,25 +1125,35 @@ class EntityDeduplicator:
         / long-form pair; the rest are the judge's business. A failed lookup
         leaves its entities pending for the next run."""
         pending = run.points
-        keys: set[str] = set()
-        acronyms: set[str] = set()
-        initials: set[str] = set()
-        for ent in pending:
-            norm = normalize_entity_name(ent["name"])
-            keys.add(canonical_key(ent["name"]) or ent["name"].strip().lower())
-            if (acr := _acronym_key(norm)) is not None:
-                acronyms.add(acr)
-            if (exp := _expansion_key(norm)) is not None:
-                initials.add(exp)
+        name_of = {ent["id"]: ent["name"] for ent in pending}
+        keys: dict[str, tuple[str, str | None, str | None]] = {}
 
-        def could_group(name: Any) -> bool:
-            if not isinstance(name, str) or not name:
+        def keys_of(name: str) -> tuple[str, str | None, str | None]:
+            # (canonical name, acronym letters, initials), once per name.
+            if name not in keys:
+                norm = normalize_entity_name(name)
+                keys[name] = (
+                    canonical_key(name) or name.strip().lower(),
+                    _acronym_key(norm),
+                    _expansion_key(norm),
+                )
+            return keys[name]
+
+        def could_group(eid: str, name: Any) -> bool:
+            # Whether the exact phase could put ``name`` in one group with the
+            # entity it is a neighbour OF: one canonical name, or one an acronym
+            # the other spells. Asked of that entity alone — asked of every
+            # pending entity at once, a first finalize of 50k entities (all
+            # pending) found nearly every neighbour a match, widened every
+            # lookup to k=1000, and timed out.
+            own = name_of.get(eid)
+            if not isinstance(name, str) or not name or not isinstance(own, str):
                 return False
-            norm = normalize_entity_name(name)
+            (key_a, acr_a, ini_a), (key_b, acr_b, ini_b) = keys_of(own), keys_of(name)
             return (
-                (canonical_key(name) or name.strip().lower()) in keys
-                or _acronym_key(norm) in initials
-                or _expansion_key(norm) in acronyms
+                key_a == key_b
+                or (acr_a is not None and acr_a == ini_b)
+                or (acr_b is not None and acr_b == ini_a)
             )
 
         index = NameNeighbourIndex(self._graph, self._embedder)
@@ -1158,7 +1168,7 @@ class EntityDeduplicator:
             full = [
                 eid
                 for eid, found in hits.items()
-                if len(found) >= k and all(could_group(name) for _, _, name in found)
+                if len(found) >= k and all(could_group(eid, name) for _, _, name in found)
             ]
             if not full:
                 break
@@ -1173,9 +1183,9 @@ class EntityDeduplicator:
         self._near_ids = list(dict.fromkeys(near))
         wanted = [
             nid
-            for found in hits.values()
+            for eid, found in hits.items()
             for nid, _, name in found
-            if nid not in pending_ids and could_group(name)
+            if nid not in pending_ids and could_group(eid, name)
         ]
         return list((await self._fetch_entities_by_ids(wanted, batch_size)).values())
 
