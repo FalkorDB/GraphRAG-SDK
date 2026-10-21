@@ -4421,28 +4421,14 @@ class GraphRAG:
         if self._config_validated:
             return
         loop = asyncio.get_running_loop()
-        created_task = False
-        async with self._config_lock():
-            if self._config_validated:
-                return
+        for attempt in range(2):
+            created_task = False
+            async with self._config_lock():
+                if self._config_validated:
+                    return
 
-            task = self._config_validation_task
-            if task is None or task.cancelled() or task.get_loop() is not loop:
-                task = loop.create_task(
-                    self._validate_graph_config_once(
-                        ctx=ctx,
-                        generation=self._config_validation_generation,
-                    )
-                )
-                self._config_validation_task = task
-                created_task = True
-            elif task.done():
-                try:
-                    result = task.result()
-                except Exception:
-                    # Configuration and latency errors are request-specific;
-                    # retry them for a later caller instead of replaying a
-                    # completed exception forever.
+                task = self._config_validation_task
+                if task is None or task.cancelled() or task.get_loop() is not loop:
                     task = loop.create_task(
                         self._validate_graph_config_once(
                             ctx=ctx,
@@ -4451,8 +4437,13 @@ class GraphRAG:
                     )
                     self._config_validation_task = task
                     created_task = True
-                else:
-                    if result or loop.time() >= self._config_validation_retry_at:
+                elif task.done():
+                    try:
+                        result = task.result()
+                    except Exception:
+                        # Configuration and latency errors are request-specific;
+                        # retry them for a later caller instead of replaying a
+                        # completed exception forever.
                         task = loop.create_task(
                             self._validate_graph_config_once(
                                 ctx=ctx,
@@ -4461,18 +4452,46 @@ class GraphRAG:
                         )
                         self._config_validation_task = task
                         created_task = True
+                    else:
+                        if result or loop.time() >= self._config_validation_retry_at:
+                            task = loop.create_task(
+                                self._validate_graph_config_once(
+                                    ctx=ctx,
+                                    generation=self._config_validation_generation,
+                                )
+                            )
+                            self._config_validation_task = task
+                            created_task = True
 
-        if ctx is not None and not created_task:
-            timeout = ctx.provider_timeout_seconds("graph config validation")
-            if timeout is not None:
+            task_error: LatencyBudgetExceededError | None = None
+            if ctx is not None and not created_task:
+                timeout = ctx.provider_timeout_seconds("graph config validation")
+                if timeout is not None:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+                    except asyncio.TimeoutError as exc:
+                        raise LatencyBudgetExceededError(
+                            "Latency budget exceeded waiting for graph config validation"
+                        ) from exc
+                    except LatencyBudgetExceededError as exc:
+                        task_error = exc
+                else:
+                    try:
+                        await asyncio.shield(task)
+                    except LatencyBudgetExceededError as exc:
+                        task_error = exc
+            else:
                 try:
-                    await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
-                except asyncio.TimeoutError as exc:
-                    raise LatencyBudgetExceededError(
-                        "Latency budget exceeded waiting for graph config validation"
-                    ) from exc
+                    await asyncio.shield(task)
+                except LatencyBudgetExceededError as exc:
+                    task_error = exc
+
+            if task_error is None:
                 return
-        await asyncio.shield(task)
+            if created_task or attempt > 0:
+                raise task_error
+            if ctx is not None:
+                ctx.ensure_budget("graph config validation")
 
     async def _validate_graph_config_once(
         self,

@@ -1449,6 +1449,42 @@ class TestGraphRAGConcurrentLazyInitialization:
         assert probe.call_count == 1
         assert g._config_validated is True
 
+    @pytest.mark.parametrize("waiter_budget_ms", [None, 1000.0])
+    async def test_graph_config_validation_retries_creator_budget_error_for_waiter(
+        self, mock_conn, embedder, llm, waiter_budget_ms
+    ):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
+        first_probe_started = asyncio.Event()
+        probe_calls = 0
+
+        async def probe_embedder(*args, **kwargs):
+            nonlocal probe_calls
+            probe_calls += 1
+            if probe_calls == 1:
+                first_probe_started.set()
+                await asyncio.sleep(kwargs["timeout"] + 0.01)
+                raise LatencyBudgetExceededError("first request budget exceeded")
+            return [0.1] * 8
+
+        g.embedder.aembed_query = AsyncMock(side_effect=probe_embedder)
+        budgeted = asyncio.create_task(
+            g._validate_graph_config(ctx=Context(latency_budget_ms=40.0))
+        )
+        await first_probe_started.wait()
+        waiter_context = (
+            Context(latency_budget_ms=waiter_budget_ms) if waiter_budget_ms is not None else None
+        )
+        waiter = asyncio.create_task(g._validate_graph_config(ctx=waiter_context))
+        await asyncio.sleep(0)
+
+        with pytest.raises(LatencyBudgetExceededError, match="first request budget exceeded"):
+            await budgeted
+        await waiter
+
+        assert probe_calls == 2
+        assert g._config_validated is True
+
     def test_graph_config_validation_lock_rebinds_after_delete_all(self, mock_conn, embedder, llm):
         """Config validation can contend again after sync wrappers create a new loop."""
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
