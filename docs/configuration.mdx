@@ -636,4 +636,4 @@ Note: `ensure_indices()` is called automatically after each `ingest()` call. The
 | Only need RELATES edge embeddings           | `await rag.vector_store.embed_relationships()`        |
 | Only need indexes                           | `await rag.vector_store.ensure_indices()`             |
 
-Do **not** call `backfill_entity_embeddings()` inside an ingestion loop (i.e., after each document). It re-scans all entities and is slow when called repeatedly. Instead, ingest all documents first, then call `finalize()` once.
+Do **not** call `backfill_entity_embeddings()` between ingests: every entity it embeds skips its dedup check. Ingest all documents first, then call `finalize()` once.
