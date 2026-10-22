@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import unicodedata
@@ -62,6 +63,13 @@ _UNION_NODE_PROVENANCE = (
     "SET n.source_chunk_ids = CASE WHEN size(contrib) = 0 THEN n.source_chunk_ids "
     "ELSE old + [c IN contrib WHERE NOT c IN old] END"
 )
+
+# How long a write waits for an index it just created to finish building before
+# it gives up with a warning and runs anyway. ``CREATE INDEX`` returns at once
+# and FalkorDB plans queries without the index until it is built: the first
+# 500-key lookup on a 1M-node label scanned the label once per key and timed
+# out. A 1M-node range index builds in about 1.5 s.
+_INDEX_READY_WAIT_S = 60.0
 
 
 class GraphStore:
@@ -125,25 +133,85 @@ class GraphStore:
         creates nothing rather than failing a CREATE per label. Failure is not
         fatal, it only costs speed. ``extra`` names further properties a caller
         is about to look nodes up by, such as a table's signed key.
+
+        Every missing field goes into one ``CREATE INDEX``: on FalkorDB 6.0.2 the
+        last of several statements sent back to back for one label sometimes
+        stayed empty while reporting OPERATIONAL, so every lookup on it, and
+        any plain ``MATCH`` filtering on it, found nothing. It then waits for
+        the build, so the caller's first query can use the index.
         """
         if self._indexed is None:
             self._indexed = await self._read_range_indexes()
         safe_label = sanitize_cypher_label(label)
-        for prop in (*self._LABEL_INDEXED_PROPERTIES, *extra):
-            if (label, prop) in self._indexed:
-                continue
-            target = prop if prop in self._LABEL_INDEXED_PROPERTIES else f"`{prop}`"
+        wanted = list(dict.fromkeys((*self._LABEL_INDEXED_PROPERTIES, *extra)))
+        sent = False
+        for _ in range(3):
+            missing = [prop for prop in wanted if (label, prop) not in self._indexed]
+            if not missing:
+                break
+            fields = ", ".join(
+                f"n.{prop}"
+                if prop in self._LABEL_INDEXED_PROPERTIES
+                else f"n.`{sanitize_cypher_label(prop)}`"
+                for prop in missing
+            )
             try:
-                await self._conn.query(f"CREATE INDEX FOR (n:`{safe_label}`) ON (n.{target})")
-                logger.debug("Created range index on %s.%s", safe_label, prop)
+                await self._conn.query(
+                    f"CREATE INDEX FOR (n:`{safe_label}`) ON ({fields})",
+                    expected_errors=("already indexed",),
+                )
             except Exception as exc:
                 if "already indexed" not in str(exc).lower():
                     # The graph refused, or the connection blipped: not
                     # remembered, so the next write tries again.
-                    logger.debug("Range index on %s.%s not created: %s", safe_label, prop, exc)
-                    continue
-                # Another instance got there first; the index exists.
-            self._indexed.add((label, prop))
+                    logger.debug("Range index on %s %s not created: %s", safe_label, missing, exc)
+                    break
+                # Another instance indexed one of these first, and FalkorDB
+                # then creates none of them. Read which, and ask for the rest.
+                sent = True
+                self._indexed |= await self._read_range_indexes()
+                continue
+            logger.debug("Created range index on %s %s", safe_label, missing)
+            self._indexed.update((label, prop) for prop in missing)
+            sent = True
+            break
+        if sent:
+            await self._wait_for_index(label, "NODE")
+
+    async def _wait_for_index(self, label: str, entity_type: str) -> None:
+        """Wait, up to ``_INDEX_READY_WAIT_S``, until ``label``'s index is built.
+
+        Both 4.x and 6.0.x report ``"[Indexing] x/y: UNDER CONSTRUCTION"`` while
+        building and exactly ``"OPERATIONAL"`` after. Giving up only costs
+        speed: until the build ends FalkorDB plans without the index.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _INDEX_READY_WAIT_S
+        delay = 0.1
+        while True:
+            try:
+                result = await self._conn.query(
+                    "CALL db.indexes() YIELD label, status, entitytype "
+                    "WHERE label = $label AND entitytype = $entity_type RETURN status",
+                    {"label": label, "entity_type": entity_type},
+                )
+            except Exception:
+                logger.debug("Could not read index status for %s", label, exc_info=True)
+                return
+            statuses = [row[0] for row in getattr(result, "result_set", None) or [] if row]
+            if all(status == "OPERATIONAL" for status in statuses):
+                return
+            if loop.time() >= deadline:
+                logger.warning(
+                    "Index on %s still building after %.0fs (%s); queries on it run "
+                    "without the index until it finishes",
+                    label,
+                    _INDEX_READY_WAIT_S,
+                    "; ".join(str(status) for status in statuses),
+                )
+                return
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 1.0)
 
     async def _read_range_indexes(self) -> set[tuple[str, str]]:
         """Every ``(label, property)`` the graph already indexes; empty if unreadable."""

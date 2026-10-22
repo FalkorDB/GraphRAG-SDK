@@ -513,10 +513,10 @@ class TestReconcileKeyedIdentity:
             for call in mock_connection.query.call_args_list
             if "CREATE INDEX" in call[0][0]
         ]
+        # One statement: FalkorDB 6.0.2 sometimes left the last of several
+        # back-to-back CREATE INDEX statements on one label empty.
         assert indexes == [
-            "CREATE INDEX FOR (n:`Person`) ON (n.id)",
-            "CREATE INDEX FOR (n:`Person`) ON (n.entity_key)",
-            "CREATE INDEX FOR (n:`Person`) ON (n.`hr__employee_id`)",
+            "CREATE INDEX FOR (n:`Person`) ON (n.id, n.entity_key, n.`hr__employee_id`)",
         ], "both lookups run once per keyed row; indexed once per label, not per call"
 
     async def test_an_index_the_graph_already_has_is_not_created_again(
@@ -526,7 +526,7 @@ class TestReconcileKeyedIdentity:
         listing = MagicMock(result_set=[["Person", ["id", "entity_key"]], ["Chunk", ["uid"]]])
         mock_connection.query = AsyncMock(
             side_effect=lambda cypher, *a, **k: (
-                listing if "db.indexes()" in cypher else MagicMock(result_set=[])
+                listing if "YIELD label, properties" in cypher else MagicMock(result_set=[])
             )
         )
 
@@ -534,10 +534,9 @@ class TestReconcileKeyedIdentity:
         await graph_store.resolve_by_entity_key("Organization", ["O1"])
 
         queries = [call[0][0] for call in mock_connection.query.call_args_list]
-        assert sum("db.indexes()" in q for q in queries) == 1, "read once per instance"
+        assert sum("YIELD label, properties" in q for q in queries) == 1, "read once per instance"
         assert [q for q in queries if "CREATE INDEX" in q] == [
-            "CREATE INDEX FOR (n:`Organization`) ON (n.id)",
-            "CREATE INDEX FOR (n:`Organization`) ON (n.entity_key)",
+            "CREATE INDEX FOR (n:`Organization`) ON (n.id, n.entity_key)",
         ]
 
     async def test_a_legacy_description_vector_is_not_carried_to_the_new_node(
@@ -1481,21 +1480,21 @@ class TestGraphStoreIdIndex:
     async def test_creates_index_for_node_label_and_entity(self, graph_store, mock_connection):
         await graph_store.upsert_nodes([GraphNode(id="n1", label="Person", properties={})])
         idx = self.index_calls(mock_connection)
-        assert "CREATE INDEX FOR (n:`Person`) ON (n.id)" in idx
+        assert "CREATE INDEX FOR (n:`Person`) ON (n.id, n.entity_key)" in idx
         # MERGE targets :Person but relationship MATCHes target :__Entity__.
-        assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id)" in idx
+        assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id, n.entity_key)" in idx
 
     async def test_structural_labels_get_index_but_not_entity(self, graph_store, mock_connection):
         await graph_store.upsert_nodes([GraphNode(id="c1", label="Chunk", properties={})])
         idx = self.index_calls(mock_connection)
-        assert "CREATE INDEX FOR (n:`Chunk`) ON (n.id)" in idx
-        assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id)" not in idx
+        assert "CREATE INDEX FOR (n:`Chunk`) ON (n.id, n.entity_key)" in idx
+        assert not any("`__Entity__`" in q for q in idx)
 
     async def test_index_created_once_per_label(self, graph_store, mock_connection):
         for i in range(5):
             await graph_store.upsert_nodes([GraphNode(id=f"n{i}", label="Person", properties={})])
         idx = self.index_calls(mock_connection)
-        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 1
+        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id, n.entity_key)") == 1
 
     async def test_relationship_upsert_indexes_both_endpoints(self, graph_store, mock_connection):
         await graph_store.upsert_relationships(
@@ -1509,13 +1508,13 @@ class TestGraphStoreIdIndex:
             ]
         )
         idx = self.index_calls(mock_connection)
-        assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id)" in idx
-        assert "CREATE INDEX FOR (n:`Chunk`) ON (n.id)" in idx
+        assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id, n.entity_key)" in idx
+        assert "CREATE INDEX FOR (n:`Chunk`) ON (n.id, n.entity_key)" in idx
 
     async def test_index_failure_does_not_break_the_write(self, graph_store, mock_connection):
         """A missing index is slow; a raised exception would be data loss."""
 
-        def side_effect(cypher, params=None):
+        def side_effect(cypher, params=None, **kwargs):
             if "CREATE INDEX" in cypher:
                 raise Exception("index unsupported")
             return MagicMock()
@@ -1529,7 +1528,7 @@ class TestGraphStoreIdIndex:
         life of the store — the label is memoised only once the query succeeds."""
         attempts = {"n": 0}
 
-        def side_effect(cypher, params=None):
+        def side_effect(cypher, params=None, **kwargs):
             if "CREATE INDEX" in cypher:
                 attempts["n"] += 1
                 if attempts["n"] == 1:
@@ -1542,7 +1541,7 @@ class TestGraphStoreIdIndex:
         await graph_store.upsert_nodes([GraphNode(id="c3", label="Chunk", properties={})])
         idx = self.index_calls(mock_connection)
         # First attempt failed, second succeeded, third was served from the memo.
-        assert idx.count("CREATE INDEX FOR (n:`Chunk`) ON (n.id)") == 2
+        assert idx.count("CREATE INDEX FOR (n:`Chunk`) ON (n.id, n.entity_key)") == 2
 
     async def test_delete_all_resets_index_memo(self, graph_store, mock_connection):
         """GRAPH.DELETE drops the indexes, so a re-ingest on the same store
@@ -1552,8 +1551,8 @@ class TestGraphStoreIdIndex:
         await graph_store.delete_all()
         await graph_store.upsert_nodes([GraphNode(id="n2", label="Person", properties={})])
         idx = self.index_calls(mock_connection)
-        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 2
-        assert idx.count("CREATE INDEX FOR (n:`__Entity__`) ON (n.id)") == 2
+        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id, n.entity_key)") == 2
+        assert idx.count("CREATE INDEX FOR (n:`__Entity__`) ON (n.id, n.entity_key)") == 2
 
     async def test_delete_all_fallback_also_resets_index_memo(self, graph_store, mock_connection):
         """Clearing on the DETACH DELETE fallback is harmless (one idempotent
@@ -1563,5 +1562,123 @@ class TestGraphStoreIdIndex:
         await graph_store.delete_all()
         await graph_store.upsert_nodes([GraphNode(id="n2", label="Person", properties={})])
         idx = self.index_calls(mock_connection)
-        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 2
+        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id, n.entity_key)") == 2
         assert any("DETACH DELETE" in c[0][0] for c in mock_connection.query.call_args_list)
+
+
+class TestNewIndexIsReadyBeforeItsFirstQuery:
+    """``CREATE INDEX`` returns at once; FalkorDB builds the index afterwards.
+
+    A lookup sent straight after it was planned without the index: on a 1M-node
+    label the first 500-key lookup scanned the label once per key and timed out.
+    And on FalkorDB 6.0.2, several CREATE INDEX statements sent back to back for
+    one label sometimes left the last field's index empty while it reported
+    OPERATIONAL, so every key looked missing.
+    """
+
+    @staticmethod
+    def _graph(mock_connection, *, listings=(), statuses=(), refuse=0):
+        """``listings``/``statuses`` answer successive index reads; the first
+        ``refuse`` CREATE statements fail as FalkorDB fails one naming a field
+        that is already indexed."""
+        listings, statuses = iter(listings), iter(statuses)
+        refused = {"n": 0}
+
+        async def answer(cypher, params=None, **kwargs):
+            if "YIELD label, properties" in cypher:
+                return MagicMock(result_set=next(listings, []))
+            if "YIELD label, status" in cypher:
+                return MagicMock(result_set=[[next(statuses, "OPERATIONAL")]])
+            if "CREATE INDEX" in cypher and refused["n"] < refuse:
+                refused["n"] += 1
+                raise DatabaseError("Attribute 'id' is already indexed")
+            return MagicMock(result_set=[])
+
+        mock_connection.query = AsyncMock(side_effect=answer)
+
+    @staticmethod
+    def _steps(mock_connection):
+        steps = []
+        for call in mock_connection.query.call_args_list:
+            cypher = call[0][0]
+            if "CREATE INDEX" in cypher:
+                steps.append(cypher)
+            elif "YIELD label, status" in cypher:
+                steps.append("status")
+            elif "UNWIND $keys AS k" in cypher:
+                steps.append("lookup")
+        return steps
+
+    @pytest.fixture(autouse=True)
+    def _no_sleeping(self, monkeypatch):
+        monkeypatch.setattr("graphrag_sdk.storage.graph_store.asyncio.sleep", AsyncMock())
+
+    async def test_the_lookup_waits_until_the_new_index_is_built(
+        self, graph_store, mock_connection
+    ):
+        building = "[Indexing] 599/1000: UNDER CONSTRUCTION"
+        self._graph(mock_connection, statuses=[building, building, "OPERATIONAL"])
+
+        await graph_store.resolve_by_property("Unit", "code", ["U-1"])
+
+        assert self._steps(mock_connection) == [
+            "CREATE INDEX FOR (n:`Unit`) ON (n.id, n.entity_key, n.`code`)",
+            "status",
+            "status",
+            "status",
+            "lookup",
+        ]
+        status = next(
+            call for call in mock_connection.query.call_args_list if "status" in call[0][0]
+        )
+        assert status[0][1] == {"label": "Unit", "entity_type": "NODE"}
+
+    async def test_an_index_already_in_place_is_not_waited_for(self, graph_store, mock_connection):
+        self._graph(mock_connection, listings=[[["Unit", ["id", "entity_key", "code"]]]])
+
+        await graph_store.resolve_by_property("Unit", "code", ["U-1"])
+        await graph_store.resolve_by_property("Unit", "code", ["U-2"])
+
+        assert self._steps(mock_connection) == ["lookup", "lookup"]
+
+    async def test_the_wait_is_bounded(self, graph_store, mock_connection, monkeypatch, caplog):
+        monkeypatch.setattr("graphrag_sdk.storage.graph_store._INDEX_READY_WAIT_S", 0.0)
+        self._graph(mock_connection, statuses=["[Indexing] 1/9: UNDER CONSTRUCTION"] * 99)
+
+        with caplog.at_level("WARNING", logger="graphrag_sdk.storage.graph_store"):
+            found = await graph_store.resolve_by_property("Unit", "code", ["U-1"])
+
+        assert found == {}
+        assert self._steps(mock_connection)[-1] == "lookup", "a slow build only costs speed"
+        assert "still building" in caplog.text
+
+    async def test_an_already_indexed_field_is_read_back_and_the_rest_created(
+        self, graph_store, mock_connection
+    ):
+        """FalkorDB refuses the whole statement when one field is indexed, and
+        creates none of them; another instance indexed ``id`` in between."""
+        self._graph(mock_connection, listings=[[], [["Unit", ["id"]]]], refuse=1)
+
+        await graph_store.resolve_by_property("Unit", "code", ["U-1"])
+
+        assert self._steps(mock_connection) == [
+            "CREATE INDEX FOR (n:`Unit`) ON (n.id, n.entity_key, n.`code`)",
+            "CREATE INDEX FOR (n:`Unit`) ON (n.entity_key, n.`code`)",
+            "status",
+            "lookup",
+        ]
+        assert {("Unit", "id"), ("Unit", "entity_key"), ("Unit", "code")} <= graph_store._indexed
+
+    async def test_already_indexed_does_not_mark_fields_it_did_not_create(
+        self, graph_store, mock_connection
+    ):
+        """The refusal names one field; the others were not created either."""
+        self._graph(mock_connection, refuse=99)
+
+        await graph_store.resolve_by_property("Unit", "code", ["U-1"])
+
+        assert not {("Unit", "entity_key"), ("Unit", "code")} & graph_store._indexed, (
+            "not remembered, so the next write asks again"
+        )
+        creates = [step for step in self._steps(mock_connection) if "CREATE" in step]
+        assert len(creates) == 3, "bounded retries"

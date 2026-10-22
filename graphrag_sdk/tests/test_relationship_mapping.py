@@ -670,6 +670,58 @@ async def test_a_declared_node_table_is_not_replaced_by_a_relationship_declarati
     ]
 
 
+class _Watched:
+    """Delegate to a connection, recording every query sent through it."""
+
+    def __init__(self, conn, on_query=None) -> None:
+        self._conn = conn
+        self._on_query = on_query
+        self.sent: list[tuple[str, Any]] = []
+
+    async def query(self, cypher, params=None, **kwargs):
+        self.sent.append((cypher, params))
+        if self._on_query is not None:
+            await self._on_query(cypher)
+        return await self._conn.query(cypher, params, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+@pytest.mark.integration
+async def test_a_new_key_index_is_built_before_the_first_lookup_on_real_falkordb(
+    real_falkordb_rag_factory, llm
+):
+    """Entities Cypher wrote have no key index, and the first lookup created it.
+
+    That lookup ran while FalkorDB was still building the index, so it scanned
+    the label once per key: on 1M nodes the first ingest timed out with
+    nothing written.
+    """
+    from graphrag_sdk.storage.graph_store import GraphStore
+
+    rag = real_falkordb_rag_factory(llm=llm, resolver=None)
+    await rag._conn.query(
+        "UNWIND range(0, 99999) AS i "
+        "CREATE (:Unit:__Entity__ {id: 'unit-' + toString(i), code: 'U-' + toString(i)})"
+    )
+    statuses: list[list[str]] = []
+
+    async def note_status(cypher):
+        if "UNWIND $keys AS k" in cypher:
+            listed = await rag._conn.query(
+                "CALL db.indexes() YIELD label, status WHERE label = 'Unit' RETURN status"
+            )
+            statuses.append([row[0] for row in listed.result_set])
+
+    keys = [f"U-{index}" for index in range(0, 100_000, 200)]
+    found = await GraphStore(_Watched(rag._conn, note_status)).resolve_by_property(
+        "Unit", "code", keys
+    )
+    assert statuses == [["OPERATIONAL"]]
+    assert found == {key: [f"unit-{key[2:]}"] for key in keys}
+
+
 def consumed_mapping(**changes: Any) -> RelationshipMapping:
     values: dict[str, Any] = {
         "source": "consumed_batch.csv",
