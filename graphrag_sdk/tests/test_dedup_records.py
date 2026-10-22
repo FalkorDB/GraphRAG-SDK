@@ -294,6 +294,41 @@ async def test_a_property_written_after_the_read_stops_the_merge(graph):
     assert outcome(result[0], 0) == STALE  # the carried title is not the one read
 
 
+@pytest.mark.parametrize(
+    "edit",
+    [
+        "MATCH (d:__Entity__ {id: 'd'}) SET d.title = 'CTO'",
+        "MATCH (d:__Entity__ {id: 'd'}) SET d.phone = '555-0100'",
+        "MATCH (s:__Entity__ {id: 's'}) SET s.title = 'Chairman'",
+    ],
+    ids=["a shared value changed", "a property added", "the survivor's value changed"],
+)
+async def test_any_change_to_what_the_merge_folds_stops_it(graph, edit):
+    """Both hold title 'CEO', so the fold neither carries nor collides on it.
+    A write to it after the read, or a property added to the duplicate, used
+    to pass the check, and the duplicate was deleted with the new value."""
+    await tim_cook(graph)
+    await graph.query_raw("MATCH (s:__Entity__ {id: 's'}) SET s.title = 'CEO'")
+    store = await held(graph)
+    plan_run = await one_absorb_plan(store)
+    read = await read_for_merge(graph, "s", "d")
+    await graph.query_raw(edit)
+    assert await absorb(store, graph, plan_run, read=read) == STALE
+    assert await rows(graph, "MATCH (d:__Entity__ {id: 'd'}) RETURN count(d)") == [[1]]
+
+
+async def test_a_name_vector_on_the_duplicate_does_not_block_the_merge(graph):
+    """The name vector is not compared: it does not survive the client round
+    trip, and only a name change — itself checked — replaces it."""
+    await tim_cook(graph)
+    await graph.query_raw(
+        "MATCH (d:__Entity__ {id: 'd'}) SET d.embedding = vecf32([0.1, 0.2, 0.3, 0.4])"
+    )
+    store = await held(graph)
+    plan_run = await one_absorb_plan(store)
+    assert await absorb(store, graph, plan_run) == APPLIED
+
+
 async def test_an_entity_deleted_or_renamed_since_judging_is_recorded_as_changed(graph):
     await tim_cook(graph)
     store = await held(graph)

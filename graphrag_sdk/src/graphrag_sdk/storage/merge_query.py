@@ -10,8 +10,9 @@
 # Cypher cannot create a relationship whose type is a variable, so the query is
 # generated per merge from the relationship types (and directions) the
 # duplicate has when it is read. The query checks that the duplicate has no
-# type it was not generated for, and that the properties the fold was computed
-# from are unchanged; otherwise nothing is written and the caller reads again.
+# type it was not generated for, and that what the fold was computed from is
+# unchanged — every property of the duplicate, and the survivor's value on each
+# of its keys; otherwise nothing is written and the caller reads again.
 # Measured on FalkorDB 4.20.4: 120 edges of five kinds, both directions, moved
 # in one 61 ms query.
 #
@@ -108,22 +109,36 @@ def handled(kinds: list[tuple[str, str]]) -> list[str]:
     return [f"{t}:{d}" for t, d in kinds]
 
 
+#: Properties the freshness check leaves out of its property-by-property
+#: comparison: the name and the description, descriptions, aliases and merged
+#: labels have clauses of their own, and the name vector does not survive the
+#: client round trip and is replaced only with the name, which is checked.
+_OWN_CLAUSES = frozenset(
+    {"name", "description", "descriptions", "aliases", "merged_labels", "embedding"}
+)
+
+
 def snapshot_params(
     read: MergeRead, carry: dict[str, Any], seen: Iterable[str] = ()
 ) -> dict[str, Any]:
-    """The preconditions :func:`absorb_query` checks: the fields the fold was
-    computed from, as read. ``carry`` is what the fold copies from the
-    duplicate onto properties the survivor lacked; ``seen`` are the other
-    properties it read on both nodes (a collision and its ``__dropped``
-    history)."""
-    seen = list(seen)
+    """The preconditions :func:`absorb_query` checks: everything the fold was
+    computed from, as read. That is every property of the duplicate — the
+    set of its keys, so one added since the read counts, and each value — and
+    the survivor's value on each of those keys, absent staying absent. A
+    shared value is not folded, but the duplicate is deleted: an edit to it
+    after the read would go with it. ``carry`` is what the fold copies from
+    the duplicate; ``seen`` are further survivor properties it read (a
+    collision's ``__dropped`` history)."""
+    d_keys = sorted(k for k in read.dup if k not in _OWN_CLAUSES)
+    on_survivor = {*d_keys, *seen} - _OWN_CLAUSES
+    s_read = {k: read.keep[k] for k in on_survivor if read.keep.get(k) not in (None, "", [])}
     params: dict[str, Any] = {
         "carry": carry,
-        "s_absent": [*carry, *(k for k in seen if read.keep.get(k) is None)],
+        "d_keys": d_keys,
+        "own_clauses": sorted(_OWN_CLAUSES),
+        "s_absent": sorted(on_survivor - s_read.keys()),
     }
-    s_read = {k: read.keep[k] for k in seen if read.keep.get(k) is not None}
-    d_read = {k: read.dup[k] for k in (*carry, *seen) if read.dup.get(k) is not None}
-    for side, values in (("s", s_read), ("d", d_read)):
+    for side, values in (("s", s_read), ("d", {k: read.dup[k] for k in d_keys})):
         exact, near, near_lists = _split_decimals(values)
         params[f"{side}_seen"] = exact
         params[f"{side}_near"] = near
@@ -262,6 +277,9 @@ _ABSORB_HEAD = (
     "AND coalesce(d.aliases, []) = $d_aliases AND coalesce(d.merged_labels, '') = $d_merged "
     "AND all(k IN keys($s_seen) WHERE s[k] = $s_seen[k]) "
     "AND all(k IN keys($d_seen) WHERE d[k] = $d_seen[k]) "
+    # No property added to the duplicate since the read: the values above and
+    # below cover every key it had.
+    "AND size([k IN keys(d) WHERE NOT k IN $own_clauses]) = size($d_keys) "
     + _unchanged_decimals("s")
     + _unchanged_decimals("d")
     + "AND all(k IN $s_absent WHERE s[k] IS NULL OR s[k] = '' OR s[k] = []) AS fresh "
