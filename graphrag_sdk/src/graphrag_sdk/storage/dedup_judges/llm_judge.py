@@ -339,6 +339,11 @@ _END_LINE = re.compile(r"^[\s\-*#>`|]*END[\s.*`]*$", re.IGNORECASE)
 _NAME_PART = re.compile(r"\|\s*NAME\s*:\s*([^|]*?)\s*(?=\||$)", re.IGNORECASE)
 _KEEP_PART = re.compile(r"\|\s*KEEP\s*:\s*([^|]*?)\s*(?=\||$)", re.IGNORECASE)
 _KEEP_ITEM = re.compile(r"([^=;,]+?)\s*=\s*(\d+)")
+# A reasoning model's thinking, closed or cut off: not part of the answer.
+_THINKING = re.compile(r"<think>.*?(?:</think>|\Z)", re.IGNORECASE | re.DOTALL)
+# A group line's member list follows "GROUP", after a colon when there is one.
+_GROUP_HEAD = re.compile(r"\bGROUP\b[^:|]*:|\bGROUP\b", re.IGNORECASE)
+_MEMBER_LIST = re.compile(r"\d+(?:\s*,\s*\d+)*")
 
 
 def parse_answer(text: str, sizes: list[int]) -> dict[int, SetVerdict]:
@@ -354,10 +359,15 @@ def parse_answer(text: str, sizes: list[int]) -> dict[int, SetVerdict]:
     be told which set it answers.
 
     Member numbers are kept as written, so the run's check of the verdict
-    sees a number the set lacks. A set no line mentions gets no verdict, nor
-    does the set an answer stopped in before its ``END`` (see :func:`cut_set`).
+    sees a number the set lacks. A group whose members are not a plain list
+    of numbers (see :func:`_members_of`) leaves its set with no verdict. So
+    does a set no line mentions, and the set an answer stopped in before its
+    ``END`` (see :func:`cut_set`). A reasoning model's ``<think>`` block is
+    not read.
     """
+    text = _THINKING.sub("", text)
     groups: dict[int, list[JudgeGroup]] = {}
+    unreadable: set[int] = set()
     for line in text.splitlines():
         nothing = _NONE_LINE.match(line) or (len(sizes) == 1 and _BARE_NONE_LINE.match(line))
         if nothing:
@@ -374,8 +384,11 @@ def parse_answer(text: str, sizes: list[int]) -> dict[int, SetVerdict]:
             si, after = 0, line
         else:
             continue
+        if not 0 <= si < len(sizes):
+            continue
         members = _members_of(after)
-        if not 0 <= si < len(sizes) or not members:
+        if members is None:
+            unreadable.add(si)
             continue
         name = _NAME_PART.search(line)
         keep = _KEEP_PART.search(line)
@@ -389,6 +402,12 @@ def parse_answer(text: str, sizes: list[int]) -> dict[int, SetVerdict]:
                 },
             )
         )
+    for si in sorted(unreadable):
+        groups.pop(si, None)
+        logger.warning(
+            "judge dedup: set %d has a group line that is not a list of members; it has no verdict",
+            si + 1,
+        )
     cut = cut_set(text, len(sizes))
     if cut is not None and groups.pop(cut, None) is not None:
         logger.warning(
@@ -397,11 +416,19 @@ def parse_answer(text: str, sizes: list[int]) -> dict[int, SetVerdict]:
     return {si: SetVerdict(groups=found) for si, found in groups.items()}
 
 
-def _members_of(after: str) -> list[int]:
-    """The 0-based member numbers of one answer line's group, as written: the
-    numbers before its first ``|``."""
-    members_part = after.partition("|")[0]
-    return sorted({int(x) - 1 for x in re.findall(r"\d+", members_part.split(":", 1)[-1])})
+def _members_of(after: str) -> list[int] | None:
+    """The 0-based member numbers of one group line, as written: the list
+    after ``GROUP`` (and its colon) up to the first ``|``. ``None`` when that
+    is not a plain list of numbers — ``1, 4 (2 and 3 are only related)``,
+    ``1-3``, a name after a missing ``|`` — since every number in it, read
+    as a member, would put in the group one the model did not mean. Markdown
+    emphasis and a closing full stop around the list are allowed."""
+    part = after.partition("|")[0]
+    head = _GROUP_HEAD.search(part)
+    listed = (part[head.end() :] if head else part).strip().strip("*`").strip().rstrip(".")
+    if not _MEMBER_LIST.fullmatch(listed.strip()):
+        return None
+    return sorted({int(x) - 1 for x in re.findall(r"\d+", listed)})
 
 
 def cut_set(text: str, n_sets: int) -> int | None:
@@ -413,7 +440,7 @@ def cut_set(text: str, n_sets: int) -> int | None:
     last ``NONE`` line closed its set; the sets after it have no line and are
     unanswered anyway. ``None`` when nothing is in doubt."""
     last: int | None = None
-    for line in text.splitlines():
+    for line in _THINKING.sub("", text).splitlines():
         if _END_LINE.match(line):
             return None
         if _NONE_LINE.match(line) or (n_sets == 1 and _BARE_NONE_LINE.match(line)):

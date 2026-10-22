@@ -152,6 +152,33 @@ def test_parse_groups_accepts_list_markers_and_bare_groups_for_one_set():
     assert parse_groups("GROUP 1: 1, 3\nGROUP 2: 2", [3]) == {0: [[0, 2], [1]]}
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "SET 1 GROUP: 1, 4 (2 and 3 are only related)",
+        "SET 1 GROUP: 1, 2 NAME: Apollo 3",
+        "SET 1 GROUP: 1-3",
+        "SET 1 GROUP: | NAME: IBM",
+    ],
+)
+def test_a_group_line_that_is_not_a_plain_member_list_leaves_its_set_unanswered(line):
+    """Read as numbers, each of these merged members the model did not mean;
+    a wrong merge is permanent, so the set is asked again instead."""
+    assert parse_groups(line + "\nSET 2 GROUP: 1, 2", [4, 2]) == {1: [[0, 1]]}
+
+
+def test_a_member_list_is_read_through_markdown_and_a_closing_full_stop():
+    for line in ("SET 1 GROUP: 1, 4.", "SET 1 GROUP: **1, 4**", "- SET 1 GROUP 1, 4 | NAME: X"):
+        assert parse_groups(line, [4]) == {0: [[0, 3], [1], [2]]}, line
+
+
+def test_a_reasoning_models_thinking_is_not_read_as_an_answer():
+    thought = "<think>\nPerhaps:\nSET 1 GROUP: 1, 2, 3\nNo, 3 is the founder.\n</think>\n"
+    assert parse_groups(thought + "SET 1 GROUP: 1, 2 | NAME: IBM", [3]) == {0: [[0, 1], [2]]}
+    # cut off while still thinking: no answer at all
+    assert parse_answer("<think>\nSET 1 GROUP: 1, 2, 3\nEND", [3]) == {}
+
+
 def test_parse_groups_drops_a_group_line_it_cannot_attribute():
     """With several sets in the prompt, ``GROUP 1: 2, 3`` names no set; it
     used to fall back to set 1 and partition set 1's entities on evidence
