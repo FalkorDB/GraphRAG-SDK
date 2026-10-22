@@ -57,7 +57,7 @@ SYSTEM_LABEL_PREFIX = "__GraphRAG"
 LOCK_TTL_MS = 600_000
 HEARTBEAT_INTERVAL_S = 30.0
 #: Ids (or operations) per record. A record is one node property write, so this
-#: keeps every write well under the 1 s default query timeout.
+#: keeps every write well inside the query timeout (10 s by default).
 RECORD_PAGE = 10_000
 #: Judged runs an entity may take part in without a usable verdict before it is
 #: unresolved: reported and never merged automatically.

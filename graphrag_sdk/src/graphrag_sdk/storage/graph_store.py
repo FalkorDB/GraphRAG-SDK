@@ -62,15 +62,15 @@ class ReferenceNode(NamedTuple):
 logger = logging.getLogger(__name__)
 
 #: Reads of a re-keyed row's two nodes before its fold gives up: a fold writes
-#: nothing when either node changed shape since the read (a new edge type, a
-#: node gone), and is read again.
+#: nothing when either node changed since the read (a property, a new edge
+#: type, a node gone), and is read again.
 _FOLD_READS = 3
 
 # An entity's ``source_chunk_ids`` is every chunk that mentioned it, across
 # documents. ``SET n += props`` alone replaces the list with the incoming
 # write's, so the second document to mention an entity erased the first's
-# provenance — the same fault the RELATES edge path and the deduplicator's
-# remap already guard against, with the same union. Bound after the MERGE as
+# provenance — the same fault the RELATES edge path and the merge queries
+# (``merge_query``) already guard against, with the same union. Bound after the MERGE as
 # ``old`` (what the node has) and ``contrib`` (what this write brings).
 # A write carrying no list — a table row, a re-embed — leaves the node's list
 # alone rather than giving it ``[]``. ``strip_stale_provenance`` is the
@@ -558,7 +558,6 @@ class GraphStore:
             # unions provenance itself, from the values at write time, and
             # writes nothing if anything this read saw has changed since.
             carry = properties_to_carry(read.keep, read.dup, never=self._NEVER_CARRY_ON_RECONCILE)
-            carry.pop("source_chunk_ids", None)
             sets = copy_on_server(carry)
             if carry:
                 sets.append("s += $carry")
@@ -738,7 +737,7 @@ class GraphStore:
                 # breaking ``delete_stale_relationships`` (a later delete
                 # of the new doc would drop the edge even though earlier
                 # docs still support it). Special-case RELATES to UNION
-                # the lists — same idiom as the deduplicator remap path.
+                # the lists — same idiom as the merge queries' RELATES block.
                 if rel_type == "RELATES":
                     # The MERGE is keyed on ``rel_type`` as well as the pair.
                     # Without it, one edge exists per (start, end) and a second

@@ -22,7 +22,7 @@
 # duplicate and the survivor (or a duplicate's self-loop) would become a
 # self-loop on the survivor and is dropped.
 #
-# Two pitfalls of the queries this replaces still apply: the survivor is bound
+# Two pitfalls every merge query here avoids: the survivor is bound
 # before any ``MERGE`` (a MERGE on an unbound path creates a nameless ghost
 # entity), and every pattern expands from the bound duplicate (anchored on a
 # labelled far end, the planner scans the whole label).
@@ -83,7 +83,8 @@ class MergeRead:
 
 
 async def read_for_merge(graph: Any, survivor_id: str, dup_id: str) -> MergeRead | None:
-    """Read what :func:`absorb_query` is generated from; ``None`` if either
+    """Read what :func:`absorb_query` and :func:`fold_query` are generated
+    from; ``None`` if either
     entity is not there. Raises what the read raises."""
     result = await graph.query_raw(_READ_QUERY, {"survivor": survivor_id, "dup": dup_id})
     rows = result.result_set or []
@@ -105,7 +106,8 @@ def edge_kinds(out_types: Iterable[str], in_types: Iterable[str]) -> list[tuple[
 
 
 def handled(kinds: list[tuple[str, str]]) -> list[str]:
-    """The ``$handled`` parameter of :func:`absorb_query` for ``kinds``."""
+    """The ``$handled`` parameter of :func:`absorb_query` and
+    :func:`fold_query` for ``kinds``."""
     return [f"{t}:{d}" for t, d in kinds]
 
 
@@ -250,9 +252,9 @@ _RETURN = (
 
 #: How far a stored decimal may be from the value read for it and still count
 #: as unchanged, as a fraction of its size. FalkorDB's rounding to 15
-#: significant digits moves a value by at most 5e-15 of it. Purely relative:
-#: with an absolute term, a float timestamp (1.7e9) could move by 1.7 s, and
-#: 1e-12 become 5e-10, unseen; now 1.7 ms and nothing.
+#: significant digits moves a value by at most 5e-15 of it. Purely relative,
+#: so a float timestamp (1.7e9) notices a change of 1.7 ms, and a value near
+#: zero any change at all.
 DECIMAL_TOLERANCE = 1e-12
 
 

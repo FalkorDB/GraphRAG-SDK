@@ -169,7 +169,13 @@ def test_a_group_line_that_is_not_a_plain_member_list_leaves_its_set_unanswered(
 
 
 def test_a_member_list_is_read_through_markdown_and_a_closing_full_stop():
-    for line in ("SET 1 GROUP: 1, 4.", "SET 1 GROUP: **1, 4**", "- SET 1 GROUP 1, 4 | NAME: X"):
+    for line in (
+        "SET 1 GROUP: 1, 4.",
+        "SET 1 GROUP: **1, 4**",
+        "SET 1 GROUP: **1, 4**.",
+        "SET 1 GROUP: **1, 4.**",
+        "- SET 1 GROUP 1, 4 | NAME: X",
+    ):
         assert parse_groups(line, [4]) == {0: [[0, 3], [1], [2]]}, line
 
 
@@ -603,7 +609,7 @@ def test_the_neighbour_search_runs_from_the_stored_vector():
             calls.append((cypher, params))
             return SimpleNamespace(result_set=[["a", [["b", 0.1, "Acne"]]]])
 
-    found, failed = asyncio.run(NameNeighbourIndex(Recording(), None).discover(["a"], 5))
+    found, failed = asyncio.run(NameNeighbourIndex(Recording()).discover(["a"], 5))
     ((cypher, params),) = calls
     assert "e.embedding)" in cypher and "collect(" in cypher
     assert params == {"ids": ["a"], "k": 6}
@@ -1054,7 +1060,7 @@ def test_a_wide_lookup_asks_for_fewer_entities_per_query():
             batches.append((params["k"], len(params["ids"])))
             return SimpleNamespace(result_set=[])
 
-    index = NameNeighbourIndex(Recording(), None)
+    index = NameNeighbourIndex(Recording())
     ids = [f"e{i}" for i in range(300)]
     asyncio.run(index.discover(ids, 5))
     asyncio.run(index.discover(ids, 1000))

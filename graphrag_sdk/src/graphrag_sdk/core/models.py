@@ -958,8 +958,9 @@ class JudgeGroup(DataModel):
     #: The merged entity's name, copied from its members' names or aliases;
     #: any other is ignored.
     name: str | None = None
-    #: Per attribute the members hold different values of, the member
-    #: (position in the set) whose value the merged entity keeps.
+    #: Per attribute the members hold different values of — keyed by its name
+    #: as in ``JudgeEntity.attributes`` — the member (position in the set)
+    #: whose value the merged entity keeps.
     keep: dict[str, int] = Field(default_factory=dict)
 
 
@@ -1075,6 +1076,7 @@ class FinalizeResult(DataModel):
     """Calls to the dedup judge: one per round, the first and each re-ask of
     the sets without a usable answer. ``judge_stats`` has the rest, with what
     the judge spent — ``LLMJudge``'s prompts in ``llm_calls``."""
+
     judge_stats: dict[str, int | str] = Field(default_factory=dict)
     dedup_pending: int = 0
     """Entities still pending a dedup check after this run.
@@ -1097,7 +1099,7 @@ class FinalizeResult(DataModel):
     dedup_collisions: list[str] = Field(default_factory=list)
     """Merges whose two entities held different values for one property.
 
-    The value that stays is the judge's choice (``KEEP``) on a judged merge,
+    The value that stays is the judge's choice (``JudgeGroup.keep``) on a judged merge,
     otherwise the survivor's; the other is not lost — it is kept on the merged
     entity in ``<property>__dropped``, a list. Each entry names both values::
 

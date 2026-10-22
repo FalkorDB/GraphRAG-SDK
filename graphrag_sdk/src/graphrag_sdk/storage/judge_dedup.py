@@ -43,7 +43,6 @@ from graphrag_sdk.core.models import (
     JudgeType,
     SetVerdict,
 )
-from graphrag_sdk.core.providers import Embedder
 from graphrag_sdk.storage.dedup_judges.base import DedupJudge
 
 logger = logging.getLogger(__name__)
@@ -53,7 +52,7 @@ Hit = tuple[str, float, Any]
 
 # Index-nominated neighbours per pending entity, and the cosine floor for them.
 # Measured on the labeled set: k=5 found 92-96 % of true pairs; k=10 doubled
-# the LLM calls for no F1 gain.
+# the judge calls for no F1 gain.
 NEIGHBOUR_K = 5
 NEIGHBOUR_GATE = 0.5
 # Pending entities per batched vector-index query, and the most neighbour rows
@@ -111,7 +110,7 @@ def make_groups_dense(
 
     ``keep_apart(i, j)`` names pairs the caller protects (two keyed rows, a
     mention two rows could own); two components are not joined when that
-    would put such a pair in one set, so the model is never shown — and never
+    would put such a pair in one set, so the judge is never shown — and never
     asked about — such a pair.
     """
     nodes = sorted({x for e in edges for x in e})
@@ -152,7 +151,7 @@ def pick_group_name(
 ) -> str | None:
     """The judge's name for a merged group: the one given to the largest
     judged sub-group, kept only if it is one of the members' own names or
-    aliases (returned in that exact spelling) — never a name the model made up."""
+    aliases (returned in that exact spelling) — never a name the judge made up."""
     members = set(group)
     proposals = sorted(
         ((len(sub), name) for sub, name in names.items() if sub <= members), reverse=True
@@ -227,9 +226,6 @@ class AttributeSchema:
             types[entity.label] = (entity.description or "", fields)
         return cls(types)
 
-    def declares(self, label: str) -> bool:
-        return bool(self.types.get(label, ("", []))[1])
-
     @property
     def keys(self) -> list[str]:
         """Every node property a declared attribute is stored under."""
@@ -280,12 +276,10 @@ class NameNeighbourIndex:
 
     Args:
         graph_store: object with ``query_raw(cypher, params)``.
-        embedder: embedding provider (entity names).
     """
 
-    def __init__(self, graph_store: Any, embedder: Embedder) -> None:
+    def __init__(self, graph_store: Any) -> None:
         self._graph = graph_store
-        self._embedder = embedder
 
     _ENTITY_FIELDS = (
         "{v}.id, {v}.name, {v}.description, "

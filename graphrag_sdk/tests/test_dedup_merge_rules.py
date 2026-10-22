@@ -1,7 +1,7 @@
 """Merge rules every dedup phase shares.
 
-A mention two keyed rows could equally own stays apart; a merge unions the
-duplicate's provenance and keeps both descriptions.
+A mention two keyed rows could equally own stays apart; a merge keeps both
+descriptions, and leaves provenance to the merge query.
 """
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ from __future__ import annotations
 from graphrag_sdk.storage.deduplicator import (
     _mentions_two_rows_could_own,
     properties_to_carry,
-    union_chunk_ids,
 )
 
 
@@ -38,17 +37,6 @@ class TestMentionsTwoRowsCouldOwn:
 
     def test_two_rows_and_no_mention_is_nothing_to_report(self):
         assert _mentions_two_rows_could_own(self.ROW_A, [self.ROW_A, self.ROW_B]) == []
-
-
-class TestUnionChunkIds:
-    def test_keeps_order_and_adds_only_what_is_missing(self):
-        assert union_chunk_ids(["c1", "c2"], ["c2", "c3", "c1"]) == ["c1", "c2", "c3"]
-
-    def test_anything_that_is_not_a_list_of_strings_counts_as_empty(self):
-        assert union_chunk_ids(None, ["c1"]) == ["c1"]
-        assert union_chunk_ids(["c1"], "c2") == ["c1"]
-        assert union_chunk_ids(["c1", 7, None], [3]) == ["c1"]
-        assert union_chunk_ids(None, None) == []
 
 
 class TestWhatAMergeKeeps:
@@ -83,6 +71,14 @@ class TestWhatAMergeKeeps:
         keep = {"id": "a", "name": "Maya Ellison", "age": 34, "embedding": [0.1]}
         dup = {"id": "b", "name": "M. Ellison", "age": 35, "embedding": [0.2], "role": "CTO"}
         assert properties_to_carry(keep, dup, never=self.NEVER) == {"role": "CTO"}
+
+    def test_provenance_is_left_to_the_merge_query(self):
+        """The query unions both lists as they are when it writes; a list read
+        before it would drop a chunk ingest added in between."""
+        keep = {"id": "a", "source_chunk_ids": ["c1"]}
+        dup = {"id": "b", "source_chunk_ids": ["c2"]}
+        assert properties_to_carry(keep, dup, never=self.NEVER) == {}
+        assert properties_to_carry({"id": "a"}, dup, never=self.NEVER) == {}
 
     def test_a_blank_description_on_the_survivor_is_filled(self):
         keep = {"id": "a", "description": ""}

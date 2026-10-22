@@ -709,7 +709,7 @@ class VectorStore:
                 # so each query naturally returns the next un-embedded batch.
                 result = await self._conn.query(
                     "MATCH (e:__Entity__) WHERE e.embedding IS NULL "
-                    "RETURN e.id AS id, e.name AS name, e.description AS desc "
+                    "RETURN e.id AS id, e.name AS name "
                     "LIMIT $limit",
                     {"limit": batch_size},
                 )

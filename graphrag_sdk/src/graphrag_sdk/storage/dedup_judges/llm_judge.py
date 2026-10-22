@@ -137,7 +137,8 @@ class LLMJudge(DedupJudge):
     Sets are packed into prompts of about ``PROMPT_TOKEN_BUDGET`` tokens, each
     headed by the declared attributes of the types its sets hold; a retry asks
     one set per prompt. A set gets no verdict when its prompt fails, when the
-    answer never mentions it, or when the answer stopped in it, before ``END``.
+    answer never mentions it, when the answer stopped in it, before ``END``,
+    or when one of its group lines is not a plain list of member numbers.
 
     Its :meth:`usage` counts the prompts sent (``llm_calls``) and those that
     got no response (``llm_failed``).
@@ -234,7 +235,8 @@ def render_set(entities: list[JudgeEntity]) -> str:
     The fields are document text and the model is told so; each is flattened
     to one line by :func:`_field`, and the description is rendered as a JSON
     string — quotes and backslashes escaped, still one line — so the line
-    grammar ``N. name [labels] — "description"`` stays unambiguous whatever a
+    grammar ``N. name [labels] (also: "alias") — "description" | attr: value``
+    stays unambiguous whatever a
     document put in it. A bare f-string quote would let a ``"`` inside the
     description close the field, and everything after it would read to the
     model as prompt prose rather than as the entity's data; an accepted answer
@@ -345,7 +347,7 @@ _ANSWER_LINE = re.compile(r"^[\s\-*#>`|]*SET\s*(\d+)\b", re.IGNORECASE)
 # "SET 2 NONE", and the same written as a group: "SET 2 GROUP: NONE".
 _AS_GROUP = r"(?:GROUP\b[\s*`]*:?[\s*`]*)?"
 _NONE_LINE = re.compile(rf"^[\s\-*#>`|]*SET\s*(\d+)[\s*`]*:?\s*{_AS_GROUP}NONE\b", re.IGNORECASE)
-_BARE_NONE_LINE = re.compile(rf"^[\s\-*#>`|]*(){_AS_GROUP}NONE[\s.*`]*$", re.IGNORECASE)
+_BARE_NONE_LINE = re.compile(rf"^[\s\-*#>`|]*{_AS_GROUP}NONE[\s.*`]*$", re.IGNORECASE)
 _BARE_GROUP_LINE = re.compile(r"^[\s\-*#>`|]*GROUP\b", re.IGNORECASE)
 _END_LINE = re.compile(r"^[\s\-*#>`|]*END[\s.*`]*$", re.IGNORECASE)
 # The parts after a group's members, each up to the next "|".
@@ -438,8 +440,8 @@ def _members_of(after: str) -> list[int] | None:
     emphasis and a closing full stop around the list are allowed."""
     part = after.partition("|")[0]
     head = _GROUP_HEAD.search(part)
-    listed = (part[head.end() :] if head else part).strip().strip("*`").strip().rstrip(".")
-    if not _MEMBER_LIST.fullmatch(listed.strip()):
+    listed = (part[head.end() :] if head else part).strip().lstrip("*` ").rstrip("*`. ")
+    if not _MEMBER_LIST.fullmatch(listed):
         return None
     return sorted({int(x) - 1 for x in re.findall(r"\d+", listed)})
 

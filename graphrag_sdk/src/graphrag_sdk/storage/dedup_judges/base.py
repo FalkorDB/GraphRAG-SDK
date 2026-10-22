@@ -30,13 +30,15 @@ class DedupJudge(ABC):
 
     Example::
 
+        from graphrag_sdk import DedupJudge, JudgeGroup, SetVerdict
+
         class SpellingJudge(DedupJudge):
             async def judge(self, sets, *, retry=False):
                 verdicts = []
                 for s in sets:
-                    by_name = defaultdict(list)
+                    by_name: dict[str, list[int]] = {}
                     for i, ent in enumerate(s.entities):
-                        by_name[ent.name.casefold()].append(i)
+                        by_name.setdefault(ent.name.casefold(), []).append(i)
                     verdicts.append(SetVerdict(groups=[
                         JudgeGroup(members=m) for m in by_name.values() if len(m) > 1
                     ]))
@@ -66,5 +68,5 @@ class DedupJudge(ABC):
         grew while it ran — to its ``judge_stats``, each key at 0 when it
         judged nothing; a key the run reports itself, and a value that is not
         a whole number, are left out. A judge shared by runs at the same time
-        sees their spending mixed. None by default."""
+        sees their spending mixed. Empty by default."""
         return {}

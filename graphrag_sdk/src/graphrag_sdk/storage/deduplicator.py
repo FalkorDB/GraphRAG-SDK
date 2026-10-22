@@ -8,8 +8,8 @@
 # judged cross-document phase (``judge_dedup``: the vector index nominates, a
 # ``DedupJudge`` decides). Every merge of the run is decided first, written as
 # a sealed plan, and applied one atomic query per merge (``merge_query``), so a
-# crash at any point resumes where it stopped.
-# Preserves label-aware grouping to prevent cross-type merging.
+# crash at any point resumes where it stopped. The exact phase never merges
+# across labels; a judged merge may, and keeps every member's label.
 
 from __future__ import annotations
 
@@ -106,7 +106,7 @@ _ACRONYM_STOPWORDS = frozenset({"of", "the", "and", "for", "de", "la", "del", "a
 
 # A short form of fewer than 3 letters is not evidence of anything: with a
 # floor of 2, ``Bo`` spelled the initials of ``Ben Ottoson`` and the pair was
-# merged with no LLM in the loop.
+# merged by rule, with no judge asked.
 _MIN_ACRONYM_LEN = 3
 _MAX_ACRONYM_LEN = 6
 
@@ -260,27 +260,16 @@ def _string_list(value: Any) -> list[str]:
     return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
 
-def union_chunk_ids(existing: Any, incoming: Any) -> list[str]:
-    """``existing`` followed by every id in ``incoming`` it lacks, order kept.
-
-    The Python side of the union the RELATES queries above do in Cypher, for
-    the places that read both nodes' properties before writing — a merge's
-    property carry. Anything that is not a list of strings counts as empty.
-    """
-    old, new = _string_list(existing), _string_list(incoming)
-    return old + [c for c in new if c not in old]
-
-
 def properties_to_carry(
     keep: dict[str, Any], dup: dict[str, Any], *, never: frozenset[str]
 ) -> dict[str, Any]:
     """What a merge copies from the node being deleted onto the one that stays.
 
     keep_existing: a value already on the survivor always wins, and an empty
-    string or list counts as absent. ``source_chunk_ids`` is the one property
-    both sides hold at once — the survivor was mentioned wherever either was —
-    so it becomes the union. ``never`` names what stays behind whatever the
-    survivor lacks; ``id`` and ``embedding`` always do.
+    string or list counts as absent. ``source_chunk_ids`` is left to the merge
+    query, which unions both nodes' lists as they are when it writes.
+    ``never`` names what stays behind whatever the survivor lacks; ``id`` and
+    ``embedding`` always do.
 
     ``description`` is the exception to keep_existing: the two are joined with
     ``" | "`` (:func:`_merge_description`), each segment kept once. The
@@ -293,7 +282,10 @@ def properties_to_carry(
     carry = {
         key: value
         for key, value in dup.items()
-        if key not in never and value is not None and keep.get(key) in (None, "", [])
+        if key not in never
+        and key != "source_chunk_ids"
+        and value is not None
+        and keep.get(key) in (None, "", [])
     }
     description = _merge_description(
         str(keep.get("description") or ""), str(dup.get("description") or "")
@@ -302,9 +294,6 @@ def properties_to_carry(
         carry["description"] = description
     else:
         carry.pop("description", None)
-    provenance = union_chunk_ids(keep.get("source_chunk_ids"), dup.get("source_chunk_ids"))
-    if provenance and provenance != keep.get("source_chunk_ids"):
-        carry["source_chunk_ids"] = provenance
     return carry
 
 
@@ -395,8 +384,8 @@ def _survivor_rank(entity: dict[str, Any]) -> tuple[int, int, int, int, int, int
        re-ingest idempotent after resolution.
     2. **Real over placeholder.** A stub was created by a foreign key and knows
        only an id and a name.
-    3. **Long form over acronym.** The survivor's *name* is what
-       ``backfill_entity_embeddings`` embeds, so keeping ``AIHS`` over
+    3. **Long form over acronym.** The survivor's *name* is what its vector
+       embeds (written by ``_publish``, and again after a rename), so keeping ``AIHS`` over
        ``Ashford Island Historical Society`` would leave the entity
        vector-indexed as an opaque string, whatever else recommended it.
     4. **Best connected.** Between two nodes of the same provenance, the one the
@@ -830,7 +819,7 @@ class EntityDeduplicator:
         if len(run.unsearched) < len(run.points):
             # The index may still be building over vectors written before this
             # run (a fresh index on a filled graph); a search would fail.
-            await NameNeighbourIndex(self._graph, self._embedder).ensure_vector_index(None)
+            await NameNeighbourIndex(self._graph).ensure_vector_index(None)
         return run
 
     async def _give_up(self, store: SystemStore, run: _Run) -> None:
@@ -884,7 +873,7 @@ class EntityDeduplicator:
         the vector of its id, as retrieval embeds it, and is never listed: the
         judge cannot judge a name it does not have.
         """
-        index = NameNeighbourIndex(self._graph, self._embedder)
+        index = NameNeighbourIndex(self._graph)
         listed = {eid for page in await store.pending_pages() for eid in page.ids}
         index_ready = False
         async for window in index.unembedded():
@@ -1023,7 +1012,7 @@ class EntityDeduplicator:
             group[:] = [ent for ent in group if ent["id"] not in run.into]
 
         decided += self._plan_adoption(run, groups)
-        logger.info(f"EntityDeduplicator phase 1 (exact): {decided} merges decided")
+        logger.info(f"EntityDeduplicator exact phase: {decided} merges decided")
         self._report_cross_label_names(groups)
 
     async def _fetch_name_neighbours(self, run: _Run, batch_size: int) -> list[dict[str, Any]]:
@@ -1087,7 +1076,7 @@ class EntityDeduplicator:
                 or (acr is not None and acr in initials)
             )
 
-        index = NameNeighbourIndex(self._graph, self._embedder)
+        index = NameNeighbourIndex(self._graph)
         ids = [ent["id"] for ent in pending if ent["id"] not in run.unsearched]
         k = _EXACT_NEIGHBOUR_K
         hits, failed = await index.discover(ids, k)
@@ -1157,7 +1146,7 @@ class EntityDeduplicator:
         the graph as the exact phase's decisions will leave it: an entity
         those absorb is represented by its survivor.
         """
-        index = NameNeighbourIndex(self._graph, self._embedder)
+        index = NameNeighbourIndex(self._graph)
         stats = self.last_judge_stats = {
             "entities": 0,
             "neighbours": 0,
@@ -1217,7 +1206,7 @@ class EntityDeduplicator:
         skip = self._undecidable_pairs
 
         def protected(a: dict[str, Any], b: dict[str, Any]) -> bool:
-            # A pair phase 1 found undecidable, and any two rows written from a
+            # A pair the exact phase found undecidable, and any two rows written from a
             # declared key: two mapped ids are two rows, whatever their names.
             return frozenset((a["id"], b["id"])) in skip or (
                 a.get("is_stub") is not None and b.get("is_stub") is not None
@@ -1365,8 +1354,8 @@ class EntityDeduplicator:
         duplicates = self._keep_undecidable_mentions_apart(survivor, duplicates, members)
         absorbed: list[str] = []
         for dup in duplicates:
-            # Transitivity can put a pair the model never saw as a candidate into
-            # one group; a pair phase 1 found undecidable still holds — against
+            # Transitivity can put a pair the judge never saw as a candidate into
+            # one group; a pair the exact phase found undecidable still holds — against
             # the survivor and against everything already folded into it.
             if any(frozenset((dup["id"], other)) in skip for other in (survivor["id"], *absorbed)):
                 logger.info(
@@ -1851,7 +1840,7 @@ class EntityDeduplicator:
         """``(mention, row)`` pairs the exact phase found no way to decide.
 
         A mention whose name two keyed rows share fits both equally, and the
-        judge would otherwise settle it on the one evidence phase 1 had already
+        judge would otherwise settle it on the one evidence the exact phase had already
         rejected, folding the mention into whichever row ranks higher. These
         pairs are kept out of the judge phase and reported instead; a name
         shared by two rows is not disambiguated by looking at the name harder.
@@ -1935,7 +1924,7 @@ class EntityDeduplicator:
     ) -> list[list[dict]]:
         """Union groups where one name is an acronym of another.
 
-        Runs on the ``(normalised name, label)`` groups so an acronym attaches to
+        Runs on the ``(canonical name, label)`` groups so an acronym attaches to
         an already-complete group. Uses union-find rather than pairwise merging
         so the result does not depend on iteration order.
 
@@ -1945,12 +1934,12 @@ class EntityDeduplicator:
         every (short, long) pair -- ~51 µs each, 20 s for 400k pairs -- which is
         quadratic inside ``finalize()``.
 
-        Two guards, because this fold deletes nodes without an LLM looking:
+        Two guards, because a group holding a table row merges by rule, unjudged:
         the short and long form must share at least one label, and a short form
         that spells the initials of two or more long forms (``ABC`` = ``American
         Broadcasting Company`` = ``Australian Broadcasting Corporation``) is
         left alone rather than used as a hub that collapses unrelated entities.
-        Ambiguous cases are the LLM judge's job: with ``ambiguous_out`` they are
+        Ambiguous cases are the judge's job: with ``ambiguous_out`` they are
         appended there as ``(short-form group, long-form group)`` pairs.
         """
         parent = list(range(len(groups)))
@@ -2006,7 +1995,7 @@ class EntityDeduplicator:
     ) -> list[dict[str, Any]]:
         """Drop mentions the judge put on a row without saying which row.
 
-        A mention is kept apart when phase 1 found it between two rows, or when
+        A mention is kept apart when the exact phase found it between two rows, or when
         the group itself holds two keyed rows and the mention — the same
         ambiguity, reached by a judge that grouped all three. What remains is a
         mention paired with exactly one row, which is a decision, not a coin

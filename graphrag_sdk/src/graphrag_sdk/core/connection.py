@@ -107,7 +107,8 @@ class FalkorDBConnection:
         self._driver: Any | None = None
         self._graph: Any | None = None
         self._breaker = CircuitBreaker()
-        # Set once the server's version passed (see _check_server_version).
+        # Set once the server's version passed, or was not reported (see
+        # _check_server_version).
         self._version_checked = False
         self._version_check_lock: asyncio.Lock | None = None
         self._version_check_loop: asyncio.AbstractEventLoop | None = None
@@ -204,6 +205,9 @@ class FalkorDBConnection:
                 unhealthy, retries were exhausted, or the failure is permanent.
                 Driver-level exceptions are wrapped so callers can distinguish
                 infrastructure failures from application errors.
+            FalkorDBVersionError: The server is older than FalkorDB 4.20 (a
+                ``DatabaseError``). Checked once per connection, before its
+                first query.
         """
         self._ensure_client()
         assert self._graph is not None  # for type-checkers
@@ -302,7 +306,7 @@ class FalkorDBConnection:
         "type mismatch",
         "procedure not found",
         # A parameter FalkorDB cannot encode (NaN, infinity): the same bytes
-        # fail every time, and three of them opened the circuit breaker.
+        # fail every time, and each attempt counted toward the circuit breaker.
         "failed to parse query parameter",
         # The query or its values are wrong, the same every time: measured,
         # two of them opened the circuit breaker for every query after them.

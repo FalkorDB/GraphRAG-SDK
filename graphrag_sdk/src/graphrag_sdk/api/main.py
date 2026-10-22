@@ -108,7 +108,7 @@ from graphrag_sdk.storage.ontology_store import (
     OntologyContradictionError,
     OntologyStore,
 )
-from graphrag_sdk.storage.system_store import deleted_record_clause
+from graphrag_sdk.storage.system_store import MAX_JUDGED_ATTEMPTS, deleted_record_clause
 from graphrag_sdk.storage.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -4538,8 +4538,9 @@ class GraphRAG:
         the values of the attributes the ontology declares. Agreed pairs are
         merged by the same rules as every other phase (survivor rank,
         descriptions list, aliases, provenance), and the survivor additionally
-        gains every member's label; anything else is left alone — nothing
-        else is written to the graph. Two rows written from a declared key,
+        gains every member's label, the judge's name for the group and the
+        values it picked to keep; pairs it did not agree are left alone. Two
+        rows written from a declared key,
         and a mention two such rows could equally own, are never put to the
         judge.
 
@@ -4882,7 +4883,8 @@ class GraphRAG:
         if dedup_report.unresolved:
             report(
                 f"finalize: {len(dedup_report.unresolved)} entity/entities got no usable dedup "
-                "verdict in 3 judged runs and are no longer checked; finalize(dedup_all=True) "
+                f"verdict in {MAX_JUDGED_ATTEMPTS} judged runs and are no longer checked; "
+                "finalize(dedup_all=True) "
                 "retries them. See FinalizeResult.dedup_unresolved"
             )
 
