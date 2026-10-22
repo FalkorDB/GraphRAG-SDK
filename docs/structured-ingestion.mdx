@@ -125,6 +125,14 @@ Each entry uses the existing batch-result wrapper, with
 relationship and endpoint counts in `entry.result.metadata`; its source
 identifier does not imply a persisted `Document` node.
 
+A relationship table needs its endpoint keys declared. While one resolves an
+endpoint by a property, `drop_table()` of the node table that signs that key,
+`drop_attribute()` and `rename_attribute()` of it raise `ValueError` naming the
+relationship table: `drop_table()` the relationship table first. A stored
+relationship mapping whose key is already gone is skipped with a warning when
+the ontology loads, so the graph still opens; ingesting that file raises
+`MappingError` until the key is declared again, and `drop_table()` removes it.
+
 Validation and endpoint checks precede relationship writes, but the batched
 write is not a database transaction. Inspect `incomplete_writes` if a batch
 fails; partial writes may remain and stale-edge cleanup is deferred. Correct

@@ -223,6 +223,121 @@ async def test_delete_prefers_a_document_named_like_a_relationship_table_on_real
     assert await state() == (0, 2, [relationship_source])
 
 
+async def _ingest_units_batches_and_edges(rag, tmp_path):
+    for filename, content in (
+        ("unit.csv", "unit_id\nU-1\nU-2\n"),
+        ("batch.csv", "batch_id\nB-1\nB-2\n"),
+    ):
+        table = tmp_path / filename
+        table.write_text(content, encoding="utf-8")
+        await rag.ingest(str(table))
+    path = write_csv(
+        tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20", "U-2,B-2,CONSUMED_BATCH,2026-09-21"]
+    )
+    assert (await rag.ingest(str(path))).relationships_written == 2
+    return path
+
+
+async def _consumed_edge_count(rag) -> int:
+    result = await rag._graph_store.query_raw(
+        "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() RETURN count(r)"
+    )
+    return result.result_set[0][0]
+
+
+def _unit_and_batch_tables():
+    from graphrag_sdk import TableMapping
+
+    return [
+        TableMapping(source="unit.csv", label="Unit", key="unit_id", name="unit_id"),
+        TableMapping(source="batch.csv", label="Batch", key="batch_id", name="batch_id"),
+    ]
+
+
+@pytest.mark.integration
+async def test_endpoint_keys_cannot_be_removed_under_a_relationship_table_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """drop_table, drop_attribute and rename_attribute refuse a key an edge table uses."""
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[consumed_mapping()],
+        ),
+    )
+    await _ingest_units_batches_and_edges(rag, tmp_path)
+    refused = r"'consumed_batch\.csv' uses {}.*drop_table\('consumed_batch\.csv'\) first"
+    with pytest.raises(ValueError, match=refused.format(r"Unit\.unit__unit_id")):
+        await rag.drop_table("unit.csv")
+    with pytest.raises(ValueError, match=refused.format(r"Batch\.batch__batch_id")):
+        await rag.drop_attribute("Batch", "batch__batch_id")
+    with pytest.raises(ValueError, match=refused.format(r"Unit\.unit__unit_id")):
+        await rag.rename_attribute("Unit", "unit__unit_id", "unit_code")
+    # Nothing was removed, and a new instance on the graph still starts.
+    stored = await rag._ontology_store.load()
+    assert [m.source for m in stored.tables] == ["batch.csv", "unit.csv"]
+    keys = {(e.label, p.name) for e in stored.entities for p in e.properties}
+    assert {("Unit", "unit__unit_id"), ("Batch", "batch__batch_id")} <= keys
+    held = await rag._graph_store.query_raw(
+        "MATCH (u:Unit) WHERE u.unit__unit_id IS NOT NULL RETURN count(u)"
+    )
+    assert held.result_set == [[2]]
+    assert await _consumed_edge_count(rag) == 2
+    restarted = real_falkordb_rag_factory(llm=llm, resolver=None, connection=rag._conn)
+    assert len((await restarted.get_ontology()).relationship_tables) == 1
+    # The order the message asks for works.
+    await restarted.drop_table("consumed_batch.csv")
+    await restarted.drop_table("unit.csv")
+    assert await _consumed_edge_count(rag) == 0
+    again = real_falkordb_rag_factory(llm=llm, resolver=None, connection=rag._conn)
+    ontology = await again.get_ontology()
+    assert ontology.relationship_tables == []
+    assert [m.source for m in ontology.tables] == ["batch.csv"]
+
+
+@pytest.mark.integration
+async def test_stored_mapping_with_a_missing_endpoint_key_does_not_stop_startup_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path, caplog
+):
+    """A graph whose relationship table lost its key still opens and can drop it."""
+    import logging
+
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[consumed_mapping()],
+        ),
+    )
+    path = await _ingest_units_batches_and_edges(rag, tmp_path)
+    # The ontology an unguarded drop_table('unit.csv') left: the node table and
+    # its key are gone, and the relationship mapping is still stored.
+    await rag._ontology_store.drop_entity_property("Unit", "unit__unit_id")
+    await rag._ontology_store.drop_table_mapping("unit.csv")
+    restarted = real_falkordb_rag_factory(llm=llm, resolver=None, connection=rag._conn)
+    with caplog.at_level(logging.WARNING, logger="graphrag_sdk.api.main"):
+        ontology = await restarted.get_ontology()
+    assert [m.source for m in ontology.relationship_tables] == ["consumed_batch.csv"]
+    assert "start endpoint key Unit.unit__unit_id" in caplog.text
+    assert "drop_table('consumed_batch.csv')" in caplog.text
+    # Ingesting that file is still an error; the rest of the graph is usable.
+    with pytest.raises(MappingError, match=r"start endpoint key Unit\.unit__unit_id"):
+        await restarted.ingest(str(path))
+    assert await _consumed_edge_count(rag) == 2
+    batch = tmp_path / "batch.csv"
+    batch.write_text("batch_id\nB-1\nB-2\nB-3\n", encoding="utf-8")
+    await restarted.ingest(str(batch))
+    await restarted.drop_table("consumed_batch.csv")
+    assert await _consumed_edge_count(rag) == 0
+    again = real_falkordb_rag_factory(llm=llm, resolver=None, connection=rag._conn)
+    assert (await again.get_ontology()).relationship_tables == []
+
+
 def consumed_mapping(**changes: Any) -> RelationshipMapping:
     values: dict[str, Any] = {
         "source": "consumed_batch.csv",
@@ -718,3 +833,200 @@ class TestRelationshipReviewRegressions:
         rag._ontology_store.drop_relation_property.assert_awaited_once_with(
             "CONSUMED_BATCH", "consumed_batch__consumed_on"
         )
+
+
+class TestRelationshipEndpointKeyGuard:
+    """An endpoint key cannot be taken from under a relationship table.
+
+    The stored mapping is registered again on every first touch, and one whose
+    key is no longer declared failed that: every new GraphRAG on the graph
+    raised ``MappingError``, including the ``drop_table()`` that removes it.
+    """
+
+    @staticmethod
+    def _rag(mock_connection, llm, embedder, ontology: Ontology) -> GraphRAG:
+        from unittest.mock import AsyncMock
+
+        from graphrag_sdk.core.connection import ConnectionConfig
+
+        mock_connection.config = ConnectionConfig(graph_name="unit-test")
+        rag = GraphRAG(connection=mock_connection, llm=llm, embedder=embedder)
+        rag._global_ontology = ontology
+        rag._ensure_ontology_initialized = AsyncMock()
+        rag._refresh_global_ontology = AsyncMock(return_value=ontology)
+        return rag
+
+    @pytest.mark.parametrize(
+        "table, key",
+        [
+            ("unit.csv", r"Unit\.unit__unit_id as its start"),
+            ("batch.csv", r"Batch\.batch__batch_id as its end"),
+        ],
+    )
+    async def test_drop_table_refuses_a_node_table_whose_key_an_edge_table_uses(
+        self, mock_connection, llm, embedder, table, key
+    ):
+        from unittest.mock import AsyncMock
+
+        from graphrag_sdk import DeleteDocumentResult, TableMapping
+
+        site = TableMapping(source="site.csv", label="Site", key="site_id", name="site_id")
+        rag = self._rag(
+            mock_connection,
+            llm,
+            embedder,
+            Ontology(
+                entities=[Entity(label="Unit"), Entity(label="Batch"), Entity(label="Site")],
+                tables=[
+                    TableMapping(source="unit.csv", label="Unit", key="unit_id", name="unit_id"),
+                    TableMapping(
+                        source="batch.csv", label="Batch", key="batch_id", name="batch_id"
+                    ),
+                    site,
+                ],
+                relationship_tables=[consumed_mapping()],
+            ),
+        )
+        rag._graph_store.documents_of_table = AsyncMock(return_value=[])
+        rag.delete_document = AsyncMock(return_value=DeleteDocumentResult(document_uid=table))
+        rag._retract_table = AsyncMock(return_value=(0, 0))
+        rag._ontology_store.drop_entity_property = AsyncMock()
+        rag._ontology_store.drop_table_mapping = AsyncMock()
+
+        with pytest.raises(
+            ValueError,
+            match=rf"'consumed_batch\.csv' uses {key} endpoint key.*"
+            r"drop_table\('consumed_batch\.csv'\) first",
+        ):
+            await rag.drop_table(table)
+        rag.delete_document.assert_not_awaited()
+        rag._retract_table.assert_not_awaited()
+        rag._ontology_store.drop_entity_property.assert_not_awaited()
+        rag._ontology_store.drop_table_mapping.assert_not_awaited()
+
+        # A table no relationship table resolves by still drops.
+        await rag.drop_table("site.csv")
+        rag._ontology_store.drop_table_mapping.assert_awaited_once_with("site.csv")
+
+    @pytest.mark.parametrize("call", ["drop_attribute", "rename_attribute"])
+    async def test_a_plain_endpoint_key_cannot_be_dropped_or_renamed(
+        self, mock_connection, llm, embedder, call
+    ):
+        from unittest.mock import AsyncMock
+
+        rag = self._rag(
+            mock_connection,
+            llm,
+            embedder,
+            Ontology(
+                entities=[
+                    Entity(
+                        label="Unit",
+                        properties=[
+                            Attribute(name="code", type="STRING"),
+                            Attribute(name="nickname", type="STRING"),
+                        ],
+                    ),
+                    Entity(
+                        label="Batch",
+                        properties=[Attribute(name="batch__batch_id", type="STRING")],
+                    ),
+                ],
+                relationship_tables=[
+                    consumed_mapping(start=EndpointMapping("Unit", "code", "source"))
+                ],
+            ),
+        )
+        rag._graph_store.drop_node_property = AsyncMock(return_value=1)
+        rag._graph_store.rename_node_property = AsyncMock(return_value=1)
+        rag._ontology_store.drop_entity_property = AsyncMock()
+        rag._ontology_store.rename_property_label = AsyncMock()
+        renaming = call == "rename_attribute"
+        extra = ("unit_code",) if renaming else ()
+
+        with pytest.raises(
+            ValueError,
+            match=r"'consumed_batch\.csv' uses Unit\.code as its start endpoint key.*"
+            r"drop_table\('consumed_batch\.csv'\) first",
+        ):
+            await getattr(rag, call)("Unit", "code", *extra)
+        for mock in (
+            rag._graph_store.drop_node_property,
+            rag._graph_store.rename_node_property,
+            rag._ontology_store.drop_entity_property,
+            rag._ontology_store.rename_property_label,
+        ):
+            mock.assert_not_awaited()
+
+        # A property no relationship table resolves by is unaffected.
+        await getattr(rag, call)("Unit", "nickname", *extra)
+        changed = (
+            rag._ontology_store.rename_property_label
+            if renaming
+            else rag._ontology_store.drop_entity_property
+        )
+        changed.assert_awaited_once()
+
+    @staticmethod
+    def _stored_without_the_start_key() -> Ontology:
+        """What an unguarded ``drop_table('unit.csv')`` left in the ontology graph."""
+        return Ontology(
+            entities=[
+                Entity(label="Unit"),
+                Entity(
+                    label="Batch", properties=[Attribute(name="batch__batch_id", type="STRING")]
+                ),
+            ],
+            relationship_tables=[consumed_mapping()],
+        )
+
+    async def test_stored_mapping_with_a_missing_key_is_skipped_at_startup(
+        self, mock_connection, llm, embedder, caplog
+    ):
+        import logging
+        from unittest.mock import AsyncMock
+
+        from graphrag_sdk.core.connection import ConnectionConfig
+
+        mock_connection.config = ConnectionConfig(graph_name="unit-test")
+        rag = GraphRAG(connection=mock_connection, llm=llm, embedder=embedder)
+        stored = self._stored_without_the_start_key()
+        rag._ontology_store.load = AsyncMock(return_value=stored)
+        rag._ontology_store.register = AsyncMock(side_effect=AssertionError("re-registered"))
+
+        with caplog.at_level(logging.WARNING, logger="graphrag_sdk.api.main"):
+            ontology = await rag.get_ontology()
+
+        assert ontology.relationship_tables == [consumed_mapping()]
+        assert "'consumed_batch.csv'" in caplog.text
+        assert "start endpoint key Unit.unit__unit_id" in caplog.text
+        assert "drop_table('consumed_batch.csv')" in caplog.text
+        rag._ontology_store.register.assert_not_awaited()
+
+        # Still stored, so drop_table() can take it out.
+        rag._graph_store.drop_relationship_source = AsyncMock(return_value=0)
+        rag._ontology_store.drop_relationship_mapping = AsyncMock()
+        await rag.drop_table("consumed_batch.csv")
+        rag._ontology_store.drop_relationship_mapping.assert_awaited_once_with("consumed_batch.csv")
+
+    async def test_declared_mapping_with_a_missing_key_still_raises_at_startup(
+        self, mock_connection, llm, embedder
+    ):
+        """Only the stored copy is skipped; a caller's own declaration is checked."""
+        from unittest.mock import AsyncMock
+
+        from graphrag_sdk.core.connection import ConnectionConfig
+
+        mock_connection.config = ConnectionConfig(graph_name="unit-test")
+        rag = GraphRAG(
+            connection=mock_connection,
+            llm=llm,
+            embedder=embedder,
+            ontology=Ontology(relationship_tables=[consumed_mapping()]),
+        )
+        stored = self._stored_without_the_start_key()
+        rag._ontology_store.load = AsyncMock(return_value=stored)
+        rag._ontology_store.register = AsyncMock(return_value=stored)
+
+        with pytest.raises(MappingError, match=r"start endpoint key Unit\.unit__unit_id"):
+            await rag.get_ontology()

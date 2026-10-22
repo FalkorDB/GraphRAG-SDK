@@ -587,7 +587,31 @@ class GraphRAG:
             self._global_ontology = await self._register_structured_ontology_locked(
                 ontology_for(mapping)
             )
+        # A stored relationship mapping whose endpoint key has left the ontology
+        # cannot be registered. Raising here stopped every later instance on the
+        # graph, retrieve() and the drop_table() that would remove it included,
+        # so it is skipped and stays stored; ingesting that file still raises.
+        # A mapping the caller declared is checked as before.
+        stored_only = not self.ontology.relationship_tables
         for relationship_mapping in declared_relationship_tables:
+            if stored_only:
+                problems = self._relationship_endpoint_schema_problems(
+                    relationship_mapping,
+                    {
+                        entity.label: {prop.name: prop.type for prop in entity.properties}
+                        for entity in self._global_ontology.entities
+                    },
+                )
+                if problems:
+                    logger.warning(
+                        "Stored relationship mapping for %r no longer fits the ontology and "
+                        "was not registered: %s. Its edges stay; ingesting it fails until "
+                        "the key is declared again. drop_table(%r) removes it.",
+                        relationship_mapping.source,
+                        "; ".join(problems),
+                        relationship_mapping.source,
+                    )
+                    continue
             self._global_ontology = await self._register_structured_ontology_locked(
                 ontology_for_relationship(relationship_mapping)
             )
@@ -941,6 +965,10 @@ class GraphRAG:
         the rename, and a collision with an existing attribute would
         overwrite values on the data graph.
 
+        Refused while a relationship table resolves an endpoint by
+        ``old_name``: its stored mapping still names the old key. Drop the
+        relationship table first with :meth:`drop_table`.
+
         v1: entity owners only. Relation-attribute evolution raises
         ``NotImplementedError`` — workaround is ``delete_all()`` followed by
         a fresh ``ingest()`` against the updated ontology.
@@ -968,6 +996,10 @@ class GraphRAG:
                 f"Attribute {owner_label}.{new_name!r} already exists; "
                 f"merging attributes is not supported by rename_attribute."
             )
+        self._refuse_removing_an_endpoint_key(
+            [(owner_label, old_name)],
+            f"rename_attribute({owner_label!r}, {old_name!r}, {new_name!r})",
+        )
         nodes_touched = await self._graph_store.rename_node_property(
             owner_label, old_name, new_name
         )
@@ -1015,6 +1047,9 @@ class GraphRAG:
         the two steps leaves the data graph already cleaned and a retry
         completes the ontology side.
 
+        Refused while a relationship table resolves an endpoint by ``name``;
+        drop the relationship table first with :meth:`drop_table`.
+
         v1: entity owners only. Relation-attribute evolution raises
         ``NotImplementedError`` — workaround is ``delete_all()`` followed by
         a fresh ``ingest()`` against the updated ontology.
@@ -1028,6 +1063,9 @@ class GraphRAG:
                 f"require iterating edges; for now, delete_all() and re-ingest "
                 f"with the updated ontology."
             )
+        self._refuse_removing_an_endpoint_key(
+            [(owner_label, name)], f"drop_attribute({owner_label!r}, {name!r})"
+        )
         nodes_touched = await self._graph_store.drop_node_property(owner_label, name)
         await self._ontology_store.drop_entity_property(owner_label, name)
         logger.info("drop_attribute %s.%s: %d nodes touched", owner_label, name, nodes_touched)
@@ -1123,7 +1161,9 @@ class GraphRAG:
         deletion lookup, ``ingest()`` selects declared mappings by basename.
 
         Raises:
-            ValueError: No table with that name is in the ontology.
+            ValueError: No table with that name is in the ontology, or a
+                relationship table resolves an endpoint by a key this node
+                table signed; drop that relationship table first.
         """
         await self._ensure_ontology_initialized()
         wanted = os.path.basename(os.path.normpath(source))
@@ -1177,6 +1217,9 @@ class GraphRAG:
                     or "none"
                 )
             )
+        self._refuse_removing_an_endpoint_key(
+            self._signed_properties_of(mapping), f"drop_table({source!r})"
+        )
         # Every Document stamped with this table's signature, whatever id it was
         # loaded under, plus the two ids a Document written before the stamp
         # could have: the table's name, or the path the caller gave.
@@ -1207,6 +1250,36 @@ class GraphRAG:
             released,
         )
         return await self._refresh_global_ontology()
+
+    def _refuse_removing_an_endpoint_key(
+        self, removing: Sequence[tuple[str, str]], action: str
+    ) -> None:
+        """Raise if a relationship table resolves an endpoint by a property in ``removing``.
+
+        ``removing`` is the ``(label, property)`` pairs ``action`` takes out of
+        the ontology. A stored relationship mapping is registered again on every
+        first touch and needs its endpoint keys declared, so taking one away
+        leaves a mapping no later instance can register. The relationship table
+        goes first, as a table goes before :meth:`drop_entity` of its label.
+        """
+        wanted = set(removing)
+        using = [
+            (mapping.source, f"{endpoint.entity}.{endpoint.key} as its {side} endpoint key")
+            for mapping in self._global_ontology.relationship_tables
+            for side, endpoint in (("start", mapping.start), ("end", mapping.end))
+            if (endpoint.entity, endpoint.key) in wanted
+        ]
+        if not using:
+            return
+        detail = "; ".join(f"{source!r} uses {what}" for source, what in using)
+        first = " and ".join(
+            f"drop_table({source!r})" for source in dict.fromkeys(s for s, _ in using)
+        )
+        raise ValueError(
+            f"{action} would remove a key a relationship table resolves its endpoints by: "
+            f"{detail}. A relationship mapping cannot be registered without its keys; "
+            f"{first} first."
+        )
 
     async def _retract_relationship_source(
         self, mapping: RelationshipMapping
