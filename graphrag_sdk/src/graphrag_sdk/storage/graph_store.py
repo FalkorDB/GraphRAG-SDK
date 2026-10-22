@@ -580,6 +580,9 @@ class GraphStore:
     # The row about to be written sets ``is_stub`` itself; a placeholder's
     # ``True`` must not land on the node first and then have to be undone.
     _NEVER_CARRY_ON_RECONCILE = frozenset({"id", "embedding", "is_stub"})
+    #: Nodes a label-wide delete removes per query. Each query writes the
+    #: deleted records of its own nodes, so no query holds the whole label.
+    _DELETE_BATCH = 10_000
 
     async def upsert_reference_nodes(self, references: Sequence[ReferenceNode]) -> int:
         """Write foreign-key reference nodes: the key always, the name never.
@@ -1970,14 +1973,17 @@ class GraphStore:
         count = count_r.result_set[0][0] if count_r.result_set else 0
         if count == 0:
             return 0
-        await self._conn.query(
-            f"MATCH (n:`{safe_label}`) "
-            "WITH collect(n) AS nodes, "
-            "collect(DISTINCT CASE WHEN n:__Entity__ THEN n.id END) AS gone "
-            + deleted_record_clause("gone")
-            + "FOREACH (n IN nodes | DETACH DELETE n)"
-        )
-        return count
+        while True:
+            r = await self._conn.query(
+                f"MATCH (n:`{safe_label}`) WITH n LIMIT $batch "
+                "WITH collect(n) AS nodes, "
+                "collect(DISTINCT CASE WHEN n:__Entity__ THEN n.id END) AS gone "
+                + deleted_record_clause("gone")
+                + "FOREACH (n IN nodes | DETACH DELETE n) RETURN size(nodes)",
+                {"batch": self._DELETE_BATCH},
+            )
+            if not r.result_set or r.result_set[0][0] < self._DELETE_BATCH:
+                return count
 
     async def rename_relation_type(self, old: str, new: str) -> int:
         """Recreate every ``[:old]`` edge as ``[:new]``, preserving

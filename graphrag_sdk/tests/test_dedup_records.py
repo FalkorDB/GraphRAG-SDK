@@ -11,6 +11,7 @@ import os
 import pytest
 
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
+from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.merge_query import (
     ALREADY_APPLIED,
     ALREADY_CHANGED,
@@ -194,6 +195,31 @@ async def test_a_delete_during_a_run_leaves_a_deleted_record_and_none_without_on
     assert await store.deleted_among(["x0", "x1", "x2", "x3"]) == {"x1", "x2"}
     await store.clear_deleted()
     assert await store.deleted_among(["x1", "x2"]) == set()
+
+
+async def test_a_label_wide_delete_records_every_entity_batch_by_batch(graph, monkeypatch):
+    """Deleting a whole label collected every node of it into one query, to
+    record the deleted ids beside the delete. Each batch now records its own."""
+    monkeypatch.setattr(GraphStore, "_DELETE_BATCH", 2)
+    await graph.query_raw(
+        "UNWIND range(0, 4) AS i CREATE (:__Entity__:Gadget {id: 'g' + toString(i)})"
+    )
+    await graph.query_raw("CREATE (:Gadget {id: 'plain'})")
+    store = await held(graph)
+    real, batches = graph._conn.query, []
+
+    async def query(cypher, params=None, **kw):
+        result = await real(cypher, params, **kw)
+        if "DETACH DELETE n" in cypher:
+            batches.append(result.result_set[0][0] if result.result_set else None)
+        return result
+
+    monkeypatch.setattr(graph._conn, "query", query)
+    assert await graph.delete_nodes_by_label("Gadget") == 6
+    assert batches == [2, 2, 2, 0]
+    assert await rows(graph, "MATCH (n:Gadget) RETURN count(n)") == [[0]]
+    ids = [f"g{i}" for i in range(5)]
+    assert await store.deleted_among([*ids, "plain"]) == set(ids)
 
 
 async def test_decisions_apply_once(graph):
