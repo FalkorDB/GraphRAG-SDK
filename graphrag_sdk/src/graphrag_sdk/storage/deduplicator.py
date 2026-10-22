@@ -19,6 +19,7 @@ import logging
 import os
 import platform
 import re
+import threading
 import unicodedata
 from collections import defaultdict
 from collections.abc import Callable, Hashable, Iterable
@@ -71,6 +72,7 @@ from graphrag_sdk.storage.system_store import (
     MAX_JUDGED_ATTEMPTS,
     RENAME,
     Decisions,
+    DedupRunActiveError,
     OwnershipLostError,
     PendingPage,
     Plan,
@@ -632,6 +634,12 @@ class EntityDeduplicator:
         self._name_embedded_ids: set[str] = set()
         # The ontology's types and attributes, as the judge sees them.
         self._schema = AttributeSchema()
+        # Held for a whole run of this instance. The run's state lives on the
+        # instance, so a second call — two finalize() on one GraphRAG — would
+        # reset it under the first before the graph's lock refused it: the
+        # protected pairs among it, so the first run could merge a mention into
+        # one of two rows sharing its name.
+        self._running = threading.Lock()
 
     async def deduplicate(
         self,
@@ -663,12 +671,40 @@ class EntityDeduplicator:
         every entity instead, and retries the unresolved ones.
 
         Raises:
-            DedupRunActiveError: another live run holds this graph's dedup lock.
+            DedupRunActiveError: another live run holds this graph's dedup
+                lock, or this instance is already running one; the running
+                run is left untouched.
             DatabaseError: a write failed. A failure after the plan was sealed
                 leaves the plan for the next run, which finishes it before
                 anything else. ``FalkorDBVersionError``, one of these, when
                 the server is older than 4.20 (refused by the connection).
         """
+        if not self._running.acquire(blocking=False):
+            raise DedupRunActiveError(
+                "This EntityDeduplicator is already running a dedup run; a second "
+                "finalize() or deduplicate_entities() on one GraphRAG waits for the first"
+            )
+        try:
+            return await self._deduplicate(
+                judge=judge,
+                batch_size=batch_size,
+                declared_labels=declared_labels,
+                dedup_all=dedup_all,
+                ontology=ontology,
+            )
+        finally:
+            self._running.release()
+
+    async def _deduplicate(
+        self,
+        *,
+        judge: DedupJudge,
+        batch_size: int,
+        declared_labels: set[str] | None,
+        dedup_all: bool,
+        ontology: Any,
+    ) -> int:
+        """:meth:`deduplicate`, once this instance is free."""
         self._declared_labels = {label.strip().lower() for label in (declared_labels or set())}
         self._ambiguous_mentions = []
         self.near_misses = []

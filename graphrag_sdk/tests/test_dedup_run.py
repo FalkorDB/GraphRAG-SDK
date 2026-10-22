@@ -17,7 +17,7 @@ import pytest
 from graphrag_sdk.core.connection import MIN_SERVER_VERSION, FalkorDBConnection
 from graphrag_sdk.core.exceptions import FalkorDBVersionError
 from graphrag_sdk.core.models import Attribute, Entity, GraphNode, GraphRelationship, Ontology
-from graphrag_sdk.storage.dedup_judges import LLMJudge
+from graphrag_sdk.storage.dedup_judges import DedupJudge, LLMJudge
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.system_store import (
@@ -244,6 +244,30 @@ async def test_a_second_run_at_once_is_refused(graph):
     await store.acquire("first")
     with pytest.raises(DedupRunActiveError):
         await dedup(graph).deduplicate(judge=AllDifferentJudge())
+
+
+async def test_a_second_run_on_the_same_instance_leaves_the_first_alone(graph):
+    """GraphRAG keeps one EntityDeduplicator, and a run's state lives on it.
+    A second call while a run works — two finalize() on one GraphRAG — reset
+    that state, the pairs the exact phase protects among it, before the
+    graph's lock refused it."""
+    await checked_graph(graph)
+    dd = dedup(graph)
+    names = LLMJudge(NameOracleLLM([TIM, APPLE]))
+    untouched = []
+
+    class SecondCallWhileJudging(DedupJudge):
+        async def judge(self, sets, *, retry=False):
+            state = (dd.last_report, dd._judge_pairs, dd._ambiguous_mentions, dd._schema)
+            with pytest.raises(DedupRunActiveError, match="already running"):
+                await dd.deduplicate(judge=AllDifferentJudge(), dedup_all=True)
+            after = (dd.last_report, dd._judge_pairs, dd._ambiguous_mentions, dd._schema)
+            untouched.append(all(a is b for a, b in zip(state, after)) and not dd._dedup_all)
+            return await names.judge(sets, retry=retry)
+
+    assert await dd.deduplicate(judge=SecondCallWhileJudging()) == 2
+    assert untouched and all(untouched)
+    assert await records(graph) == []
 
 
 # ── concurrent writes ────────────────────────────────────────────
