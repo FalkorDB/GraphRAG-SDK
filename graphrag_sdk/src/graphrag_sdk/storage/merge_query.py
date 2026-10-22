@@ -223,9 +223,11 @@ _RETURN = (
 )
 
 #: How far a stored decimal may be from the value read for it and still count
-#: as unchanged, relative to its size. Rounding to 15 digits moves a value by
-#: about one part in 10^15; a real edit (0.30 -> 0.31) by percents.
-DECIMAL_TOLERANCE = 1e-9
+#: as unchanged, as a fraction of its size. FalkorDB's rounding to 15
+#: significant digits moves a value by at most 5e-15 of it. Purely relative:
+#: with an absolute term, a float timestamp (1.7e9) could move by 1.7 s, and
+#: 1e-12 become 5e-10, unseen; now 1.7 ms and nothing.
+DECIMAL_TOLERANCE = 1e-12
 
 
 def _number(value: str) -> str:
@@ -241,7 +243,7 @@ def _near(stored: str, read: str) -> str:
     both are numbers, exactly otherwise (a number ingest turned into text is
     then simply not equal)."""
     s, r = _number(stored), _number(read)
-    return f"coalesce(abs({s} - {r}) <= {DECIMAL_TOLERANCE} * (1 + abs({r})), {stored} = {read})"
+    return f"coalesce(abs({s} - {r}) <= {DECIMAL_TOLERANCE} * abs({r}), {stored} = {read})"
 
 
 def _unchanged_decimals(node: str) -> str:

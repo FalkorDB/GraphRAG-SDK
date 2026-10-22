@@ -545,6 +545,23 @@ async def test_a_decimal_read_back_rounded_does_not_block_the_merge(graph):
     assert weight == pytest.approx(0.3) and series == [pytest.approx(0.3), 1]
 
 
+@pytest.mark.parametrize(
+    "stored, edited",
+    [("1700000000.25", "1700000000.75"), ("1e-12", "5e-10")],
+    ids=["a timestamp half a second later", "a value near zero"],
+)
+async def test_a_small_real_edit_of_a_large_or_tiny_decimal_stops_the_merge(graph, stored, edited):
+    """The tolerance was 1e-9 x (1 + |value|): a float timestamp could move by
+    up to 1.7 s, and 1e-12 become 5e-10, and still read as unchanged."""
+    await tim_cook(graph)
+    await graph.query_raw(f"MATCH (d:__Entity__ {{id: 'd'}}) SET d.at = {stored}")
+    store = await held(graph)
+    plan_run = await one_absorb_plan(store)
+    read = await read_for_merge(graph, "s", "d")
+    await graph.query_raw(f"MATCH (d:__Entity__ {{id: 'd'}}) SET d.at = {edited}")
+    assert await absorb(store, graph, plan_run, read=read) == STALE
+
+
 async def test_a_hand_off_with_no_pending_record_is_written_with_the_tick(graph):
     """Entities that become pending when no record exists to take them get a
     new record in the query that ticks the decision page: a crash cannot leave
