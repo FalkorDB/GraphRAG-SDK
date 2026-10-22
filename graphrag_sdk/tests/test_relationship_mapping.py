@@ -513,6 +513,47 @@ async def test_merged_nodes_keep_both_relationship_tables_ownership_on_real_falk
     assert await edges() == [["Gamma", ["consumed_b"], None, "2026-02-02"]]
 
 
+@pytest.mark.integration
+async def test_apply_changes_in_git_diff_order_writes_every_edge_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """A git diff lists consumed_batch.csv before unit.csv; the edges are written anyway."""
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[consumed_mapping()],
+        ),
+    )
+    unit, batch = tmp_path / "unit.csv", tmp_path / "batch.csv"
+    unit.write_text("unit_id\nU-1\nU-2\n", encoding="utf-8")
+    batch.write_text("batch_id\nB-1\nB-2\n", encoding="utf-8")
+    edges = write_csv(
+        tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20", "U-2,B-2,CONSUMED_BATCH,2026-09-21"]
+    )
+    added = await rag.apply_changes(added=sorted([str(unit), str(batch), str(edges)]))
+    assert [entry.error for entry in added.added] == [None, None, None]
+    assert added.added[1].result.metadata["relationships_written"] == 2
+    assert await _consumed_edge_count(rag) == 2
+
+    # Both change: the edge file now names a unit only the other file adds.
+    unit.write_text("unit_id\nU-1\nU-2\nU-3\n", encoding="utf-8")
+    write_csv(
+        tmp_path,
+        [
+            "U-1,B-1,CONSUMED_BATCH,2026-09-20",
+            "U-2,B-2,CONSUMED_BATCH,2026-09-21",
+            "U-3,B-1,CONSUMED_BATCH,2026-09-22",
+        ],
+    )
+    modified = await rag.apply_changes(modified=sorted([str(unit), str(edges)]))
+    assert [entry.error for entry in modified.modified] == [None, None]
+    assert modified.modified[0].result.metadata["relationships_written"] == 3
+    assert await _consumed_edge_count(rag) == 3
+
+
 def consumed_mapping(**changes: Any) -> RelationshipMapping:
     values: dict[str, Any] = {
         "source": "consumed_batch.csv",
@@ -1268,3 +1309,101 @@ class TestRelationshipEndpointKeyGuard:
 
         with pytest.raises(MappingError, match=r"start endpoint key Unit\.unit__unit_id"):
             await rag.get_ontology()
+
+
+class TestApplyChangesRunsRelationshipTablesLast:
+    """A relationship table waits for the entity tables of the same batch.
+
+    Its endpoints resolve against nodes those tables write, and a git diff lists
+    files alphabetically: consumed_batch.csv ran before unit.csv and found its
+    start endpoints missing.
+    """
+
+    @staticmethod
+    def _rag(mock_connection, llm, embedder, calls: list[tuple[str, str]], fail=()):
+        import os
+        from unittest.mock import AsyncMock
+
+        from graphrag_sdk.core.connection import ConnectionConfig
+        from graphrag_sdk.core.models import DocumentInfo, UpdateResult
+        from graphrag_sdk.ingestion.structured_pipeline import (
+            RelationshipIngestionResult,
+            StructuredIngestionResult,
+        )
+
+        mock_connection.config = ConnectionConfig(graph_name="unit-test")
+        rag = GraphRAG(connection=mock_connection, llm=llm, embedder=embedder)
+        rag._global_ontology = Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[consumed_mapping()],
+        )
+        rag._ensure_ontology_initialized = AsyncMock()
+
+        async def ingest(path, **kwargs):
+            name = os.path.basename(path)
+            calls.append(("ingest", name))
+            if name in fail:
+                raise RuntimeError(f"{name} failed")
+            if name == "consumed_batch.csv":
+                result = RelationshipIngestionResult(path)
+                result.relationships_written = 2
+                return result
+            return StructuredIngestionResult(name)
+
+        async def update(path, **kwargs):
+            name = os.path.basename(path)
+            calls.append(("update", name))
+            return UpdateResult(document_info=DocumentInfo(uid=name, path=path))
+
+        rag.ingest = ingest
+        rag.update = update
+        return rag
+
+    async def test_added_in_sorted_order_writes_the_edges_last(
+        self, mock_connection, llm, embedder
+    ):
+        calls: list[tuple[str, str]] = []
+        rag = self._rag(mock_connection, llm, embedder, calls)
+        result = await rag.apply_changes(added=["batch.csv", "consumed_batch.csv", "unit.csv"])
+        assert calls == [
+            ("ingest", "batch.csv"),
+            ("ingest", "unit.csv"),
+            ("ingest", "consumed_batch.csv"),
+        ]
+        # Each entry stays where its file was in the list.
+        assert [entry.result.document_info.uid for entry in result.added] == [
+            "batch.csv",
+            "consumed_batch.csv",
+            "unit.csv",
+        ]
+        assert result.added[1].result.metadata["relationships_written"] == 2
+
+    async def test_a_modified_relationship_table_waits_for_added_and_modified_tables(
+        self, mock_connection, llm, embedder
+    ):
+        calls: list[tuple[str, str]] = []
+        rag = self._rag(mock_connection, llm, embedder, calls)
+        result = await rag.apply_changes(
+            modified=["consumed_batch.csv", "unit.csv"], added=["batch.csv"]
+        )
+        assert calls == [
+            ("update", "unit.csv"),
+            ("ingest", "batch.csv"),
+            ("ingest", "consumed_batch.csv"),
+        ]
+        assert result.modified[0].result.metadata["relationships_written"] == 2
+        assert result.modified[1].result.document_info.uid == "unit.csv"
+
+    async def test_each_file_keeps_its_own_error(self, mock_connection, llm, embedder):
+        calls: list[tuple[str, str]] = []
+        rag = self._rag(
+            mock_connection, llm, embedder, calls, fail=("batch.csv", "consumed_batch.csv")
+        )
+        result = await rag.apply_changes(added=["batch.csv", "consumed_batch.csv", "unit.csv"])
+        assert [entry.error for entry in result.added] == [
+            "batch.csv failed",
+            "consumed_batch.csv failed",
+            None,
+        ]
+        assert calls[-1] == ("ingest", "consumed_batch.csv")

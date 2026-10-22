@@ -2871,6 +2871,41 @@ class GraphRAG:
     def _is_tabular(cls, source: str, loader: LoaderStrategy | None = None) -> bool:
         return loader is None and source.lower().endswith(cls._TABULAR_SUFFIXES)
 
+    def _declared_mapping_for(
+        self, source: str, *, document_id: str | None = None
+    ) -> TableMapping | RelationshipMapping | None:
+        """The mapping the ontology holds for ``source``, as :meth:`_mapping_for` finds it.
+
+        ``None`` when there is none; :meth:`_mapping_for` then proposes one.
+        """
+        candidates = [os.path.basename(os.path.normpath(source))]
+        if document_id:
+            candidates.insert(0, os.path.basename(os.path.normpath(document_id)))
+        for candidate in candidates:
+            for declared in self._global_ontology.tables:
+                if os.path.basename(os.path.normpath(declared.source)) == candidate:
+                    return declared
+            for relationship_mapping in self._global_ontology.relationship_tables:
+                if os.path.basename(os.path.normpath(relationship_mapping.source)) == candidate:
+                    return relationship_mapping
+        return None
+
+    async def _is_relationship_table(self, source: str, loader: LoaderStrategy | None) -> bool:
+        """Whether ``source`` is ingested as a relationship table.
+
+        Reads the ontology only: a mapping the SDK proposes is never a
+        relationship table, and proposing one asks the model. An ontology that
+        cannot be loaded answers no, so the error is reported on the file's own
+        entry when it is ingested.
+        """
+        if not self._is_tabular(source, loader):
+            return False
+        try:
+            await self._ensure_ontology_initialized()
+        except Exception:
+            return False
+        return isinstance(self._declared_mapping_for(source), RelationshipMapping)
+
     async def _mapping_for(
         self,
         source: str,
@@ -2905,17 +2940,10 @@ class GraphRAG:
         as-is: typed columns, label from the filename, no name and so no join.
         """
         await self._ensure_ontology_initialized()
+        declared_mapping = self._declared_mapping_for(source, document_id=document_id)
+        if declared_mapping is not None:
+            return declared_mapping
         wanted = os.path.basename(os.path.normpath(source))
-        candidates = [wanted]
-        if document_id:
-            candidates.insert(0, os.path.basename(os.path.normpath(document_id)))
-        for candidate in candidates:
-            for declared in self._global_ontology.tables:
-                if os.path.basename(os.path.normpath(declared.source)) == candidate:
-                    return declared
-            for relationship_mapping in self._global_ontology.relationship_tables:
-                if os.path.basename(os.path.normpath(relationship_mapping.source)) == candidate:
-                    return relationship_mapping
 
         # Memoized: resolving is idempotent, but proposing a mapping reads and
         # profiles the whole file and asks the model, and the warning below
@@ -4224,7 +4252,11 @@ class GraphRAG:
         minimises peak entity cardinality (their orphan candidates are
         gone before adds bring in potentially-overlapping ids), which
         future entity-budget enforcement may rely on. Callers should
-        not assume reordering is safe.
+        not assume reordering is safe. Relationship tables in ``added``
+        or ``modified`` are the exception: they run after all of that,
+        ``modified`` first, each list in its own order, because their
+        endpoints resolve against nodes the entity tables in the same
+        batch write. Their entries keep their positions in the result.
 
         **This method does NOT call ``finalize()``.** Cross-document
         deduplication is O(graph size); call ``finalize()`` once after
@@ -4392,9 +4424,18 @@ class GraphRAG:
                     )
                     return BatchEntry.fail(exc)
 
-        update_results: list[BatchEntry[UpdateResult]] = (
-            list(await asyncio.gather(*[_update_one(p) for p in modified])) if modified else []
-        )
+        # A relationship table resolves its endpoints against nodes the entity
+        # tables write, so it waits for every one of them in the batch, step 2
+        # and step 3 alike: a git diff lists consumed_batch.csv before
+        # unit.csv, and an endpoint not written yet is reported missing.
+        relationship_tables = {
+            path for path in [*modified, *added] if await self._is_relationship_table(path, loader)
+        }
+        update_results: dict[int, BatchEntry[UpdateResult]] = {}
+        updates = [(i, p) for i, p in enumerate(modified) if p not in relationship_tables]
+        if updates:
+            entries = await asyncio.gather(*[_update_one(p) for _, p in updates])
+            update_results.update((i, entry) for (i, _), entry in zip(updates, entries))
 
         # ── 3. Adds ──
         # Prose goes through ingest's batch path for its per-file error handling;
@@ -4405,9 +4446,46 @@ class GraphRAG:
         # under the update semaphore, because a table the graph already holds is
         # re-synced through update() and so shares the orphan-cleanup invariant
         # that serializes the modified list.
+        async def _add_table(path: str) -> BatchEntry[IngestionResult]:
+            async with update_sem:
+                try:
+                    structured = await self.ingest(path, ctx=ctx.child())
+                except Exception as exc:
+                    logger.warning(
+                        "apply_changes: ingest failed for %r: %s: %s",
+                        path,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    return BatchEntry.fail(exc)
+            if isinstance(structured, RelationshipIngestionResult):
+                return BatchEntry.ok(
+                    IngestionResult(
+                        document_info=DocumentInfo(uid=structured.source, path=path),
+                        relationships_created=structured.relationships_written,
+                        metadata=structured.as_dict(),
+                    )
+                )
+            assert isinstance(structured, StructuredIngestionResult)
+            return BatchEntry.ok(
+                # Same shape a table takes in ``modified``: the counts a
+                # StructuredIngestionResult carries, in ``metadata``.
+                IngestionResult(
+                    document_info=DocumentInfo(uid=structured.document_id, path=path),
+                    nodes_created=structured.entities + structured.references,
+                    relationships_created=structured.edges,
+                    chunks_indexed=structured.chunks,
+                    metadata=structured.as_dict(),
+                )
+            )
+
         added_results: dict[int, BatchEntry[IngestionResult]] = {}
         prose_adds = [(i, p) for i, p in enumerate(added) if not self._is_tabular(p, loader)]
-        table_adds = [(i, p) for i, p in enumerate(added) if self._is_tabular(p, loader)]
+        table_adds = [
+            (i, p)
+            for i, p in enumerate(added)
+            if self._is_tabular(p, loader) and p not in relationship_tables
+        ]
         if prose_adds:
             batch_out = await self.ingest(
                 [path for _, path in prose_adds],
@@ -4425,43 +4503,19 @@ class GraphRAG:
                     BatchEntry.fail(item) if isinstance(item, Exception) else BatchEntry.ok(item)
                 )
         for i, path in table_adds:
-            async with update_sem:
-                try:
-                    structured = await self.ingest(path, ctx=ctx.child())
-                except Exception as exc:
-                    logger.warning(
-                        "apply_changes: ingest failed for %r: %s: %s",
-                        path,
-                        type(exc).__name__,
-                        exc,
-                    )
-                    added_results[i] = BatchEntry.fail(exc)
-                    continue
-            if isinstance(structured, RelationshipIngestionResult):
-                added_results[i] = BatchEntry.ok(
-                    IngestionResult(
-                        document_info=DocumentInfo(uid=structured.source, path=path),
-                        relationships_created=structured.relationships_written,
-                        metadata=structured.as_dict(),
-                    )
-                )
-                continue
-            assert isinstance(structured, StructuredIngestionResult)
-            added_results[i] = BatchEntry.ok(
-                # Same shape a table takes in ``modified``: the counts a
-                # StructuredIngestionResult carries, in ``metadata``.
-                IngestionResult(
-                    document_info=DocumentInfo(uid=structured.document_id, path=path),
-                    nodes_created=structured.entities + structured.references,
-                    relationships_created=structured.edges,
-                    chunks_indexed=structured.chunks,
-                    metadata=structured.as_dict(),
-                )
-            )
+            added_results[i] = await _add_table(path)
+
+        # ── 4. Relationship tables, once every node they can point at is written ──
+        for i, path in enumerate(modified):
+            if path in relationship_tables:
+                update_results[i] = await _update_one(path)
+        for i, path in enumerate(added):
+            if path in relationship_tables:
+                added_results[i] = await _add_table(path)
 
         return ApplyChangesResult(
             added=[added_results[i] for i in range(len(added))],
-            modified=update_results,
+            modified=[update_results[i] for i in range(len(modified))],
             deleted=delete_results,
         )
 

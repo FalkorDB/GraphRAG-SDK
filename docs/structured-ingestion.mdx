@@ -123,7 +123,8 @@ ingest. Use `await rag.drop_table(
 "consumed_batch.csv")` to remove the mapping and its contributions explicitly.
 Use `ingest()` again to refresh a relationship table; `update()` is for documents.
 `apply_changes(added=[path])` and `apply_changes(modified=[path])` also support
-relationship tables. `deleted=[source]` removes the source's contributions and keeps
+relationship tables, and write them after every entity table and document in the
+same batch, so their endpoints exist whatever order the lists give. `deleted=[source]` removes the source's contributions and keeps
 its mapping, as it does for a node table, so the file added back later is read as
 the same relationship table; `drop_table()` is the way to remove the mapping. A
 Document whose id is exactly that name wins: `deleted=[...]` deletes the Document
