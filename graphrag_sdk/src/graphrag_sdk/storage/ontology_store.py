@@ -58,6 +58,7 @@ import logging
 from typing import Any, Literal
 
 from graphrag_sdk.core.connection import FalkorDBConnection
+from graphrag_sdk.core.exceptions import FalkorDBVersionError
 from graphrag_sdk.core.models import (
     Attribute,
     Entity,
@@ -130,6 +131,10 @@ class OntologyStore:
         return self._graph
 
     async def _query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
+        # The connection refuses a FalkorDB too old before its first query;
+        # this graph is queried through the driver, so it asks the same here,
+        # or a refused server would get the ontology graph written first.
+        await self._conn._check_server_version()
         graph = self._ensure_graph()
         return await graph.query(cypher, params=params)
 
@@ -165,6 +170,8 @@ class OntologyStore:
                 "RETURN r.label AS owner, p.label AS name, p.type AS type, "
                 "p.description AS description, p.structured AS structured"
             )
+        except FalkorDBVersionError:
+            raise
         except Exception as exc:
             logger.debug("Ontology load failed (returning empty ontology): %s", exc)
             return Ontology()

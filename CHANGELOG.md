@@ -157,45 +157,127 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`finalize()` deduplicates incrementally, with one judge pass.** Ingest now
-  sets `dedup_pending = true` on every entity node it *creates*, and
-  `finalize()` checks only those entities — against the whole graph, through
-  the `__Entity__` vector index, never by reading every entity — then removes
-  the flag. A `finalize()` with nothing pending does no dedup work, and once
-  every check has completed the graph carries no dedup data. Measured: +1,000 new entities on a
-  ~39k-entity graph finalize in 4.5 s (fake LLM), where the previous flow spent
-  about 256 s of dedup and 5,982 LLM calls on every call; on a labeled set of
-  277 entities (138 true pairs, gpt-4.1, 3 runs) precision rose from 0.81 to
-  0.92–0.93 and F1 from 0.71–0.73 to 0.83–0.84, with 5 LLM calls instead of 14.
-  - Candidates come from each new entity's nearest names in the vector index
-    (one name embedding per entity, also used by search); descriptions are no
-    longer embedded, but the judge still reads them.
+- **`finalize()` deduplicates incrementally, with one judge pass, and
+  survives a crash.** `finalize()` checks only the entities whose check is
+  pending — against the whole graph, through the `__Entity__` vector index,
+  never by reading every entity. Nothing is written on an entity to mark it:
+  ingest writes entities without a name vector, and a run lists them in a
+  `pending` system record *before* it embeds them, so no crash can leave an
+  unchecked entity looking checked. A `finalize()` with nothing pending does no
+  dedup work. Measured: +1,000 new entities on a ~39k-entity graph finalize in
+  4.5 s (fake LLM), where the previous flow spent about 256 s of dedup and
+  5,982 LLM calls on every call; on a labeled set of 277 entities (138 true
+  pairs, gpt-4.1, 3 runs) precision rose from 0.81 to 0.92–0.93 and F1 from
+  0.71–0.73 to 0.83–0.84, with 5 LLM calls instead of 14.
+  - Candidates come from each pending entity's nearest names in the vector
+    index, searched from the vector stored on it (one name embedding per
+    entity, also used by search); descriptions are no longer embedded, but the
+    judge still reads them.
   - The judge runs **once** per set and names each merged group (the survivor
-    takes that name; its old name moves to `aliases`; a table row keeps its
-    declared name). It also sees each entity's existing aliases. Agreed pairs
-    chain across sets.
+    takes that name and its vector; its old name moves to `aliases`; a table
+    row keeps its declared name). It also sees each entity's existing aliases.
+    The answer lists only groups of two or more, or `SET n NONE` (a member no
+    line lists stands alone), which cut answer tokens by about two thirds,
+    and ends with `END`. Only a clean answer is a verdict — a member number
+    the set lacks, overlapping groups, or a merged name on a one-member group
+    is no answer — and a set without one is asked again on its own, up to 2
+    more times. An answer that stops after a group line, before `END`, leaves
+    that set unanswered: the groups it did not reach would otherwise read as
+    "different". An output limit below 4,096 tokens set on the LLM is raised
+    to 4,096 for judge calls (`LLMJudge(min_output_tokens=)`; `None` keeps the
+    LLM's own limit, for a small-context server); the judge never sets one
+    itself. Agreed pairs
+    chain across sets, but never into a group holding a pair the judge kept
+    apart.
+  - **Every merge is decided before any is written.** The run's merges, from
+    both phases, are written as a merge plan, sealed, and applied one atomic
+    query per merge that moves every relationship of every type (the old remap
+    moved only `RELATES` and `MENTIONED_IN`), folds the properties, deletes the
+    duplicate and ticks the plan. An interrupted `finalize()` is finished by
+    the next one, from the ticks; nothing is merged twice or half. One dedup
+    run per graph at a time: a second — from another process, or a second
+    `finalize()` on the same `GraphRAG` — raises `DedupRunActiveError` and
+    leaves the running one untouched, and a run that stalls past its
+    10-minute heartbeat is taken over and writes nothing more.
+  - `update()`, `delete_document()` and table re-syncs never wait for a running
+    `finalize()`: each SDK delete or re-key leaves a `deleted` record in the
+    same query, and a merge that would touch the entity is skipped and decided
+    again next run (`FinalizeResult.dedup_merges_changed`). A table re-key into
+    a taken id is one query that moves every edge type and, like a merge,
+    writes nothing if either node changed since it was read — a property, or
+    a label (`rename_entity()`).
   - Extracted mentions with the same spelling are judged rather than merged on
     the name alone (Paris, France and Paris, Texas); a table row still absorbs
-    a same-named mention by rule.
+    a same-named mention by rule — unless two rows share the name (also for a
+    declared label adopting a guessed one), or the mention's nearest-name
+    search did not finish, which go to the report or the judge instead.
   - A "different" answer writes nothing to the graph; the pair is judged
-    again only if a later new entity brings it into a set. An entity whose
-    check did not complete (a failed lookup, judge call or merge write, an
-    answer that was not a full partition, or no name vector) keeps its flag and is retried by the next `finalize()`, up to
-    3 runs; after that it is released and named in a warning. When all of a
-    new entity's 10 nearest names are exact-phase matches, the lookup widens
-    (up to 1,000) to find matches beyond the tenth. A table
-    re-sync that renames a row flags it, so it is checked under its new
-    name. When
-    the judge renames a merged node, its name vector is replaced too.
+    again only if a later pending entity brings it into a set. An entity whose
+    check did not complete — a failed lookup or judge call, an answer that was
+    not a clean partition, a group held because one of its sets got no verdict,
+    a merge an update changed — stays pending (`FinalizeResult.dedup_pending`).
+    After 3 judged runs without a usable verdict it is unresolved
+    (`FinalizeResult.dedup_unresolved`): reported, left out of every set and
+    never merged automatically; `finalize(dedup_all=True)` retries it. When all
+    of a pending entity's 10 nearest names are exact-phase matches, the lookup
+    widens (up to 1,000) to find matches beyond the tenth. A table re-sync that
+    renames a row drops its vector, so it is checked under its new name.
+  - **The judge sees your ontology's attributes.** Each entity shows the values
+    of the attributes its types declare (`born: 1960; role: "CEO"`), under a
+    header listing those types and attributes — only the types in that prompt.
+    Two different values of a fact that does not change mean different entities;
+    on a small labelled set (gpt-4.1) namesakes told apart only by a birth year or
+    birthplace were merged every time without the values and kept apart every
+    time with them. Where a merged group's members disagree, the judge picks
+    whose value stays (`KEEP: born=1`); the other value is kept on the merged
+    entity in `<property>__dropped` (a list), and `FinalizeResult.dedup_collisions`
+    names each. A merge by rule (a table row absorbing a mention) keeps the
+    survivor's value the same way.
+  - **The judge is a pluggable component, and every run has one.**
+    `finalize(judge=...)` and `deduplicate_entities(judge=...)` take any
+    `DedupJudge`; the default is `LLMJudge` with the instance's `llm`, and
+    `LLMJudge(other_llm)` picks another model. A judge is given each candidate
+    set as a `JudgeSet` (each member's name, labels, aliases, description and
+    declared attribute values, with its types' declared attributes) and returns
+    a `SetVerdict` per set (groups of member positions, the merged entity's
+    name, `keep` picks), or `None` for a set it could not decide. The run
+    checks every judge's answer with the rules above and asks a set without
+    a usable one again (`retry=True`); the merge stays the run's. A judge may
+    report what it spent through `usage()`; `judge_stats` gets the run's
+    share (`LLMJudge`: `llm_calls`, `llm_failed`). There is no
+    run without a judge: `judge=False` raises `TypeError`, so no entity waits
+    for a judged run that may never come.
+  - The bookkeeping lives in SDK system nodes in the data graph, beside the
+    existing `__GraphRAGConfig__`: `__GraphRAGProcessing__` records (the lock,
+    pending, unresolved and deleted records, the plan), with no edges and no
+    vector; `get_statistics()` does not count them.
+  - **Requires FalkorDB 4.20 or later.** Earlier versions left a stale
+    vector-index entry on every write to an embedded node, so search and dedup
+    missed entities. Each connection asks the server its version once, before
+    its first query, and refuses an older one with `FalkorDBVersionError` (a
+    `DatabaseError`): `ingest()`, `query()`, `finalize()` and the rest fail
+    before anything is written. A server that refuses to report its version
+    (an ACL, a disabled `MODULE LIST`) is let through with a warning; any other
+    error reply is retried like a query, and `close()` makes the next query ask
+    again. CI, `docker-compose.yml`, the docs' `docker
+    run` lines and the examples use `v4.20.4`.
+  - `finalize()` no longer calls `backfill_entity_embeddings()`: dedup writes
+    every entity's name vector, listing the entity first, and a backfill after
+    it would embed entities ingested meanwhile without a check.
   - **Deprecated:** the fuzzy name-embedding phase is removed. For one
     release `deduplicate_entities()` still accepts `fuzzy=False` and
     `similarity_threshold=` (ignored, with a `DeprecationWarning`);
     `fuzzy=True` raises `ValueError`. Finalize dedup is the exact phase plus
     the judge. Ingest-time resolvers
     (`ingest(resolver=...)`) are unchanged.
-  - **Upgrading:** a graph built before this change has no flags. Run
-    `finalize(dedup_all=True)` once to check every entity; after that, a
-    plain `finalize()` is enough.
+  - **Upgrading:** upgrade the FalkorDB server to 4.20 or later first — 1.4.0
+    ran on older servers, this release refuses them. `finalize()` and
+    `deduplicate_entities()` now call the LLM (the judge), where 1.4.0's made
+    no LLM call; to keep dedup LLM-free, pass a `DedupJudge` of your own, such
+    as one that groups by spelling (see Strategies). Entities a graph built by
+    an earlier release already holds vectors for count as checked; the new ones
+    are checked by the next `finalize()`. To check every entity once, run
+    `finalize(dedup_all=True)`.
 - **CI runs the FalkorDB-backed tests.** The integration job used to run one
   file (`tests/test_integration.py`); the whole suite now runs with
   `RUN_INTEGRATION=1`, so every test that needs a live graph is exercised on
@@ -209,8 +291,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`drop_entity()` refuses a label a table maps rows to or links to**, naming
   the table and pointing at `drop_table()`: the mapping would re-register the
   label on the next load, so the drop could only be undone.
-- **`finalize()` now also runs an LLM-judged cross-document dedup phase**
-  (`storage/judge_dedup.py`, `finalize(judge=True)` — the default) after the
+- **`finalize()` now also runs a judged cross-document dedup phase**
+  (`storage/judge_dedup.py`; the judge is a `DedupJudge`, `LLMJudge` by default) after the
   exact-name phase; see the incremental-dedup entry under Changed for how it
   picks candidates. Ingest keeps `ExactMatchResolution` as its default: a
   resolver at ingest only ever sees one document, so the cross-document
@@ -219,17 +301,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same absorb path as the exact phase — survivor by the same rank (a table's
   row over a mention), every member's description kept in `descriptions` and
   joined with `" | "`, other names kept in `aliases`, provenance and missing
-  properties carried, edges remapped before the loser is deleted — and the
+  properties carried, every edge moved in the query that deletes the loser — and the
   survivor additionally gains every member's label, recorded in
   `merged_labels` as well as set as Cypher labels. Two keyed rows and a
   mention two rows could own are never put to the judge. `FinalizeResult`
-  gains `judge_llm_calls` and `judge_stats`. Use a gpt-4.1-class `judge_llm`
-  (defaults to the instance's `llm`): on the benchmark corpus it made 9 wrong
-  merges where gpt-4o-mini made 51. `finalize(judge=False)` keeps finalize
-  LLM-free. On the standalone `deduplicate_entities()` the judge is opt-in
-  (`judge=True`), and `judge_llm=...` without it warns that the judge did not
-  run. `finalize()` deduplicates *before* embedding entity names, so a
-  duplicate the merge removes is not embedded first. The entity text in the
+  gains `judge_calls` and `judge_stats`. Give the default `LLMJudge` a
+  gpt-4.1-class model (`finalize(judge=LLMJudge(gpt41))`; it defaults to the
+  instance's `llm`): on the benchmark corpus it made 9 wrong merges where
+  gpt-4o-mini made 51. The entity text in the
   judge prompt is flattened, quoted and declared untrusted. A label holding
   `|` — the separator of the `merged_labels` record — is refused by a mapping
   and by a merge. An adoption into a declared label drops the labels the
@@ -255,7 +334,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   abbreviations (`Corp.` → `corporation`) and one trailing legal form
   (`Ltd`, `Inc`, `GmbH`) are normalised, word order is not — `Morgan Stanley`
   and `Stanley Morgan` stay apart. A group holding a table row merges by rule;
-  with the judge on, a group of extracted mentions only goes to the judge.
+  a group of extracted mentions only goes to the judge.
   Spellings the rule deliberately declines to join (`M. Ellison` / `Maya
   Ellison`, a pure reordering) are never merged by the rule; the judge may
   merge them, and a pair it leaves apart is listed in
@@ -550,10 +629,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A merge no longer discards the duplicate's properties.** The deduplicator
   remapped edges only, so `DETACH DELETE` took the duplicate's properties with
   it — its description and every value only it knew. Properties are now carried onto the survivor in the same statement
-  that deletes the duplicate, with a value already on the survivor always
-  winning; the two descriptions are joined with `" | "` and the duplicate's
-  name is recorded in the survivor's `aliases`. The same policy applies when a
-  renamed table row is folded into a node that already holds its new id.
+  that deletes the duplicate: a value only the duplicate holds is copied, and
+  where both hold different values the judge's pick (`KEEP`) or else the
+  survivor's stays and the other goes to `<property>__dropped`; the two
+  descriptions are joined with `" | "` and the duplicate's name is recorded in
+  the survivor's `aliases`. When a renamed table row is folded into a node
+  that already holds its new id, that node's own values stay.
 
 - **Edge identity includes `rel_type`.** Every data edge is `RELATES` with its
   semantic type in `rel_type`, but the deduplicator's remap and the writers that

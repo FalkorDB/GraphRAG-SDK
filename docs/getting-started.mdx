@@ -40,8 +40,10 @@ pip install -e "./graphrag_sdk[all]"
 Run FalkorDB as a Docker container:
 
 ```bash
-docker run -d --name falkordb -p 6379:6379 falkordb/falkordb
+docker run -d --name falkordb -p 6379:6379 falkordb/falkordb:v4.20.4
 ```
+
+GraphRAG SDK needs a FalkorDB server **4.20 or later** and refuses an older one at its first query, with `FalkorDBVersionError`. Keep the image tag: a bare `falkordb/falkordb` reuses whatever image Docker has cached, which may be older.
 
 Verify it is running:
 
@@ -221,7 +223,7 @@ for row in results.result_set:
 
 ## 10. Finalize
 
-After all documents have been ingested, run `finalize()` to deduplicate entities, backfill embeddings, and create indexes:
+After all documents have been ingested, run `finalize()` to deduplicate entities (which also embeds their names), embed relationships, and create indexes:
 
 ```python
 results = await rag.finalize()
@@ -229,7 +231,7 @@ print(f"Deduplicated: {results.entities_deduplicated}")
 print(f"Embedded: {results.entities_embedded} entities, {results.relationships_embedded} relationships")
 ```
 
-This step is important for query accuracy. It merges duplicate entities — spelling variants such as "Acme Ltd" and "Acme Limited" by rule, and pairs such as "J. Doe" and "Jane Doe" when the LLM judge decides they are one person — and ensures all entities have vector embeddings for semantic search.
+This step is important for query accuracy. It merges duplicate entities — a table row and a mention of its name by rule, and spelling variants such as "Acme Ltd" and "Acme Limited", or "J. Doe" and "Jane Doe", when the judge decides they are one — and ensures all entities have vector embeddings for semantic search.
 
 ---
 

@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redis.exceptions import ResponseError
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
-from graphrag_sdk.core.exceptions import DatabaseError
+from graphrag_sdk.core.exceptions import (
+    DatabaseError,
+    DatabaseUnavailableError,
+    FalkorDBVersionError,
+)
+
+
+def _skip_version_check(conn: FalkorDBConnection) -> None:
+    """Treat the server version as checked: ``TestServerVersion`` covers it."""
+    conn._version_checked = True
 
 
 class TestConnectionConfig:
@@ -81,6 +92,7 @@ class TestFalkorDBConnection:
         conn._pool = MagicMock()
         conn._pool.aclose = AsyncMock()
         conn._driver = MagicMock()
+        _skip_version_check(conn)
         conn._graph = MagicMock()
         await conn.close()
         assert conn._driver is None
@@ -102,6 +114,7 @@ class TestFalkorDBConnection:
         )
         conn._graph = mock_graph
         conn._driver = MagicMock()  # mark as initialised
+        _skip_version_check(conn)
 
         result = await conn.query("MATCH (n) RETURN n")
         assert result == "success"
@@ -114,6 +127,7 @@ class TestFalkorDBConnection:
         mock_graph.query = AsyncMock(side_effect=Exception("always fails"))
         conn._graph = mock_graph
         conn._driver = MagicMock()
+        _skip_version_check(conn)
 
         with caplog.at_level("ERROR", logger="graphrag_sdk.core.connection"):
             with pytest.raises(Exception, match="always fails"):
@@ -128,6 +142,7 @@ class TestFalkorDBConnection:
         mock_graph.query = AsyncMock(side_effect=Exception("syntax error at offset 3"))
         conn._graph = mock_graph
         conn._driver = MagicMock()
+        _skip_version_check(conn)
 
         with caplog.at_level("ERROR", logger="graphrag_sdk.core.connection"):
             with pytest.raises(Exception, match="syntax error"):
@@ -153,6 +168,7 @@ class TestFalkorDBConnection:
         mock_graph.query = AsyncMock(side_effect=Exception(message))
         conn._graph = mock_graph
         conn._driver = MagicMock()
+        _skip_version_check(conn)
 
         with caplog.at_level("DEBUG", logger="graphrag_sdk.core.connection"):
             with pytest.raises(Exception, match="already"):
@@ -179,6 +195,7 @@ class TestFalkorDBConnection:
         mock_graph.query = AsyncMock(side_effect=Exception("Constraint already exists"))
         conn._graph = mock_graph
         conn._driver = MagicMock()
+        _skip_version_check(conn)
 
         with caplog.at_level("DEBUG", logger="graphrag_sdk.core.connection"):
             with pytest.raises(Exception, match="already exists"):
@@ -197,6 +214,7 @@ class TestFalkorDBConnection:
         mock_graph.query = AsyncMock(side_effect=Exception("syntax error at offset 3"))
         conn._graph = mock_graph
         conn._driver = MagicMock()
+        _skip_version_check(conn)
 
         with caplog.at_level("DEBUG", logger="graphrag_sdk.core.connection"):
             with pytest.raises(Exception, match="syntax error"):
@@ -215,6 +233,7 @@ class TestFalkorDBConnection:
         mock_graph.query = AsyncMock(return_value="ok")
         conn._graph = mock_graph
         conn._driver = MagicMock()
+        _skip_version_check(conn)
 
         result = await conn.query("MATCH (n {id: $id}) RETURN n", {"id": "test"})
         assert result == "ok"
@@ -351,6 +370,7 @@ class TestDriverErrorsBecomeDatabaseError:
         mock_graph = MagicMock()
         mock_graph.query = AsyncMock(side_effect=RedisConnectionError("Connection reset"))
         conn._driver = MagicMock()
+        _skip_version_check(conn)
         conn._graph = mock_graph
 
         with pytest.raises(DatabaseError) as excinfo:
@@ -360,12 +380,11 @@ class TestDriverErrorsBecomeDatabaseError:
         assert isinstance(excinfo.value.__cause__, RedisConnectionError)
 
     async def test_query_wraps_permanent_error_without_retrying(self):
-        from redis.exceptions import ResponseError
-
         conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.001))
         mock_graph = MagicMock()
         mock_graph.query = AsyncMock(side_effect=ResponseError("Attribute already indexed"))
         conn._driver = MagicMock()
+        _skip_version_check(conn)
         conn._graph = mock_graph
 
         with pytest.raises(DatabaseError):
@@ -373,15 +392,85 @@ class TestDriverErrorsBecomeDatabaseError:
 
         assert mock_graph.query.await_count == 1
 
+    async def test_a_parameter_falkordb_cannot_parse_is_not_retried(self):
+        """FalkorDB refuses NaN and infinity as parameters. Retried as an
+        outage, the same query failed three times and opened the circuit
+        breaker for every query after it."""
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.001))
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(
+            side_effect=ResponseError("Failed to parse query parameter 'v' value")
+        )
+        conn._driver = MagicMock()
+        _skip_version_check(conn)
+        conn._graph = mock_graph
+
+        with pytest.raises(DatabaseError) as excinfo:
+            await conn.query("CREATE (:X {v: $v})", {"v": float("nan")})
+        assert not isinstance(excinfo.value, DatabaseUnavailableError)
+        assert mock_graph.query.await_count == 1
+        assert await conn._breaker.allow_request()
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "Missing parameters",
+            "Cannot merge node using null property value",
+            "Property values can only be of primitive types or arrays of primitive types",
+            "Division by zero",
+            "Attempted to access undefined attribute",
+        ],
+    )
+    async def test_an_error_the_server_answered_is_not_retried(self, reply):
+        """The server answered: the query itself is wrong and will fail the
+        same way again. Retried as an outage, two of them opened the circuit
+        breaker and refused every query after them."""
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.001))
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=ResponseError(reply))
+        conn._driver = MagicMock()
+        _skip_version_check(conn)
+        conn._graph = mock_graph
+
+        with pytest.raises(DatabaseError) as excinfo:
+            await conn.query("RETURN $x")
+        assert not isinstance(excinfo.value, DatabaseUnavailableError)
+        assert mock_graph.query.await_count == 1
+        assert await conn._breaker.allow_request()
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "LOADING FalkorDB is loading the dataset",
+            "BUSY",
+            "Query timed out",
+            "Max pending queries exceeded",
+            "OOM command not allowed when used memory > 'maxmemory'.",
+            "CLUSTERDOWN The cluster is down",
+            "NOREPLICAS Not enough good replicas to write.",
+        ],
+    )
+    async def test_a_reply_from_a_busy_server_is_retried(self, reply):
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.001))
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(
+            side_effect=[ResponseError(reply), MagicMock(result_set=[[1]])]
+        )
+        conn._driver = MagicMock()
+        _skip_version_check(conn)
+        conn._graph = mock_graph
+
+        result = await conn.query("RETURN 1")
+        assert result.result_set == [[1]] and mock_graph.query.await_count == 2
+
     async def test_wrapped_message_keeps_the_driver_text(self):
         """Index creation tolerates 'already indexed' by reading the message,
         so wrapping must not hide what the driver said."""
-        from redis.exceptions import ResponseError
-
         conn = FalkorDBConnection(ConnectionConfig(retry_count=1, retry_delay=0.001))
         mock_graph = MagicMock()
         mock_graph.query = AsyncMock(side_effect=ResponseError("Attribute already indexed"))
         conn._driver = MagicMock()
+        _skip_version_check(conn)
         conn._graph = mock_graph
 
         with pytest.raises(DatabaseError, match="already indexed"):
@@ -390,6 +479,7 @@ class TestDriverErrorsBecomeDatabaseError:
     async def test_open_circuit_breaker(self):
         conn = FalkorDBConnection()
         conn._driver = MagicMock()
+        _skip_version_check(conn)
         conn._graph = MagicMock()
         conn._breaker.allow_request = AsyncMock(return_value=False)
 
@@ -408,3 +498,143 @@ class TestDriverErrorsBecomeDatabaseError:
         ):
             mock_falkor.side_effect = RedisConnectionError("Connection refused")
             assert await conn.ping() is False
+
+
+class TestServerVersion:
+    """A connection refuses a FalkorDB server older than 4.20, once, before
+    its first query: nothing is sent to it."""
+
+    @staticmethod
+    def _conn(**mock_kw):
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=1, retry_delay=0.0))
+        conn._graph = MagicMock()
+        conn._graph.query = AsyncMock(return_value="ok")
+        conn._driver = MagicMock()
+        conn._driver.execute_command = AsyncMock(**mock_kw)
+        return conn
+
+    async def test_an_older_server_is_refused_and_nothing_is_sent(self):
+        conn = self._conn(return_value=[["name", "graph", "ver", 41802]])
+        for _ in range(2):  # every query, not only the first
+            with pytest.raises(FalkorDBVersionError, match="is 4.18.2; GraphRAG SDK needs"):
+                await conn.query("CREATE (:X)")
+        conn._graph.query.assert_not_awaited()
+        assert issubclass(FalkorDBVersionError, DatabaseError)
+
+    async def test_a_current_server_is_asked_once(self):
+        conn = self._conn(return_value=[{"name": "graph", "ver": 42004}])
+        assert await conn.server_version() == (4, 20, 4)
+        conn._driver.execute_command.reset_mock()
+        await asyncio.gather(*(conn.query("RETURN 1") for _ in range(50)))
+        assert conn._driver.execute_command.await_count == 1
+        assert conn._graph.query.await_count == 50
+
+    async def test_a_server_that_does_not_say_is_let_through_with_one_warning(self, caplog):
+        conn = self._conn(side_effect=ResponseError("NOPERM this user has no permissions"))
+        with caplog.at_level("WARNING", logger="graphrag_sdk.core.connection"):
+            assert await conn.query("RETURN 1") == "ok"
+            assert await conn.query("RETURN 1") == "ok"
+        assert caplog.text.count("Could not read the FalkorDB server version") == 1
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "CLUSTERDOWN The cluster is down",
+            "TRYAGAIN Multiple keys request during rehashing of slot",
+            "OOM command not allowed when used memory > 'maxmemory'",
+        ],
+        ids=["clusterdown", "tryagain", "oom"],
+    )
+    async def test_an_error_that_passes_is_not_read_as_a_refusal(self, reply):
+        """Read as "will not say", one such reply left the connection checked
+        for good, with a warning; it is retried like a query instead."""
+        conn = self._conn(side_effect=[ResponseError(reply), [["name", "graph", "ver", 41803]]])
+        conn.config.retry_count = 2
+        with pytest.raises(FalkorDBVersionError, match="is 4.18.3"):
+            await conn.query("CREATE (:X)")
+        conn._graph.query.assert_not_awaited()
+
+    async def test_a_closed_connection_asks_again(self):
+        """``close()`` drops the client and the next query reconnects, maybe to
+        a server replaced meanwhile at the same address."""
+        conn = self._conn(return_value=[{"name": "graph", "ver": 42004}])
+        assert await conn.query("RETURN 1") == "ok"
+        await conn.close()
+        reopened = self._conn(return_value=[["name", "graph", "ver", 41802]])
+        conn._graph, conn._driver = reopened._graph, reopened._driver  # the reconnect
+        with pytest.raises(FalkorDBVersionError, match="is 4.18.2"):
+            await conn.query("CREATE (:X)")
+        conn._graph.query.assert_not_awaited()
+
+    async def test_a_server_that_cannot_be_asked_fails_the_query_and_is_asked_again(self):
+        """No query runs unchecked: a failed version question fails the query,
+        and the next query asks again."""
+        conn = self._conn(side_effect=[ConnectionError("down"), [{"name": "graph", "ver": 42004}]])
+        with pytest.raises(DatabaseUnavailableError, match="version check failed"):
+            await conn.query("CREATE (:X)")
+        conn._graph.query.assert_not_awaited()
+        assert await conn.query("RETURN 1") == "ok"
+        assert conn._driver.execute_command.await_count == 2
+
+    async def test_the_version_question_is_retried_like_a_query(self):
+        """A stale pooled connection — after a server restart, or in a fresh
+        ``asyncio.run`` — fails the first ask; the retry reaches the server,
+        and an old one is still refused."""
+        conn = self._conn(side_effect=[ConnectionError("stale"), [["name", "graph", "ver", 41803]]])
+        conn.config.retry_count = 2
+        with pytest.raises(FalkorDBVersionError, match="is 4.18.3"):
+            await conn.query("CREATE (:X)")
+        conn._graph.query.assert_not_awaited()
+
+    def test_the_check_holds_across_event_loops(self):
+        """The ``*_sync`` wrappers run every call in a fresh ``asyncio.run``; a
+        lock bound to the first loop raised ``RuntimeError`` in the next, in
+        place of the version error."""
+        conn = self._conn(return_value=[["name", "graph", "ver", 41802]])
+
+        async def three_at_once():
+            return await asyncio.gather(
+                *(conn.query("CREATE (:X)") for _ in range(3)), return_exceptions=True
+            )
+
+        for _ in range(2):
+            assert all(isinstance(r, FalkorDBVersionError) for r in asyncio.run(three_at_once()))
+        conn._graph.query.assert_not_awaited()
+
+
+async def test_the_ontology_graph_is_not_written_on_a_server_too_old():
+    """The ontology graph is queried through the driver, not conn.query: on a
+    server older than 4.20 it was created before the first refusal."""
+    from graphrag_sdk.core.exceptions import FalkorDBVersionError
+    from graphrag_sdk.storage.ontology_store import OntologyStore
+
+    conn = FalkorDBConnection(ConnectionConfig(retry_count=1, retry_delay=0.001))
+    conn._driver = MagicMock()
+    graph = MagicMock()
+    graph.query = AsyncMock()
+    conn._driver.select_graph = MagicMock(return_value=graph)
+
+    async def old():
+        return (4, 18, 3)
+
+    conn.server_version = old
+    store = OntologyStore(conn, "g")
+    with pytest.raises(FalkorDBVersionError):
+        await store._query("CREATE (:X)")
+    graph.query.assert_not_called()
+
+
+async def test_a_server_too_old_is_not_loaded_as_an_empty_ontology():
+    from graphrag_sdk.core.exceptions import FalkorDBVersionError
+    from graphrag_sdk.storage.ontology_store import OntologyStore
+
+    conn = FalkorDBConnection(ConnectionConfig(retry_count=1, retry_delay=0.001))
+    conn._driver = MagicMock()
+    conn._driver.select_graph = MagicMock(return_value=MagicMock(query=AsyncMock()))
+
+    async def old():
+        return (4, 18, 3)
+
+    conn.server_version = old
+    with pytest.raises(FalkorDBVersionError):
+        await OntologyStore(conn, "g").load()

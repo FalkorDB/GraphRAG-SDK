@@ -31,7 +31,7 @@ Three cooperating APIs:
 Prereqs::
 
     pip install graphrag-sdk[litellm]
-    docker run -p 6379:6379 falkordb/falkordb
+    docker run -p 6379:6379 falkordb/falkordb:v4.20.4
     export OPENAI_API_KEY=...
 
 Run::

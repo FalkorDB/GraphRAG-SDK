@@ -22,8 +22,20 @@ from graphrag_sdk.core.models import (
     GraphNode,
     GraphRelationship,
 )
-from graphrag_sdk.storage.deduplicator import _REMAP_QUERIES, properties_to_carry
-from graphrag_sdk.storage.judge_dedup import DEDUP_ATTEMPTS_KEY, DEDUP_PENDING_KEY
+from graphrag_sdk.storage.deduplicator import properties_to_carry
+from graphrag_sdk.storage.merge_query import (
+    copy_on_server,
+    fold_query,
+    handled,
+    read_for_merge,
+    snapshot_params,
+)
+from graphrag_sdk.storage.system_store import (
+    CONFIG_LABEL,
+    PROCESSING_LABEL,
+    deleted_record_clause,
+    is_system_label,
+)
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 
@@ -49,11 +61,16 @@ class ReferenceNode(NamedTuple):
 
 logger = logging.getLogger(__name__)
 
+#: Reads of a re-keyed row's two nodes before its fold gives up: a fold writes
+#: nothing when either node changed since the read (a property, a new edge
+#: type, a node gone), and is read again.
+_FOLD_READS = 3
+
 # An entity's ``source_chunk_ids`` is every chunk that mentioned it, across
 # documents. ``SET n += props`` alone replaces the list with the incoming
 # write's, so the second document to mention an entity erased the first's
-# provenance — the same fault the RELATES edge path and the deduplicator's
-# remap already guard against, with the same union. Bound after the MERGE as
+# provenance — the same fault the RELATES edge path and the merge queries
+# (``merge_query``) already guard against, with the same union. Bound after the MERGE as
 # ``old`` (what the node has) and ``contrib`` (what this write brings).
 # A write carrying no list — a table row, a re-embed — leaves the node's list
 # alone rather than giving it ``[]``. ``strip_stale_provenance`` is the
@@ -220,10 +237,9 @@ class GraphStore:
                 ]
                 query = f"UNWIND $batch AS item MERGE (n:`{safe_label}` {{id: item.id}}) "
                 if is_entity:
+                    # Nothing marks a new entity for dedup: it has no name
+                    # vector, and that is what the next finalize() looks for.
                     query += (
-                        # New to the graph: the next finalize checks it for
-                        # duplicates, then removes the flag.
-                        f"ON CREATE SET n.{DEDUP_PENDING_KEY} = true "
                         "WITH n, item, "
                         "     coalesce(n.source_chunk_ids, []) AS old, "
                         "     coalesce(item.properties.source_chunk_ids, []) AS contrib "
@@ -248,7 +264,6 @@ class GraphStore:
                         q = f"MERGE (n:`{safe_node_label}` {{id: $id}}) "
                         if is_entity:
                             q += (
-                                f"ON CREATE SET n.{DEDUP_PENDING_KEY} = true "
                                 "WITH n, $properties AS props, "
                                 "     coalesce(n.source_chunk_ids, []) AS old, "
                                 "     coalesce($properties.source_chunk_ids, []) AS contrib "
@@ -489,7 +504,8 @@ class GraphStore:
                 if new_id in movers:
                     aside = f"{old_id}__swapping"
                     await self.query_raw(
-                        "MATCH (n:__Entity__ {id: $old}) SET n.id = $aside",
+                        "MATCH (n:__Entity__ {id: $old}) SET n.id = $aside "
+                        + deleted_record_clause("[$old]"),
                         {"old": old_id, "aside": aside},
                     )
                     deferred.append((aside, new_id))
@@ -515,61 +531,58 @@ class GraphStore:
         """Rename the node at ``old_id`` to ``new_id``, or fold it into what is there.
 
         Returns ``(renamed, merged)`` -- one of them 1.
+
+        Raises:
+            DatabaseError: the two nodes changed between every read and its
+                fold (``_FOLD_READS`` tries), or a query failed.
         """
-        exists = await self.query_raw(
-            "MATCH (n:__Entity__ {id: $id}) RETURN count(n)", {"id": new_id}
-        )
-        if not (exists.result_set and exists.result_set[0][0]):
-            # The embedding is of the old name; left on the node, vector search
-            # kept finding the row under a name it no longer has. finalize()
-            # embeds every node without one. The new name is new to dedup too,
-            # so the node is flagged for the next finalize to check.
-            await self.query_raw(
-                "MATCH (n:__Entity__ {id: $old}) "
-                f"SET n.id = $new, n.{DEDUP_PENDING_KEY} = true REMOVE n.embedding",
-                {"old": old_id, "new": new_id},
+        for _ in range(_FOLD_READS):
+            read = await read_for_merge(self, new_id, old_id)
+            if read is None:
+                # The embedding is of the old name; left on the node, vector
+                # search kept finding the row under a name it no longer has.
+                # Without it the node is pending dedup again — the new name is
+                # new to dedup too — and the next finalize() embeds and checks
+                # it. The old id leaves a deleted record, so a merge planned on
+                # it is not applied to the node.
+                await self.query_raw(
+                    "MATCH (n:__Entity__ {id: $old}) SET n.id = $new REMOVE n.embedding "
+                    + deleted_record_clause("[$old]"),
+                    {"old": old_id, "new": new_id},
+                )
+                return 1, 0
+            # Something already sits at new_id — a prose mention of the same
+            # name, typically. Fold the old node into it in one query, which
+            # also makes the result pending dedup again: it now carries the
+            # row's identity, which no dedup run has seen with it. The query
+            # unions provenance itself, from the values at write time, and
+            # writes nothing if anything this read saw has changed since.
+            carry = properties_to_carry(read.keep, read.dup, never=self._NEVER_CARRY_ON_RECONCILE)
+            sets = copy_on_server(carry)
+            if carry:
+                sets.append("s += $carry")
+            result = await self.query_raw(
+                fold_query(read.kinds, sets),
+                {
+                    "old": old_id,
+                    "new": new_id,
+                    "handled": handled(read.kinds),
+                    **snapshot_params(read, carry),
+                },
             )
-            return 1, 0
-        # Something already sits at new_id — a prose mention of the same name,
-        # typically. Fold the old node into it, and flag the result: it now
-        # carries the row's identity, which no dedup run has seen with it.
-        for query in _REMAP_QUERIES:
-            await self.query_raw(query, {"dup_id": old_id, "survivor_id": new_id})
-        await self._carry_then_delete(old_id, new_id)
-        await self.query_raw(
-            f"MATCH (n:__Entity__ {{id: $new}}) SET n.{DEDUP_PENDING_KEY} = true",
-            {"new": new_id},
+            if result.result_set and result.result_set[0][0] is True:
+                return 0, 1
+        raise DatabaseError(
+            f"Could not fold entity {old_id!r} into {new_id!r}: one of them kept changing "
+            "between its read and the fold"
         )
-        return 0, 1
 
     # The row about to be written sets ``is_stub`` itself; a placeholder's
-    # ``True`` must not land on the node first and then have to be undone. The
-    # dedup flag and failure count belong to each node's own checks: the fold
-    # flags the survivor itself, and another node's count would cut its retries.
-    _NEVER_CARRY_ON_RECONCILE = frozenset(
-        {"id", "embedding", "is_stub", DEDUP_PENDING_KEY, DEDUP_ATTEMPTS_KEY}
-    )
-
-    async def _carry_then_delete(self, old_id: str, new_id: str) -> None:
-        """Copy what only the old node knew onto the new one, then delete the old.
-
-        Same policy as a dedup merge (:func:`properties_to_carry`), except that
-        the stub bookkeeping stays behind.
-        """
-        res = await self.query_raw(
-            "MATCH (k:__Entity__ {id: $new}), (d:__Entity__ {id: $old}) "
-            "RETURN properties(k), properties(d)",
-            {"new": new_id, "old": old_id},
-        )
-        if res.result_set:
-            keep, dup = res.result_set[0][0] or {}, res.result_set[0][1] or {}
-            carry = properties_to_carry(keep, dup, never=self._NEVER_CARRY_ON_RECONCILE)
-            if carry:
-                await self.query_raw(
-                    "MATCH (k:__Entity__ {id: $new}) SET k += $carry",
-                    {"new": new_id, "carry": carry},
-                )
-        await self.query_raw("MATCH (d:__Entity__ {id: $old}) DETACH DELETE d", {"old": old_id})
+    # ``True`` must not land on the node first and then have to be undone.
+    _NEVER_CARRY_ON_RECONCILE = frozenset({"id", "embedding", "is_stub"})
+    #: Nodes a label-wide delete removes per query. Each query writes the
+    #: deleted records of its own nodes, so no query holds the whole label.
+    _DELETE_BATCH = 10_000
 
     async def upsert_reference_nodes(self, references: Sequence[ReferenceNode]) -> int:
         """Write foreign-key reference nodes: the key always, the name never.
@@ -639,7 +652,7 @@ class GraphStore:
                     f"UNWIND $batch AS item "
                     f"MERGE (n:`{safe_label}` {{id: item.id}}) "
                     f"ON CREATE SET n += item.properties, n.name = item.name, "
-                    f"n.is_stub = true, n.{DEDUP_PENDING_KEY} = true "
+                    f"n.is_stub = true "
                     f"ON MATCH SET n += item.claims, "
                     f"n.entity_key = coalesce(n.entity_key, item.properties.entity_key), "
                     f"n.is_stub = coalesce(n.is_stub, true) "
@@ -727,7 +740,7 @@ class GraphStore:
                 # breaking ``delete_stale_relationships`` (a later delete
                 # of the new doc would drop the edge even though earlier
                 # docs still support it). Special-case RELATES to UNION
-                # the lists — same idiom as the deduplicator remap path.
+                # the lists — same idiom as the merge queries' RELATES block.
                 if rel_type == "RELATES":
                     # The MERGE is keyed on ``rel_type`` as well as the pair.
                     # Without it, one edge exists per (start, end) and a second
@@ -876,14 +889,21 @@ class GraphStore:
         """
         stats: dict[str, Any] = {}
 
-        r = await self._conn.query("MATCH (n) RETURN count(n)")
-        stats["node_count"] = r.result_set[0][0] if r.result_set else 0
+        # The SDK's own system nodes (config, dedup records) are not data.
+        r = await self._conn.query(
+            "MATCH (n) RETURN count(n) AS n UNION ALL "
+            f"MATCH (n:{CONFIG_LABEL}) RETURN -count(n) AS n UNION ALL "
+            f"MATCH (n:{PROCESSING_LABEL}) RETURN -count(n) AS n"
+        )
+        stats["node_count"] = sum(row[0] for row in r.result_set or [])
 
         r = await self._conn.query("MATCH ()-[r]->() RETURN count(r)")
         stats["edge_count"] = r.result_set[0][0] if r.result_set else 0
 
         r = await self._conn.query("CALL db.labels()")
-        stats["entity_types"] = [row[0] for row in r.result_set] if r.result_set else []
+        stats["entity_types"] = [
+            row[0] for row in r.result_set or [] if not is_system_label(row[0])
+        ]
 
         r = await self._conn.query("CALL db.relationshipTypes()")
         stats["relationship_types"] = [row[0] for row in r.result_set] if r.result_set else []
@@ -1612,7 +1632,9 @@ class GraphStore:
                 "UNWIND $ids AS eid "
                 "MATCH (e:__Entity__ {id: eid}) "
                 "WHERE NOT (e)-[:MENTIONED_IN]->(:Chunk) "
-                "DETACH DELETE e RETURN count(e) AS n",
+                "WITH collect(e) AS orphans, collect(DISTINCT e.id) AS gone "
+                + deleted_record_clause("gone")
+                + "FOREACH (e IN orphans | DETACH DELETE e) RETURN size(orphans) AS n",
                 {"ids": batch},
             )
             deleted += r.result_set[0][0] if r.result_set else 0
@@ -1951,8 +1973,17 @@ class GraphStore:
         count = count_r.result_set[0][0] if count_r.result_set else 0
         if count == 0:
             return 0
-        await self._conn.query(f"MATCH (n:`{safe_label}`) DETACH DELETE n")
-        return count
+        while True:
+            r = await self._conn.query(
+                f"MATCH (n:`{safe_label}`) WITH n LIMIT $batch "
+                "WITH collect(n) AS nodes, "
+                "collect(DISTINCT CASE WHEN n:__Entity__ THEN n.id END) AS gone "
+                + deleted_record_clause("gone")
+                + "FOREACH (n IN nodes | DETACH DELETE n) RETURN size(nodes)",
+                {"batch": self._DELETE_BATCH},
+            )
+            if not r.result_set or r.result_set[0][0] < self._DELETE_BATCH:
+                return count
 
     async def rename_relation_type(self, old: str, new: str) -> int:
         """Recreate every ``[:old]`` edge as ``[:new]``, preserving
@@ -2205,13 +2236,10 @@ class GraphStore:
         - Lists: filter items to primitives only, strip control chars from strings.
         - Dicts: serialise to JSON string.
         - Other: convert to string and strip control characters.
-        - ``dedup_pending`` and ``dedup_attempts`` are dropped: the SDK owns
-          them, and an incoming value would overwrite the flag set when the
-          node is created.
         """
         cleaned: dict[str, Any] = {}
         for key, value in props.items():
-            if value is None or key in (DEDUP_PENDING_KEY, DEDUP_ATTEMPTS_KEY):
+            if value is None:
                 continue
             if isinstance(value, str | int | float | bool):
                 cleaned[key] = cls._sanitize_string(value) if isinstance(value, str) else value

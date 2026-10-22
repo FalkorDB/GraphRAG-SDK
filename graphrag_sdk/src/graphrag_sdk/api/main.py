@@ -101,12 +101,14 @@ from graphrag_sdk.ingestion.structured_pipeline import (
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
-from graphrag_sdk.storage.deduplicator import EntityDeduplicator
+from graphrag_sdk.storage.dedup_judges import DedupJudge, LLMJudge
+from graphrag_sdk.storage.deduplicator import DedupReport, EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.ontology_store import (
     OntologyContradictionError,
     OntologyStore,
 )
+from graphrag_sdk.storage.system_store import MAX_JUDGED_ATTEMPTS, deleted_record_clause
 from graphrag_sdk.storage.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -1861,7 +1863,7 @@ class GraphRAG:
         - Resolver: ExactMatchResolution — zero LLM cost; same name + same
           label within the document, descriptions kept as a list, edges
           re-pointed to the survivor. Cross-document duplicates are merged
-          once, in :meth:`finalize` — by its exact-name and LLM-judged dedup
+          once, in :meth:`finalize` — by its exact-name and judged dedup
           phases. Pass ``resolver=LLMVerifiedResolution(...)`` to also
           resolve per document at ingest.
 
@@ -2726,7 +2728,7 @@ class GraphRAG:
         result = await pipeline.run(source, ctx, text=text, document_info=doc_info)
 
         # Cross-document duplicates can only be resolved by finalize(); see
-        # _warn_if_dedup_pending.
+        # _warn_if_finalize_missing.
         self._docs_since_dedup += 1
 
         if not _skip_post:
@@ -2907,7 +2909,7 @@ class GraphRAG:
         moved by less than one question.
 
         Cross-document dedup runs **once, in** :meth:`finalize`: exact-name and
-        acronym matching, then the LLM judge (``storage/judge_dedup.py``), over
+        acronym matching, then the judge (``storage/judge_dedup.py``), over
         the entities added since the last run against their nearest names in
         the whole graph. Ingest stays zero-LLM-cost for resolution: no ``llm``
         is passed, so ``ExactMatchResolution`` neither summarises merged
@@ -3618,7 +3620,7 @@ class GraphRAG:
         # so update() accumulates exactly the cross-document duplicates
         # finalize() exists to remove. Arm the reminder here too, or a session
         # that ingests, finalizes, then updates a hundred files reads a graph
-        # full of duplicates in silence. See _warn_if_dedup_pending.
+        # full of duplicates in silence. See _warn_if_finalize_missing.
         self._docs_since_dedup += 1
         return update_result
 
@@ -4131,7 +4133,7 @@ class GraphRAG:
 
         ctx.log(f"Retrieve: {question[:80]}...")
         ctx.ensure_budget("graph config validation")
-        self._warn_if_dedup_pending()
+        self._warn_if_finalize_missing()
 
         # Make sure the retrieval strategy sees the persisted ontology, even
         # when the user is querying an existing graph without ingesting first.
@@ -4513,70 +4515,68 @@ class GraphRAG:
         self,
         *,
         batch_size: int = 500,
-        judge: bool = False,
-        judge_llm: LLMInterface | None = None,
+        judge: DedupJudge | None = None,
         dedup_all: bool = False,
         fuzzy: bool | None = None,
         similarity_threshold: float | None = None,
     ) -> int:
-        """Incremental cross-document entity deduplication.
+        """Incremental, crash-safe cross-document entity deduplication.
 
-        Phase 1 (always): Exact name match — groups entities by canonical
-        name and label (an acronym joins its unique same-label long form),
-        keeps the survivor the merge rules pick (a table row over a mention,
-        then the best-connected and best-described), keeps every member's
-        description in the ``descriptions`` list (joined with ``" | "`` in
-        ``description``), remaps all RELATES and MENTIONED_IN edges, deletes
-        duplicates. With ``judge=True``, a group of extracted mentions only is
+        Phase 1: Exact name match — groups entities by canonical name and
+        label (an acronym joins its unique same-label long form), keeps the
+        survivor the merge rules pick (a table row over a mention, then the
+        best-connected and best-described), keeps every member's description
+        in the ``descriptions`` list (joined with ``" | "`` in
+        ``description``), moves every relationship of the duplicates to the
+        survivor, deletes duplicates. A group of extracted mentions only is
         handed to the judge instead of merged on the name.
 
-        Phase 2 (opt-in here, ``judge=True``; on by default in
-        :meth:`finalize`): LLM-judged cross-document dedup of the entities
-        added since the last run. Each new entity's nearest names are read from
-        the entity vector index; candidates form small dense sets; the judge
-        LLM partitions each set in one pass, seeing names, labels and
-        descriptions. Agreed pairs are merged by the same rules as every other
-        phase (survivor rank, descriptions list, aliases, provenance), and the
-        survivor additionally gains every member's label; anything else is left
-        alone — nothing else is written to the graph. Two rows
-        written from a declared key, and a mention two such rows could equally
-        own, are never put to the judge.
+        Phase 2: judged cross-document dedup of the entities added since the
+        last run. Each new entity's nearest names are read from the entity
+        vector index; candidates form small dense sets; the judge partitions
+        each set in one pass, seeing names, labels, aliases, descriptions and
+        the values of the attributes the ontology declares. Agreed pairs are
+        merged by the same rules as every other phase (survivor rank,
+        descriptions list, aliases, provenance), and the survivor additionally
+        gains every member's label, the judge's name for the group and the
+        values it picked to keep; pairs it did not agree are left alone. Two
+        rows written from a declared key,
+        and a mention two such rows could equally own, are never put to the
+        judge.
 
-        Both phases are incremental: only entities flagged ``dedup_pending`` at
-        ingest are query points, compared with the rest of the graph through
-        the entity vector index, and the flag is removed when the run ends
-        (kept on an entity whose check did not complete — a failed lookup,
-        judge call or merge write, an answer that was not a full partition,
-        or no name vector — so the next run retries it, up to 3 runs) — a
-        second call with nothing pending does no work, and once every check
-        has completed the graph keeps no dedup data. A
-        graph written before the flag existed has none: pass
-        ``dedup_all=True`` once to check every entity. The new entities'
-        name embeddings (``e.embedding``) are written by this call.
-
-        With ``judge`` off — the default here — this method calls no model;
-        :meth:`finalize` is where the judge is on by default.
+        Both phases are incremental: only entities whose check is pending are
+        query points — ingest writes entities without a name vector, and this
+        call lists those in a system record before it embeds them — compared
+        with the rest of the graph through the entity vector index. Nothing is
+        written on an entity to mark it. An entity whose check did not complete
+        (a failed lookup or judge call, an answer that was not a clean
+        partition, a group held for one, a merge an update changed) stays
+        pending for the next run; after 3 judged runs without a usable verdict
+        it is reported as unresolved and no longer retried. A second call with
+        nothing pending does no work and asks the judge nothing. Every merge
+        is decided before any is written, and applied from a sealed plan one
+        atomic query at a time, so an interrupted call is finished by the next
+        one. ``update()`` and deletes may run meanwhile; a merge whose entities
+        they change is skipped and decided again next run. One call per graph
+        at a time: a second raises ``DedupRunActiveError``.
 
         Call after all documents are ingested.
 
         Args:
             batch_size: Entities per query batch.
-            judge: run the LLM-judged phase (default False here; ``True`` in
-                :meth:`finalize`). ``False`` = no judge LLM calls.
-            judge_llm: Judge model; defaults to this instance's ``llm``.
-                Only read with ``judge=True`` — given alone it is ignored,
-                with a warning, since the phase is off here by default.
-                A gpt-4.1-class model is strongly recommended — on the
-                benchmark corpus it made 9 wrong merges where gpt-4o-mini
-                made 51.
+            judge: Decides which candidates are one entity: any
+                :class:`DedupJudge`. Defaults to :class:`LLMJudge` with this
+                instance's ``llm``; every run has a judge. For an LLM judge a
+                gpt-4.1-class model is strongly recommended — on the benchmark
+                corpus it made 9 wrong merges where gpt-4o-mini made 51.
             fuzzy: Deprecated; the fuzzy name-embedding phase was removed.
                 ``False`` is accepted with a ``DeprecationWarning``; ``True``
-                raises ``ValueError``. Use ``judge=True`` instead.
+                raises ``ValueError``.
             similarity_threshold: Deprecated and ignored, with a
                 ``DeprecationWarning``.
-            dedup_all: Check every entity, not only the ones flagged
-                ``dedup_pending`` since the last run. Needed once for a graph
-                written before the flag existed.
+            dedup_all: Check every entity, not only the pending ones, and
+                retry the unresolved ones. For a graph whose entity vectors
+                were written outside ``finalize()``.
 
         Returns:
             Total number of duplicate entities merged (all phases). Judge-phase
@@ -4586,8 +4586,8 @@ class GraphRAG:
         if fuzzy:
             raise ValueError(
                 "deduplicate_entities(fuzzy=True) is no longer supported: the fuzzy "
-                "name-embedding phase was removed. Use judge=True, which compares each "
-                "new entity with its nearest names and lets the model decide."
+                "name-embedding phase was removed. The judge compares each new entity "
+                "with its nearest names and decides."
             )
         if fuzzy is not None or similarity_threshold is not None:
             warnings.warn(
@@ -4596,17 +4596,14 @@ class GraphRAG:
                 DeprecationWarning,
                 stacklevel=2,
             )
+        judge = self._dedup_judge(judge)
         await self._ensure_ontology_initialized()
-        if judge_llm is not None and not judge:
-            logger.warning(
-                "deduplicate_entities: judge_llm was given but judge=False, so the judge "
-                "phase does not run; pass judge=True to use it (finalize() runs it by default)"
-            )
         merged = await self._deduplicator.deduplicate(
+            judge=judge,
             batch_size=batch_size,
             declared_labels=self._mapping_declared_labels(),
-            judge_llm=(judge_llm or self.llm) if judge else None,
             dedup_all=dedup_all,
+            ontology=self._global_ontology,
         )
         # Dedup has run over what was pending, so the pending-dedup reminder
         # no longer applies. Reset here rather than in finalize() so a caller
@@ -4615,7 +4612,20 @@ class GraphRAG:
         self._finalize_reminder_emitted = False
         return merged
 
-    def _warn_if_dedup_pending(self) -> None:
+    def _dedup_judge(self, judge: DedupJudge | None) -> DedupJudge:
+        """``judge``, or :class:`LLMJudge` with this instance's ``llm``. Anything
+        else — ``judge=False`` among them — is refused before any work."""
+        if judge is None:
+            return LLMJudge(self.llm)
+        if not isinstance(judge, DedupJudge):
+            raise TypeError(
+                f"judge takes a DedupJudge, not {type(judge).__name__}: every dedup run "
+                "has a judge. Leave it out for LLMJudge with this instance's llm, or "
+                "pass LLMJudge(another_llm) or your own DedupJudge."
+            )
+        return judge
+
+    def _warn_if_finalize_missing(self) -> None:
         """Warn once when reading a graph that was never deduplicated.
 
         The ingest-time resolver only ever sees a single document
@@ -4657,8 +4667,7 @@ class GraphRAG:
     async def finalize(
         self,
         *,
-        judge: bool = True,
-        judge_llm: LLMInterface | None = None,
+        judge: DedupJudge | None = None,
         dedup_all: bool = False,
     ) -> FinalizeResult:
         """Run all post-ingestion steps after all documents are ingested.
@@ -4669,29 +4678,30 @@ class GraphRAG:
 
         Bundles:
         1. Remove NULL-name stub entities (legacy cleanup)
-        2. ``deduplicate_entities()`` — incremental: only entities added since
-           the last finalize are checked, against the whole graph through
-           indexes. Exact-name / acronym dedup, then (``judge``) one LLM pass
-           over each new entity and its nearest names from the vector index;
-           see :meth:`deduplicate_entities`. Dedup embeds the names it reads
-           and stores them on the nodes. Calling ``finalize()`` again with
-           nothing pending does no dedup work.
-        3. ``backfill_entity_embeddings()`` — name embeddings on every entity
-           still missing one. After dedup, so a duplicate the merge removes
-           is not embedded first; ``FinalizeResult.entities_embedded`` counts
-           the vectors written by this step and by dedup.
-        4. ``embed_relationships()`` — fact text embeddings on RELATES edges
-        5. ``ensure_indices()`` — all indexes
+        2. ``deduplicate_entities()`` — incremental: only entities whose check
+           is pending (added since the last finalize, or left pending by it)
+           are checked, against the whole graph through indexes. Exact-name /
+           acronym dedup, then one judge pass over each pending entity and its
+           nearest names from the vector index; see
+           :meth:`deduplicate_entities`. Dedup gives every entity without one
+           its name embedding — ``FinalizeResult.entities_embedded`` counts
+           them. Calling ``finalize()`` again with nothing pending does no
+           dedup work.
+        3. ``embed_relationships()`` — fact text embeddings on RELATES edges
+        4. ``ensure_indices()`` — all indexes
+
+        Entity name embeddings are written only by dedup: an entity with a
+        vector and no pending record counts as checked, so a vector written by
+        anything else (``backfill_entity_embeddings()`` called directly) skips
+        its check — run ``finalize(dedup_all=True)`` once after one.
 
         Args:
-            judge: run the LLM-judged dedup phase (default True): one LLM call
-                per ~3000 prompt tokens of candidate sets, over new entities
-                only. ``judge=False`` is exact-name dedup alone, with no LLM
-                calls at all.
-            judge_llm: judge model, defaults to this instance's ``llm``.
-            dedup_all: check every entity instead of only those ingested since
-                the last finalize. Run it once on a graph built before the
-                ``dedup_pending`` flag existed.
+            judge: the dedup judge, any :class:`DedupJudge`. Defaults to
+                :class:`LLMJudge` with this instance's ``llm``: one LLM call per
+                ~3000 prompt tokens of candidate sets, over pending entities
+                only. Every run has a judge.
+            dedup_all: check every entity instead of only the pending ones,
+                and retry the unresolved ones.
 
         Returns:
             ``FinalizeResult`` — typed counts from each step.
@@ -4705,6 +4715,7 @@ class GraphRAG:
         # caller who would rather assert than read.
         ctx_log = logger.info
         report = logger.warning
+        judge = self._dedup_judge(judge)
 
         ctx_log("finalize: starting post-ingestion steps")
 
@@ -4718,38 +4729,31 @@ class GraphRAG:
         # the deletion reported only as a legacy-stub count.
         r = await self._graph_store.query_raw(
             "MATCH (e:__Entity__) WHERE e.name IS NULL AND e.is_stub IS NULL "
-            "DETACH DELETE e RETURN count(e)"
+            "WITH collect(e) AS stubs, collect(DISTINCT e.id) AS gone "
+            + deleted_record_clause("gone")
+            + "FOREACH (e IN stubs | DETACH DELETE e) RETURN size(stubs)"
         )
         null_cleaned = r.result_set[0][0] if r.result_set else 0
         if null_cleaned:
             ctx_log(f"finalize: removed {null_cleaned} NULL-name stub entities")
 
-        # Step 2: Incremental dedup (exact, then LLM-judged)
-        dedup_count = await self.deduplicate_entities(
-            judge=judge,
-            judge_llm=judge_llm,
-            dedup_all=dedup_all,
-        )
+        # Step 2: Incremental dedup (exact, then judged)
+        dedup_count = await self.deduplicate_entities(judge=judge, dedup_all=dedup_all)
+        dedup_report = getattr(self._deduplicator, "last_report", None) or DedupReport()
         judge_stats = dict(getattr(self._deduplicator, "last_judge_stats", {}) or {})
-        if not judge:
-            judge_stats = {}
         ctx_log(f"finalize: deduplicated {dedup_count} entities; judge={judge_stats}")
 
-        # Step 3: Entity name embeddings, after dedup so the duplicates the merge
-        # just removed are not embedded first. The judge phase has already
-        # embedded and stored the names it read, net of any node its own merges
-        # then deleted; this covers the rest, and the reported count is every
-        # vector written this call to a node still here.
-        entity_count = await self._vector_store.backfill_entity_embeddings()
-        entity_count += int(judge_stats.get("embedded", 0) or 0)
-        entity_count += int(getattr(self._deduplicator, "names_embedded", 0) or 0)
+        # Entity name embeddings were written by dedup, which lists an entity as
+        # pending before it embeds it. A backfill here would embed what ingest
+        # added while dedup ran — unlisted, so it would look checked.
+        entity_count = int(getattr(self._deduplicator, "names_embedded", 0) or 0)
         ctx_log(f"finalize: embedded {entity_count} entities")
 
-        # Step 4: Relationship embeddings (fact text on RELATES edges)
+        # Step 3: Relationship embeddings (fact text on RELATES edges)
         rel_count = await self._vector_store.embed_relationships()
         ctx_log(f"finalize: embedded {rel_count} relationships")
 
-        # Step 5: Ensure all indexes
+        # Step 4: Ensure all indexes
         self._vector_store._indices_ensured = False  # force re-check
         index_results = await self._vector_store.ensure_indices()
         ctx_log(f"finalize: indexes = {index_results}")
@@ -4870,10 +4874,32 @@ class GraphRAG:
                 "the declared labels"
             )
 
+        if dedup_report.collisions:
+            report(
+                f"finalize: {len(dedup_report.collisions)} merge(s) found the two entities "
+                "holding different values for one property; the other value is kept in "
+                "<property>__dropped on the merged entity. See FinalizeResult.dedup_collisions"
+            )
+        if dedup_report.unresolved:
+            report(
+                f"finalize: {len(dedup_report.unresolved)} entity/entities got no usable dedup "
+                f"verdict in {MAX_JUDGED_ATTEMPTS} judged runs and are no longer checked; "
+                "finalize(dedup_all=True) "
+                "retries them. See FinalizeResult.dedup_unresolved"
+            )
+
         return FinalizeResult(
             null_stubs_removed=null_cleaned,
             entities_deduplicated=dedup_count,
-            judge_llm_calls=judge_stats.get("llm_calls", 0),
+            dedup_pending=dedup_report.pending,
+            dedup_unresolved=[
+                f"{eid}: {u.reason} ({u.attempts} judged runs)"
+                + (f"; kept from {u.blocked_with}" if u.blocked_with else "")
+                for eid, u in sorted(dedup_report.unresolved.items())
+            ],
+            dedup_merges_changed=dedup_report.changed,
+            dedup_collisions=list(dedup_report.collisions),
+            judge_calls=judge_stats.get("judge_calls", 0),
             judge_stats=judge_stats,
             unmerged_name_collisions=collisions,
             probable_duplicates=[str(m) for m in near_misses],
@@ -5013,21 +5039,14 @@ class GraphRAG:
     def finalize_sync(
         self,
         *,
-        judge: bool = True,
-        judge_llm: LLMInterface | None = None,
+        judge: DedupJudge | None = None,
         dedup_all: bool = False,
     ) -> FinalizeResult:
         """Synchronous finalize convenience method.
 
         Keep in sync with :meth:`finalize`.
         """
-        return asyncio.run(
-            self.finalize(
-                judge=judge,
-                judge_llm=judge_llm,
-                dedup_all=dedup_all,
-            )
-        )
+        return asyncio.run(self.finalize(judge=judge, dedup_all=dedup_all))
 
     def update_sync(
         self,

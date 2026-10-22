@@ -16,6 +16,8 @@ from graphrag_sdk import Column, Entity, ExactMatchResolution, Ontology, TableMa
 from graphrag_sdk.storage.deduplicator import _survivor_rank
 from graphrag_sdk.storage.identity import canonical_key, find_near_misses, why_same
 
+from .dedup_sim import AllDifferentJudge
+
 # The mapping is part of the ontology now, declared once and found by ``ingest``
 # on the file's basename — so the file each test writes must be named for it.
 _HR = TableMapping(
@@ -190,14 +192,14 @@ class TestFinalizeReports:
         )
         await rag.query(
             "CREATE (:__Entity__:Person {id:'m_ellison__person', name:'M. Ellison', "
-            "description:'an engineer who led the remediation plan', dedup_pending: true})"
+            "description:'an engineer who led the remediation plan'})"
         )
-        await rag.finalize(judge=False)
+        await rag.finalize(judge=AllDifferentJudge())
         path = tmp_path / "hr.csv"
         path.write_text("employee_id,full_name,age\nE-1,Maya Ellison,34\n")
         await rag.ingest(str(path))
 
-        summary = await rag.finalize(judge=False)
+        summary = await rag.finalize(judge=AllDifferentJudge())
 
         assert any(
             "Maya Ellison" in line and "M. Ellison" in line for line in summary.probable_duplicates
@@ -212,18 +214,18 @@ class TestFinalizeReports:
             resolver=resolver,
             ontology=Ontology(entities=[Entity(label="Person")], tables=[_HR]),
         )
-        # Written by hand, so flag it the way ingest flags a new entity.
+        # Written by hand without a vector: pending, as ingest leaves a new entity.
         await rag.query(
             "CREATE (:__Entity__:Person {id:'m_ellison__person', name:'M. Ellison', "
-            "description:'an engineer who led the remediation plan', dedup_pending: true})"
+            "description:'an engineer who led the remediation plan'})"
         )
         path = tmp_path / "hr.csv"
         path.write_text("employee_id,full_name,age\nE-1,Maya Ellison,34\n")
         await rag.ingest(str(path))
 
-        # No judge: this is about what the name rule alone does with the pair.
+        # Nothing judged the same: this is about what the name rule alone does.
         with caplog.at_level(logging.WARNING):
-            summary = await rag.finalize(judge=False)
+            summary = await rag.finalize(judge=AllDifferentJudge())
 
         assert any(
             "Maya Ellison" in line and "M. Ellison" in line for line in summary.probable_duplicates
@@ -511,8 +513,7 @@ class TestTheJoinAgainstARealGraph:
         )
         await rag.query(
             "CREATE (:__Entity__:Organization {id:'globex_limited__organization', "
-            "name:'Globex Limited', description:'the grid operator named in the review', "
-            "dedup_pending: true})"
+            "name:'Globex Limited', description:'the grid operator named in the review'})"
         )
         path = tmp_path / "orgs.csv"
         path.write_text("org_id,org_name,employee_count\nG-1,Globex Ltd,240\n")

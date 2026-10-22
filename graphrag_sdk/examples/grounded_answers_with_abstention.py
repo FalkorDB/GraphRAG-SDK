@@ -49,7 +49,7 @@ signal or accept the prompt-level abstention in rule 6 of the default system
 prompt.
 
 Prerequisites:
-    docker run -p 6379:6379 falkordb/falkordb
+    docker run -p 6379:6379 falkordb/falkordb:v4.20.4
     pip install graphrag-sdk[litellm]
     export OPENAI_API_KEY="sk-..."
 

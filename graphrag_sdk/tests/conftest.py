@@ -415,3 +415,56 @@ async def real_falkordb_rag_factory(embedder):
                 graph_name,
                 exc_info=True,
             )
+
+
+# ── Live FalkorDB helpers (modules gated on RUN_INTEGRATION=1) ──────────────
+
+
+@pytest.fixture
+async def graph():
+    """A ``GraphStore`` on a fresh, uniquely named graph of the FalkorDB at
+    ``$FALKOR_HOST:$FALKOR_PORT``, dropped afterwards."""
+    from graphrag_sdk.core.connection import ConnectionConfig
+    from graphrag_sdk.storage.graph_store import GraphStore
+
+    conn = FalkorDBConnection(
+        ConnectionConfig(
+            host=os.getenv("FALKOR_HOST", "localhost"),
+            port=int(os.getenv("FALKOR_PORT", "6379")),
+            username=os.getenv("FALKOR_USERNAME") or None,
+            password=os.getenv("FALKOR_PASSWORD") or None,
+            graph_name=f"test_dedup_{uuid4().hex[:8]}",
+        )
+    )
+    store = GraphStore(conn)
+    yield store
+    try:
+        await store.delete_all()
+    finally:
+        await conn.close()
+
+
+async def rows(graph, cypher, params=None):
+    """The rows ``cypher`` returns."""
+    return (await graph.query_raw(cypher, params or {})).result_set or []
+
+
+def lose_each_reply_once(graph, monkeypatch, *markers: str) -> set[str]:
+    """Apply every driver query holding one of ``markers``, then lose its
+    reply, once per distinct query: the connection sends it again, as after
+    a timeout. Returns the queries whose reply was lost, as they fill in."""
+    driver_graph = graph._conn._graph
+    real = driver_graph.query
+    lost: set[str] = set()
+
+    async def query(cypher, params=None, timeout=None):
+        result = await real(cypher, params=params, timeout=timeout)
+        key = cypher + json.dumps(params, sort_keys=True, default=str)
+        if any(marker in cypher for marker in markers) and key not in lost:
+            lost.add(key)
+            raise ConnectionError("reply lost")
+        return result
+
+    graph._conn.config.retry_delay = 0.0
+    monkeypatch.setattr(driver_graph, "query", query)
+    return lost
