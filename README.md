@@ -77,7 +77,7 @@ Vectors match similar chunks. The graph traverses relationships. Every answer ci
 
 ```bash
 pip install graphrag-sdk[litellm]
-docker run -d -p 6379:6379 -p 3000:3000 --name falkordb falkordb/falkordb:v4.20.4
+docker run -d -p 6379:6379 -p 3000:3000 --name falkordb falkordb/falkordb:v4.22.2
 export OPENAI_API_KEY="sk-..."
 ```
 

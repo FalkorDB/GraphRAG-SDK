@@ -40,7 +40,7 @@ pip install -e "./graphrag_sdk[all]"
 Run FalkorDB as a Docker container:
 
 ```bash
-docker run -d --name falkordb -p 6379:6379 falkordb/falkordb:v4.20.4
+docker run -d --name falkordb -p 6379:6379 falkordb/falkordb:v4.22.2
 ```
 
 GraphRAG SDK needs a FalkorDB server **4.20 or later** and refuses an older one at its first query, with `FalkorDBVersionError`. Keep the image tag: a bare `falkordb/falkordb` reuses whatever image Docker has cached, which may be older.

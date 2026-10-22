@@ -21,7 +21,7 @@ the employment edges and ages come from the CSV, the revenue miss comes from
 the note, and the answer only exists if they share one Acme Corp node.
 
 Prerequisites:
-    docker run -p 6379:6379 falkordb/falkordb:v4.20.4
+    docker run -p 6379:6379 falkordb/falkordb:v4.22.2
     pip install graphrag-sdk[litellm]
     export OPENAI_API_KEY="sk-..."
 """

@@ -73,6 +73,14 @@ DescriptionKind = Literal["entity", "relation", "entity_property", "relation_pro
 
 logger = logging.getLogger(__name__)
 
+# Several :Relation nodes share a label, one per (source, target) pattern, and
+# where they disagree the first one created wins. Node ids cannot tell which
+# that is — FalkorDB reuses the ids of deleted nodes — so each Relation is
+# stamped when it is created. Nodes written before the stamp existed have none
+# and sort first, which is right: they predate every stamped node.
+_STAMP_NEW_RELATION = "ON CREATE SET r.created_at = timestamp()"
+_RELATION_AGE = "coalesce(r.created_at, 0), id(r)"
+
 
 class OntologyContradictionError(ValueError):
     """Raised when an incoming ontology re-types an existing property.
@@ -149,26 +157,36 @@ class OntologyStore:
         """
         try:
             ent_result = await self._query(
-                "MATCH (e:Entity) RETURN e.label AS label, e.description AS description"
+                # Every read below is ordered, so the result does not depend
+                # on the order the engine lists rows in (FalkorDB 4.x and
+                # 6.0.x differ). Node id gives a stable order but not creation
+                # order — ids of deleted nodes are reused — so where several
+                # Relation nodes describe one label and the first must win,
+                # they are ordered by the creation stamp first.
+                "MATCH (e:Entity) RETURN e.label AS label, e.description AS description "
+                "ORDER BY id(e)"
             )
             ent_prop_result = await self._query(
                 "MATCH (e:Entity)-[:HAS_PROPERTY]->(p:Property) "
                 "RETURN e.label AS owner, p.label AS name, p.type AS type, "
-                "p.description AS description, p.structured AS structured"
+                "p.description AS description, p.structured AS structured "
+                "ORDER BY id(e), id(p)"
             )
             patterned_rel_result = await self._query(
                 "MATCH (r:Relation)-[:SOURCE]->(s:Entity), (r)-[:TARGET]->(t:Entity) "
                 "RETURN r.label AS rel_label, r.description AS description, "
-                "s.label AS src, t.label AS tgt"
+                f"s.label AS src, t.label AS tgt ORDER BY {_RELATION_AGE}"
             )
             open_rel_result = await self._query(
                 "MATCH (r:Relation) WHERE NOT (r)-[:SOURCE]->() "
-                "RETURN r.label AS rel_label, r.description AS description"
+                "RETURN r.label AS rel_label, r.description AS description "
+                f"ORDER BY {_RELATION_AGE}"
             )
             rel_prop_result = await self._query(
                 "MATCH (r:Relation)-[:HAS_PROPERTY]->(p:Property) "
                 "RETURN r.label AS owner, p.label AS name, p.type AS type, "
-                "p.description AS description, p.structured AS structured"
+                "p.description AS description, p.structured AS structured "
+                f"ORDER BY {_RELATION_AGE}, id(p)"
             )
         except FalkorDBVersionError:
             raise
@@ -192,23 +210,23 @@ class OntologyStore:
             table_result = await self._query(
                 "MATCH (t:TableMapping) RETURN t.source AS source, t.label AS label, "
                 "t.key AS key, t.name AS name, t.standalone AS standalone, t.derived AS derived, "
-                "t.description AS description"
+                "t.description AS description ORDER BY id(t)"
             )
             column_result = await self._query(
                 "MATCH (t:TableMapping)-[:MAPS_COLUMN]->(c:MappedColumn) "
                 "RETURN t.source AS source, c.property AS property, c.column AS column, "
-                "c.type AS type, c.description AS description"
+                "c.type AS type, c.description AS description ORDER BY id(t), id(c)"
             )
             link_result = await self._query(
                 "MATCH (t:TableMapping)-[:MAPS_LINK]->(l:MappedLink) "
                 "RETURN t.source AS source, l.type AS type, l.to AS to, l.by AS by, "
-                "l.name AS name, l.description AS description"
+                "l.name AS name, l.description AS description ORDER BY id(t), id(l)"
             )
             link_column_result = await self._query(
                 "MATCH (t:TableMapping)-[:MAPS_LINK_COLUMN]->(c:MappedLinkColumn) "
                 "RETURN t.source AS source, c.link_type AS link_type, c.link_by AS link_by, "
                 "c.property AS property, c.column AS column, c.type AS type, "
-                "c.description AS description, c.link_to AS link_to"
+                "c.description AS description, c.link_to AS link_to ORDER BY id(t), id(c)"
             )
             table_rows = list(getattr(table_result, "result_set", None) or [])
             column_rows = list(getattr(column_result, "result_set", None) or [])
@@ -275,7 +293,10 @@ class OntologyStore:
             entry = rel_by_label.setdefault(rel_label, {"description": description, "patterns": []})
             if src and tgt:
                 entry["patterns"].append((src, tgt))
-            if description:
+            # The first pattern written holds the declared description; a later
+            # pattern only fills a gap. Taking the last one let a table's
+            # "<source> to <target>" fallback text replace what the user wrote.
+            if description and not entry["description"]:
                 entry["description"] = description
 
         # Open-mode relations (Relation node with no SOURCE edge)
@@ -810,6 +831,7 @@ class OntologyStore:
                     "MERGE (s:Entity {label: $src}) "
                     "MERGE (t:Entity {label: $tgt}) "
                     "MERGE (s)<-[:SOURCE]-(r:Relation {label: $rel_label})-[:TARGET]->(t) "
+                    f"{_STAMP_NEW_RELATION} "
                     "SET r.description = coalesce($description, r.description)",
                     {
                         "src": src,
@@ -823,6 +845,7 @@ class OntologyStore:
         else:
             await self._query(
                 "MERGE (r:Relation {label: $rel_label}) "
+                f"{_STAMP_NEW_RELATION} "
                 "SET r.description = coalesce($description, r.description)",
                 {"rel_label": rt.label, "description": rt.description},
             )
@@ -972,6 +995,7 @@ class OntologyStore:
             "MATCH (s:Entity {label: $src}) "
             "MATCH (t:Entity {label: $tgt}) "
             "MERGE (s)<-[:SOURCE]-(r:Relation {label: $rel_label})-[:TARGET]->(t) "
+            f"{_STAMP_NEW_RELATION} "
             "SET r.description = coalesce($description, r.description)",
             {"src": src, "tgt": tgt, "rel_label": rel_label, "description": description},
         )
@@ -984,9 +1008,16 @@ class OntologyStore:
             "MATCH (new:Relation {label: $rel_label})-[:SOURCE]->(s:Entity {label: $src}) "
             "MATCH (new)-[:TARGET]->(t:Entity {label: $tgt}) "
             "WHERE existing <> new "
-            "MERGE (new)-[:HAS_PROPERTY]->(p2:Property {label: p.label}) "
+            # One row per property name, taken from the oldest sibling: with a
+            # row per sibling the last SET won, and which sibling came last was
+            # the engine's row order.
+            "WITH new, p ORDER BY coalesce(existing.created_at, 0), id(existing), id(p) "
+            "WITH new, p.label AS name, collect(p) AS props "
+            "WITH new, name, props[0] AS p, "
+            "any(x IN props WHERE coalesce(x.structured, false)) AS structured "
+            "MERGE (new)-[:HAS_PROPERTY]->(p2:Property {label: name}) "
             "SET p2.type = p.type, p2.description = p.description, "
-            "p2.structured = (coalesce(p2.structured, false) OR coalesce(p.structured, false))",
+            "p2.structured = (coalesce(p2.structured, false) OR structured)",
             {"rel_label": rel_label, "src": src, "tgt": tgt},
         )
 

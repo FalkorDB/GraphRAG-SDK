@@ -10,7 +10,7 @@ on the defaults. Retrieval is left at the default. Uses:
 
 Prerequisites:
     pip install graphrag-sdk[litellm]
-    docker run -p 6379:6379 falkordb/falkordb:v4.20.4
+    docker run -p 6379:6379 falkordb/falkordb:v4.22.2
 
 Usage:
     python 03_custom_strategies.py

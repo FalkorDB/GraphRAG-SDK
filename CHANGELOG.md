@@ -259,8 +259,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     before anything is written. A server that refuses to report its version
     (an ACL, a disabled `MODULE LIST`) is let through with a warning; any other
     error reply is retried like a query, and `close()` makes the next query ask
-    again. CI, `docker-compose.yml`, the docs' `docker
-    run` lines and the examples use `v4.20.4`.
+    again. CI tests `v4.22.2` and the Rust engine's 6.0.2 (which reports 6.0.2
+    and passes); `docker-compose.yml`, the docs' `docker run` lines and the
+    examples use `v4.22.2`.
   - `finalize()` no longer calls `backfill_entity_embeddings()`: dedup writes
     every entity's name vector, listing the entity first, and a backfill after
     it would embed entities ingested meanwhile without a check.
@@ -278,6 +279,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     an earlier release already holds vectors for count as checked; the new ones
     are checked by the next `finalize()`. To check every entity once, run
     `finalize(dedup_all=True)`.
+- **Entity fulltext search returns name matches first.** The `__Entity__`
+  index covers `name` and `description` alike, so for a common term every hit
+  scored the same and `LIMIT` kept arbitrary rows: "Northwind Robotics" returned
+  dates whose descriptions mention it, not the company. Results are now ordered
+  by exact name match, then name containing the query (both case-insensitive,
+  ignoring surrounding spaces), then score, then id.
+- **A relation keeps its first (declared) description.** When a relation's
+  patterns carry different descriptions, `OntologyStore.load()` now reports the
+  oldest one instead of whichever row the engine listed last, so a description
+  derived from a table no longer replaces the one the user declared. A new
+  pattern copies properties from its oldest sibling. Relation nodes get a
+  creation stamp, since FalkorDB reuses the ids of deleted nodes.
+- **A query the server rejects, or one the server stops with "Query timed
+  out", raises `DatabaseError` on its first attempt, not
+  `DatabaseUnavailableError` after the retries.** Everything that is not a
+  server reply is still retried, as before: a lost connection, a client-side
+  socket timeout (no reply in time), `LOADING`, an error raised in the driver.
+  Of the server's replies only the temporary ones are: a full query queue,
+  `BUSY`, `NOREPLICAS`, `MISCONF`, cluster redirect/failover, a read-only
+  replica, out of memory. A rejection counts as a healthy answer for the circuit
+  breaker: it resets the failure count and closes a half-open breaker. The
+  server's "Query timed out" reply is not tried again, since each attempt costs
+  the full timeout, and two of them opened the breaker for every caller.
+  If you catch `DatabaseUnavailableError` to detect an outage, these errors no
+  longer reach that handler; catch `DatabaseError` for them.
+  `update(cache_unchanged_chunks=True)` now falls back to extraction on such an
+  error instead of stopping. On FalkorDB 4.x, a chunk or entity vector search
+  sent while its index is still being built in another process now returns no
+  hits at once; the old retries (about 1.5–4.5 s) could outlast a short build,
+  but counted each attempt against the breaker. In the process that builds the
+  index, `ensure_indices()` now waits for the build (see **Fixed**).
+- **On a server that accepts connections but never answers, a query takes
+  longer to raise `DatabaseUnavailableError`: about 47 s at the defaults, was
+  about 18 s.** Each of the `retry_count` attempts waits `query_timeout_ms` +
+  5 s for a reply, plus the backoff between them; that is the price of waiting
+  long enough for a slow query to finish. Lower `query_timeout_ms` or `retry_count` to fail
+  sooner. `ping()` still answers within 5 s.
 - **CI runs the FalkorDB-backed tests.** The integration job used to run one
   file (`tests/test_integration.py`); the whole suite now runs with
   `RUN_INTEGRATION=1`, so every test that needs a live graph is exercised on
@@ -391,8 +429,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/*.md` to `docs/*.mdx`, navigation is declared in `docs/docs.json`, and
   `mkdocs.yml` plus the GitHub Pages deploy workflow were removed in favour of
   MDX/link validation in CI.
+- GraphRAG SDK now depends on `falkordb[hiredis]>=1.8.0`, which installs the
+  `hiredis` C reply parser. Retrieval reads each chunk's embedding back to
+  rerank, and parsing those replies in pure Python was most of the client's
+  CPU per question: about 48 ms down to 11 ms in our tests, so one process
+  serves more concurrent questions.
 
 ### Fixed
+- **A write batch holding the same entity or relationship twice lost a write.**
+  In one `UNWIND ... MERGE` call FalkorDB 4.x kept the first row's values and
+  6.0.x the last, and on both only one row's `source_chunk_ids` survived, so an
+  entity seen in two chunks stayed linked to one. `upsert_nodes()` and
+  `upsert_relationships()` now merge writes that share a key before sending
+  the batch, as if they were written one at a time: later properties win, and
+  for entities and `RELATES` edges the chunk lists are combined (other labels
+  and edge types keep the last write's list, as before). On 4.x a repeated key
+  now keeps its last values instead of its first.
+- **Entity resolution dropped a merged fact's sources.** Merging `acme_corp`
+  into `acme` turns `Alice WORKS_AT Acme Corp` (chunk 1) and `Alice WORKS_AT
+  Acme` (chunk 2) into one edge; `remap_relationships()` kept the first edge
+  and its `source_chunk_ids` only, so the graph forgot chunk 2, and deleting
+  chunk 1's document deleted the fact. The kept edge now also gets the
+  dropped duplicates' chunks; its other properties are still the first edge's.
+- **Results cut by a `LIMIT` or a cap depended on the engine's row order.**
+  FalkorDB 4.x and 6.0.x list unordered rows differently, so these returned
+  different data after an upgrade, and now order before cutting:
+  `get_connected_entities()` (which 50 entities it returns; only with
+  `max_hops=1`, since beyond one hop an order would need every path first, so
+  the engine's order stays),
+  `list_chunks_for_relation_pattern_backfill()` (which pairs the cap shows the
+  LLM), `search_chunks()` / `search_entities()` (which of equally close nodes:
+  ties are cut by id, fetching 2×`top_k` and more while the cut is still a tie),
+  `GraphVisualizer.sample_nodes()` and `add_relation_pattern_node()`.
+- **FalkorDB 6.0.x: fulltext indexes were never created.** 6.0.x rejects the
+  multi-argument `db.idx.fulltext.createNodeIndex(label, field, ...)` procedure,
+  so `ensure_indices()` left `Chunk(text)` and `__Entity__(name, description)`
+  unindexed and fulltext search returned nothing. Each failing statement was
+  also retried and counted against the circuit breaker, which then opened and
+  refused every query for the recovery timeout. Fulltext indexes are now created
+  with `CREATE FULLTEXT INDEX`, which works on 4.x and 6.0.x, one field per
+  statement so an existing index on `name` cannot leave `description` unindexed.
+- **A query the server rejects is no longer retried.** Only replies matching a
+  short list were treated as permanent; anything else — division by zero, an
+  unknown variable, a `MERGE` on a null key, a missing index, a procedure called
+  with the wrong arity — was tried three times and counted against the circuit
+  breaker, so two such statements in a row opened it and refused every caller
+  for the recovery timeout, on 4.x as well as 6.0.x. See **Changed** for the
+  error type it now raises.
+- **Queries slower than 5 seconds always failed.** redis-py stops waiting for a
+  reply after 5 s unless told otherwise, and the SDK never told it, so a query
+  needing 5–10 s failed on the client before the server's 10 s
+  `query_timeout_ms` could answer. Each attempt was retried, counted against
+  the circuit breaker and left running on the server: a 7 s query failed after
+  16–20 s, and two of them opened the breaker. The client now waits
+  `query_timeout_ms` plus 5 s for a reply (no limit when `query_timeout_ms` is
+  `None`). Opening a connection, `ping()` and the driver's first probe of the
+  server still give up after 5 s.
+- **A search right after `ensure_indices()` on a large graph found nothing.**
+  `CREATE ... INDEX` returns while FalkorDB is still building the index over
+  existing data; until it finishes, 4.x rejects a vector search and 6.0.x
+  answers with no rows. With 20,000 chunks, `ensure_indices()` (and so
+  `ingest()`) returned with the chunk index half built and the entity index not
+  started, and chunk and entity search came back empty. Each index statement
+  also waited on the server for the previous build, past the client's socket
+  timeout, and was re-sent. `ensure_indices()` now waits until `db.indexes()`
+  reports every index built (up to 10 minutes, logging progress every 10 s).
+- `drop_chunk_vector_index()`, `drop_entity_vector_index()` and
+  `drop_relates_vector_index()` called `db.idx.vector.drop`, which exists on no
+  FalkorDB version, so nothing was dropped. They now use `DROP VECTOR INDEX`, and
+  a later `ensure_indices()` on the same store recreates the index.
+- **FalkorDB 6.0.x: relationship search returned nothing without a `RELATES`
+  vector index.** The cosine-scan fallback only ran when the index query raised;
+  4.x raises for a missing index, 6.0.x answers with no rows. An empty answer now
+  falls back too, unless `db.indexes()` shows the `RELATES` vector index in
+  place, in which case the empty answer stands. The scan reads every embedded
+  edge, so the first fallback per store logs a warning.
 - `delete_all()` forgot to reset the memo for the per-label `id` range
   indexes. The graph drop took the indexes with it, but in the same process
   `create_id_range_indices()` believed they still existed, so the next ingest

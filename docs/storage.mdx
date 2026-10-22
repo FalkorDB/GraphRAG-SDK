@@ -105,12 +105,15 @@ CREATE VECTOR INDEX FOR (n:Chunk) ON (n.embedding)
 OPTIONS {dimension:256, similarityFunction:'cosine'}
 ```
 
-**Fulltext indexes** use the RediSearch-based fulltext API:
+**Fulltext indexes** use the fulltext index DDL, one field per statement:
 
 ```
-CALL db.idx.fulltext.createNodeIndex('Chunk', 'text')
-CALL db.idx.fulltext.createNodeIndex('__Entity__', 'name', 'description')
+CREATE FULLTEXT INDEX FOR (n:Chunk) ON (n.text)
+CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.name)
+CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.description)
 ```
+
+FalkorDB 6.0.x rejects the older `db.idx.fulltext.createNodeIndex(label, field, ...)` procedure.
 
 **Relationship vector indexes** use the edge index syntax:
 
@@ -165,42 +168,49 @@ RELATES edges with a `fact` property but no embedding are batch-embedded:
 
 **Vector search on Chunk nodes:**
 ```cypher
-CALL db.idx.vector.queryNodes('Chunk', 'embedding', $top_k, vecf32($vector))
+CALL db.idx.vector.queryNodes('Chunk', 'embedding', $fetch_k, vecf32($vector))
 YIELD node, score
-RETURN node.id AS id, node.text AS text, score
-ORDER BY score DESC
+RETURN node.id AS id, node.text AS text, (1-score) AS score
+ORDER BY score DESC, id
 ```
 
 **Vector search on Entity nodes:**
 ```cypher
-CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $top_k, vecf32($vector))
+CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $fetch_k, vecf32($vector))
 YIELD node, score
-RETURN node.id AS id, node.name AS name, node.description AS description, score
-ORDER BY score DESC
+RETURN node.id AS id, node.name AS name, node.description AS description, (1-score) AS score
+ORDER BY score DESC, id
 ```
+
+Equally close nodes are cut by id, not by the order the engine lists them (FalkorDB 4.x and 6.0.x differ). To see every tie at the cut, the query asks the index for `$fetch_k` = 2×`top_k` nodes, and asks again for twice as many (up to 1024) while the score at the cut still equals the score of the last node fetched, since the tie may continue past it.
 
 **Vector search on RELATES edges (with fallback):**
 ```cypher
 -- Primary (FalkorDB >= 4.2):
 CALL db.idx.vector.queryRelationships('RELATES', 'embedding', $top_k, vecf32($vector))
 YIELD relationship AS r, score
-RETURN r.src_name, r.rel_type, r.tgt_name, r.fact, score
+RETURN r.src_name AS src, r.rel_type AS type, r.tgt_name AS tgt, r.fact AS fact, (1-score) AS score
+ORDER BY score DESC
 
 -- Fallback (Cypher-based cosine distance scan):
 MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__)
 WHERE r.embedding IS NOT NULL
-WITH a, r, b, vecf32.distance.cosine(r.embedding, vecf32($vector)) AS dist
-RETURN r.src_name, r.rel_type, r.tgt_name, r.fact, (1-dist) AS score
+WITH a, r, b, vec.cosineDistance(r.embedding, vecf32($vector)) AS dist
+RETURN r.src_name AS src, r.rel_type AS type, r.tgt_name AS tgt, r.fact AS fact, (1-dist) AS score
 ORDER BY dist ASC LIMIT $top_k
 ```
+
+The scan runs when the server rejects the primary query (FalkorDB 4.x does when there is no `RELATES` vector index, or while it is still being built), or when it returns no rows and `db.indexes()` shows no built vector index on `RELATES.embedding` (FalkorDB 6.0.x answers a missing index with no rows). With the index in place, an empty answer is returned as is. If FalkorDB is unreachable, or the primary query runs past its timeout, the search returns no results without scanning: the scan would fail the same way or take longer still. The scan reads every embedded edge, so the SDK logs a warning the first time a store falls back to it.
 
 **Fulltext search:**
 ```cypher
 CALL db.idx.fulltext.queryNodes('Chunk', $query_text)
 YIELD node, score
 RETURN node.id AS id, node.text AS text, score
-ORDER BY score DESC LIMIT $top_k
+ORDER BY score DESC, id LIMIT $top_k
 ```
+
+Entity fulltext search ranks by name before score. The index covers `name` and `description` alike, so for a common term every hit can score the same, and an entity named by the query would rank no higher than the ones whose descriptions merely mention it. Results come back in this order: an exact name match (case-insensitive, ignoring surrounding spaces), then names containing the query, then by score, then by id.
 
 Special characters in fulltext queries are escaped for RediSearch compatibility (commas, brackets, operators, etc.).
 
@@ -211,6 +221,8 @@ During retrieval, the `rerank_chunks()` function uses **stored embeddings** when
 ### ensure_indices()
 
 Creates all 5 standard indexes in one call. Tracks state internally (`_indices_ensured`) to avoid redundant creation. Called automatically after each `ingest()` call, and re-run during `finalize()` (which resets the flag).
+
+FalkorDB builds an index over existing data in the background after `CREATE ... INDEX` returns, and a vector search on it finds nothing until the build ends. `ensure_indices()` therefore waits until `db.indexes()` reports every index built before it returns (up to 10 minutes, logging progress every 10 s), so a search right after `ingest()` sees the data. On a large first ingest this wait is most of the time `ingest()` spends after extraction.
 
 ---
 
@@ -297,7 +309,7 @@ This is much faster than `MATCH (n) DETACH DELETE n` on large graphs.
 
 ### Retry Behavior
 
-The connection layer retries transient query failures up to 3 times using exponential backoff with jitter (`retry_delay * 2^attempt * random(0.5, 1.5)`) and employs a circuit breaker to short-circuit repeated failures. An error that says the query itself was rejected — a syntax error, an index that already exists, a missing parameter, a parameter FalkorDB cannot parse (NaN, infinity), and the like — is raised at once, without a retry and without counting toward the circuit breaker.
+The connection layer makes up to `retry_count` attempts per query (default 3: the first try and two retries), with exponential backoff and jitter between them (`retry_delay * 2^attempt * random(0.5, 1.5)`), and employs a circuit breaker to short-circuit repeated failures. Everything that is not a server reply is retried (a lost connection or socket timeout, `LOADING`), and of the server's replies only the temporary ones (a full query queue, `BUSY`, `NOREPLICAS`, `MISCONF`, a cluster redirect or failover, a read-only replica, out of memory); one that outlasts every attempt raises `DatabaseUnavailableError`. A query the server rejects, or a read it stops at its timeout, raises `DatabaseError` at once, without retrying or counting against the breaker. See [Configuration](/configuration#retry-behavior).
 
 ---
 

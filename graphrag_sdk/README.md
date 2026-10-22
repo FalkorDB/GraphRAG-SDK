@@ -44,7 +44,7 @@ pip install graphrag-sdk[all]           # Everything
 ### Prerequisites
 
 - **Python** >= 3.10
-- **FalkorDB server 4.20 or later**: `docker run -p 6379:6379 falkordb/falkordb:v4.20.4` (an older server is refused with `FalkorDBVersionError`)
+- **FalkorDB server 4.20 or later**: `docker run -p 6379:6379 falkordb/falkordb:v4.22.2` (an older server is refused with `FalkorDBVersionError`)
 - An **LLM API key** (OpenAI, Azure OpenAI, OpenRouter, etc.)
 
 ## Usage

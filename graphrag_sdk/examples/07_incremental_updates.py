@@ -12,7 +12,7 @@ PR diff has all three change types in one go, and apply_changes routes
 each list to the right primitive so consumer code stays flat.
 
 Prerequisites:
-    docker run -p 6379:6379 falkordb/falkordb:v4.20.4
+    docker run -p 6379:6379 falkordb/falkordb:v4.22.2
     pip install graphrag-sdk[litellm]
     export OPENAI_API_KEY="sk-..."
 """

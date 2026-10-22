@@ -19,7 +19,7 @@ End-to-end walkthrough of the ontology API renamed in v1.2:
 
 Prerequisites:
     pip install graphrag-sdk[litellm]
-    docker run -p 6379:6379 falkordb/falkordb:v4.20.4
+    docker run -p 6379:6379 falkordb/falkordb:v4.22.2
     export OPENAI_API_KEY=...
 
 Usage:

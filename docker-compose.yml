@@ -1,6 +1,8 @@
 services:
   falkordb:
-    image: falkordb/falkordb:v4.20.4
+    # Same as the C engine version CI pins (.github/scripts/falkordb_versions.py).
+    # 4.18 under-returns vector search after any write to an indexed node.
+    image: falkordb/falkordb:v4.22.2
     ports:
       - "6379:6379"
       - "127.0.0.1:3000:3000"

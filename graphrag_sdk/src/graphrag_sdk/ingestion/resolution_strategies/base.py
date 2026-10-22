@@ -7,7 +7,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship, ResolutionResult
@@ -568,24 +568,47 @@ def remap_relationships(
     which that later pass removed. Flattening here rather than at each
     call site means no caller can forget it; it is a no-op on a mapping
     that is already one hop deep.
+
+    The first edge per key is kept, and a dropped duplicate's
+    ``source_chunk_ids`` are added to it. Merging ``acme_corp`` into ``acme``
+    turns ``Alice WORKS_AT Acme Corp`` (chunk 1) and ``Alice WORKS_AT Acme``
+    (chunk 2) into one edge; keeping only the first edge's list forgot that
+    chunk 2 says it too, so deleting chunk 1's document deleted the fact.
     """
     id_remap = flatten_remap(id_remap)
     deduplicated_rels: list[GraphRelationship] = []
-    seen_rels: set[tuple[str, str, str, str]] = set()
+    kept: dict[tuple[str, str, str, str], tuple[GraphRelationship, set[Any] | None]] = {}
     for rel in relationships:
         start = id_remap.get(rel.start_node_id, rel.start_node_id)
         end = id_remap.get(rel.end_node_id, rel.end_node_id)
         rel_key = (start, rel.type, rel.properties.get("rel_type", ""), end)
-        if rel_key not in seen_rels:
-            seen_rels.add(rel_key)
-            deduplicated_rels.append(
-                GraphRelationship(
-                    start_node_id=start,
-                    end_node_id=end,
-                    type=rel.type,
-                    properties=rel.properties,
-                )
+        if rel_key not in kept:
+            first = GraphRelationship(
+                start_node_id=start,
+                end_node_id=end,
+                type=rel.type,
+                properties=rel.properties,
             )
+            kept[rel_key] = (first, None)
+            deduplicated_rels.append(first)
+            continue
+        first, seen = kept[rel_key]
+        extra = rel.properties.get("source_chunk_ids")
+        if not isinstance(extra, list) or not extra:
+            continue
+        if seen is None:
+            # Copy before the first change: the dict may still be the
+            # caller's input relationship's.
+            current = first.properties.get("source_chunk_ids")
+            chunk_ids = list(current) if isinstance(current, list) else []
+            first.properties = {**first.properties, "source_chunk_ids": chunk_ids}
+            seen = set(chunk_ids)
+        chunk_ids = first.properties["source_chunk_ids"]
+        for chunk_id in extra:
+            if chunk_id not in seen:
+                seen.add(chunk_id)
+                chunk_ids.append(chunk_id)
+        kept[rel_key] = (first, seen)
     return deduplicated_rels
 
 
