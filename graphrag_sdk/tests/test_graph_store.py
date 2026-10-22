@@ -157,6 +157,58 @@ class TestUpsertNodesKeepsProvenance:
         assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in fallback[0]
 
 
+class TestUpsertNodesMarksNothingForDedup:
+    """Ingest writes nothing onto an entity for dedup. A new entity has no name
+    vector, and that is what the next finalize looks for; it lists the entity
+    in a system record before it embeds it."""
+
+    async def test_a_new_entity_carries_no_dedup_marker(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes(
+            [GraphNode(id="acme", label="Organization", properties={"name": "Acme"})]
+        )
+        cypher = upsert_calls(mock_connection)[0][0][0]
+        assert "dedup" not in cypher and "ON CREATE" not in cypher
+        assert "embedding" not in cypher
+
+    async def test_a_property_named_like_the_old_flag_is_the_users(
+        self, graph_store, mock_connection
+    ):
+        """``dedup_pending`` was once an SDK flag; it is ordinary data now."""
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="acme",
+                    label="Organization",
+                    properties={"name": "Acme", "dedup_pending": False},
+                )
+            ]
+        )
+        params = upsert_calls(mock_connection)[0][0][1]
+        assert params["batch"][0]["properties"] == {"name": "Acme", "dedup_pending": False}
+
+    async def test_a_structural_node_is_never_marked(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes([GraphNode(id="c1", label="Chunk", properties={})])
+        cypher = upsert_calls(mock_connection)[0][0][0]
+        assert "dedup" not in cypher
+
+    async def test_the_per_item_fallback_marks_nothing_either(self, graph_store, mock_connection):
+        async def fail_the_batch(cypher, params=None):
+            if "UNWIND" in cypher:
+                raise Exception("batch fail")
+            return MagicMock()
+
+        mock_connection.query = AsyncMock(side_effect=fail_the_batch)
+        await graph_store.upsert_nodes(
+            [GraphNode(id="acme", label="Organization", properties={"name": "Acme"})]
+        )
+        fallback = [
+            call[0][0]
+            for call in mock_connection.query.call_args_list
+            if "UNWIND" not in call[0][0] and not _is_index_housekeeping(call[0][0])
+        ]
+        assert len(fallback) == 1 and "dedup" not in fallback[0]
+
+
 class TestOneKeyTwiceInOneCall:
     """A batch holding one key twice gave engine-dependent values and dropped
     one write's chunks, so writes sharing a key are folded before sending."""
@@ -502,6 +554,59 @@ class TestReconcileKeyedIdentity:
             " the key is not such a rival"
         )
 
+    async def test_a_renamed_row_is_pending_dedup_and_its_old_id_recorded(
+        self, graph_store, mock_connection
+    ):
+        """A re-sync that renames a row gives it a name no dedup run has seen.
+        Its vector (of the old name) goes, so the next finalize embeds and
+        checks it under the new one; the old id leaves a deleted record in the
+        same query, so a merge a running dedup planned on it is not applied."""
+        mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[]))
+        assert await graph_store._move_entity("globex__org", "initech__org") == (1, 0)
+        (rename,) = [
+            c[0][0] for c in mock_connection.query.call_args_list if "SET n.id = $new" in c[0][0]
+        ]
+        assert "REMOVE n.embedding" in rename and "dedup_pending" not in rename
+        assert "kind: 'deleted', eid: _eid" in rename
+
+    async def test_a_row_folded_into_an_existing_node_is_one_query(
+        self, graph_store, mock_connection
+    ):
+        """Every edge moved, the old node's properties carried, the survivor
+        made pending (no vector), both ids recorded deleted and the old node
+        deleted, in one query: a dedup merge cannot land in between."""
+
+        async def answer(cypher, params=None):
+            if "RETURN properties(k)" in cypher:
+                keep, dup = {"id": "initech__org"}, {"id": "globex__org", "role": "x"}
+                return MagicMock(result_set=[[keep, dup, [], [], ["RELATES", "OWNS"], []]])
+            return MagicMock(result_set=[[True]])
+
+        mock_connection.query = AsyncMock(side_effect=answer)
+        assert await graph_store._move_entity("globex__org", "initech__org") == (0, 1)
+        (fold,) = [
+            c[0] for c in mock_connection.query.call_args_list if "DETACH DELETE d" in c[0][0]
+        ]
+        cypher, params = fold
+        assert "MERGE (s)-[nr:`RELATES`" in cypher and "MERGE (s)-[nr:`OWNS`]" in cypher
+        assert "SET s.embedding = null" in cypher and "kind: 'deleted', eid: _eid" in cypher
+        # both ids: a merge planned on either must find it changed
+        assert "CASE WHEN ok THEN [$old, $new] ELSE [] END" in cypher
+        assert params["old"] == "globex__org" and params["new"] == "initech__org"
+        assert params["carry"] == {"role": "x"}
+        assert params["handled"] == ["OWNS:out", "RELATES:out"]
+
+    async def test_a_fold_does_not_carry_the_folded_nodes_identity_or_vector(self):
+        """The id, the name vector and the stub flag are each node's own."""
+        from graphrag_sdk.storage.deduplicator import properties_to_carry
+        from graphrag_sdk.storage.graph_store import GraphStore
+
+        dup = {"id": "old", "embedding": [0.1], "is_stub": True, "role": "engineer"}
+        carried = properties_to_carry(
+            {"id": "new"}, dup, never=GraphStore._NEVER_CARRY_ON_RECONCILE
+        )
+        assert carried == {"role": "engineer"}
+
     async def test_the_key_it_matches_on_is_indexed_first(self, graph_store, mock_connection):
         mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[]))
 
@@ -539,33 +644,6 @@ class TestReconcileKeyedIdentity:
             "CREATE INDEX FOR (n:`Organization`) ON (n.id)",
             "CREATE INDEX FOR (n:`Organization`) ON (n.entity_key)",
         ]
-
-    async def test_a_legacy_description_vector_is_not_carried_to_the_new_node(
-        self, graph_store, mock_connection
-    ):
-        """An earlier build cached description vectors on entity nodes; folding
-        such a node into another during ingest must not copy them across."""
-        keep = {"id": "new"}
-        dup = {
-            "id": "old",
-            "description_embedding": [0.1, 0.2],
-            "description_embedding_hash": "h",
-            "role": "engineer",
-        }
-        mock_connection.query = AsyncMock(
-            side_effect=lambda cypher, *a, **k: MagicMock(
-                result_set=[[keep, dup]] if "RETURN properties(k)" in cypher else []
-            )
-        )
-
-        await graph_store._carry_then_delete("old", "new")
-
-        (carry,) = [
-            call[0][1]["carry"]
-            for call in mock_connection.query.call_args_list
-            if "SET k += $carry" in call[0][0]
-        ]
-        assert carry == {"role": "engineer"}
 
     async def test_nothing_to_reconcile_touches_nothing(self, graph_store, mock_connection):
         assert await graph_store.reconcile_keyed_identity("Person", "hr__employee_id", []) == {}

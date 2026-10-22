@@ -115,6 +115,16 @@ class DatabaseUnavailableError(DatabaseError):
     pass
 
 
+class FalkorDBVersionError(DatabaseError):
+    """Raised when the FalkorDB server is older than the SDK supports.
+
+    Checked once per connection, before its first query, so nothing is
+    written to a server the SDK would misuse. Subclasses ``DatabaseError``.
+    """
+
+    pass
+
+
 class IndexError_(GraphRAGError):
     """Raised when index creation/management fails.
 
