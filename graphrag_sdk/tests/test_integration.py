@@ -8,6 +8,8 @@ import pytest
 
 from graphrag_sdk.core.providers import Embedder
 
+from .conftest import falkordb_test_server
+
 
 class TestTopLevelImports:
     """Verify all public API exports are importable."""
@@ -581,10 +583,7 @@ class TestIncrementalUpdateInvariants:
         # ── Fresh GraphRAG against the same graph_name (process restart).
         rag2 = GraphRAG(
             connection=ConnectionConfig(
-                host=os.getenv("FALKOR_HOST", "localhost"),
-                port=int(os.getenv("FALKOR_PORT", "6379")),
-                username=os.getenv("FALKOR_USERNAME") or None,
-                password=os.getenv("FALKOR_PASSWORD") or None,
+                **falkordb_test_server(),
                 graph_name=graph_name,
             ),
             llm=llm,
@@ -698,10 +697,7 @@ class TestIncrementalUpdateInvariants:
 
         rag2 = GraphRAG(
             connection=ConnectionConfig(
-                host=os.getenv("FALKOR_HOST", "localhost"),
-                port=int(os.getenv("FALKOR_PORT", "6379")),
-                username=os.getenv("FALKOR_USERNAME") or None,
-                password=os.getenv("FALKOR_PASSWORD") or None,
+                **falkordb_test_server(),
                 graph_name=graph_name,
             ),
             llm=llm,
@@ -773,10 +769,7 @@ class TestIncrementalUpdateInvariants:
 
         rag2 = GraphRAG(
             connection=ConnectionConfig(
-                host=os.getenv("FALKOR_HOST", "localhost"),
-                port=int(os.getenv("FALKOR_PORT", "6379")),
-                username=os.getenv("FALKOR_USERNAME") or None,
-                password=os.getenv("FALKOR_PASSWORD") or None,
+                **falkordb_test_server(),
                 graph_name=graph_name,
             ),
             llm=llm,

@@ -16,6 +16,8 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.models import Attribute, Entity, Ontology, Relation
 from graphrag_sdk.storage.ontology_store import OntologyStore
 
+from .conftest import falkordb_test_server
+
 
 @pytest.fixture
 async def onto():
@@ -24,10 +26,7 @@ async def onto():
     name = f"test_os_{uuid4().hex[:8]}"
     connection = FalkorDBConnection(
         ConnectionConfig(
-            host=os.getenv("FALKOR_HOST", "localhost"),
-            port=int(os.getenv("FALKOR_PORT", "6379")),
-            username=os.getenv("FALKOR_USERNAME") or None,
-            password=os.getenv("FALKOR_PASSWORD") or None,
+            **falkordb_test_server(),
             graph_name=name,
         )
     )
