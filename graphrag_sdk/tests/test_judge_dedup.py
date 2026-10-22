@@ -49,9 +49,9 @@ from graphrag_sdk.storage.judge_dedup import (
     make_groups_dense,
 )
 from graphrag_sdk.storage.merge_query import MergeRead
-from graphrag_sdk.storage.system_store import ABSORB, JUDGE, PlanOp
+from graphrag_sdk.storage.system_store import ABSORB, EXACT, JUDGE, PlanOp
 
-from .dedup_sim import SimGraph, simulate
+from .dedup_sim import AllDifferentJudge, AllSameJudge, SimGraph, simulate
 
 # ── pure helpers ────────────────────────────────────────────────────────────
 
@@ -1406,3 +1406,78 @@ def test_a_duplicate_an_applied_merge_deleted_is_not_listed_again():
     )
     asyncio.run(EntityDeduplicator(None, None)._clear(Store(), plan))
     assert Store.created is not None and sorted(Store.created.ids) == ["d2", "s"]
+
+
+# js0's ten nearest names are all "John Smith": r1, a table row, and nine
+# mentions. A second row, r2, sits just past them.
+_SAME = [1.0, 0.0, 0.0]
+_ONE_ROW_IN_VIEW = [
+    ["js0", "John Smith", "a mention", "Person", None, None, 0, _SAME],
+    ["r1", "John Smith", "an employee", "Person", None, False, 0, _SAME],
+    *([f"m{i}", "John Smith", f"Mention {i}.", "Person", None, None, 0, _SAME] for i in range(9)),
+    ["r2", "John Smith", "another employee", "Person", None, False, 0, [1.0, 0.05, 0.0]],
+]
+
+
+def test_an_entity_whose_search_did_not_finish_is_not_merged_by_rule():
+    """js0's lookup widens and the widening fails. Grouped on the ten it
+    found, js0 looked like r1's alone, and r1 absorbed it — and the nine — by
+    rule, past the rule that a mention two rows could own is left alone. Its
+    group goes to the judge instead, which reads the descriptions; js0 stays
+    pending for its lookup, and gets back the attempt its judged set charged."""
+    sim = asyncio.run(
+        simulate(
+            [list(r) for r in _ONE_ROW_IN_VIEW],
+            pending=["js0"],
+            graph_class=_WideFails,
+            judge=AllDifferentJudge(),
+        )
+    )
+    assert not any(op.policy == EXACT for op in sim.ops)
+    assert frozenset(("js0", "r1")) in {frozenset(p) for p in sim.dedup._judge_pairs}
+    assert _retried(sim) == {"js0": "widened nearest-name lookup failed"}
+    assert "js0" in sim.run.charged and "js0" in sim.decisions.refund
+
+
+def test_an_entity_whose_widening_failed_twice_is_judged_not_merged_by_rule():
+    """Failing again on the next run, the ten it found stand as js0's check,
+    so it is not pending for good. They go to the judge, which reads the
+    descriptions, rather than merged by rule: r2 is still out of view."""
+    sim = asyncio.run(
+        simulate(
+            [list(r) for r in _ONE_ROW_IN_VIEW],
+            pending=["js0"],
+            graph_class=_WideFails,
+            prior_reasons={"js0": "widened nearest-name lookup failed"},
+            judge=AllDifferentJudge(),
+        )
+    )
+    assert not any(op.policy == EXACT for op in sim.ops)
+    assert frozenset(("js0", "r1")) in {frozenset(p) for p in sim.dedup._judge_pairs}
+    assert "js0" in sim.decisions.clear
+
+
+class _LookupsFail(SimGraph):
+    async def query_raw(self, cypher, params=None):
+        if "db.idx.vector.queryNodes" in cypher:
+            raise RuntimeError("query timed out")
+        return await super().query_raw(cypher, params)
+
+
+@pytest.mark.parametrize("pending", [["a", "b"], None], ids=["incremental", "dedup_all"])
+def test_an_entity_whose_lookup_failed_is_not_charged_for_a_verdict_it_got(pending):
+    """Every lookup fails. The exact phase's same-name pair still takes "Acme
+    Corp" and "Acme Corporation" to the judge, which merges them. Both stay
+    pending for their lookups — but the judged attempt they were charged had
+    a usable verdict. Kept, three such runs made them "unresolved: no usable
+    verdict", which was not so."""
+    rows = [
+        ["a", "Acme Corp", "anvils", "Organization"],
+        ["b", "Acme Corporation", "anvils", "Organization"],
+    ]
+    sim = asyncio.run(
+        simulate(rows, pending=pending, graph_class=_LookupsFail, judge=AllSameJudge())
+    )
+    assert sim.groups == [["a", "b"]]
+    assert _retried(sim) == {"a": "nearest-name lookup failed", "b": "nearest-name lookup failed"}
+    assert sim.run.charged == {"a", "b"} and sorted(sim.decisions.refund) == ["a", "b"]

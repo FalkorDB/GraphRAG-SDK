@@ -515,8 +515,14 @@ class _Run:
     points: list[dict[str, Any]] = field(default_factory=list)
     #: Listed ids no longer in the graph.
     gone: set[str] = field(default_factory=set)
-    #: Points with no completed nearest-name lookup, and why.
+    #: Points with no completed nearest-name lookup, and why. They stay
+    #: pending, and are never merged by rule: grouped on part of their nearest
+    #: names, the rules that need them all (a mention two rows could own) see
+    #: only part. The judge, reading descriptions, may still decide them.
     unsearched: dict[str, str] = field(default_factory=dict)
+    #: Points whose widened lookup failed a second run running: decided on
+    #: the nearest names their first lookup found, and never merged by rule.
+    partial: set[str] = field(default_factory=set)
     #: The reason each listed id was left pending by the run before, if any.
     prior_reasons: dict[str, str] = field(default_factory=dict)
     hits: dict[str, list[Hit]] = field(default_factory=dict)
@@ -979,10 +985,14 @@ class EntityDeduplicator:
         for group in merged_groups:
             if len(group) < 2:
                 continue
-            if all(ent.get("is_stub") is None for ent in group):
+            if all(ent.get("is_stub") is None for ent in group) or any(
+                ent["id"] in run.partial or ent["id"] in run.unsearched for ent in group
+            ):
                 # Extracted mentions only: the same spelling is evidence, not
                 # proof. The judge sees their descriptions and decides; a table
-                # row (keyed) still absorbs its mentions here by the rules below.
+                # row (keyed) still absorbs its mentions here by the rules below
+                # — unless a member's search is unfinished or stood on its first
+                # nearest names: a second row past them went unseen.
                 ids = [ent["id"] for ent in group]
                 self._judge_pairs.extend((a, b) for i, a in enumerate(ids) for b in ids[i + 1 :])
                 continue
@@ -1103,6 +1113,7 @@ class EntityDeduplicator:
             # unjudged, for good.
             again = {eid for eid in failed if run.prior_reasons.get(eid) == _WIDEN_FAILED}
             run.unsearched.update(dict.fromkeys(set(failed) - again, _WIDEN_FAILED))
+            run.partial.update(again)
             if failed:
                 logger.warning("Exact phase: a widened lookup failed for %d entities", len(failed))
             if again:
@@ -1192,9 +1203,9 @@ class EntityDeduplicator:
                 picked[nid] = sim
             neighbours[ent["id"]] = list(picked.items())
         extra = [
-            (run.resolve(a), run.resolve(b))
-            for a, b in self._judge_pairs
-            if run.resolve(a) not in run.unresolved and run.resolve(b) not in run.unresolved
+            (a, b)
+            for a, b in ((run.resolve(x), run.resolve(y)) for x, y in self._judge_pairs)
+            if a not in run.unresolved and b not in run.unresolved
         ]
         point_ids = {ent["id"] for ent in points}
         wanted = {nid for found in neighbours.values() for nid, _ in found}
@@ -1445,6 +1456,12 @@ class EntityDeduplicator:
             inferred = [label for label in labels if label not in self._declared_labels]
             if len(declared) != 1 or not inferred:
                 continue
+            if any(
+                ent["id"] in run.partial or ent["id"] in run.unsearched
+                for label in (*declared, *inferred)
+                for ent in groups[(norm_name, label)]
+            ):
+                continue  # adoption is by rule, and a member's search is partial
 
             survivors = groups[(norm_name, declared[0])]
             if not survivors:
@@ -1523,6 +1540,11 @@ class EntityDeduplicator:
                 decisions.clear.append(eid)
             elif eid in run.unsearched:
                 retry(eid, run.unsearched[eid])
+                if eid in run.charged and eid not in run.failed:
+                    # Judged, with a usable verdict: pending for its lookup,
+                    # not its verdict, so the claim's charge is given back —
+                    # else three failed lookups made it "unresolved".
+                    decisions.refund.append(eid)
             elif eid in run.failed:
                 retry(eid, "no usable verdict")
             elif eid in run.held:
