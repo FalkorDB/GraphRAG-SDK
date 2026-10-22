@@ -640,6 +640,20 @@ class TestGraphStoreUpsertRelationships:
         assert params["batch"][0]["properties"]["note"] == "ABC"
 
     async def test_relationship_source_ownership_is_unioned(self, graph_store, mock_connection):
+        """In the batch write and in the per-row fallback a failed batch takes.
+
+        ``SET r += ...`` alone replaces the list, so a second relationship
+        table writing an edge would take it from the first, and the first
+        table's next re-ingest or drop would delete an edge the second still
+        lists.
+        """
+
+        async def fail_batch(cypher, params=None):
+            if "UNWIND $batch AS item" in cypher:
+                raise Exception("fail")
+            return MagicMock()
+
+        mock_connection.query = AsyncMock(side_effect=fail_batch)
         await graph_store.upsert_relationships(
             [
                 GraphRelationship(
@@ -653,10 +667,16 @@ class TestGraphStoreUpsertRelationships:
                 )
             ]
         )
-        cypher = upsert_calls(mock_connection)[0][0][0]
-        assert "coalesce(r.structured_sources, []) AS old_sources" in cypher
-        assert "WHERE NOT s IN old_sources" in cypher
-        assert "old_snapshot" not in cypher
+        batch, fallback = (call[0][0] for call in upsert_calls(mock_connection))
+        for cypher, incoming in ((batch, "item.properties"), (fallback, "$properties")):
+            assert "coalesce(r.structured_sources, []) AS old_sources" in cypher
+            assert f"coalesce({incoming}.structured_sources, []) AS sources" in cypher
+            assert (
+                "r.structured_sources = old_sources + [s IN sources WHERE NOT s IN old_sources]"
+            ) in cypher
+            assert cypher.index("AS old_sources") < cypher.index("SET r +=")
+            assert cypher.index("SET r +=") < cypher.index("r.structured_sources = old_sources")
+            assert "old_snapshot" not in cypher
 
     async def test_snapshot_number_never_moves_back(self, graph_store, mock_connection):
         """A run that started earlier and writes later keeps the newer run's number."""
@@ -1400,6 +1420,23 @@ class TestGraphStoreDocumentLifecycle:
         n = await graph_store.delete_orphan_entities(ids)
         assert n == 6
         assert mock_connection.query.await_count == 3
+
+    async def test_delete_stale_relationships_keeps_table_backed_edges(
+        self, graph_store, mock_connection
+    ):
+        """An edge a relationship table lists is not the document's to delete.
+
+        A table-only edge has ``source_chunk_ids = []``, so without the
+        ``structured_sources`` check any document cleanup that touches one of
+        its endpoints deleted it.
+        """
+        mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[[0]]))
+        await graph_store.delete_stale_relationships(["unit-1"], ["chunk-1"])
+        strip, delete = (call[0][0] for call in mock_connection.query.call_args_list)
+        assert "SET r.source_chunk_ids = remaining" in strip
+        assert "DELETE r" in delete
+        assert "AND size(r.source_chunk_ids) = 0 " in delete
+        assert "AND size(coalesce(r.structured_sources, [])) = 0 " in delete
 
 
 class TestMergedLabelsBecomeRealLabels:

@@ -863,6 +863,122 @@ async def test_cleanup_reads_only_the_tables_own_edges_in_chunks_on_real_falkord
         assert "NodeByIdSeek" in plan and "Index Scan" not in plan, (cypher, plan)
 
 
+@pytest.mark.integration
+async def test_a_shared_edge_keeps_every_tables_ownership_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """Two relationship tables list U-1 -> B-1; one dropping the row keeps the edge.
+
+    The second table is written through the per-row fallback a failed batch
+    write takes, which has to union ownership as the batch write does.
+    """
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[
+                consumed_mapping(source="consumed_a.csv"),
+                consumed_mapping(source="consumed_b.csv"),
+            ],
+        ),
+    )
+    for filename, content in (
+        ("unit.csv", "unit_id\nU-1\nU-2\n"),
+        ("batch.csv", "batch_id\nB-1\nB-2\n"),
+        ("consumed_a.csv", "source,target,consumed_on\nU-1,B-1,2026-01-01\nU-2,B-2,2026-01-02\n"),
+    ):
+        (tmp_path / filename).write_text(content, encoding="utf-8")
+        await rag.ingest(str(tmp_path / filename))
+
+    async def lose_the_batch_write(cypher):
+        if "UNWIND $batch AS item" in cypher and "MERGE (a)-[r:`RELATES`" in cypher:
+            raise ConnectionError("batch write lost")
+
+    conn = rag._graph_store._conn
+    watched = _Watched(conn, on_query=lose_the_batch_write)
+    rag._graph_store._conn = watched
+    (tmp_path / "consumed_b.csv").write_text(
+        "source,target,consumed_on\nU-1,B-1,2026-02-02\n", encoding="utf-8"
+    )
+    result = await rag.ingest(str(tmp_path / "consumed_b.csv"))
+    rag._graph_store._conn = conn
+    assert (result.relationships_written, result.incomplete_writes) == (1, [])
+    assert any("{id: $start_id}" in cypher for cypher, _ in watched.sent), "per-row fallback ran"
+
+    async def edges():
+        rows = await rag._graph_store.query_raw(
+            "MATCH (u:Unit)-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->(b:Batch) "
+            "RETURN u.unit__unit_id, b.batch__batch_id, r.structured_sources, "
+            "r.consumed_a__consumed_on, r.consumed_b__consumed_on "
+            "ORDER BY u.unit__unit_id"
+        )
+        return rows.result_set
+
+    assert await edges() == [
+        ["U-1", "B-1", ["consumed_a", "consumed_b"], "2026-01-01", "2026-02-02"],
+        ["U-2", "B-2", ["consumed_a"], "2026-01-02", None],
+    ]
+    # consumed_a.csv drops U-1 -> B-1, which consumed_b.csv still lists.
+    (tmp_path / "consumed_a.csv").write_text(
+        "source,target,consumed_on\nU-2,B-2,2026-01-02\n", encoding="utf-8"
+    )
+    await rag.ingest(str(tmp_path / "consumed_a.csv"))
+    assert await edges() == [
+        ["U-1", "B-1", ["consumed_b"], None, "2026-02-02"],
+        ["U-2", "B-2", ["consumed_a"], "2026-01-02", None],
+    ]
+    # Once no table lists it, it goes.
+    await rag.drop_table("consumed_b.csv")
+    assert await edges() == [["U-2", "B-2", ["consumed_a"], "2026-01-02", None]]
+
+
+@pytest.mark.integration
+async def test_document_cleanup_keeps_edges_a_relationship_table_lists_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """Deleting a document's chunks deletes an edge only when no table lists it.
+
+    A table-only edge has ``source_chunk_ids = []``, so any document cleanup
+    touching one of its endpoints deleted it, as well as an edge the table and
+    the document both supported.
+    """
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[consumed_mapping()],
+        ),
+    )
+    await _ingest_units_batches_and_edges(rag, tmp_path)
+    # A document chunk also supports U-1 -> B-1, and wrote an edge of its own.
+    await rag._graph_store.query_raw(
+        "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->(:Batch {batch__batch_id: 'B-1'}) "
+        "SET r.source_chunk_ids = ['chunk-1']"
+    )
+    await rag._graph_store.query_raw(
+        "MATCH (u:Unit {unit__unit_id: 'U-2'}), (b:Batch {batch__batch_id: 'B-1'}) "
+        "CREATE (u)-[:RELATES {rel_type: 'MENTIONED_WITH', source_chunk_ids: ['chunk-1']}]->(b)"
+    )
+    units = await rag._graph_store.query_raw("MATCH (u:Unit) RETURN u.id")
+    deleted = await rag._graph_store.delete_stale_relationships(
+        [row[0] for row in units.result_set], ["chunk-1"]
+    )
+    assert deleted == 1, "only the document's own edge"
+    edges = await rag._graph_store.query_raw(
+        "MATCH (u:Unit)-[r:RELATES]->(b:Batch) "
+        "RETURN u.unit__unit_id, b.batch__batch_id, r.rel_type, r.source_chunk_ids, "
+        "r.structured_sources ORDER BY u.unit__unit_id"
+    )
+    assert edges.result_set == [
+        ["U-1", "B-1", "CONSUMED_BATCH", [], ["consumed_batch"]],
+        ["U-2", "B-2", "CONSUMED_BATCH", [], ["consumed_batch"]],
+    ]
+
+
 def consumed_mapping(**changes: Any) -> RelationshipMapping:
     values: dict[str, Any] = {
         "source": "consumed_batch.csv",
@@ -1173,6 +1289,99 @@ class TestRelationshipIngestion:
         assert raised.value.result.endpoint_errors[0]["key_value"] == "B-404"
         assert store.write_calls == 0
 
+    @pytest.mark.parametrize(
+        "entity, key, value, counter",
+        [
+            ("Unit", "unit__unit_id", "U-1", "ambiguous_start"),
+            ("Batch", "batch__batch_id", "B-1", "ambiguous_end"),
+        ],
+    )
+    async def test_ambiguous_endpoint_errors_before_writes_by_default(
+        self, tmp_path, entity, key, value, counter
+    ):
+        """The default policy is fail-closed for a key two nodes hold, too."""
+        path = write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])
+        store = RelationshipStore()
+        store.entities[(entity, key)][value] = ["node-a", "node-b"]
+        with pytest.raises(RelationshipResolutionError) as raised:
+            await RelationshipIngestionPipeline(CsvRecordLoader(), store).run(
+                str(path), consumed_mapping(), Context()
+            )
+        assert getattr(raised.value.result, counter) == 1
+        (sample,) = raised.value.result.endpoint_errors
+        assert (sample["status"], sample["key_value"], sample["candidate_ids"]) == (
+            "ambiguous",
+            value,
+            ["node-a", "node-b"],
+        )
+        assert store.write_calls == 0
+
+    async def test_a_key_that_becomes_ambiguous_keeps_its_edge_by_default(self, tmp_path):
+        """Raising before the write also skips the snapshot cleanup that would drop it."""
+        path = write_csv(
+            tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20", "U-2,B-2,CONSUMED_BATCH,2026-09-21"]
+        )
+        store = RelationshipStore()
+        pipeline = RelationshipIngestionPipeline(CsvRecordLoader(), store)
+        await pipeline.run(str(path), consumed_mapping(), Context())
+        before = dict(store.relationships)
+        store.entities[("Unit", "unit__unit_id")]["U-2"] = ["unit-2", "duplicate-unit"]
+        with pytest.raises(RelationshipResolutionError):
+            await pipeline.run(str(path), consumed_mapping(), Context())
+        assert store.relationships == before
+        assert store.write_calls == 1
+
+    async def test_a_short_write_keeps_old_edges_until_a_clean_retry(self, tmp_path):
+        """Cleanup after a short write deleted rows the file still has.
+
+        ``GraphStore.upsert_relationships`` logs a failed write and returns a
+        smaller count rather than raising, so the count is the only sign. A row
+        whose rewrite was lost still carries the previous run's number, and the
+        snapshot cleanup would treat it as gone from the file.
+        """
+        path = write_csv(
+            tmp_path,
+            [
+                "U-1,B-1,CONSUMED_BATCH,2026-09-20",
+                "U-2,B-2,CONSUMED_BATCH,2026-09-21",
+                "U-1,B-2,CONSUMED_BATCH,2026-09-22",
+            ],
+        )
+        store = RelationshipStore()
+        pipeline = RelationshipIngestionPipeline(CsvRecordLoader(), store)
+        await pipeline.run(str(path), consumed_mapping(), Context())
+        first = dict(store.relationships)
+        assert len(first) == 3
+
+        write = store.upsert_relationships
+
+        async def lose_unit_2(relationships, *, snapshot_property=None):
+            kept = [rel for rel in relationships if rel.start_node_id != "unit-2"]
+            return await write(kept, snapshot_property=snapshot_property)
+
+        store.upsert_relationships = lose_unit_2
+        # U-1 -> B-2 left the file; U-2 -> B-2 is still in it but is not rewritten.
+        write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20", "U-2,B-2,CONSUMED_BATCH,"])
+        result = await pipeline.run(str(path), consumed_mapping(), Context())
+        assert result.incomplete_writes == ["relationships 1/2 in row batch 1-2"]
+        assert result.relationships_deleted == 0
+        assert store.relationships.keys() == first.keys(), "cleanup waits for a full write"
+
+        store.upsert_relationships = write
+        result = await pipeline.run(str(path), consumed_mapping(), Context())
+        assert result.incomplete_writes == []
+        assert result.relationships_deleted == 1
+        assert sorted(store.relationships) == [
+            ("unit-1", "batch-1", "CONSUMED_BATCH"),
+            ("unit-2", "batch-2", "CONSUMED_BATCH"),
+        ]
+        assert (
+            store.relationships[("unit-2", "batch-2", "CONSUMED_BATCH")].properties[
+                "consumed_batch__consumed_on"
+            ]
+            is None
+        )
+
     async def test_skip_policy_reports_missing_and_ambiguous(self, tmp_path):
         path = write_csv(
             tmp_path,
@@ -1233,7 +1442,7 @@ class TestRelationshipIngestion:
 
 
 class TestRelationshipReviewRegressions:
-    @pytest.mark.parametrize("kind", ["INTEGER", "FLOAT", "BOOLEAN", "LIST"])
+    @pytest.mark.parametrize("kind", ["INTEGER", "FLOAT", "BOOLEAN", "DATE", "LIST"])
     def test_non_string_endpoint_keys_are_refused_before_writes(self, kind):
         problems = GraphRAG._relationship_endpoint_schema_problems(
             consumed_mapping(),
