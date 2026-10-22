@@ -61,8 +61,10 @@ class DedupJudge(ABC):
         ...
 
     def usage(self) -> dict[str, int]:
-        """Running totals of what this judge has spent, e.g.
+        """Running totals of what this judge has spent, as whole numbers, e.g.
         ``{"llm_calls": 12}``. A run adds what it spent — how much the totals
-        grew while it ran — to its ``judge_stats``; a key the run reports
-        itself is left alone. None by default."""
+        grew while it ran — to its ``judge_stats``, each key at 0 when it
+        judged nothing; a key the run reports itself, and a value that is not
+        a whole number, are left out. A judge shared by runs at the same time
+        sees their spending mixed. None by default."""
         return {}

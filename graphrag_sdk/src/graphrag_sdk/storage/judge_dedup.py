@@ -601,7 +601,7 @@ async def ask_judge(
     Nothing is written."""
     asked = judge_sets(sets, ents, schema)
     verdicts = Verdicts()
-    before = judge.usage()
+    before = counted_usage(judge)
     todo = list(range(len(sets)))
     for attempt in range(1 + REASKS):
         if not todo:
@@ -626,8 +626,26 @@ async def ask_judge(
     for s in todo:
         verdicts.failed.update(sets[s])
     verdicts.unanswered = len(todo)
-    verdicts.usage = {key: n - before.get(key, 0) for key, n in judge.usage().items()}
+    after = counted_usage(judge, warn=True)
+    verdicts.usage = {key: n - before.get(key, 0) for key, n in after.items()}
     return verdicts
+
+
+def counted_usage(judge: DedupJudge, *, warn: bool = False) -> dict[str, int]:
+    """A copy of ``judge.usage()``, whole numbers only: ``judge_stats`` holds
+    counts, and a fractional value (``cost_usd``) made ``FinalizeResult``
+    raise at the end of ``finalize()``. A copy, because a judge may return
+    its live counters, which would read as nothing spent. ``warn`` logs what
+    is left out."""
+    usage = judge.usage()
+    kept = {k: v for k, v in usage.items() if isinstance(v, int) and not isinstance(v, bool)}
+    if warn and len(kept) < len(usage):
+        logger.warning(
+            "judge dedup: usage() values that are not whole numbers are left out of "
+            "judge_stats: %s",
+            ", ".join(sorted(set(usage) - set(kept))),
+        )
+    return kept
 
 
 def _usable(answer: Any, size: int) -> list[JudgeGroup] | None:

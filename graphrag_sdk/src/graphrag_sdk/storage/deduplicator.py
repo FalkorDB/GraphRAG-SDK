@@ -42,6 +42,7 @@ from graphrag_sdk.storage.judge_dedup import (
     Verdicts,
     ask_judge,
     candidate_sets,
+    counted_usage,
     pick_group_name,
 )
 from graphrag_sdk.storage.merge_query import (
@@ -1131,6 +1132,10 @@ class EntityDeduplicator:
             "agreed_pairs": 0,
             "merged": 0,
         }
+        # What the judge reports it spent, at 0 until it is asked: a run with
+        # nothing to judge still has the keys.
+        own = set(stats)
+        stats.update({key: 0 for key in counted_usage(judge) if key not in own})
         points = [
             ent
             for ent in run.points
@@ -1204,8 +1209,7 @@ class EntityDeduplicator:
         stats["judge_calls"] = verdicts.calls
         stats["judge_failed"] = verdicts.failed_calls
         stats["unanswered_sets"] = verdicts.unanswered
-        for key, spent in verdicts.usage.items():
-            stats.setdefault(key, spent)
+        stats.update({key: spent for key, spent in verdicts.usage.items() if key not in own})
         await self._resolve(run, ents, verdicts, protected, batch_size)
 
     async def _claim(self, store: SystemStore, run: _Run) -> None:

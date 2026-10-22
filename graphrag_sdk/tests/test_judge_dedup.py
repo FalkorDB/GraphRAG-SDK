@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from types import SimpleNamespace
 
@@ -1241,3 +1242,37 @@ def test_a_long_form_only_another_entity_found_still_makes_an_acronym_ambiguous(
     ]
     sim = asyncio.run(simulate(rows, pending=["acme", "x"]))
     assert not any(op.dup == "acme" for op in sim.ops), "two long forms: not folded by rule"
+
+
+def test_usage_reports_whole_numbers_only_and_reads_a_live_dict_right(caplog):
+    """A judge returning its own counter dict was read as having spent
+    nothing. A fractional value made ``FinalizeResult`` raise at the end of
+    ``finalize()``, losing the whole report: it is left out, with a warning.
+    A run with nothing to judge still reports its judge's keys, as 0."""
+    from graphrag_sdk.core.models import FinalizeResult
+
+    class Counting(RecordingJudge):
+        def __init__(self, *rounds, extra=None):
+            super().__init__(*rounds)
+            self.counts = {"calls": 0}
+            self.extra = extra
+
+        async def judge(self, sets, *, retry=False):
+            self.counts["calls"] += 1
+            return await super().judge(sets, retry=retry)
+
+        def usage(self):
+            return {**self.counts, **self.extra} if self.extra else self.counts
+
+    one_group = SetVerdict(groups=[JudgeGroup(members=[0, 1])])
+    assert _sim(judge=Counting([one_group])).dedup.last_judge_stats["calls"] == 1
+
+    with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.judge_dedup"):
+        judge = Counting([one_group], extra={"cost_usd": 0.0123})
+        stats = _sim(judge=judge).dedup.last_judge_stats
+    assert stats["calls"] == 1 and "cost_usd" not in stats and "cost_usd" in caplog.text
+    FinalizeResult(judge_stats=stats)  # validates
+
+    lone = [["e1", "IBM", "Computer company.", ["Organization"], None, None, 0, [1.0, 0, 0]]]
+    stats = _sim(lone, judge=LLMJudge(ScriptedLLM([[IBM]]))).dedup.last_judge_stats
+    assert stats["llm_calls"] == 0 and stats["llm_failed"] == 0
