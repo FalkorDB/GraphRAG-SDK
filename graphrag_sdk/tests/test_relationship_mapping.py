@@ -7,6 +7,7 @@ import pytest
 from graphrag_sdk import (
     Attribute,
     Column,
+    DocumentNotFoundError,
     EndpointMapping,
     Entity,
     GraphRAG,
@@ -122,16 +123,104 @@ async def test_relationship_snapshot_and_mapping_reload_on_real_falkordb(
         for relation in declared.relations
         for prop in relation.properties
     )
+
+    async def edge_count():
+        result = await rag._graph_store.query_raw(
+            "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() RETURN count(r)"
+        )
+        return result.result_set[0][0]
+
+    # Deleting the file takes its edges and keeps its mapping, as a node table
+    # keeps its own, so the file added back is read as the same table again.
+    stored = (await rag._ontology_store.load()).relationship_tables
+    assert [item.source for item in stored] == ["consumed_batch.csv"]
     deleted = await retry.apply_changes(deleted=[str(path)])
     assert deleted.deleted[0].is_success
     assert deleted.deleted[0].result.document_uid == str(path)
-    assert (
-        await rag._graph_store.query_raw(
-            "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() RETURN count(r)"
-        )
-    ).result_set == [[0]]
+    assert await edge_count() == 0
+    assert (await rag._ontology_store.load()).relationship_tables == stored
+    assert await counts() == before
+    readded = await retry.apply_changes(added=[str(path)])
+    assert readded.added[0].is_success, readded.added[0].error
+    assert readded.added[0].result.metadata["relationships_written"] == 1
+    assert await edge_count() == 1
+    # No proposed node table: no consumed_batch entity, Document or Chunk.
+    assert await counts() == before
+    await retry.drop_table("consumed_batch.csv")
+    assert await edge_count() == 0
     assert (await rag._ontology_store.load()).relationship_tables == []
     assert await counts() == before
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "relationship_source, doc_id",
+    [
+        ("consumed_batch.csv", "consumed_batch.csv"),
+        ("exports/consumed_batch.csv", "notes/consumed_batch.csv"),
+    ],
+)
+async def test_delete_prefers_a_document_named_like_a_relationship_table_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path, relationship_source, doc_id
+):
+    """``deleted`` removes a Document with that id and leaves the table alone."""
+    from graphrag_sdk import TableMapping
+    from graphrag_sdk.core.models import GraphData
+    from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+
+    class NoEntities(ExtractionStrategy):
+        async def extract(self, chunks, ontology, ctx):
+            return GraphData(nodes=[], relationships=[])
+
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=[
+                TableMapping(source="unit.csv", label="Unit", key="unit_id", name="unit_id"),
+                TableMapping(source="batch.csv", label="Batch", key="batch_id", name="batch_id"),
+            ],
+            relationship_tables=[consumed_mapping(source=relationship_source)],
+        ),
+    )
+    for filename, content in (
+        ("unit.csv", "unit_id\nU-1\nU-2\n"),
+        ("batch.csv", "batch_id\nB-1\nB-2\n"),
+    ):
+        table = tmp_path / filename
+        table.write_text(content, encoding="utf-8")
+        await rag.ingest(str(table))
+    path = write_csv(
+        tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20", "U-2,B-2,CONSUMED_BATCH,2026-09-21"]
+    )
+    assert (await rag.ingest(str(path))).relationships_written == 2
+    # Prose stored under the table's name, or under another path with its basename.
+    await rag.ingest(
+        text="Unit U-1 consumed batch B-1 on 20 September.",
+        document_id=doc_id,
+        extractor=NoEntities(),
+    )
+
+    async def state():
+        documents = await rag._graph_store.query_raw(
+            "MATCH (d:Document {id: $id}) RETURN count(d)", {"id": doc_id}
+        )
+        edges = await rag._graph_store.query_raw(
+            "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() RETURN count(r)"
+        )
+        stored = await rag._ontology_store.load()
+        return (
+            documents.result_set[0][0],
+            edges.result_set[0][0],
+            [item.source for item in stored.relationship_tables],
+        )
+
+    assert await state() == (1, 2, [relationship_source])
+    result = await rag.apply_changes(deleted=[doc_id])
+    assert result.deleted[0].is_success, result.deleted[0].error
+    assert result.deleted[0].result.chunks_deleted == 1
+    assert await state() == (0, 2, [relationship_source])
 
 
 def consumed_mapping(**changes: Any) -> RelationshipMapping:
@@ -509,8 +598,11 @@ class TestRelationshipReviewRegressions:
         rag = GraphRAG(connection=mock_connection, llm=llm, embedder=embedder)
         rag._global_ontology = Ontology(relationship_tables=[consumed_mapping()])
         rag._ensure_ontology_initialized = AsyncMock()
-        rag.drop_table = AsyncMock(side_effect=[RuntimeError("database busy"), Ontology()])
-        rag.delete_document = AsyncMock(side_effect=AssertionError("no document exists"))
+        rag._graph_store.drop_relationship_source = AsyncMock(
+            side_effect=[RuntimeError("database busy"), 0]
+        )
+        # No Document has either id, so both names reach the relationship table.
+        rag.delete_document = AsyncMock(side_effect=DocumentNotFoundError("no document exists"))
         results = await rag.apply_changes(
             deleted=["first/consumed_batch.csv", "second/consumed_batch.csv"]
         )
@@ -518,7 +610,7 @@ class TestRelationshipReviewRegressions:
         assert results.deleted[0].error == "database busy"
         assert results.deleted[1].is_success
         assert results.deleted[1].result.chunks_deleted == 0
-        rag.delete_document.assert_not_awaited()
+        assert rag._graph_store.drop_relationship_source.await_count == 2
 
     async def test_delete_uses_exact_relationship_path_before_entity_basename(
         self, mock_connection, llm, embedder
@@ -541,12 +633,88 @@ class TestRelationshipReviewRegressions:
             }
         )
         rag._ensure_ontology_initialized = AsyncMock()
-        rag._refresh_global_ontology = AsyncMock(return_value=Ontology())
         rag._graph_store.drop_relationship_source = AsyncMock()
         rag._ontology_store.drop_relationship_mapping = AsyncMock()
-        rag.delete_document = AsyncMock(side_effect=AssertionError("wrong entity table"))
+        rag.delete_document = AsyncMock(side_effect=DocumentNotFoundError("no document"))
         result = await rag.apply_changes(deleted=["relations/links.csv"])
         assert result.deleted[0].is_success
-        rag._ontology_store.drop_relationship_mapping.assert_awaited_once_with(mapping.source)
         rag._graph_store.drop_relationship_source.assert_awaited_once_with(mapping.signature, [])
-        rag.delete_document.assert_not_awaited()
+        # Only the Document named exactly that is tried, never the entity table's.
+        rag.delete_document.assert_awaited_once_with("relations/links.csv")
+        rag._ontology_store.drop_relationship_mapping.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "relationship_source, doc_id",
+        [
+            ("consumed_batch.csv", "consumed_batch.csv"),
+            ("exports/consumed_batch.csv", "notes/consumed_batch.csv"),
+        ],
+    )
+    async def test_delete_prefers_an_existing_document_over_a_relationship_table(
+        self, mock_connection, llm, embedder, relationship_source, doc_id
+    ):
+        from unittest.mock import AsyncMock
+
+        from graphrag_sdk import DeleteDocumentResult
+        from graphrag_sdk.core.connection import ConnectionConfig
+
+        mock_connection.config = ConnectionConfig(graph_name="unit-test")
+        rag = GraphRAG(connection=mock_connection, llm=llm, embedder=embedder)
+        rag._global_ontology = Ontology(
+            relationship_tables=[consumed_mapping(source=relationship_source)]
+        )
+        rag._ensure_ontology_initialized = AsyncMock()
+        # A Document with this exact id exists: prose ingested under the name.
+        rag.delete_document = AsyncMock(
+            return_value=DeleteDocumentResult(document_uid=doc_id, chunks_deleted=1)
+        )
+        rag.drop_table = AsyncMock(side_effect=AssertionError("relationship table dropped"))
+        rag._graph_store.drop_relationship_source = AsyncMock(
+            side_effect=AssertionError("relationship edges removed")
+        )
+
+        result = await rag.apply_changes(deleted=[doc_id])
+
+        assert result.deleted[0].is_success, result.deleted[0].error
+        assert result.deleted[0].result.chunks_deleted == 1
+        rag.delete_document.assert_awaited_once_with(doc_id)
+        rag.drop_table.assert_not_awaited()
+        rag._graph_store.drop_relationship_source.assert_not_awaited()
+
+    async def test_delete_keeps_the_relationship_mapping(self, mock_connection, llm, embedder):
+        """A deleted relationship CSV loses its edges, not its mapping, like a node table.
+
+        Otherwise the file added back later has no declaration and is written
+        as a proposed node table. ``drop_table()`` still removes the mapping.
+        """
+        from unittest.mock import AsyncMock
+
+        from graphrag_sdk.core.connection import ConnectionConfig
+
+        mock_connection.config = ConnectionConfig(graph_name="unit-test")
+        rag = GraphRAG(connection=mock_connection, llm=llm, embedder=embedder)
+        mapping = consumed_mapping()
+        rag._global_ontology = ontology_for_relationship(mapping)
+        rag._ensure_ontology_initialized = AsyncMock()
+        rag._refresh_global_ontology = AsyncMock(return_value=Ontology())
+        rag.delete_document = AsyncMock(side_effect=DocumentNotFoundError("no document"))
+        rag._graph_store.drop_relationship_source = AsyncMock(return_value=2)
+        rag._ontology_store.drop_relation_property = AsyncMock()
+        rag._ontology_store.drop_relationship_mapping = AsyncMock()
+
+        result = await rag.apply_changes(deleted=["consumed_batch.csv"])
+
+        assert result.deleted[0].is_success, result.deleted[0].error
+        rag._graph_store.drop_relationship_source.assert_awaited_once_with(
+            mapping.signature, ["consumed_batch__consumed_on"]
+        )
+        rag._ontology_store.drop_relationship_mapping.assert_not_awaited()
+        rag._ontology_store.drop_relation_property.assert_not_awaited()
+        assert rag._global_ontology.relationship_tables == [mapping]
+        assert await rag._mapping_for("consumed_batch.csv") == mapping
+
+        await rag.drop_table("consumed_batch.csv")
+        rag._ontology_store.drop_relationship_mapping.assert_awaited_once_with(mapping.source)
+        rag._ontology_store.drop_relation_property.assert_awaited_once_with(
+            "CONSUMED_BATCH", "consumed_batch__consumed_on"
+        )

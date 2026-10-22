@@ -1158,15 +1158,8 @@ class GraphRAG:
                 None,
             )
             if relationship_mapping is not None:
-                properties_by_relation = {
-                    (relation.label, prop.name)
-                    for relation in self._global_ontology.relations
-                    for prop in relation.properties
-                    if prop.name.startswith(f"{relationship_mapping.signature}__")
-                }
-                signed_properties = sorted({name for _, name in properties_by_relation})
-                await self._graph_store.drop_relationship_source(
-                    relationship_mapping.signature, signed_properties
+                properties_by_relation = await self._retract_relationship_source(
+                    relationship_mapping
                 )
                 for relationship_type, property_name in properties_by_relation:
                     await self._ontology_store.drop_relation_property(
@@ -1214,6 +1207,52 @@ class GraphRAG:
             released,
         )
         return await self._refresh_global_ontology()
+
+    async def _retract_relationship_source(
+        self, mapping: RelationshipMapping
+    ) -> set[tuple[str, str]]:
+        """Take back the edges and edge properties one relationship table wrote.
+
+        The mapping and the relation properties it declares stay in the
+        ontology; ``drop_table()`` removes those with the returned
+        ``(relationship type, property)`` pairs. An edge another relationship
+        table or a document chunk still supports survives without this
+        table's properties.
+        """
+        properties_by_relation = {
+            (relation.label, prop.name)
+            for relation in self._global_ontology.relations
+            for prop in relation.properties
+            if prop.name.startswith(f"{mapping.signature}__")
+        }
+        signed_properties = sorted({name for _, name in properties_by_relation})
+        await self._graph_store.drop_relationship_source(mapping.signature, signed_properties)
+        return properties_by_relation
+
+    async def _relationship_table_named(self, name: str) -> RelationshipMapping | None:
+        """The relationship table ``name`` refers to: exact source, then basename.
+
+        The basename fallback is skipped when a node table has exactly this
+        source, so a delete aimed at that table never reaches a relationship
+        table that only shares its filename.
+        """
+        await self._ensure_ontology_initialized()
+        exact = os.path.normpath(name)
+        wanted = os.path.basename(exact)
+        relationship_tables = self._global_ontology.relationship_tables
+        found = next((m for m in relationship_tables if os.path.normpath(m.source) == exact), None)
+        if found is not None or any(
+            os.path.normpath(m.source) == exact for m in self._global_ontology.tables
+        ):
+            return found
+        return next(
+            (
+                m
+                for m in relationship_tables
+                if os.path.basename(os.path.normpath(m.source)) == wanted
+            ),
+            None,
+        )
 
     @staticmethod
     def _signed_properties_of(mapping: TableMapping) -> list[tuple[str, str]]:
@@ -4086,7 +4125,9 @@ class GraphRAG:
         - ``added`` → ``ingest()``
         - ``modified`` → ``update(if_missing="ingest")`` (so a "modified"
           file the graph never saw is upserted, not erroring out)
-        - ``deleted`` → ``delete_document()``
+        - ``deleted`` → ``delete_document()``; a name that is no Document's
+          id but names a relationship table removes that table's edges and
+          keeps its mapping (``drop_table()`` removes both)
 
         A table (``.csv``, ``.tsv``, ``.psv``, ``.tab``) in ``added`` or
         ``modified`` takes the structured path its mapping in the ontology
@@ -4205,35 +4246,21 @@ class GraphRAG:
         delete_results: list[BatchEntry[DeleteDocumentResult]] = []
         for doc_id in deleted:
             try:
-                await self._ensure_ontology_initialized()
-                wanted = os.path.basename(os.path.normpath(doc_id))
-                exact = os.path.normpath(doc_id)
-                relationship_mapping = next(
-                    (
-                        mapping
-                        for mapping in self._global_ontology.relationship_tables
-                        if os.path.normpath(mapping.source) == exact
-                    ),
-                    None,
-                )
-                exact_entity = any(
-                    os.path.normpath(mapping.source) == exact
-                    for mapping in self._global_ontology.tables
-                )
-                if relationship_mapping is None and not exact_entity:
-                    relationship_mapping = next(
-                        (
-                            mapping
-                            for mapping in self._global_ontology.relationship_tables
-                            if os.path.basename(os.path.normpath(mapping.source)) == wanted
-                        ),
-                        None,
-                    )
-                if relationship_mapping is not None:
-                    await self.drop_table(relationship_mapping.source)
-                    delete_results.append(BatchEntry.ok(DeleteDocumentResult(document_uid=doc_id)))
-                else:
+                # A Document with this id always wins: that is what ``deleted``
+                # meant before relationship tables existed. A relationship
+                # table has no Document, so it is looked up only when none is.
+                try:
                     delete_results.append(BatchEntry.ok(await self.delete_document(doc_id)))
+                    continue
+                except DocumentNotFoundError:
+                    relationship_mapping = await self._relationship_table_named(doc_id)
+                    if relationship_mapping is None:
+                        raise
+                # Its edges go and its mapping stays, as a node table's does, so
+                # the file read back later is the same relationship table again.
+                # drop_table() is the way to remove the mapping.
+                await self._retract_relationship_source(relationship_mapping)
+                delete_results.append(BatchEntry.ok(DeleteDocumentResult(document_uid=doc_id)))
             except Exception as exc:
                 logger.warning(
                     "apply_changes: delete failed for %r: %s: %s",
