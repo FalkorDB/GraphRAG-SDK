@@ -99,7 +99,8 @@ the connection is a graph edge, not a coincidence of vocabulary.
 
 The LLM can optionally generate a read-only Cypher query against the graph
 schema for questions that need structural answers (counts, exact lists,
-multi-hop paths) that text search can't express
+multi-hop paths) that text search can't express, and runs it read-only, so the
+database refuses any write
 (`execute_cypher_retrieval()` in
 [`cypher_generation.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/cypher_generation.py)).
 **This path is off by default** (`enable_cypher=False`) and adds latency when

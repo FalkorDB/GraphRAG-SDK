@@ -381,6 +381,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves more concurrent questions.
 
 ### Fixed
+- **Text-to-Cypher runs the model's query read-only and bounds its rows.** The
+  query was sent as an ordinary one, so a keyword check was all that stood
+  between the model and a write. It now goes through `GRAPH.RO_QUERY` and the
+  database refuses any write; a refused query fails once, without a retry or a
+  mark against the circuit breaker, and is logged at DEBUG.
+  `FalkorDBConnection.query()` and `GraphStore.query_raw()` take
+  `read_only=True` for any query whose text came from a model or a user. The
+  final `RETURN` now gives back at most 100 rows: a larger `LIMIT` is lowered to
+  100, and a query without one still gets `LIMIT 25`. A `LIMIT` inside an
+  earlier `WITH` no longer counts as one, and is left as written.
+- **Text-to-Cypher's cleanup broke valid queries.** It deleted every `path =`,
+  which left `RETURN path` pointing at nothing and turned
+  `WHERE d.path = 'docs/a.md'` into `WHERE d.'docs/a.md'`, and its rewrites
+  reached inside string literals. Named paths are now kept, and no cleanup step
+  edits text inside quotes, backtick names or comments.
 - **A write batch holding the same entity or relationship twice lost a write.**
   In one `UNWIND ... MERGE` call FalkorDB 4.x kept the first row's values and
   6.0.x the last, and on both only one row's `source_chunk_ids` survived, so an

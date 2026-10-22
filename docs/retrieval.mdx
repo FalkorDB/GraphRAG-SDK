@@ -109,8 +109,8 @@ Alice —[WORKS_AT]→ Acme Corp: Alice is a senior engineer at Acme Corp
 **How it works:**
 1. The LLM receives a description of the graph schema (what node types exist, how edges work)
 2. It generates a Cypher query tailored to the question
-3. The query is validated (read-only, valid labels) and sanitized (adds LIMIT, removes unsupported FalkorDB patterns)
-4. If the query executes successfully, the results go **directly** to the final LLM context — they are NOT filtered by the reranker
+3. The query is validated (read-only, valid labels) and sanitized (removes unsupported FalkorDB patterns, and bounds the rows: a query without a `LIMIT` gets `LIMIT 25`, a larger one is lowered to 100). Sanitizing never edits text inside quotes, so a value like `'docs/a.md'` reaches the database as written
+4. The query runs read-only (`GRAPH.RO_QUERY`), so the database itself refuses any write the validation missed. If it executes successfully, the results go **directly** to the final LLM context — they are NOT filtered by the reranker
 
 **Runs in parallel** with step 3a to avoid adding latency. If it fails, the other paths still produce results.
 
