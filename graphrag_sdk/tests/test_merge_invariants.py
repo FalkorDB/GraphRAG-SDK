@@ -408,7 +408,8 @@ class TestJudgeMergeSite:
 
         assert list(inspect.signature(DedupJudge.judge).parameters) == ["self", "sets", "retry"]
         assert inspect.signature(DedupJudge.judge).return_annotation == "list[SetVerdict | None]"
-        assert list(inspect.signature(LLMJudge).parameters) == ["llm", "max_concurrency"]
+        params = set(inspect.signature(LLMJudge).parameters)
+        assert "llm" in params and not params & {"graph", "graph_store", "store"}
 
 
 class TestRemapChainsAreFlattened:

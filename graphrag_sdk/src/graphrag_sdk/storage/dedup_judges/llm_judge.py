@@ -29,12 +29,12 @@ logger = logging.getLogger(__name__)
 #: Prompt tokens a first pass packs whole sets into; a retry asks one set
 #: per prompt.
 PROMPT_TOKEN_BUDGET = 3000
-#: The least room a judge answer gets. The judge often reuses the caller's
-#: LLM, and an output limit set there for short RAG answers would cut a judge
-#: answer mid-set; a lower limit is raised to this for judge calls. Never
-#: imposed: with no limit set, the provider's own maximum applies, which a
-#: reasoning model, spending output tokens on thought, needs. Answers run
-#: ~150-300.
+#: The least room a judge answer gets by default (``LLMJudge(min_output_tokens=)``).
+#: The judge often reuses the caller's LLM, and an output limit set there for
+#: short RAG answers would cut a judge answer mid-set; a lower limit is raised
+#: to this for judge calls. Never imposed: with no limit set, the provider's
+#: own maximum applies, which a reasoning model, spending output tokens on
+#: thought, needs. Answers run ~150-300.
 JUDGE_MIN_OUTPUT_TOKENS = 4_096
 # Longest description rendered per entity, so a set of 8 members with merged
 # descriptions still fits the prompt budget; names and labels are capped too,
@@ -147,11 +147,22 @@ class LLMJudge(DedupJudge):
             gpt-4o-mini made 51 on the same input; use the strongest you can.
         max_concurrency: judge prompts in flight. ``None`` uses the LLM's own
             ``max_concurrency``.
+        min_output_tokens: the least output room a judge answer gets: an
+            output limit set lower on ``llm`` is raised to this for judge
+            calls. ``None`` keeps the LLM's own limit — for a server whose
+            context window cannot hold a ~3,000-token prompt plus this.
     """
 
-    def __init__(self, llm: LLMInterface, *, max_concurrency: int | None = None) -> None:
+    def __init__(
+        self,
+        llm: LLMInterface,
+        *,
+        max_concurrency: int | None = None,
+        min_output_tokens: int | None = JUDGE_MIN_OUTPUT_TOKENS,
+    ) -> None:
         self._llm = llm
         self._conc = max_concurrency
+        self._floor = min_output_tokens
         self._calls = 0
         self._failed = 0
 
@@ -160,7 +171,7 @@ class LLMJudge(DedupJudge):
         self._calls += len(prompts)
         try:
             results = await self._llm.abatch_invoke(
-                prompts, max_concurrency=self._conc, **_output_room(self._llm)
+                prompts, max_concurrency=self._conc, **_output_room(self._llm, self._floor)
             )
         except Exception:
             self._failed += len(prompts)
@@ -190,14 +201,14 @@ class LLMJudge(DedupJudge):
         return {"llm_calls": self._calls, "llm_failed": self._failed}
 
 
-def _output_room(llm: Any) -> dict[str, int]:
+def _output_room(llm: Any, floor: int | None = JUDGE_MIN_OUTPUT_TOKENS) -> dict[str, int]:
     """Per-call arguments that lift a low output limit set on ``llm`` to
-    :data:`JUDGE_MIN_OUTPUT_TOKENS`; none when it sets no limit or a higher
-    one. A per-call ``max_tokens`` wins over the instance's in the SDK's
+    ``floor``; none when it sets no limit or a higher one, or when there is no
+    floor. A per-call ``max_tokens`` wins over the instance's in the SDK's
     providers."""
     limit = getattr(llm, "_max_tokens", None)
-    if isinstance(limit, int) and limit < JUDGE_MIN_OUTPUT_TOKENS:
-        return {"max_tokens": JUDGE_MIN_OUTPUT_TOKENS}
+    if floor is not None and isinstance(limit, int) and limit < floor:
+        return {"max_tokens": floor}
     return {}
 
 

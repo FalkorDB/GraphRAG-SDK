@@ -627,7 +627,7 @@ A call that raises, or returns a list of another length, answers none of its set
 
 ### Built-in: LLMJudge (default)
 
-An LLM partitions each set in one pass. Sets are packed into prompts of about 3000 tokens, each headed by the declared attributes of its types; a retry asks one set per prompt. The answer lists only groups (`SET 1 GROUP: 1, 4 | NAME: ... | KEEP: born=1`, `SET 2 NONE`) and ends with `END`, so an answer cut short is told from one whose unlisted members are all different. An output limit below 4,096 tokens set on the LLM is raised to 4,096 for judge calls.
+An LLM partitions each set in one pass. Sets are packed into prompts of about 3000 tokens, each headed by the declared attributes of its types; a retry asks one set per prompt. The answer lists only groups (`SET 1 GROUP: 1, 4 | NAME: ... | KEEP: born=1`, `SET 2 NONE`) and ends with `END`, so an answer cut short is told from one whose unlisted members are all different. An output limit below 4,096 tokens set on the LLM is raised to 4,096 for judge calls; `LLMJudge(llm, min_output_tokens=None)` keeps the LLM's own limit, for a server whose context window cannot hold a prompt plus 4,096 output tokens (`min_output_tokens=1024` sets another floor).
 
 ```python
 from graphrag_sdk import LLMJudge

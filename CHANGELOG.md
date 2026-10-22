@@ -184,7 +184,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     more times. An answer that stops after a group line, before `END`, leaves
     that set unanswered: the groups it did not reach would otherwise read as
     "different". An output limit below 4,096 tokens set on the LLM is raised
-    to 4,096 for judge calls; the judge never sets one itself. Agreed pairs
+    to 4,096 for judge calls (`LLMJudge(min_output_tokens=)`; `None` keeps the
+    LLM's own limit, for a small-context server); the judge never sets one
+    itself. Agreed pairs
     chain across sets, but never into a group holding a pair the judge kept
     apart.
   - **Every merge is decided before any is written.** The run's merges, from

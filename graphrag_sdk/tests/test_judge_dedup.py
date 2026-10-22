@@ -472,6 +472,17 @@ def test_the_judge_lifts_a_low_output_limit_and_never_sets_one():
     assert llm.kw["max_tokens"] == JUDGE_MIN_OUTPUT_TOKENS
 
 
+def test_the_output_floor_can_be_set_or_turned_off():
+    """A server whose context window cannot hold a prompt plus 4,096 output
+    tokens failed every judge call with the floor forced on; the floor is an
+    option, and ``None`` keeps the LLM's own limit."""
+    for floor, sent in ((1_024, 1_024), (None, None)):
+        llm = ScriptedLLM([[IBM]])
+        llm._max_tokens = 256
+        sim = _sim(judge=LLMJudge(llm, min_output_tokens=floor))
+        assert llm.kw.get("max_tokens") == sent and sim.merged == 1
+
+
 def test_an_answer_that_is_not_a_clean_partition_is_not_a_verdict():
     for answer in ("SET 1 GROUP: 1, 2, 7", "SET 1 GROUP: 1 | NAME: IBM", "SET 2 NONE"):
         sim = _sim(judge=ScriptedLLM([answer]))
