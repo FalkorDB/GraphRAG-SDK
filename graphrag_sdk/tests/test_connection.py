@@ -389,6 +389,27 @@ class TestDriverErrorsBecomeDatabaseError:
 
         assert mock_graph.query.await_count == 1
 
+    async def test_a_parameter_falkordb_cannot_parse_is_not_retried(self):
+        """FalkorDB refuses NaN and infinity as parameters. Retried as an
+        outage, the same query failed three times and opened the circuit
+        breaker for every query after it."""
+        from redis.exceptions import ResponseError
+
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.001))
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(
+            side_effect=ResponseError("Failed to parse query parameter 'v' value")
+        )
+        conn._driver = MagicMock()
+        conn._version_checked = True  # see TestServerVersion
+        conn._graph = mock_graph
+
+        with pytest.raises(DatabaseError) as excinfo:
+            await conn.query("CREATE (:X {v: $v})", {"v": float("nan")})
+        assert not isinstance(excinfo.value, DatabaseUnavailableError)
+        assert mock_graph.query.await_count == 1
+        assert await conn._breaker.allow_request()
+
     async def test_wrapped_message_keeps_the_driver_text(self):
         """Index creation tolerates 'already indexed' by reading the message,
         so wrapping must not hide what the driver said."""

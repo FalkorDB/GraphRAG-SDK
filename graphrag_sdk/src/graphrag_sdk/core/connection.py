@@ -301,6 +301,9 @@ class FalkorDBConnection:
         "unknown function",
         "type mismatch",
         "procedure not found",
+        # A parameter FalkorDB cannot encode (NaN, infinity): the same bytes
+        # fail every time, and three of them opened the circuit breaker.
+        "failed to parse query parameter",
     )
 
     @classmethod
