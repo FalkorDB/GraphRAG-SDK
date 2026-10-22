@@ -45,13 +45,15 @@ to the shared `entity_key`:
 
 ```python
 from graphrag_sdk import (
-    Attribute, Column, EndpointMapping, Entity, GraphRAG, Ontology, RelationshipMapping,
+    Column, EndpointMapping, Entity, GraphRAG, Ontology, RelationshipMapping, TableMapping,
 )
 
 ONTOLOGY = Ontology(
-    entities=[
-        Entity(label="Unit", properties=[Attribute(name="units__unit_id", type="STRING")]),
-        Entity(label="Batch", properties=[Attribute(name="batches__batch_id", type="STRING")]),
+    entities=[Entity(label="Unit"), Entity(label="Batch")],
+    tables=[
+        # The endpoint nodes, and the keys the edges find them by.
+        TableMapping(source="units.csv", label="Unit", key="unit_id", name="unit_id"),
+        TableMapping(source="batches.csv", label="Batch", key="batch_id", name="batch_id"),
     ],
     relationship_tables=[
         RelationshipMapping(
@@ -75,18 +77,25 @@ ONTOLOGY = Ontology(
     ],
 )
 
-# Reuse your configured connection and providers. Endpoint entities must already exist.
+# Reuse your configured connection and providers. The endpoint nodes must exist
+# before the edge file is ingested.
 async with GraphRAG(connection=connection, llm=llm, embedder=embedder, ontology=ONTOLOGY) as rag:
+    await rag.ingest("data/units.csv")
+    await rag.ingest("data/batches.csv")
     result = await rag.ingest("data/consumed_batch.csv")
 ```
 
 `key` is the exact property already stored on the endpoint node. For a
-`TableMapping`, this is normally its signed key
-(``<table signature>__<safe key column>``), not `entity_key`. Naming the key
-space explicitly prevents two unrelated identifiers on the same entity label
-from being merged or resolved interchangeably. The property must be declared as `STRING`
-in the ontology (numeric, boolean and list endpoint keys are rejected), so relationship-only mappings intentionally cannot resolve
-against undeclared prose-only `name` or internal `entity_key` values.
+`TableMapping`, this is its signed key (``<table signature>__<safe key column>``),
+not `entity_key`: `units.csv` keyed on `unit_id` stores `units__unit_id`. Naming
+the key space explicitly prevents two unrelated identifiers on the same entity
+label from being merged or resolved interchangeably. The property must be
+declared as `STRING` in the ontology (any other type, `DATE` included, is
+rejected), so relationship-only mappings intentionally cannot resolve against
+undeclared prose-only `name` or internal `entity_key` values. Let the
+`TableMapping` that writes the key declare it, as above, rather than a plain
+`Attribute` on the entity: the extractor is asked to fill a plain attribute from
+prose, so documents could write values into the table's key space.
 
 `type="CONSUMED_BATCH"` fixes the semantic `rel_type`. For a heterogeneous edge
 file, use `type_column="type"` with
@@ -113,34 +122,49 @@ cell clears the edge's value in the same batch write as the other rows. Re-runni
 `ingest()` is an idempotent upsert; relationship properties are signed with the
 mapping source, and source ownership is unioned when another relationship table
 describes the same edge, including when two nodes are merged (a renamed row folded
-into an existing node, or deduplication) and their edges become one.
+into an existing node, or deduplication) and their edges become one. The
+signature comes from the filename, and node tables and relationship tables share
+one signature namespace, because node-table links sign edge properties too: a
+relationship table whose filename reduces to another table's signature, of either
+kind, is refused (see [Two files, one signature, refused](#two-files-one-signature-refused)).
 
 Each successful re-ingest is a **snapshot of that source**: edges missing from
 the new file lose that source's contribution. An edge supported by another
-relationship table or by document chunks remains. Each run is numbered from the
-database clock when it starts, and its cleanup removes only what an older run
-left, so two runs of the same file at once (two workers, or one change delivered
-twice) keep each other's edges. If the file changed between them, the run that
-started last decides; an edge only the earlier run wrote can stay until the next
-ingest. The cleanup reads only the source's own edges, through a range index
-on `RELATES.structured_sources` that the first relationship-table ingest on a
-graph creates, and changes at most 10,000 edges per write. Creating that index
+relationship table or by document chunks remains, and `relationships_deleted`
+counts it too: it is the number of edges the source let go. Under a `skip`
+policy a skipped row counts as missing: a row still in the file whose endpoint
+is now missing or ambiguous loses the edge it wrote in an earlier run, until an
+ingest resolves its key to exactly one node again. `rows_skipped` and
+`endpoint_errors` name those rows. The default `error` policies raise before
+anything is written, so the edge stays.
+
+Each run is numbered from the database clock when it starts, and its cleanup
+removes only what an older run left, so two runs of the same file at once (two
+workers, or one change delivered twice) keep each other's edges. If the file
+changed between them, the run that started last decides; an edge only the
+earlier run wrote can stay until the next ingest. The cleanup reads only the
+source's own edges, through a range index on `RELATES.structured_sources` that
+the first relationship-table ingest on a graph creates, and changes at most
+10,000 edges per write. Creating that index
 makes FalkorDB rebuild the graph's RELATES index once, embeddings included: about
 two minutes for 100,000 edges with 256-dimension embeddings in our tests, during
 which FalkorDB 6.0 holds other writes for several seconds at a time. Ingest
 waits up to 60 seconds for it, then continues without the index (results are
-the same, only slower) until the build finishes. Use `await rag.drop_table(
-"consumed_batch.csv")` to remove the mapping and its contributions explicitly.
-Use `ingest()` again to refresh a relationship table; `update()` is for documents.
-`apply_changes(added=[path])` and `apply_changes(modified=[path])` also support
-relationship tables, and write them after every entity table and document in the
-same batch, so their endpoints exist whatever order the lists give. `deleted=[source]` removes the source's contributions and keeps
-its mapping, as it does for a node table, so the file added back later is read as
-the same relationship table; `drop_table()` is the way to remove the mapping. A
-Document whose id is exactly that name wins: `deleted=[...]` deletes the Document
-and leaves the table alone, and looks for a relationship table (exact source first,
-then basename) only when no such Document exists.
-Each entry uses the existing batch-result wrapper, with
+the same, only slower) until the build finishes.
+
+Use `await rag.drop_table("consumed_batch.csv")` to remove the mapping and its
+contributions explicitly; it matches the exact stored source path first, then
+the basename. Use `ingest()` again to refresh a relationship table; `update()`
+is for documents. `apply_changes(added=[path])` and
+`apply_changes(modified=[path])` also support relationship tables, and write
+them after every entity table and document in the same batch, so their
+endpoints exist whatever order the lists give. `deleted=[source]` removes the
+source's contributions and keeps its mapping, as it does for a node table, so
+the file added back later is read as the same relationship table; `drop_table()`
+is the way to remove the mapping. A Document whose id is exactly that name wins:
+`deleted=[...]` deletes the Document and leaves the table alone, and looks for a
+relationship table (exact source first, then basename) only when no such
+Document exists. Each entry uses the existing batch-result wrapper, with
 relationship and endpoint counts in `entry.result.metadata`; its source
 identifier does not imply a persisted `Document` node.
 
@@ -153,11 +177,21 @@ the ontology loads, so the graph still opens; ingesting that file raises
 `MappingError` until the key is declared again, and `drop_table()` removes it.
 
 Validation and endpoint checks precede relationship writes, but the batched
-write is not a database transaction. Inspect `incomplete_writes` if a batch
-fails; partial writes may remain and stale-edge cleanup is deferred. Correct
-the failure and re-ingest the source. Relationship-only rows have no record
-chunks for chunk-vector retrieval; query their edges directly or finalize the
-graph for relationship search.
+write is not a database transaction. If `ingest()` raises while writing, or
+returns with `incomplete_writes`, some rows may be written and the edges of rows
+the file dropped are not removed yet: the stale-edge cleanup runs only after
+every batch is written. Fix the cause and run `ingest()` again; the retry
+rewrites every row, then cleans up.
+
+Relationship-only rows have no record chunks, and relationship (vector) search
+does not return their edges. Every edge of one mapping carries the same `fact`
+text, `(Unit, CONSUMED_BATCH, Batch)`, and no endpoint names, so retrieval drops
+these hits, though once `finalize()` has embedded the edges they still take
+relationship-search slots. Find the edges with graph queries (`rag.query()`, or
+text-to-Cypher with `enable_cypher=True`), or by following edges from an entity
+found by name, which needs the endpoint nodes to have a `name` (`name=` on their
+`TableMapping`). On an edge a document also wrote, the table's write replaces
+the document's `fact` with that same text; the edge keeps the document's chunks.
 
 ### JSON and server integration
 
@@ -1068,5 +1102,3 @@ stated once rather than two ways of choosing a path that could disagree.
 ## Example
 
 `examples/11_structured_ingestion.py` runs the whole path against a local FalkorDB: two CSVs declared on the ontology, a document whose "Acme Corp" lands on the CSV's row from the first write, `finalize()` and its report, the ontology the mappings declared, a structured question, a prose question and one that needs both halves, and a re-ingest that corrects a row, adds one and drops one.
-
-Relationship-only and entity-table mappings must use distinct property signatures (derived from filenames). Entity-table links also write relationship properties, so sharing a signature across mapping kinds is refused. `drop_table()` selects an exact stored source path before falling back to its basename.

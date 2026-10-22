@@ -670,6 +670,12 @@ class RelationshipMapping:
     Both endpoints must already exist and are resolved by the exact declared
     graph property. The semantic relationship type is either fixed with
     ``type`` or read from ``type_column`` and constrained by ``allowed_types``.
+
+    Each ingest is a snapshot of the file. Under the default ``"error"``
+    policies a key that matches no node, or several, raises
+    ``RelationshipResolutionError`` before anything is written. Under
+    ``"skip"`` such a row is counted and skipped, and so counts as missing
+    from the file: the edge it wrote in an earlier run loses this source.
     """
 
     source: str
