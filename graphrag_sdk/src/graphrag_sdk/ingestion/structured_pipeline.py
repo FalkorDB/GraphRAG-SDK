@@ -465,6 +465,13 @@ class RelationshipIngestionPipeline:
 
         result = RelationshipIngestionResult(source)
         seen: dict[tuple[str, str, str], tuple[tuple[str, str], ...]] = {}
+        # Rows of one identity with different properties, by the identity's
+        # first row. Refused only once resolution shows they would be written:
+        # rows a skip policy drops cannot make the result order-dependent, and
+        # the error policy reports them as RelationshipResolutionError with its
+        # diagnostics.
+        conflicts: dict[tuple[str, str, str], int] = {}
+        first_rows: dict[tuple[str, str, str], int] = {}
         for prepared in self._prepared(batch, mapping):
             result.rows += 1
             fingerprint = tuple(
@@ -473,13 +480,11 @@ class RelationshipIngestionPipeline:
             prior = seen.get(prepared.identity)
             if prior is not None:
                 if prior != fingerprint:
-                    raise MappingError(
-                        f"{source}: rows resolving to {prepared.identity!r} declare "
-                        f"different relationship properties; refusing an order-dependent update"
-                    )
+                    conflicts.setdefault(prepared.identity, first_rows[prepared.identity])
                 result.duplicate_rows += 1
                 continue
             seen[prepared.identity] = fingerprint
+            first_rows[prepared.identity] = prepared.row
         # A fresh generation marks this attempt, not just the file's bytes.
         # Unchanged rows can resolve differently (e.g. newly ambiguous keys).
         # It is a number from the server clock, not a random token: cleanup
@@ -501,6 +506,14 @@ class RelationshipIngestionPipeline:
         )
         if has_fatal_missing or has_fatal_ambiguous:
             raise RelationshipResolutionError(result)
+        # The resolution pass reads each identity's first row, and every row of
+        # an identity resolves alike, so that row says whether any is written.
+        for identity, first_row in conflicts.items():
+            if first_row not in result._failed_rows:
+                raise MappingError(
+                    f"{source}: rows resolving to {identity!r} declare "
+                    f"different relationship properties; refusing an order-dependent update"
+                )
 
         seen.clear()
         for prepared_batch in self._prepared_batches(batch, mapping, batch_size):

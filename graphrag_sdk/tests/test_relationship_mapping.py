@@ -767,6 +767,51 @@ class TestRelationshipIngestion:
             )
         assert store.write_calls == 0
 
+    @pytest.mark.parametrize(
+        "start_key, policy",
+        [
+            ("", {"missing_endpoint": "skip"}),
+            ("U-404", {"missing_endpoint": "skip"}),
+            ("U-2", {"ambiguous_endpoint": "skip"}),
+        ],
+    )
+    async def test_conflicting_duplicates_a_skip_policy_drops_do_not_fail_the_file(
+        self, tmp_path, start_key, policy
+    ):
+        """Rows that are skipped are never written, so their order cannot matter."""
+        path = write_csv(
+            tmp_path,
+            [
+                "U-1,B-1,CONSUMED_BATCH,2026-01-01",
+                f"{start_key},B-2,CONSUMED_BATCH,2026-01-02",
+                f"{start_key},B-2,CONSUMED_BATCH,2026-01-03",
+            ],
+        )
+        store = RelationshipStore()
+        store.entities[("Unit", "unit__unit_id")]["U-2"] = ["unit-2a", "unit-2b"]
+        result = await RelationshipIngestionPipeline(CsvRecordLoader(), store).run(
+            str(path), consumed_mapping(**policy), Context()
+        )
+        assert result.relationships_written == 1
+        assert (result.rows, result.duplicate_rows, result.rows_skipped) == (3, 1, 1)
+        relationship = next(iter(store.relationships.values()))
+        assert relationship.properties["consumed_batch__consumed_on"] == "2026-01-01"
+
+    async def test_conflicting_duplicates_with_a_missing_endpoint_report_resolution(self, tmp_path):
+        """Under the error policy the caller gets the diagnostics, not a bare MappingError."""
+        path = write_csv(
+            tmp_path,
+            ["U-404,B-1,CONSUMED_BATCH,2026-01-02", "U-404,B-1,CONSUMED_BATCH,2026-01-03"],
+        )
+        store = RelationshipStore()
+        with pytest.raises(RelationshipResolutionError) as raised:
+            await RelationshipIngestionPipeline(CsvRecordLoader(), store).run(
+                str(path), consumed_mapping(), Context()
+            )
+        assert raised.value.result.missing_start == 1
+        assert raised.value.result.endpoint_errors[0]["key_value"] == "U-404"
+        assert store.write_calls == 0
+
     async def test_missing_endpoint_errors_before_writes(self, tmp_path):
         path = write_csv(tmp_path, ["U-1,B-404,CONSUMED_BATCH,2026-09-20"])
         store = RelationshipStore()

@@ -101,7 +101,9 @@ its `.result` contains counts and up to 100 structured samples. Set
 returning those same counts in `RelationshipIngestionResult.as_dict()`. Exact
 duplicate rows are collapsed. Duplicate endpoint/type rows with different
 properties are rejected because accepting them would make the result depend on
-CSV order.
+CSV order. Only rows that would be written count: duplicates whose endpoint is
+blank, missing or ambiguous are skipped and counted under a `skip` policy, and
+reported as `RelationshipResolutionError` under `error`.
 
 Resolution and writes use bounded batches (500 by default), so files larger
 than FalkorDB's result-set limit do not rely on one unbounded query. Re-running
