@@ -22,7 +22,8 @@ from graphrag_sdk.core.models import (
     GraphNode,
     GraphRelationship,
 )
-from graphrag_sdk.storage.deduplicator import _REMAP_QUERIES, properties_to_carry
+from graphrag_sdk.storage.deduplicator import properties_to_carry
+from graphrag_sdk.storage.merge_query import fold_query, handled, read_for_merge
 from graphrag_sdk.storage.system_store import (
     CONFIG_LABEL,
     PROCESSING_LABEL,
@@ -53,6 +54,11 @@ class ReferenceNode(NamedTuple):
 
 
 logger = logging.getLogger(__name__)
+
+#: Reads of a re-keyed row's two nodes before its fold gives up: a fold writes
+#: nothing when either node changed shape since the read (a new edge type, a
+#: node gone), and is read again.
+_FOLD_READS = 3
 
 # An entity's ``source_chunk_ids`` is every chunk that mentioned it, across
 # documents. ``SET n += props`` alone replaces the list with the incoming
@@ -520,60 +526,40 @@ class GraphStore:
 
         Returns ``(renamed, merged)`` -- one of them 1.
         """
-        exists = await self.query_raw(
-            "MATCH (n:__Entity__ {id: $id}) RETURN count(n)", {"id": new_id}
-        )
-        if not (exists.result_set and exists.result_set[0][0]):
-            # The embedding is of the old name; left on the node, vector search
-            # kept finding the row under a name it no longer has. Without it the
-            # node is pending dedup again — the new name is new to dedup too —
-            # and the next finalize() embeds and checks it. The old id leaves a
-            # deleted record, so a merge planned on it is not applied to the node.
-            await self.query_raw(
-                "MATCH (n:__Entity__ {id: $old}) SET n.id = $new REMOVE n.embedding "
-                + deleted_record_clause("[$old]"),
-                {"old": old_id, "new": new_id},
+        for _ in range(_FOLD_READS):
+            read = await read_for_merge(self, new_id, old_id)
+            if read is None:
+                # The embedding is of the old name; left on the node, vector
+                # search kept finding the row under a name it no longer has.
+                # Without it the node is pending dedup again — the new name is
+                # new to dedup too — and the next finalize() embeds and checks
+                # it. The old id leaves a deleted record, so a merge planned on
+                # it is not applied to the node.
+                await self.query_raw(
+                    "MATCH (n:__Entity__ {id: $old}) SET n.id = $new REMOVE n.embedding "
+                    + deleted_record_clause("[$old]"),
+                    {"old": old_id, "new": new_id},
+                )
+                return 1, 0
+            # Something already sits at new_id — a prose mention of the same
+            # name, typically. Fold the old node into it in one query, which
+            # also makes the result pending dedup again: it now carries the
+            # row's identity, which no dedup run has seen with it.
+            carry = properties_to_carry(read.keep, read.dup, never=self._NEVER_CARRY_ON_RECONCILE)
+            result = await self.query_raw(
+                fold_query(read.kinds),
+                {"old": old_id, "new": new_id, "carry": carry, "handled": handled(read.kinds)},
             )
-            return 1, 0
-        # Something already sits at new_id — a prose mention of the same name,
-        # typically. Fold the old node into it, and make the result pending
-        # dedup again: it now carries the row's identity, which no dedup run has
-        # seen with it.
-        for query in _REMAP_QUERIES:
-            await self.query_raw(query, {"dup_id": old_id, "survivor_id": new_id})
-        await self._carry_then_delete(old_id, new_id)
-        await self.query_raw("MATCH (n:__Entity__ {id: $new}) REMOVE n.embedding", {"new": new_id})
-        return 0, 1
+            if result.result_set and result.result_set[0][0] is True:
+                return 0, 1
+        raise DatabaseError(
+            f"Could not fold entity {old_id!r} into {new_id!r}: one of them kept changing "
+            "while it was read"
+        )
 
     # The row about to be written sets ``is_stub`` itself; a placeholder's
     # ``True`` must not land on the node first and then have to be undone.
     _NEVER_CARRY_ON_RECONCILE = frozenset({"id", "embedding", "is_stub"})
-
-    async def _carry_then_delete(self, old_id: str, new_id: str) -> None:
-        """Copy what only the old node knew onto the new one, then delete the old.
-
-        Same policy as a dedup merge (:func:`properties_to_carry`), except that
-        the stub bookkeeping stays behind.
-        """
-        res = await self.query_raw(
-            "MATCH (k:__Entity__ {id: $new}), (d:__Entity__ {id: $old}) "
-            "RETURN properties(k), properties(d)",
-            {"new": new_id, "old": old_id},
-        )
-        if res.result_set:
-            keep, dup = res.result_set[0][0] or {}, res.result_set[0][1] or {}
-            carry = properties_to_carry(keep, dup, never=self._NEVER_CARRY_ON_RECONCILE)
-            if carry:
-                await self.query_raw(
-                    "MATCH (k:__Entity__ {id: $new}) SET k += $carry",
-                    {"new": new_id, "carry": carry},
-                )
-        await self.query_raw(
-            "MATCH (d:__Entity__ {id: $old}) WITH collect(d) AS gone "
-            + deleted_record_clause("[$old]")
-            + "FOREACH (d IN gone | DETACH DELETE d)",
-            {"old": old_id},
-        )
 
     async def upsert_reference_nodes(self, references: Sequence[ReferenceNode]) -> int:
         """Write foreign-key reference nodes: the key always, the name never.

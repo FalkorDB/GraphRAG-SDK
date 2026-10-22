@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from graphrag_sdk.storage.deduplicator import _REMAP_QUERIES, EntityDeduplicator
+from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.merge_query import absorb_query
 
 from .dedup_sim import AllSameJudge, simulate
@@ -51,56 +51,6 @@ def _props_read(rows, params, stored=None):
             ]
         ]
     )
-
-
-def _incoming_query() -> str:
-    # The RELATES MERGE is keyed on rel_type, so match the head of the pattern.
-    matches = [q for q in _REMAP_QUERIES if "MERGE (a)-[nr:RELATES" in q and "]->(s)" in q]
-    assert len(matches) == 1, "expected exactly one incoming-RELATES remap query"
-    return matches[0]
-
-
-def test_incoming_remap_anchors_on_the_duplicate() -> None:
-    """The duplicate must be matched (and thus indexed) before the traversal.
-
-    Without the ``WITH dup`` barrier FalkorDB anchors the pattern on
-    ``a:__Entity__`` and emits ``Node By Label Scan``. Reversing the arrow does
-    not help -- only a separate MATCH ... WITH does.
-    """
-    q = _incoming_query()
-    anchor = re.search(r"MATCH \(dup:__Entity__ \{id: \$dup_id\}\)\s*WITH dup", q)
-    assert anchor, (
-        "incoming remap must anchor on the indexed dup lookup before "
-        "traversing, or every merge costs a full label scan:\n" + q
-    )
-    assert anchor.start() < q.index("MATCH (a:__Entity__)"), (
-        "the dup anchor must come before the (a:__Entity__) traversal"
-    )
-
-
-@pytest.mark.parametrize("query", _REMAP_QUERIES)
-def test_every_remap_query_looks_up_the_duplicate_by_indexed_id(query: str) -> None:
-    """No remap query may start from a bare label scan over all entities."""
-    first_match = query.index("MATCH ")
-    opening = query[first_match : first_match + 60]
-    assert "$dup_id" in opening or "$survivor_id" in opening, (
-        "the first MATCH must be an id lookup so the index is used:\n" + query
-    )
-
-
-def test_relates_remaps_preserve_provenance() -> None:
-    """Merging must union source_chunk_ids, never overwrite them.
-
-    ``SET nr += properties(r)`` alone would replace the survivor edge's
-    provenance with the duplicate's, which makes previously-rooted facts look
-    unrooted to ``delete_stale_relationships``.
-    """
-    for q in _REMAP_QUERIES:
-        if ":RELATES]->" not in q or "MERGE" not in q:
-            continue
-        assert "source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]" in q, (
-            "RELATES remap must union provenance rather than overwrite it:\n" + q
-        )
 
 
 # ── Name grouping ───────────────────────────────────────────────

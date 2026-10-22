@@ -601,3 +601,32 @@ async def test_a_record_write_whose_reply_was_lost_is_written_once(graph, monkey
     ]
     plan = await store.sealed_plan()
     assert [len(ops) for ops in plan.ops] == [1] and len(plan.decisions) == 1
+
+
+async def test_a_table_rekey_folds_into_the_taken_id_in_one_query(graph):
+    """A re-synced row whose new id is taken folds into that node in one
+    query. As several, a dedup merge applied between them found the old node
+    half-moved and split the entity. Every edge type moves (the old remap
+    moved only RELATES and MENTIONED_IN), its properties carry, the result is
+    pending again, and during a dedup run both ids get a deleted record."""
+    await graph.query_raw(
+        "CREATE (o:__Entity__:Organization {id: 'old', name: 'Globex', role: 'supplier', "
+        "source_chunk_ids: ['c1']}), "
+        "(n:__Entity__:Organization {id: 'new', name: 'Initech', embedding: vecf32([1.0, 0.0])}), "
+        "(a:__Entity__:Person {id: 'a', name: 'Ann'}), (c:Chunk {id: 'c1'}), "
+        "(o)-[:RELATES {rel_type: 'SUPPLIES', source_chunk_ids: ['c1']}]->(a), "
+        "(o)-[:MENTIONED_IN]->(c), (a)-[:OWNS]->(o)"
+    )
+    store = await held(graph)
+    assert await graph._move_entity("old", "new") == (0, 1)
+    assert await rows(graph, "MATCH (n:__Entity__ {id: 'old'}) RETURN count(n)") == [[0]]
+    assert await rows(
+        graph,
+        "MATCH (n:__Entity__ {id: 'new'})-[r]-(x) "
+        "RETURN type(r), startNode(r) = n, x.id ORDER BY type(r)",
+    ) == [["MENTIONED_IN", True, "c1"], ["OWNS", False, "a"], ["RELATES", True, "a"]]
+    assert await rows(
+        graph,
+        "MATCH (n:__Entity__ {id: 'new'}) RETURN n.role, n.embedding IS NULL, n.source_chunk_ids",
+    ) == [["supplier", True, ["c1"]]]
+    assert await store.deleted_among(["old", "new"]) == {"old", "new"}

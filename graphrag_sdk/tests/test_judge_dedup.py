@@ -737,17 +737,6 @@ def test_a_judged_merge_folds_descriptions_aliases_and_the_losers_label():
     assert write.labels == ["Organization"]  # Company is already the survivor's own
 
 
-def test_remap_queries_bind_survivor_before_merge():
-    """An unbound ``(s {id})`` inside a path MERGE creates a stub node per
-    edge (measured: 136 stubs from 24 merges). Every remap query must MATCH
-    the survivor first and MERGE only the relationship."""
-    from graphrag_sdk.storage.deduplicator import _REMAP_QUERIES
-
-    for q in _REMAP_QUERIES:
-        assert "(s:__Entity__ {id: $survivor_id})" in q.split("MERGE")[0]
-        assert "MERGE (s:__Entity__" not in q and "->(s:__Entity__" not in q
-
-
 def test_two_keyed_rows_are_not_asked_and_a_mention_between_them_is_not_moved():
     """The CI contract from structured ingestion: two rows keyed E-1 / E-2
     named 'Alice Smith' and a passage mentioning her. The exact phase leaves

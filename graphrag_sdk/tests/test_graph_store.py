@@ -360,7 +360,7 @@ class TestReconcileKeyedIdentity:
         Its vector (of the old name) goes, so the next finalize embeds and
         checks it under the new one; the old id leaves a deleted record in the
         same query, so a merge a running dedup planned on it is not applied."""
-        mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[[0]]))
+        mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[]))
         assert await graph_store._move_entity("globex__org", "initech__org") == (1, 0)
         (rename,) = [
             c[0][0] for c in mock_connection.query.call_args_list if "SET n.id = $new" in c[0][0]
@@ -368,23 +368,30 @@ class TestReconcileKeyedIdentity:
         assert "REMOVE n.embedding" in rename and "dedup_pending" not in rename
         assert "kind: 'deleted', eid: _eid" in rename
 
-    async def test_a_row_folded_into_an_existing_node_makes_the_survivor_pending(
+    async def test_a_row_folded_into_an_existing_node_is_one_query(
         self, graph_store, mock_connection
     ):
+        """Every edge moved, the old node's properties carried, the survivor
+        made pending (no vector), both ids recorded deleted and the old node
+        deleted, in one query: a dedup merge cannot land in between."""
+
         async def answer(cypher, params=None):
-            if "RETURN count(n)" in cypher:
-                return MagicMock(result_set=[[1]])
             if "RETURN properties(k)" in cypher:
-                return MagicMock(result_set=[[{"id": "initech__org"}, {"id": "globex__org"}]])
-            return MagicMock(result_set=[])
+                keep, dup = {"id": "initech__org"}, {"id": "globex__org", "role": "x"}
+                return MagicMock(result_set=[[keep, dup, [], [], ["RELATES", "OWNS"], []]])
+            return MagicMock(result_set=[[True]])
 
         mock_connection.query = AsyncMock(side_effect=answer)
         assert await graph_store._move_entity("globex__org", "initech__org") == (0, 1)
-        calls = [c[0] for c in mock_connection.query.call_args_list]
-        (pending,) = [c for c in calls if "REMOVE n.embedding" in c[0]]
-        assert pending[1] == {"new": "initech__org"}
-        (delete,) = [c for c in calls if "DETACH DELETE d" in c[0]]
-        assert "kind: 'deleted', eid: _eid" in delete[0] and delete[1] == {"old": "globex__org"}
+        (fold,) = [
+            c[0] for c in mock_connection.query.call_args_list if "DETACH DELETE d" in c[0][0]
+        ]
+        cypher, params = fold
+        assert "MERGE (s)-[nr:`RELATES`" in cypher and "MERGE (s)-[nr:`OWNS`]" in cypher
+        assert "SET s.embedding = null" in cypher and "kind: 'deleted', eid: _eid" in cypher
+        assert params["old"] == "globex__org" and params["new"] == "initech__org"
+        assert params["carry"] == {"role": "x"}
+        assert params["handled"] == ["OWNS:out", "RELATES:out"]
 
     async def test_a_fold_does_not_carry_the_folded_nodes_identity_or_vector(self):
         """The id, the name vector and the stub flag are each node's own."""

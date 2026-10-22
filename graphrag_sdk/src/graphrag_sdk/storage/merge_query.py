@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from graphrag_sdk.core.exceptions import GraphRAGError
-from graphrag_sdk.storage.system_store import PLAN, PROCESSING_LABEL
+from graphrag_sdk.storage.system_store import PLAN, PROCESSING_LABEL, deleted_record_clause
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 OUT, IN = "out", "in"
@@ -296,8 +296,9 @@ _ABSORB_HEAD = (
 _CARRIED = f"{_TICKED}, d, s, present, fresh, unhandled, ok"
 
 
-def _move_block(rel_type: str, direction: str) -> str:
-    """Move the duplicate's ``rel_type`` edges of one direction to the survivor."""
+def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
+    """Move the duplicate's ``rel_type`` edges of one direction to the survivor.
+    ``carried`` are the variables in scope, ``d``, ``s`` and ``ok`` among them."""
     safe = sanitize_cypher_label(rel_type)
     key = " {rel_type: coalesce(e.rel_type, '')}" if safe == "RELATES" else ""
     if direction == OUT:
@@ -318,7 +319,7 @@ def _move_block(rel_type: str, direction: str) -> str:
         # Read before the MERGE, which inside FOREACH cannot be followed by WITH.
         read_old = (
             f"OPTIONAL MATCH {existing} "
-            f"WITH {_CARRIED}, e, b, coalesce(ex.source_chunk_ids, []) AS old "
+            f"WITH {carried}, e, b, coalesce(ex.source_chunk_ids, []) AS old "
         )
         update = (
             "SET nr += properties(e) "
@@ -329,13 +330,13 @@ def _move_block(rel_type: str, direction: str) -> str:
         read_old, update = "", "SET nr += properties(e)"
     return (
         f"OPTIONAL MATCH {old} WHERE ok AND b <> s AND b <> d "
-        f"WITH {_CARRIED}, collect([e, b]) AS rows "
+        f"WITH {carried}, collect([e, b]) AS rows "
         "UNWIND CASE WHEN size(rows) = 0 THEN [null] ELSE rows END AS row "
-        f"WITH {_CARRIED}, row[0] AS e, row[1] AS b "
+        f"WITH {carried}, row[0] AS e, row[1] AS b "
         f"{read_old}"
         "FOREACH (_ IN CASE WHEN ok AND e IS NOT NULL THEN [1] ELSE [] END | "
         f"MERGE {new} {update}) "
-        f"WITH {_CARRIED}, count(*) AS _moved "
+        f"WITH {carried}, count(*) AS _moved "
     )
 
 
@@ -367,6 +368,36 @@ def absorb_query(kinds: list[tuple[str, str]], sets: list[str], labels: list[str
         + _TICK
         + "FOREACH (_ IN CASE WHEN ok THEN [1] ELSE [] END | DETACH DELETE d) "
         + _RETURN
+    )
+
+
+def fold_query(kinds: list[tuple[str, str]]) -> str:
+    """One query that folds the node ``$old`` into the node ``$new``, outside
+    any plan: a table re-key whose new id is already taken. Every edge moves
+    as :func:`absorb_query` moves them; ``$carry`` is set on the node that
+    stays, and its name vector is dropped — it now holds the row's identity,
+    which no dedup run has checked; both ids get a ``deleted`` record while a
+    dedup run exists; the old node is deleted. All or nothing: as several
+    queries, a dedup merge applied in between saw the old node half-moved and
+    split the entity. Returns ``ok``, false — and nothing written — when
+    either node is gone or the old one has a relationship type ``kinds``
+    lacks (``$handled``, from :func:`handled`); the caller reads again."""
+    carried = "d, s, ok"
+    return (
+        "OPTIONAL MATCH (d:__Entity__ {id: $old}) WITH head(collect(d)) AS d "
+        "OPTIONAL MATCH (s:__Entity__ {id: $new}) WHERE d IS NOT NULL AND s <> d "
+        "WITH d, head(collect(s)) AS s "
+        "OPTIONAL MATCH (d)-[x]-() WHERE s IS NOT NULL "
+        "WITH d, s, sum(CASE WHEN x IS NULL THEN 0 "
+        "WHEN (type(x) + CASE WHEN startNode(x) = d THEN ':out' ELSE ':in' END) IN $handled THEN 0 "
+        "ELSE 1 END) AS unhandled "
+        "WITH d, s, (d IS NOT NULL AND s IS NOT NULL AND unhandled = 0) AS ok "
+        + "".join(_move_block(t, direction, carried) for t, direction in kinds)
+        + "FOREACH (_ IN CASE WHEN ok THEN [1] ELSE [] END | "
+        "SET s += $carry SET s.embedding = null) "
+        + deleted_record_clause("CASE WHEN ok THEN [$old, $new] ELSE [] END")
+        + "FOREACH (_ IN CASE WHEN ok THEN [1] ELSE [] END | DETACH DELETE d) "
+        "RETURN ok"
     )
 
 
