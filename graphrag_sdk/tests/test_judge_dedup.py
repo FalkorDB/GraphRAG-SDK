@@ -1199,6 +1199,34 @@ def test_a_widened_lookup_that_fails_leaves_its_entity_pending():
     assert _retried(sim) == {"js0": "widened nearest-name lookup failed"}
 
 
+class _WideFails(SimGraph):
+    async def query_raw(self, cypher, params=None):
+        if "db.idx.vector.queryNodes" in cypher and params["k"] > 11:
+            raise RuntimeError("query timed out")
+        return await super().query_raw(cypher, params)
+
+
+_JOHN_SMITHS = [[f"js{i}", "John Smith", f"Mention {i}.", "Person"] for i in range(15)]
+
+
+def test_a_widened_lookup_that_fails_twice_lets_the_first_lookup_stand():
+    """Pending once for a widened lookup that failed, the entity's next run
+    fails it again: the first lookup's search stands as its check, so it
+    leaves the pending list instead of coming back every run."""
+    rows = [list(r) for r in _JOHN_SMITHS]
+    rows[0] += [None, False]
+    sim = asyncio.run(
+        simulate(
+            rows,
+            pending=["js0"],
+            graph_class=_WideFails,
+            prior_reasons={"js0": "widened nearest-name lookup failed"},
+        )
+    )
+    assert _retried(sim) == {}
+    assert "js0" in sim.decisions.clear
+
+
 def test_a_long_form_only_another_entity_found_still_makes_an_acronym_ambiguous():
     """Pending "ACME" finds one long form, a table row; a second sits only in
     another pending entity's lookup. Read per entity, the second was never
@@ -1302,3 +1330,79 @@ def test_an_unresolved_entity_is_not_merged_by_rule_either():
     quarantined = {"u": Unresolved(3, "no usable verdict", "")}
     sim = asyncio.run(simulate(rows, pending=["row"], unresolved=quarantined))
     assert sim.ops == [] and sim.run.blocked == {"u": {"Acme"}}
+
+
+def test_a_group_line_that_could_add_a_member_is_still_refused():
+    from graphrag_sdk.storage.dedup_judges.llm_judge import parse_answer
+
+    for form in (
+        "1, 4 (2 and 3 are only related) | NAME: A",
+        "1, 2 NAME: Apollo 3",
+        "1-3 | NAME: A",
+        "1, 4 (see 2) | NAME: A",
+    ):
+        assert parse_answer(f"SET 1 GROUP: {form}\nEND", [4]) == {}, form
+
+
+def test_a_judges_usage_that_fails_or_is_not_a_dict_counts_nothing():
+    """A custom judge's usage() is outside the run's control: one that raises
+    or returns nothing must not break finalize(), and any whole-number type
+    (a numpy integer) is a count."""
+    import numpy as np
+
+    from graphrag_sdk.storage.judge_dedup import counted_usage
+
+    class Raises(DedupJudge):
+        async def judge(self, sets, *, retry=False):
+            return []
+
+        def usage(self):
+            raise RuntimeError("meter offline")
+
+    class Nothing(Raises):
+        def usage(self):
+            return None
+
+    class Numpy(Raises):
+        def usage(self):
+            return {"calls": np.int64(3), "cost_usd": 0.01, "ok": True}
+
+    assert counted_usage(Raises()) == {}
+    assert counted_usage(Nothing()) == {}
+    assert counted_usage(Numpy()) == {"calls": 3}
+
+
+def test_a_duplicate_an_applied_merge_deleted_is_not_listed_again():
+    """In a group where a later merge was skipped as changed, the members are
+    checked again, but a duplicate an earlier merge of the group already
+    deleted is gone: listed again, it only inflated the pending count."""
+    from graphrag_sdk.storage.deduplicator import EntityDeduplicator
+    from graphrag_sdk.storage.system_store import Decisions, Plan
+
+    class Store:
+        created = None
+
+        async def deleted_among(self, ids):
+            return set()
+
+        async def pending_pages(self):
+            return []
+
+        async def apply_decisions(self, plan_run, page, updates, created=None):
+            Store.created = created
+            return True
+
+    ops = [
+        PlanOp(ABSORB, 0, "s", "S", dup="d1", dup_name="S", policy=JUDGE),
+        PlanOp(ABSORB, 0, "s", "S", dup="d2", dup_name="S", policy=JUDGE),
+    ]
+    plan = Plan(
+        "run",
+        ops=[ops],
+        nexts=[2],
+        changed=[[1]],
+        decisions=[Decisions(clear=["s", "d1", "d2"])],
+        decision_done=[False],
+    )
+    asyncio.run(EntityDeduplicator(None, None)._clear(Store(), plan))
+    assert Store.created is not None and sorted(Store.created.ids) == ["d2", "s"]

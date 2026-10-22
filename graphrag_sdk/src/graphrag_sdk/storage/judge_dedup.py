@@ -29,9 +29,10 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Callable, Hashable, Iterable
+from collections.abc import AsyncIterator, Callable, Hashable, Iterable, Mapping
 from dataclasses import dataclass, field
 from itertools import combinations
+from numbers import Integral
 from typing import Any
 
 from graphrag_sdk.core.models import (
@@ -637,8 +638,18 @@ def counted_usage(judge: DedupJudge, *, warn: bool = False) -> dict[str, int]:
     raise at the end of ``finalize()``. A copy, because a judge may return
     its live counters, which would read as nothing spent. ``warn`` logs what
     is left out."""
-    usage = judge.usage()
-    kept = {k: v for k, v in usage.items() if isinstance(v, int) and not isinstance(v, bool)}
+    try:
+        usage = judge.usage()
+    except Exception:
+        logger.warning(
+            "judge dedup: the judge's usage() failed; its counts are left out", exc_info=True
+        )
+        return {}
+    if not isinstance(usage, Mapping):
+        return {}
+    kept = {
+        k: int(v) for k, v in usage.items() if isinstance(v, Integral) and not isinstance(v, bool)
+    }
     if warn and len(kept) < len(usage):
         logger.warning(
             "judge dedup: usage() values that are not whole numbers are left out of "

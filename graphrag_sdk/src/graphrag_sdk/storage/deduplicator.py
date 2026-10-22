@@ -58,6 +58,7 @@ from graphrag_sdk.storage.merge_query import (
     outcome,
     read_for_merge,
     rename_query,
+    round_trips,
     snapshot_params,
 )
 from graphrag_sdk.storage.system_store import (
@@ -446,6 +447,8 @@ _EXACT_NEIGHBOUR_K = 10
 #: exact-phase matches (twenty rows called "John Smith"): the k-th neighbour
 #: being a match says the next one may be too, so k grows tenfold up to this.
 _EXACT_NEIGHBOUR_K_MAX = 1000
+#: The pending reason of an entity whose widened lookup failed.
+_WIDEN_FAILED = "widened nearest-name lookup failed"
 
 # The projection every entity read uses, applied to a bound ``e``.
 _ENTITY_RETURN = (
@@ -513,6 +516,8 @@ class _Run:
     gone: set[str] = field(default_factory=set)
     #: Points with no completed nearest-name lookup, and why.
     unsearched: dict[str, str] = field(default_factory=dict)
+    #: The reason each listed id was left pending by the run before, if any.
+    prior_reasons: dict[str, str] = field(default_factory=dict)
     hits: dict[str, list[Hit]] = field(default_factory=dict)
     #: Rows the merge decisions are ranked and named from, by id.
     rows: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -801,6 +806,9 @@ class EntityDeduplicator:
 
         pages = await store.pending_pages()
         run.listed = {eid for page in pages for eid in page.ids} - run.unresolved.keys()
+        run.prior_reasons = {
+            eid: why for page in pages for eid, why in zip(page.ids, page.reasons) if why
+        }
         if self._dedup_all:
             entities = await self._fetch_all_entities(batch_size)
         else:
@@ -1089,9 +1097,19 @@ class EntityDeduplicator:
             hits.update(wider)
             # Matches past the first k are what the widening looks for; a
             # failed one is not a finished search, so the entity stays pending.
-            run.unsearched.update(dict.fromkeys(failed, "widened nearest-name lookup failed"))
+            # Failing again on the next run, the first search stands as its
+            # check: a lookup that cannot succeed must not keep it pending,
+            # unjudged, for good.
+            again = {eid for eid in failed if run.prior_reasons.get(eid) == _WIDEN_FAILED}
+            run.unsearched.update(dict.fromkeys(set(failed) - again, _WIDEN_FAILED))
             if failed:
                 logger.warning("Exact phase: a widened lookup failed for %d entities", len(failed))
+            if again:
+                logger.warning(
+                    "Exact phase: the widened lookup failed again for %d entities; "
+                    "their first nearest names stand as their check",
+                    len(again),
+                )
         run.hits = hits
         pending_ids = {ent["id"] for ent in pending}
         near = [nid for found in hits.values() for nid, _, _ in found if nid not in pending_ids]
@@ -1684,6 +1702,13 @@ class EntityDeduplicator:
         # Handled above, by the collisions below, or by the absorb query itself.
         for key in [k for k in carry if k in _FOLDED_KEYS or k.endswith(DROPPED_SUFFIX)]:
             carry.pop(key)
+        # A value that does not survive the trip to the client and back (a
+        # point reads as a map, which no property may hold) is copied on the
+        # server, from the duplicate the query still holds.
+        for key in [k for k, v in carry.items() if not round_trips(v)]:
+            carry.pop(key)
+            name = key.replace("`", "``")
+            sets.append(f"s.`{name}` = d.`{name}`")
         if carry:
             sets.append("s += $carry")
         if merged_labels != recorded:
@@ -1747,6 +1772,14 @@ class EntityDeduplicator:
                 if i in plan.changed[page]:
                     changed_groups.add(op.group)
         recheck = set().union(*(members[g] for g in changed_groups))
+        # A duplicate an applied absorb deleted is gone with its merge, not
+        # owed a check: listed again, it only inflated the pending count.
+        recheck -= {
+            op.dup
+            for page, ops in enumerate(plan.ops)
+            for i, op in enumerate(ops)
+            if op.op == ABSORB and op.dup and i not in plan.changed[page]
+        }
         # A member deleted or re-keyed since judging is gone, not owed a check.
         recheck -= await store.deleted_among(recheck)
         for page, (decided, done) in enumerate(zip(plan.decisions, plan.decision_done)):
@@ -2145,6 +2178,12 @@ def _collisions(
             continue
         mine, theirs = keep[key], dup[key]
         if mine in (None, "", []) or theirs in (None, "", []) or _canon(mine) == _canon(theirs):
+            continue
+        if not (round_trips(mine) and round_trips(theirs)):
+            # A point reads back as a map, which no property may hold: written
+            # to ``__dropped`` or picked back, the merge query is refused on
+            # every run and the plan can never finish. The survivor's value
+            # stays, as with any collision, without a written history.
             continue
         if isinstance(mine, list) and isinstance(theirs, list):
             override[key] = _union(mine, theirs)

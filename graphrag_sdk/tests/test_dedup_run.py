@@ -556,6 +556,46 @@ async def test_a_merge_whose_reply_was_lost_still_counts_and_its_group_is_rename
     assert dd.last_report.changed == 0 and await records(graph) == []
 
 
+async def test_a_value_that_does_not_round_trip_does_not_block_the_merge(graph):
+    """A point reads back as a map, which no parameter compares equal to:
+    compared as read, the merge was stale on every run."""
+    await graph.query_raw(
+        "CREATE (:__Entity__:Person {id: 'tim', name: 'Tim Cook', description: 'Apple CEO', "
+        "home: point({latitude: 37.33, longitude: -122.03})}), "
+        "(:__Entity__:Person {id: 'timothy', name: 'Timothy Cook', description: 'c', "
+        "home: point({latitude: 37.33, longitude: -122.03}), "
+        "office: point({latitude: 37.3, longitude: -122.0})})"
+    )
+    dd = dedup(graph)
+    assert await dd.deduplicate(judge=LLMJudge(Judge([TIM]))) == 1
+    assert dd.last_report.changed == 0 and await records(graph) == []
+    # the duplicate's point is carried, copied on the server (a point holds
+    # 32-bit coordinates)
+    ((kind, lat),) = await rows(
+        graph, "MATCH (e:__Entity__) RETURN typeOf(e.office), e.office.latitude"
+    )
+    assert kind == "Point" and abs(lat - 37.3) < 1e-5
+
+
+async def test_two_different_points_on_one_key_do_not_break_the_merge(graph):
+    """Both entities hold a point under the same key: written to
+    ``home__dropped`` as a map, the merge query was refused on every run and
+    its plan could never finish. The survivor keeps its own point."""
+    await graph.query_raw(
+        "CREATE (:__Entity__:Person {id: 'tim', name: 'Tim Cook', description: 'Apple CEO', "
+        "home: point({latitude: 37.33, longitude: -122.03})}), "
+        "(:__Entity__:Person {id: 'timothy', name: 'Timothy Cook', description: 'c', "
+        "home: point({latitude: 10.0, longitude: 10.0})})"
+    )
+    dd = dedup(graph)
+    assert await dd.deduplicate(judge=LLMJudge(Judge([TIM]))) == 1
+    assert dd.last_report.changed == 0 and await records(graph) == []
+    ((lat, dropped),) = await rows(
+        graph, "MATCH (e:__Entity__) RETURN e.home.latitude, e.home__dropped"
+    )
+    assert abs(lat - 37.33) < 1e-4 and dropped is None
+
+
 # ── the server ───────────────────────────────────────────────────
 
 

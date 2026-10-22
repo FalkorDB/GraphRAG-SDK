@@ -170,6 +170,11 @@ def _split_decimals(
     near: dict[str, float] = {}
     near_lists: dict[str, list[Any]] = {}
     for key, value in values.items():
+        if not round_trips(value):
+            # Read back in a form no parameter compares equal to (a point
+            # reads as a map): left out, or the merge reads as changed on
+            # every run. The key-count check still sees it added or removed.
+            continue
         if isinstance(value, float):
             near[key] = value
         elif isinstance(value, list) and any(isinstance(item, float) for item in value):
@@ -177,6 +182,14 @@ def _split_decimals(
         else:
             exact[key] = value
     return exact, near, near_lists
+
+
+def round_trips(value: Any) -> bool:
+    """Whether a value read from FalkorDB can be sent back and compared: not
+    a map (how a point reads) and not a list holding one."""
+    if isinstance(value, dict):
+        return False
+    return not (isinstance(value, list) and any(isinstance(v, (list, dict)) for v in value))
 
 
 def outcome(row: list[Any], op: int) -> str:

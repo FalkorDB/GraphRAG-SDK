@@ -410,6 +410,62 @@ class TestDriverErrorsBecomeDatabaseError:
         assert mock_graph.query.await_count == 1
         assert await conn._breaker.allow_request()
 
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "Missing parameters",
+            "Cannot merge node using null property value",
+            "Property values can only be of primitive types or arrays of primitive types",
+            "Division by zero",
+            "Attempted to access undefined attribute",
+        ],
+    )
+    async def test_an_error_the_server_answered_is_not_retried(self, reply):
+        """The server answered: the query itself is wrong and will fail the
+        same way again. Retried as an outage, two of them opened the circuit
+        breaker and refused every query after them."""
+        from redis.exceptions import ResponseError
+
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.001))
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=ResponseError(reply))
+        conn._driver = MagicMock()
+        conn._version_checked = True  # see TestServerVersion
+        conn._graph = mock_graph
+
+        with pytest.raises(DatabaseError) as excinfo:
+            await conn.query("RETURN $x")
+        assert not isinstance(excinfo.value, DatabaseUnavailableError)
+        assert mock_graph.query.await_count == 1
+        assert await conn._breaker.allow_request()
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "LOADING FalkorDB is loading the dataset",
+            "BUSY",
+            "Query timed out",
+            "Max pending queries exceeded",
+            "OOM command not allowed when used memory > 'maxmemory'.",
+            "CLUSTERDOWN The cluster is down",
+            "NOREPLICAS Not enough good replicas to write.",
+        ],
+    )
+    async def test_a_reply_from_a_busy_server_is_retried(self, reply):
+        from redis.exceptions import ResponseError
+
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.001))
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(
+            side_effect=[ResponseError(reply), MagicMock(result_set=[[1]])]
+        )
+        conn._driver = MagicMock()
+        conn._version_checked = True  # see TestServerVersion
+        conn._graph = mock_graph
+
+        result = await conn.query("RETURN 1")
+        assert result.result_set == [[1]] and mock_graph.query.await_count == 2
+
     async def test_wrapped_message_keeps_the_driver_text(self):
         """Index creation tolerates 'already indexed' by reading the message,
         so wrapping must not hide what the driver said."""
@@ -519,3 +575,41 @@ class TestServerVersion:
         for _ in range(2):
             assert all(isinstance(r, FalkorDBVersionError) for r in asyncio.run(three_at_once()))
         conn._graph.query.assert_not_awaited()
+
+
+async def test_the_ontology_graph_is_not_written_on_a_server_too_old():
+    """The ontology graph is queried through the driver, not conn.query: on a
+    server older than 4.20 it was created before the first refusal."""
+    from graphrag_sdk.core.exceptions import FalkorDBVersionError
+    from graphrag_sdk.storage.ontology_store import OntologyStore
+
+    conn = FalkorDBConnection(ConnectionConfig(retry_count=1, retry_delay=0.001))
+    conn._driver = MagicMock()
+    graph = MagicMock()
+    graph.query = AsyncMock()
+    conn._driver.select_graph = MagicMock(return_value=graph)
+
+    async def old():
+        return (4, 18, 3)
+
+    conn.server_version = old
+    store = OntologyStore(conn, "g")
+    with pytest.raises(FalkorDBVersionError):
+        await store._query("CREATE (:X)")
+    graph.query.assert_not_called()
+
+
+async def test_a_server_too_old_is_not_loaded_as_an_empty_ontology():
+    from graphrag_sdk.core.exceptions import FalkorDBVersionError
+    from graphrag_sdk.storage.ontology_store import OntologyStore
+
+    conn = FalkorDBConnection(ConnectionConfig(retry_count=1, retry_delay=0.001))
+    conn._driver = MagicMock()
+    conn._driver.select_graph = MagicMock(return_value=MagicMock(query=AsyncMock()))
+
+    async def old():
+        return (4, 18, 3)
+
+    conn.server_version = old
+    with pytest.raises(FalkorDBVersionError):
+        await OntologyStore(conn, "g").load()

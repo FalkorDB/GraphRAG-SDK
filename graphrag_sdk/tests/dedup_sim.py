@@ -237,6 +237,7 @@ async def simulate(
     graph_class: type | None = None,
     ontology: Any = None,
     unresolved: dict[str, Any] | None = None,
+    prior_reasons: dict[str, str] | None = None,
 ) -> Sim:
     """Decide and apply one run over ``rows`` — ``[id, name, description,
     label or [labels], aliases, is_stub, degree, embedding]``, trailing
@@ -249,7 +250,8 @@ async def simulate(
     query points, and the exact phase finds the others through the
     nearest-name search, as a real run does; by default every row is a query
     point, ``dedup_all``-style. ``unresolved`` are the entities the run
-    loads as unresolved (``Unresolved`` by id)."""
+    loads as unresolved (``Unresolved`` by id). ``prior_reasons`` are the
+    pending reasons the run before left, by id."""
     stored = stored or {}
     nodes = {row[0]: _node(row, stored.get(row[0], {})) for row in rows}
     graph = (graph_class or SimGraph)(nodes)
@@ -261,6 +263,7 @@ async def simulate(
     points = list(nodes) if pending is None else list(pending)
     run.points = [_entity_from_row(graph._entity_row(eid)) for eid in points]
     run.listed = set(points)
+    run.prior_reasons = dict(prior_reasons or {})
     for ent in run.points:
         run.rows[ent["id"]] = ent
         if not ent["has_vector"]:

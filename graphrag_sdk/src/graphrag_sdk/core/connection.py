@@ -304,6 +304,13 @@ class FalkorDBConnection:
         # A parameter FalkorDB cannot encode (NaN, infinity): the same bytes
         # fail every time, and three of them opened the circuit breaker.
         "failed to parse query parameter",
+        # The query or its values are wrong, the same every time: measured,
+        # two of them opened the circuit breaker for every query after them.
+        "missing parameters",
+        "cannot merge node using null property value",
+        "property values can only be of primitive types",
+        "division by zero",
+        "attempted to access undefined attribute",
     )
 
     @classmethod
