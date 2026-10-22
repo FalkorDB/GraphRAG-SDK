@@ -24,6 +24,7 @@ from graphrag_sdk.storage.system_store import (
     DedupRunActiveError,
     OwnershipLostError,
     SystemStore,
+    Unresolved,
 )
 
 from .conftest import lose_each_reply_once, rows
@@ -364,6 +365,24 @@ async def test_a_failed_check_stays_pending_and_three_make_it_unresolved(graph):
     dd = dedup(graph)
     assert await dd.deduplicate(judge=LLMJudge(NameOracleLLM([TIM])), dedup_all=True) == 1
     assert dd.last_report.unresolved == {}, "dedup_all retries it"
+
+
+async def test_a_retry_of_the_unresolved_cut_short_lists_them_once(graph):
+    """dedup_all lists the unresolved entities as pending, then drops them
+    from their record. A crash between the two left both, and the next
+    dedup_all listed them again: each pending twice, counted twice."""
+    await checked_graph(graph)
+    store = SystemStore(graph)
+    await store.ensure_indexes()
+    await store.acquire("a run that crashed")
+    await store.add_unresolved({"timothy": Unresolved(3, "no usable verdict", "")})
+    await store.add_pending(["timothy"])  # listed again; the crash came before the drop
+    await store.release()
+
+    judge = NameOracleLLM([TIM], fail={"Timothy Cook"})
+    await dedup(graph).deduplicate(judge=LLMJudge(judge), dedup_all=True)
+    listed = [eid for kind, ids, *_ in await records(graph) if kind == "pending" for eid in ids]
+    assert listed.count("timothy") == 1, listed
 
 
 async def test_a_same_spelling_is_the_judges_to_merge_and_every_check_completes(graph):

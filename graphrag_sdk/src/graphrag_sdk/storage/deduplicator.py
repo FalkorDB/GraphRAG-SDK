@@ -828,8 +828,10 @@ class EntityDeduplicator:
         run.unresolved = await store.unresolved()
         if self._dedup_all and run.unresolved:
             # Listed again first: a crash in between leaves them pending, which
-            # is checked; the other order could leave them in neither.
-            await store.add_pending(list(run.unresolved))
+            # is checked; the other order could leave them in neither. One a
+            # crashed run already listed is not listed twice.
+            listed = {eid for page in await store.pending_pages() for eid in page.ids}
+            await store.add_pending([eid for eid in run.unresolved if eid not in listed])
             await store.drop_unresolved(run.unresolved)
             run.unresolved = {}
         elif not self._dedup_all:
