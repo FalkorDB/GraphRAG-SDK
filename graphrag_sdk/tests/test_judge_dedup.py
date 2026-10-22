@@ -270,6 +270,17 @@ def test_only_groups_are_listed_and_an_unlisted_member_stands_alone():
     assert parse_groups("NONE", [2]) == {0: [[0], [1]]}
 
 
+@pytest.mark.parametrize(
+    "line",
+    ["SET 1 GROUP: NONE", "SET 1 GROUP NONE", "**SET 1 GROUP**: NONE", "- SET 1: GROUP: NONE"],
+)
+def test_a_group_of_none_answers_the_set_with_nothing_merged(line):
+    """Some models write the empty answer as a group; it is still the
+    answer, not a malformed group line to be asked three times again."""
+    assert parse_groups(line + "\nSET 2 GROUP: 1, 2", [2, 2]) == {0: [[0], [1]], 1: [[0, 1]]}
+    assert parse_groups(line.replace("SET 1 ", "").replace("SET 1: ", ""), [2]) == {0: [[0], [1]]}
+
+
 def test_none_after_a_sets_groups_means_no_further_group():
     """gpt-4.1 closes a set it grouped with ``SET n NONE``: no more groups."""
     text = "SET 1 GROUP: 1, 3 | NAME: IBM\nSET 1 NONE"

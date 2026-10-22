@@ -342,8 +342,10 @@ def pack_prompts(
 # ── the answer ──────────────────────────────────────────────────────────────
 
 _ANSWER_LINE = re.compile(r"^[\s\-*#>`|]*SET\s*(\d+)\b", re.IGNORECASE)
-_NONE_LINE = re.compile(r"^[\s\-*#>`|]*SET\s*(\d+)\s*:?\s*NONE\b", re.IGNORECASE)
-_BARE_NONE_LINE = re.compile(r"^[\s\-*#>`|]*()NONE\s*$", re.IGNORECASE)
+# "SET 2 NONE", and the same written as a group: "SET 2 GROUP: NONE".
+_AS_GROUP = r"(?:GROUP\b[\s*`]*:?[\s*`]*)?"
+_NONE_LINE = re.compile(rf"^[\s\-*#>`|]*SET\s*(\d+)[\s*`]*:?\s*{_AS_GROUP}NONE\b", re.IGNORECASE)
+_BARE_NONE_LINE = re.compile(rf"^[\s\-*#>`|]*(){_AS_GROUP}NONE[\s.*`]*$", re.IGNORECASE)
 _BARE_GROUP_LINE = re.compile(r"^[\s\-*#>`|]*GROUP\b", re.IGNORECASE)
 _END_LINE = re.compile(r"^[\s\-*#>`|]*END[\s.*`]*$", re.IGNORECASE)
 # The parts after a group's members, each up to the next "|".
