@@ -1064,6 +1064,9 @@ class EntityDeduplicator:
             k = min(k * 10, _EXACT_NEIGHBOUR_K_MAX)
             wider, failed = await index.discover(full, k)
             hits.update(wider)
+            # Matches past the first k are what the widening looks for; a
+            # failed one is not a finished search, so the entity stays pending.
+            run.unsearched.update(dict.fromkeys(failed, "widened nearest-name lookup failed"))
             if failed:
                 logger.warning("Exact phase: a widened lookup failed for %d entities", len(failed))
         run.hits = hits

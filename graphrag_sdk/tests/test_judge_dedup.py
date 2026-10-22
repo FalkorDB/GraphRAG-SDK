@@ -1168,3 +1168,20 @@ def test_a_run_reports_what_its_judge_spent_in_that_run():
         judge=Boastful([SetVerdict(groups=[JudgeGroup(members=[0, 1])])])
     ).dedup.last_judge_stats
     assert stats["merged"] == 1 and stats["tokens"] == 1
+
+
+def test_a_widened_lookup_that_fails_leaves_its_entity_pending():
+    """Ten nearest names that all match may have more past them — the reason
+    the lookup widens. A widened lookup that fails is not a finished search:
+    the entity stays pending for a later run, as when the first lookup fails."""
+
+    class WideFails(SimGraph):
+        async def query_raw(self, cypher, params=None):
+            if "db.idx.vector.queryNodes" in cypher and params["k"] > 11:
+                raise RuntimeError("query timed out")
+            return await super().query_raw(cypher, params)
+
+    rows = [[f"js{i}", "John Smith", f"Mention {i}.", "Person"] for i in range(15)]
+    rows[0] += [None, False]
+    sim = asyncio.run(simulate(rows, pending=["js0"], graph_class=WideFails))
+    assert _retried(sim) == {"js0": "widened nearest-name lookup failed"}
