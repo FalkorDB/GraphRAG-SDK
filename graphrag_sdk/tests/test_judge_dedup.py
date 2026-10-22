@@ -19,7 +19,7 @@ from graphrag_sdk.core.models import (
     SetVerdict,
 )
 from graphrag_sdk.core.providers.base import LLMBatchItem
-from graphrag_sdk.storage.dedup_judges import DedupJudge
+from graphrag_sdk.storage.dedup_judges import DedupJudge, LLMJudge
 from graphrag_sdk.storage.dedup_judges.llm_judge import (
     JUDGE_MIN_OUTPUT_TOKENS,
     JUDGE_PROMPT,
@@ -375,8 +375,9 @@ def _retried(sim):
 def test_an_agreed_pair_merges_once():
     llm = ScriptedLLM([[IBM]])
     sim = _sim(judge=llm)
-    # one round: the IBM pair is judged once and merged once
-    assert sim.dedup.last_judge_stats["judge_calls"] == 1
+    # one round, one prompt: the IBM pair is judged once and merged once
+    stats = sim.dedup.last_judge_stats
+    assert stats["judge_calls"] == stats["llm_calls"] == 1 and stats["llm_failed"] == 0
     assert sim.groups == [["e1", "e2"]] and sim.merged == 1
     assert set(sim.decisions.clear) == {"e1", "e2", "e3"}
 
@@ -390,6 +391,7 @@ def test_a_failed_call_merges_nothing_and_its_set_is_asked_again_alone():
     stats = sim.dedup.last_judge_stats
     assert sim.merged == 0 and stats["judge_calls"] == len(llm.prompts) == 1 + REASKS
     assert stats["unanswered_sets"] == 1 and stats["judge_failed"] == 0
+    assert stats["llm_calls"] == stats["llm_failed"] == 1 + REASKS
     assert _retried(sim) == {"e1": "no usable verdict", "e2": "no usable verdict"}
     assert sim.run.charged == {"e1", "e2"} and sim.decisions.clear == ["e3"]
 
@@ -663,6 +665,8 @@ def test_a_judge_that_raises_leaves_every_judged_entity_pending():
     sim = _sim(judge=Raises())
     assert sim.merged == 0 and sim.decisions.clear == ["e3"]
     assert set(_retried(sim)) == {"e1", "e2"}
+    stats = sim.dedup.last_judge_stats
+    assert stats["judge_failed"] == stats["llm_calls"] == stats["llm_failed"] == 1 + REASKS
 
 
 def test_the_judges_name_is_the_groups_last_operation():
@@ -1113,3 +1117,27 @@ def test_a_set_no_round_answers_stays_pending():
     assert stats["judge_calls"] == 1 + REASKS and stats["unanswered_sets"] == 1
     assert _retried(sim) == {"e1": "no usable verdict", "e2": "no usable verdict"}
     assert sim.merged == 0
+
+
+def test_a_run_reports_what_its_judge_spent_in_that_run():
+    """A judge's ``usage()`` is running totals; each run's stats get only what
+    grew while it ran, so one judge reused across runs is not counted twice. A
+    judge that reports nothing adds nothing, and a key the run reports itself
+    is left alone."""
+    judge = LLMJudge(ScriptedLLM([[IBM]]))
+    first, second = _sim(judge=judge), _sim(judge=judge)
+    assert first.dedup.last_judge_stats["llm_calls"] == 1
+    assert second.dedup.last_judge_stats["llm_calls"] == 1
+    assert judge.usage() == {"llm_calls": 2, "llm_failed": 0}
+
+    plain = _sim(judge=RecordingJudge([SetVerdict(groups=[JudgeGroup(members=[0, 1])])]))
+    assert "llm_calls" not in plain.dedup.last_judge_stats
+
+    class Boastful(RecordingJudge):
+        def usage(self):
+            return {"merged": 99, "tokens": len(self.asked)}
+
+    stats = _sim(
+        judge=Boastful([SetVerdict(groups=[JudgeGroup(members=[0, 1])])])
+    ).dedup.last_judge_stats
+    assert stats["merged"] == 1 and stats["tokens"] == 1

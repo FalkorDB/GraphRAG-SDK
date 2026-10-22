@@ -1073,7 +1073,8 @@ class FinalizeResult(DataModel):
     entities_deduplicated: int = 0
     judge_calls: int = 0
     """Calls to the dedup judge: one per round, the first and each re-ask of
-    the sets without a usable answer. ``judge_stats`` has the rest."""
+    the sets without a usable answer. ``judge_stats`` has the rest, with what
+    the judge spent — ``LLMJudge``'s prompts in ``llm_calls``."""
     judge_stats: dict[str, int | str] = Field(default_factory=dict)
     dedup_pending: int = 0
     """Entities still pending a dedup check after this run.

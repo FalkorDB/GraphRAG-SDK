@@ -139,6 +139,9 @@ class LLMJudge(DedupJudge):
     one set per prompt. A set gets no verdict when its prompt fails, when the
     answer never mentions it, or when the answer stopped in it, before ``END``.
 
+    Its :meth:`usage` counts the prompts sent (``llm_calls``) and those that
+    got no response (``llm_failed``).
+
     Args:
         llm: judge model. gpt-4.1-class models measured 9 wrong merges where
             gpt-4o-mini made 51 on the same input; use the strongest you can.
@@ -149,12 +152,19 @@ class LLMJudge(DedupJudge):
     def __init__(self, llm: LLMInterface, *, max_concurrency: int | None = None) -> None:
         self._llm = llm
         self._conc = max_concurrency
+        self._calls = 0
+        self._failed = 0
 
     async def judge(self, sets: list[JudgeSet], *, retry: bool = False) -> list[SetVerdict | None]:
         prompts, orders = pack_prompts(sets, budget=0 if retry else PROMPT_TOKEN_BUDGET)
-        results = await self._llm.abatch_invoke(
-            prompts, max_concurrency=self._conc, **_output_room(self._llm)
-        )
+        self._calls += len(prompts)
+        try:
+            results = await self._llm.abatch_invoke(
+                prompts, max_concurrency=self._conc, **_output_room(self._llm)
+            )
+        except Exception:
+            self._failed += len(prompts)
+            raise
         verdicts: list[SetVerdict | None] = [None] * len(sets)
         failed = 0
         for item in results:
@@ -168,12 +178,16 @@ class LLMJudge(DedupJudge):
             for k, verdict in answered.items():
                 verdicts[order[k]] = verdict
         if failed:
+            self._failed += failed
             logger.warning(
                 "judge dedup: %d of %d judge prompts failed; their sets got no verdict",
                 failed,
                 len(prompts),
             )
         return verdicts
+
+    def usage(self) -> dict[str, int]:
+        return {"llm_calls": self._calls, "llm_failed": self._failed}
 
 
 def _output_room(llm: Any) -> dict[str, int]:

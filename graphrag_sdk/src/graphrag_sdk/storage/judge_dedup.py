@@ -477,7 +477,9 @@ class Verdicts:
     ``failed`` are the members of the sets that got no usable answer after
     ``REASKS`` further attempts each; ``unanswered`` counts those sets.
     ``calls`` counts the judge's calls, ``failed_calls`` those that answered
-    nothing: they raised, or returned a list of another length.
+    nothing: they raised, or returned a list of another length. ``usage`` is
+    what the judge reports it spent on these sets (see
+    :meth:`DedupJudge.usage`).
     """
 
     same: set[tuple[int, int]] = field(default_factory=set)
@@ -488,6 +490,7 @@ class Verdicts:
     unanswered: int = 0
     calls: int = 0
     failed_calls: int = 0
+    usage: dict[str, int] = field(default_factory=dict)
 
     def record(self, members: list[int], groups: list[JudgeGroup]) -> None:
         """Add one set's clean verdict; ``members`` are its entity indices, by
@@ -598,6 +601,7 @@ async def ask_judge(
     Nothing is written."""
     asked = judge_sets(sets, ents, schema)
     verdicts = Verdicts()
+    before = judge.usage()
     todo = list(range(len(sets)))
     for attempt in range(1 + REASKS):
         if not todo:
@@ -622,6 +626,7 @@ async def ask_judge(
     for s in todo:
         verdicts.failed.update(sets[s])
     verdicts.unanswered = len(todo)
+    verdicts.usage = {key: n - before.get(key, 0) for key, n in judge.usage().items()}
     return verdicts
 
 

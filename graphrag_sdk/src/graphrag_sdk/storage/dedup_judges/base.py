@@ -59,3 +59,10 @@ class DedupJudge(ABC):
             answers none of its sets.
         """
         ...
+
+    def usage(self) -> dict[str, int]:
+        """Running totals of what this judge has spent, e.g.
+        ``{"llm_calls": 12}``. A run adds what it spent — how much the totals
+        grew while it ran — to its ``judge_stats``; a key the run reports
+        itself is left alone. None by default."""
+        return {}

@@ -1261,6 +1261,8 @@ class EntityDeduplicator:
         stats["judge_calls"] = verdicts.calls
         stats["judge_failed"] = verdicts.failed_calls
         stats["unanswered_sets"] = verdicts.unanswered
+        for key, spent in verdicts.usage.items():
+            stats.setdefault(key, spent)
         await self._resolve(run, ents, verdicts, protected, batch_size)
 
     async def _claim(self, store: SystemStore, run: _Run) -> None:

@@ -607,7 +607,13 @@ class DedupJudge(ABC):
     async def judge(self, sets: list[JudgeSet], *, retry: bool = False) -> list[SetVerdict | None]:
         """One verdict per set, in order; None for a set it could not decide."""
         ...
+
+    def usage(self) -> dict[str, int]:
+        """Optional: running totals of what the judge spent, e.g. {"llm_calls": 12}."""
+        return {}
 ```
+
+A run adds what its judge spent — how much `usage()` grew while it ran — to `FinalizeResult.judge_stats`. `LLMJudge` reports its prompts (`llm_calls`) and those that got no response (`llm_failed`).
 
 **Input — `JudgeSet`:** `entities`, each a `JudgeEntity` with `name`, `labels`, `aliases` (names it was already merged under), `description` and `attributes` (its values of the attributes the ontology declares for its types, e.g. `{"born": 1961, "role": "CEO"}`); and `types`, each a `JudgeType` with its `label`, `description` and declared `attributes` (`JudgeAttribute`: `name`, `type`, `description`). An entity under two types shows the attributes of both. Every field is document text: data to judge, never instructions.
 

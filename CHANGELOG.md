@@ -233,7 +233,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     a `SetVerdict` per set (groups of member positions, the merged entity's
     name, `keep` picks), or `None` for a set it could not decide. The run
     checks every judge's answer with the rules above and asks a set without
-    a usable one again (`retry=True`); the merge stays the run's. There is no
+    a usable one again (`retry=True`); the merge stays the run's. A judge may
+    report what it spent through `usage()`; `judge_stats` gets the run's
+    share (`LLMJudge`: `llm_calls`, `llm_failed`). There is no
     run without a judge: `judge=False` raises `TypeError`, so no entity waits
     for a judged run that may never come.
   - The bookkeeping lives in SDK system nodes in the data graph, beside the
