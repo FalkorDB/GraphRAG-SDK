@@ -188,8 +188,10 @@ and CI tests both engines.
   `SpacyExtractor` uses spaCy's NER (`graphrag-sdk[spacy]` plus a spaCy
   model). `CompositeExtractor` chains extractors: the first one's entities
   win where spans overlap and later ones fill the gaps, for example GLiNER
-  first and spaCy after it. Both are importable from `graphrag_sdk`; nothing
-  changes unless you construct them.
+  first and spaCy after it. One exception: a later span that contains an
+  earlier one and adds a word replaces it, so `Paris Observatory` from the
+  second extractor replaces `Paris` from the first. Both are importable from
+  `graphrag_sdk`; nothing changes unless you construct them.
 - **`ingest()` reports chunks whose extraction failed.** A chunk whose model
   call failed used to add nothing while `ingest()` still reported success.
   `IngestionResult.metadata["extraction"]` now carries `chunks_attempted`,
@@ -505,8 +507,8 @@ and CI tests both engines.
   and `completion()` warn once when documents were ingested and no
   deduplication pass ran since.
 - **`LLMVerifiedResolution` finds more duplicates and makes fewer wrong
-  merges.** It runs only when passed as `ingest(resolver=...)`. Candidates are
-  nominated in one stage by the similarity of `"name: description"`, whatever
+  merges.** It runs only when passed as `resolver=` to `ingest()`, `update()`
+  or `apply_changes()`. Candidates are nominated in one stage by the similarity of `"name: description"`, whatever
   their labels (`unified_threshold=0.65`). Pairs are checked five per model call
   (`verification_max_pairs_per_call`). Pairs whose labels belong to different
   families (a person and a place) are dropped before the model sees them
