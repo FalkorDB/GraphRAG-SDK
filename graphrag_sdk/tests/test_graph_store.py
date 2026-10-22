@@ -389,6 +389,8 @@ class TestReconcileKeyedIdentity:
         cypher, params = fold
         assert "MERGE (s)-[nr:`RELATES`" in cypher and "MERGE (s)-[nr:`OWNS`]" in cypher
         assert "SET s.embedding = null" in cypher and "kind: 'deleted', eid: _eid" in cypher
+        # both ids: a merge planned on either must find it changed
+        assert "CASE WHEN ok THEN [$old, $new] ELSE [] END" in cypher
         assert params["old"] == "globex__org" and params["new"] == "initech__org"
         assert params["carry"] == {"role": "x"}
         assert params["handled"] == ["OWNS:out", "RELATES:out"]
