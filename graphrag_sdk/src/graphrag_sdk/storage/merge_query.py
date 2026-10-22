@@ -391,8 +391,12 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
     else:
         read_old, update = "", "SET nr += properties(e)"
     return (
-        f"OPTIONAL MATCH {old} WHERE ok AND b <> s AND b <> d "
-        f"WITH {carried}, collect([e, b]) AS rows "
+        # Filtered in the collect, not in a WHERE on the match: on FalkorDB 6.0
+        # (Rust engine) a WHERE that reads ``s`` on an OPTIONAL MATCH after an
+        # earlier block's UNWIND drops every row, so only the first edge type
+        # moved and the rest went with the duplicate.
+        f"OPTIONAL MATCH {old} "
+        f"WITH {carried}, collect(CASE WHEN ok AND b <> s AND b <> d THEN [e, b] END) AS rows "
         "UNWIND CASE WHEN size(rows) = 0 THEN [null] ELSE rows END AS row "
         f"WITH {carried}, row[0] AS e, row[1] AS b "
         f"{read_old}"
