@@ -2726,9 +2726,7 @@ class TestDefaultResolver:
         assert res.relationships[0].start_node_id == survivor.id  # edge re-pointed, not lost
         assert res.relationships[0].end_node_id == "x"
 
-    async def test_finalize_reports_the_judge_and_runs_one_it_is_given(
-        self, graphrag, monkeypatch
-    ):
+    async def test_finalize_reports_the_judge_and_runs_one_it_is_given(self, graphrag, monkeypatch):
         seen: dict = {}
 
         async def fake_dedup(**kw):
