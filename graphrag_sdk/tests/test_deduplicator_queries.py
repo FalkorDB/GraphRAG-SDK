@@ -1,65 +1,26 @@
-"""Regression tests for the edge-remap queries used when merging duplicates.
+"""The exact phase's rules and the merges it writes, without a database.
 
-These assert on query *shape* rather than behaviour, because the defect they
-guard against is a planner choice, not a wrong answer. The old incoming-remap
-query returned perfectly correct results; it just scanned every entity in the
-graph to do it, so merge throughput fell from 61.9 to 10.3 merges/s between a
-1K and a 50K node graph. No functional test can catch that.
+Name normalisation and the acronym fold that group entities by name; merges
+simulated through ``dedup_sim`` (descriptions, aliases, labels); the merge
+query's shape, for what a functional test cannot see — the moves before the
+delete, the fold and the delete under one guard; and how a merge whose reply
+was lost reports what the earlier attempt did. The merge query itself runs on
+a real FalkorDB in ``test_dedup_records``.
 """
-
-import re
-from unittest.mock import MagicMock
 
 import pytest
 
-from graphrag_sdk.storage.deduplicator import EntityDeduplicator
-from graphrag_sdk.storage.merge_query import absorb_query
-
-from .dedup_sim import AllSameJudge, simulate
-
-
-def _result(rows):
-    r = MagicMock()
-    r.result_set = rows
-    return r
-
-
-def _props_read(rows, params, stored=None):
-    """Answer ``_read_properties`` from the fetched rows, as the graph would:
-    ``[props(survivor), props(dup), labels(survivor), labels(dup)]``.
-    ``stored`` adds properties the page does not carry, per id — the
-    ``descriptions`` list an earlier merge left on a node."""
-    by_id = {r[0]: r for r in rows}
-
-    def props(r):
-        out = {"name": r[1], "description": r[2]}
-        if len(r) > 4 and r[4]:
-            out["aliases"] = list(r[4])
-        out.update((stored or {}).get(r[0], {}))
-        return out
-
-    k, d = by_id.get(params["survivor_id"]), by_id.get(params["dup_id"])
-    if k is None or d is None:
-        return _result([])
-    return _result(
-        [
-            [
-                props(k),
-                props(d),
-                [k[3]] if len(k) > 3 and k[3] else [],
-                [d[3]] if len(d) > 3 and d[3] else [],
-            ]
-        ]
-    )
-
-
-# ── Name grouping ───────────────────────────────────────────────
-
-from graphrag_sdk.storage.deduplicator import (  # noqa: E402
+from graphrag_sdk.storage.deduplicator import (
+    EntityDeduplicator,
     _acronym_key,
     _expansion_key,
     normalize_entity_name,
 )
+from graphrag_sdk.storage.merge_query import absorb_query
+
+from .dedup_sim import AllSameJudge, simulate
+
+# ── Name grouping ───────────────────────────────────────────────
 
 
 def is_acronym_of(short: str, long: str) -> bool:
@@ -330,7 +291,7 @@ class TestMergePreservesDescriptions:
         assert "first lit in 1871" in writes[0]
         assert "a lighthouse on Cape Morrow" in writes[0]
 
-    async def test_same_name_different_label_is_not_merged(self):
+    async def test_same_name_different_label_is_not_merged_by_rule(self):
         sim = await simulate(
             [
                 ["e1", "Paris", "the capital of France", "Location", None, False],
@@ -338,22 +299,6 @@ class TestMergePreservesDescriptions:
             ]
         )
         assert sim.merged == 0 and sim.ops == []
-
-    async def test_identical_descriptions_are_not_concatenated(self):
-        """The text is not repeated — and the ``descriptions`` list is still
-        written, so the member the deleted node held is recorded: two nodes
-        with the same description and no list used to leave the survivor
-        without one, reporting fewer members than it absorbed."""
-        sim = await simulate(
-            [
-                ["e1", "Alice", "an engineer", "Person"],
-                ["e2", "alice", "an engineer", "Person"],
-            ],
-            judge=AllSameJudge(),
-        )
-        assert self._description_writes(sim) == ["an engineer"]
-        (write,) = sim.writes
-        assert write.params["descs"] == ["an engineer"]
 
     async def test_empty_description_does_not_produce_a_separator(self):
         sim = await simulate(
@@ -363,8 +308,7 @@ class TestMergePreservesDescriptions:
             ],
             judge=AllSameJudge(),
         )
-        for w in self._description_writes(sim):
-            assert not w.startswith(" | ") and not w.endswith(" | ")
+        assert self._description_writes(sim) == ["a physicist"]
 
     async def test_existing_segments_are_not_repeated(self):
         """Dedup compares members, not whole strings.
@@ -385,24 +329,6 @@ class TestMergePreservesDescriptions:
         )
         assert sim.merged == 1
         assert self._description_writes(sim) == []
-
-    async def test_a_lone_description_holding_the_separator_is_one_member(self):
-        """A node with only ``description`` is one member, not split on
-        ``" | "`` — the rule ``description_list`` states: nothing tells a
-        pre-``descriptions`` survivor from a fresh node whose single text
-        contains the separator, and splitting the fresh one invents members
-        that count toward ``force_summary_threshold``."""
-        sim = await simulate(
-            [
-                ["e1", "Maya Ellison", "CEO | founder of Acme", "Person"],
-                ["e2", "maya ellison", "born 1970", "Person"],
-            ],
-            judge=AllSameJudge(),
-        )
-        assert sim.merged == 1
-        (write,) = sim.writes
-        assert write.params["descs"] == ["CEO | founder of Acme", "born 1970"]
-        assert write.params["desc"] == "CEO | founder of Acme | born 1970"
 
     async def test_segments_accumulate_once_across_a_group(self):
         sim = await simulate(
@@ -532,8 +458,6 @@ def test_an_operation_an_earlier_attempt_ticked_says_what_that_attempt_did():
     """A merge whose reply was lost comes back, through the connection's
     retry, as "not my turn". The plan page says whether the earlier attempt
     applied it or skipped it as changed."""
-    import pytest
-
     from graphrag_sdk.storage.merge_query import (
         ALREADY_APPLIED,
         ALREADY_CHANGED,

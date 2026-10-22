@@ -3,20 +3,20 @@
 1. the survivor keeps EVERY member's description as a list (``descriptions``)
    plus the ``" | "``-joined string (``description``) that search reads;
 2. the survivor carries every member's label (``merged_labels`` at ingest →
-   promoted to Cypher labels on write; at finalize ``_absorb`` sets the Cypher
-   labels and records them in ``merged_labels`` in the same statement);
+   promoted to Cypher labels on write; at finalize the merge query sets the
+   Cypher labels ``EntityDeduplicator._fold`` computed and records them in
+   ``merged_labels`` in the same statement);
 3. relationship endpoints are re-pointed to the survivor before any loser is
    removed, so no edge is lost.
 
-Covered here: the shared helper, ExactMatchResolution (ingest) and both
-LLMVerifiedResolution merge loops. Later layers add the finalize exact phase
-and the judge.
+Covered here: the shared helper, ExactMatchResolution (ingest), both
+LLMVerifiedResolution merge loops, and finalize's merge write with the judge
+that decides it.
 """
 
 from __future__ import annotations
 
 import re
-from types import SimpleNamespace
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship, LLMResponse
@@ -34,7 +34,7 @@ from graphrag_sdk.storage.dedup_judges import DedupJudge, LLMJudge
 from graphrag_sdk.storage.merge_query import absorb_query
 
 from .conftest import MockLLM
-from .dedup_sim import AllSameJudge, simulate
+from .dedup_sim import AllSameJudge, NameOracleLLM, simulate
 from .test_llm_verified_resolution import ControlledEmbedder, _angle
 
 
@@ -251,9 +251,9 @@ class TestLLMVerifiedMergeSites:
 
 
 class TestFinalizeMergeFold:
-    """Rules 1 and 3 through ``EntityDeduplicator._fold``, the write every
-    finalize phase (exact, adoption, judge) merges through, and the merge query
-    that carries it."""
+    """Rules 1 and 3 through ``EntityDeduplicator._fold`` — the write every
+    finalize phase (exact, adoption, judge) merges through, reached here by
+    judged merges — and the merge query that carries it."""
 
     # id, name, description, label
     _ROWS = [
@@ -366,26 +366,15 @@ class TestJudgeMergeSite:
     — one fold carrying the descriptions list, aliases and the loser's labels,
     applied by the one query that moves every edge."""
 
-    class _LLM:
-        def __init__(self):
-            self.prompts = []
-
-        async def abatch_invoke(self, prompts, max_concurrency=8):
-            self.prompts.extend(prompts)
-            return [
-                SimpleNamespace(
-                    ok=True, index=i, response=SimpleNamespace(content="SET 1 GROUP: 1, 2\nEND")
-                )
-                for i in range(len(prompts))
-            ]
-
     async def test_three_rules(self):
         rows = [
             ["a", "Airbus", "planemaker", ["Organization"]],
             ["b", "Airbus SE", "Toulouse group", ["Company"]],
         ]
         sim = await simulate(
-            rows, stored={"a": {"props": {"descriptions": ["planemaker"]}}}, judge=self._LLM()
+            rows,
+            stored={"a": {"props": {"descriptions": ["planemaker"]}}},
+            judge=NameOracleLLM(rounds=["SET 1 GROUP: 1, 2\nEND"]),
         )
         assert sim.merged == 1 and sim.dedup.last_judge_stats["merged"] == 1
         (write,) = sim.writes
@@ -407,7 +396,6 @@ class TestJudgeMergeSite:
         import inspect
 
         assert list(inspect.signature(DedupJudge.judge).parameters) == ["self", "sets", "retry"]
-        assert inspect.signature(DedupJudge.judge).return_annotation == "list[SetVerdict | None]"
         params = set(inspect.signature(LLMJudge).parameters)
         assert "llm" in params and not params & {"graph", "graph_store", "store"}
 

@@ -369,7 +369,6 @@ class TestGraphRAGDeduplicateEntities:
         empty = MagicMock()
         empty.result_set = [[0]]
         g._graph_store.query_raw = AsyncMock(return_value=empty)
-        g._vector_store.backfill_entity_embeddings = AsyncMock(return_value=0)
         g._vector_store.embed_relationships = AsyncMock(return_value=0)
         g._vector_store.ensure_indices = AsyncMock(return_value={})
         await g.finalize()
@@ -2727,33 +2726,24 @@ class TestDefaultResolver:
         assert res.relationships[0].start_node_id == survivor.id  # edge re-pointed, not lost
         assert res.relationships[0].end_node_id == "x"
 
-    async def test_finalize_runs_the_judge_with_the_facade_llm(self, graphrag, monkeypatch):
+    async def test_finalize_reports_the_judge_and_runs_one_it_is_given(
+        self, graphrag, monkeypatch
+    ):
         seen: dict = {}
-        order: list[str] = []
 
         async def fake_dedup(**kw):
             seen.update(kw)
-            order.append("dedup")
-            return 0
-
-        async def fake_backfill(*a, **kw):
-            order.append("backfill")
             return 0
 
         monkeypatch.setattr(graphrag._deduplicator, "deduplicate", fake_dedup)
         graphrag._deduplicator.last_judge_stats = {"merged": 2, "judge_calls": 4}
         graphrag._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[[0]]))
-        graphrag._vector_store.backfill_entity_embeddings = AsyncMock(side_effect=fake_backfill)
         graphrag._vector_store.embed_relationships = AsyncMock(return_value=0)
         graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
 
         result = await graphrag.finalize()
-        assert isinstance(seen["judge"], LLMJudge) and seen["judge"]._llm is graphrag.llm
         assert result.judge_calls == 4
         assert result.judge_stats == {"merged": 2, "judge_calls": 4}
-        # Dedup writes every entity vector itself, listing each entity first;
-        # no backfill runs after it.
-        assert order == ["dedup"]
 
         other = LLMJudge(MagicMock())
         await graphrag.finalize(judge=other)

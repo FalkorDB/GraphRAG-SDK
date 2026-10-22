@@ -19,7 +19,6 @@ from graphrag_sdk.core.models import (
     Ontology,
     SetVerdict,
 )
-from graphrag_sdk.core.providers.base import LLMBatchItem
 from graphrag_sdk.storage.dedup_judges import DedupJudge, LLMJudge
 from graphrag_sdk.storage.dedup_judges.llm_judge import (
     JUDGE_MIN_OUTPUT_TOKENS,
@@ -51,7 +50,7 @@ from graphrag_sdk.storage.judge_dedup import (
 from graphrag_sdk.storage.merge_query import MergeRead
 from graphrag_sdk.storage.system_store import ABSORB, ADOPT, EXACT, JUDGE, PlanOp
 
-from .dedup_sim import AllDifferentJudge, AllSameJudge, SimGraph, simulate
+from .dedup_sim import AllDifferentJudge, AllSameJudge, NameOracleLLM, SimGraph, simulate
 
 # ── pure helpers ────────────────────────────────────────────────────────────
 
@@ -346,51 +345,6 @@ def test_pack_prompts_keeps_an_oversized_set_within_budget():
 # against a real FalkorDB are covered by test_dedup_records / test_dedup_run.
 
 
-class ScriptedLLM:
-    """Oracle judge: answers by entity NAME. ``per_pass[n]`` is the n-th
-    round's answer — the name groups that are one entity; ``None`` makes every
-    call of that round fail; a ``str`` is returned verbatim, so it carries its
-    own ``END``. Rounds past the list answer like the last one, so ``[None]``
-    fails every re-ask too."""
-
-    def __init__(self, per_pass):
-        self.per_pass = list(per_pass)
-        self.prompts: list[str] = []
-        self.pass_no = 0
-        self.kw: dict = {}
-
-    async def abatch_invoke(self, prompts, **kw):
-        self.prompts.extend(prompts)
-        self.kw = kw
-        same = self.per_pass[min(self.pass_no, len(self.per_pass) - 1)]
-        self.pass_no += 1
-        out = []
-        for i, p in enumerate(prompts):
-            if same is None:
-                out.append(LLMBatchItem(index=i, error=RuntimeError("boom")))
-                continue
-            if isinstance(same, str):
-                out.append(LLMBatchItem(index=i, response=SimpleNamespace(content=same)))
-                continue
-            lines = []
-            for si, block in enumerate(re.split(r"--- Set \d+ ---\n", p)[1:], start=1):
-                block = block.split("\n\nDECISION PROCEDURE")[0]
-                names = re.findall(r"^(\d+)\. (.+?) \[", block, flags=re.M)
-                used: set[str] = set()
-                groups = []
-                for num, name in names:
-                    if num in used:
-                        continue
-                    grp = [n for n, nm in names if any(name in g and nm in g for g in same)]
-                    if len(grp) > 1:
-                        used.update(grp)
-                        groups.append(f"SET {si} GROUP: {', '.join(grp)} | NAME: {name}")
-                lines += groups or [f"SET {si} NONE"]
-            lines.append("END")
-            out.append(LLMBatchItem(index=i, response=SimpleNamespace(content="\n".join(lines))))
-        return out
-
-
 IBM = {"IBM", "International Business Machines"}
 # id, name, description, labels, aliases, is_stub, degree, name vector
 ROWS = [
@@ -418,7 +372,7 @@ def _retried(sim):
 
 
 def test_an_agreed_pair_merges_once():
-    llm = ScriptedLLM([[IBM]])
+    llm = NameOracleLLM(rounds=[[IBM]])
     sim = _sim(judge=llm)
     # one round, one prompt: the IBM pair is judged once and merged once
     stats = sim.dedup.last_judge_stats
@@ -431,7 +385,7 @@ def test_a_failed_call_merges_nothing_and_its_set_is_asked_again_alone():
     """A prompt that failed is not a verdict: nothing in it merges, its sets
     are asked again one per prompt, and an entity whose set never got an
     answer stays pending, charged one judged attempt."""
-    llm = ScriptedLLM([None])
+    llm = NameOracleLLM(rounds=[None])
     sim = _sim(judge=llm)
     stats = sim.dedup.last_judge_stats
     assert sim.merged == 0 and stats["judge_calls"] == len(llm.prompts) == 1 + REASKS
@@ -440,7 +394,7 @@ def test_a_failed_call_merges_nothing_and_its_set_is_asked_again_alone():
     assert _retried(sim) == {"e1": "no usable verdict", "e2": "no usable verdict"}
     assert sim.run.charged == {"e1", "e2"} and sim.decisions.clear == ["e3"]
 
-    llm = ScriptedLLM([None, [IBM]])
+    llm = NameOracleLLM(rounds=[None, [IBM]])
     sim = _sim(judge=llm)
     assert sim.groups == [["e1", "e2"]], "the re-ask answered"
     assert "--- Set 2 ---" not in llm.prompts[-1]
@@ -452,8 +406,6 @@ def test_a_set_an_answer_stopped_in_is_asked_again_and_the_sets_before_it_count(
     """An answer cut after "IBM = International Business Machines" would say
     Big Blue is a different company. Without its END line that set is asked
     again, alone; the set the answer finished still counts."""
-    import logging
-
     rows = [
         ["a", "Meta", "Owner of Instagram.", ["Organization"]],
         ["b", "Facebook", "Social network company.", ["Organization"]],
@@ -466,7 +418,7 @@ def test_a_set_an_answer_stopped_in_is_asked_again_and_the_sets_before_it_count(
         lambda edges, **kw: [[0, 1], [2, 3, 4]],
     )
     cut = "SET 1 GROUP: 1, 2 | NAME: Meta\nSET 2 GROUP: 1, 2 | NAME: IBM"
-    llm = ScriptedLLM([cut, [IBM | {"Big Blue"}]])
+    llm = NameOracleLLM(rounds=[cut, [IBM | {"Big Blue"}]])
     with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.judge_dedup"):
         sim = _sim(rows, judge=llm)
     assert sorted(map(sorted, sim.groups)) == [["a", "b"], ["c", "d", "e"]]
@@ -484,7 +436,7 @@ def test_the_judge_lifts_a_low_output_limit_and_never_sets_one():
     assert _output_room(SimpleNamespace(_max_tokens=32_000)) == {}
     assert _output_room(SimpleNamespace()) == {}
 
-    llm = ScriptedLLM([[IBM]])
+    llm = NameOracleLLM(rounds=[[IBM]])
     llm._max_tokens = 256
     _sim(judge=llm)
     assert llm.kw["max_tokens"] == JUDGE_MIN_OUTPUT_TOKENS
@@ -495,15 +447,23 @@ def test_the_output_floor_can_be_set_or_turned_off():
     tokens failed every judge call with the floor forced on; the floor is an
     option, and ``None`` keeps the LLM's own limit."""
     for floor, sent in ((1_024, 1_024), (None, None)):
-        llm = ScriptedLLM([[IBM]])
+        llm = NameOracleLLM(rounds=[[IBM]])
         llm._max_tokens = 256
         sim = _sim(judge=LLMJudge(llm, min_output_tokens=floor))
         assert llm.kw.get("max_tokens") == sent and sim.merged == 1
 
 
+def test_the_judge_sends_its_concurrency_to_the_llm():
+    """``None`` leaves the LLM's own ``max_concurrency``."""
+    for conc in (3, None):
+        llm = NameOracleLLM(rounds=[[IBM]])
+        _sim(judge=LLMJudge(llm, max_concurrency=conc))
+        assert llm.kw["max_concurrency"] == conc
+
+
 def test_an_answer_that_is_not_a_clean_partition_is_not_a_verdict():
     for answer in ("SET 1 GROUP: 1, 2, 7", "SET 1 GROUP: 1 | NAME: IBM", "SET 2 NONE"):
-        sim = _sim(judge=ScriptedLLM([answer]))
+        sim = _sim(judge=NameOracleLLM(rounds=[answer]))
         assert sim.merged == 0, answer
         assert set(_retried(sim)) == {"e1", "e2"}, answer
 
@@ -516,7 +476,7 @@ def test_same_name_mentions_are_judged_even_without_name_vectors():
         ["p1", "Paris", "capital of France", ["Location"], None, None, 0, []],
         ["p2", "Paris", "French capital city", ["Location"], None, None, 0, []],
     ]
-    sim = _sim(rows, judge=ScriptedLLM([[{"Paris"}]]))
+    sim = _sim(rows, judge=NameOracleLLM(rounds=[[{"Paris"}]]))
     assert sim.groups == [["p1", "p2"]]
     assert _retried(sim) == {"p1": "no name vector", "p2": "no name vector"}
 
@@ -536,12 +496,12 @@ def test_agreements_chain_across_sets_but_never_through_a_protected_pair(monkeyp
     monkeypatch.setattr(
         "graphrag_sdk.storage.judge_dedup.make_groups_dense", lambda edges, **kw: [[0, 1], [1, 2]]
     )
-    llm = ScriptedLLM([[same]])
+    llm = NameOracleLLM(rounds=[[same]])
     sim = _sim(rows, judge=llm)
     assert sim.dedup.last_judge_stats["sets"] == 2 and "--- Set 2 ---" in llm.prompts[0]
     assert sim.groups == [["a", "b", "c"]], "agreements in two sets chain into one group"
 
-    sim = _sim(rows, judge=ScriptedLLM([[same]]), skip_pairs={frozenset(("a", "c"))})
+    sim = _sim(rows, judge=NameOracleLLM(rounds=[[same]]), skip_pairs={frozenset(("a", "c"))})
     assert all(not {"a", "c"} <= set(g) for g in sim.groups)
 
 
@@ -559,7 +519,9 @@ def test_a_pair_the_judge_put_apart_is_never_joined_through_other_sets(monkeypat
         "graphrag_sdk.storage.judge_dedup.make_groups_dense",
         lambda edges, **kw: [[0, 1, 2], [2, 3], [1, 3]],
     )
-    llm = ScriptedLLM([[{"Acme", "Acme Corp", "ACME Co."}, {"Acme Corp (Ohio)", "ACME Co."}]])
+    llm = NameOracleLLM(
+        rounds=[[{"Acme", "Acme Corp", "ACME Co."}, {"Acme Corp (Ohio)", "ACME Co."}]]
+    )
     sim = _sim(rows, judge=llm)
     assert sim.groups == [["a", "b", "d"]]
     assert "c" in sim.decisions.clear, "a decided pair is a completed check"
@@ -578,7 +540,7 @@ def test_a_group_a_failed_set_could_change_is_held_and_the_neighbour_refunded(mo
         "graphrag_sdk.storage.judge_dedup.make_groups_dense", lambda edges, **kw: [[0, 1], [0, 2]]
     )
 
-    class NeverAnswersTheSecondSet(ScriptedLLM):
+    class NeverAnswersTheSecondSet(NameOracleLLM):
         """Answers set {P, A}; names a member set {P, B} lacks, every time."""
 
         async def abatch_invoke(self, prompts, **kw):
@@ -592,7 +554,7 @@ def test_a_group_a_failed_set_could_change_is_held_and_the_neighbour_refunded(mo
                 item.response.content = "\n".join(kept + spoilt + ["END"])
             return out
 
-    sim = _sim(rows, judge=NeverAnswersTheSecondSet([[{"Tim Cook", "Timothy Cook"}]]))
+    sim = _sim(rows, judge=NeverAnswersTheSecondSet(rounds=[[{"Tim Cook", "Timothy Cook"}]]))
     assert sim.merged == 0
     assert _retried(sim)["p"] == "no usable verdict"
     assert _retried(sim)["a"].startswith("held")
@@ -624,7 +586,7 @@ def test_nameless_entities_are_not_judged():
         ["e2", None, "American computer firm; IBM.", ["Company"], *ROWS[1][4:]],
         ROWS[2],
     ]
-    llm = ScriptedLLM([[IBM]])
+    llm = NameOracleLLM(rounds=[[IBM]])
     sim = _sim(rows, judge=llm)
     assert sim.dedup.last_judge_stats["entities"] == 2 and sim.groups == []
     assert not any("American computer firm" in p for p in llm.prompts)
@@ -640,14 +602,14 @@ def test_keyed_rows_are_never_asked_about_each_other():
     called: the pair is dropped before the model is called. Measured as
     ``finalize()`` spending two judge calls on E-1 / E-2 'Alice Smith' rows
     the merge rules would have refused anyway."""
-    llm = ScriptedLLM([[IBM]])
+    llm = NameOracleLLM(rounds=[[IBM]])
     sim = _sim(_keyed(ROWS, {"e1", "e2", "e3"}), judge=llm)
     stats = sim.dedup.last_judge_stats
     assert stats["judge_calls"] == 0 and stats["candidates"] == 0 and sim.groups == []
     assert llm.prompts == []
     # Only the rows are protected: Watson is still judged against IBM, but the
     # two rows are never put in one set nor in one group.
-    llm = ScriptedLLM([[IBM]])
+    llm = NameOracleLLM(rounds=[[IBM]])
     sim = _sim(_keyed(ROWS, {"e1", "e2"}), judge=llm)
     assert sim.groups == []
     for prompt in llm.prompts:
@@ -665,7 +627,7 @@ def test_a_protected_pair_is_never_grouped_through_a_third_member():
         ["c", "Acme Inc", "Anvils.", ["Organization"]],
     ]
     same = {"Acme", "Acme Corp", "Acme Inc"}
-    sim = _sim(rows, judge=ScriptedLLM([[same]]), skip_pairs={frozenset(("b", "c"))})
+    sim = _sim(rows, judge=NameOracleLLM(rounds=[[same]]), skip_pairs={frozenset(("b", "c"))})
     assert sim.groups in ([["a", "b"]], [["a", "c"]])
     assert sim.merged == 1
 
@@ -689,27 +651,44 @@ def test_an_entity_with_no_name_vector_is_not_looked_up_and_stays_pending():
     """One entity without a vector gets no neighbour lookup, even when the
     others have one; it stays pending for the next run."""
     rows = [*ROWS[:2], [*ROWS[2][:7], []]]
-    sim = _sim(rows, judge=ScriptedLLM([[IBM]]))
+    sim = _sim(rows, judge=NameOracleLLM(rounds=[[IBM]]))
     assert sim.groups == [["e1", "e2"]]
     assert _retried(sim) == {"e3": "no name vector"}
+
+
+class _LookupKs(SimGraph):
+    """Records the ``k`` of every nearest-name lookup, in ``ks``."""
+
+    def __init__(self, nodes):
+        super().__init__(nodes)
+        self.ks: list[int] = []
+
+    async def query_raw(self, cypher, params=None):
+        if "db.idx.vector.queryNodes" in cypher:
+            self.ks.append(params["k"])
+        return await super().query_raw(cypher, params)
+
+
+class _WideFails(SimGraph):
+    async def query_raw(self, cypher, params=None):
+        if "db.idx.vector.queryNodes" in cypher and params["k"] > 11:
+            raise RuntimeError("query timed out")
+        return await super().query_raw(cypher, params)
+
+
+#: Fifteen mentions of one name: more than a first lookup returns.
+_JOHN_SMITHS = [[f"js{i}", "John Smith", f"Mention {i}.", "Person"] for i in range(15)]
 
 
 def test_more_same_name_entities_than_one_lookup_returns_are_all_found():
     """Fourteen existing "John Smith" mentions and a new table row of that
     name: the first lookup returns ten, all of them matches, so it is widened
     until it is not; the row absorbs every one."""
-    ks = []
-
-    class Recording(SimGraph):
-        async def query_raw(self, cypher, params=None):
-            if "db.idx.vector.queryNodes" in cypher:
-                ks.append(params["k"])
-            return await super().query_raw(cypher, params)
-
-    rows = [[f"js{i}", "John Smith", f"Mention {i}.", "Person"] for i in range(15)]
+    rows = [list(r) for r in _JOHN_SMITHS]
     rows[0] += [None, False]
-    sim = asyncio.run(simulate(rows, pending=["js0"], graph_class=Recording))
+    sim = asyncio.run(simulate(rows, pending=["js0"], graph_class=_LookupKs))
     assert sim.merged == 14 and set(sim.nodes) == {sim.writes[0].op.survivor}
+    ks = sim.dedup._graph.ks
     assert ks[0] == 11 and max(ks) > 11, ks
 
 
@@ -733,7 +712,7 @@ def test_the_judges_name_is_the_groups_last_operation():
         ["d", "Timothy D. Cook", "chief executive of Apple", ["Person"]],
     ]
     answer = "SET 1 GROUP: 1, 2 | NAME: Timothy D. Cook\nEND"
-    sim = _sim(rows, judge=ScriptedLLM([answer]))
+    sim = _sim(rows, judge=NameOracleLLM(rounds=[answer]))
     assert [op.op for op in sim.ops] == ["absorb", "rename"]
     assert (sim.ops[0].survivor, sim.ops[1].survivor) == ("s", "s"), "the better connected"
     assert sim.ops[1].rename_to == "Timothy D. Cook"
@@ -741,19 +720,20 @@ def test_the_judges_name_is_the_groups_last_operation():
     assert sim.nodes["s"]["props"]["aliases"] == ["Tim Cook"]
 
 
-def test_without_the_judge_two_extracted_mentions_never_merge_on_the_name():
+def test_the_exact_phase_never_merges_two_extracted_mentions_on_the_name():
     """The exact phase hands a group of extracted mentions only to the judge:
-    the same spelling is evidence, not proof. Unjudged, they stay apart."""
+    the same spelling is evidence, not proof. Judged different, they stay
+    apart."""
     rows = [["a", "Acme", "anvils", "Organization"], ["b", "ACME", "a band", "Organization"]]
-    assert _sim(rows).merged == 0
-    assert _sim(rows, judge=ScriptedLLM([[{"Acme", "ACME"}]])).merged == 1
+    assert _sim(rows, judge=AllDifferentJudge()).merged == 0
+    assert _sim(rows, judge=NameOracleLLM(rounds=[[{"Acme", "ACME"}]])).merged == 1
 
 
 def test_a_judged_merge_folds_descriptions_aliases_and_the_losers_label():
     """The judge decides identity and ``_fold`` writes the merge: the
     descriptions list, aliases and the loser's label, in the one query that
     moves its edges and deletes it."""
-    sim = _sim(judge=ScriptedLLM([[IBM]]))
+    sim = _sim(judge=NameOracleLLM(rounds=[[IBM]]))
     (write,) = sim.writes
     # survivor rank: equal provenance and degree, so the longest description
     # ("American computer firm; IBM.") keeps its node
@@ -775,7 +755,7 @@ def test_two_keyed_rows_are_not_asked_and_a_mention_between_them_is_not_moved():
         ["e-1__person", "Alice Smith", "", ["Person"], None, False],
         ["e-2__person", "Alice Smith", "", ["Person"], None, False],
     ]
-    llm = ScriptedLLM([[{"Alice Smith"}]])
+    llm = NameOracleLLM(rounds=[[{"Alice Smith"}]])
     sim = _sim(rows, judge=llm)
     assert sim.merged == 0 and llm.prompts == []
     stats = sim.dedup.last_judge_stats
@@ -819,7 +799,7 @@ def test_a_judge_label_union_survives_a_later_exact_merge():
         ["a", "Airbus", "Planemaker.", ["Organization"]],
         ["b", "Airbus SE", "Toulouse group.", ["Company"]],
     ]
-    first = _sim(rows, judge=ScriptedLLM([[{"Airbus", "Airbus SE"}]]))
+    first = _sim(rows, judge=NameOracleLLM(rounds=[[{"Airbus", "Airbus SE"}]]))
     b = first.nodes["b"]
     assert set(first.nodes) == {"b"} and b["labels"] == ["Company", "Organization"]
     assert b["props"]["merged_labels"] == "Organization"
@@ -903,12 +883,10 @@ def test_a_label_holding_the_separator_is_refused_and_a_recorded_one_reads_back_
     assert _entity_from_row(row)["label"] == "A"  # not filtered out as if A and B had been absorbed
 
 
-def test_a_spoiled_answer_is_warned_about_once(caplog):
+def test_a_spoiled_answer_is_warned_about_once_per_answer(caplog):
     """One answer is parsed once: a spoiled set is one warning, not one per
     reading of the answer."""
-    import logging
-
-    llm = ScriptedLLM(["SET 1 GROUP: 1 | NAME: IBM\nSET 1 GROUP: 2\nEND"])
+    llm = NameOracleLLM(rounds=["SET 1 GROUP: 1 | NAME: IBM\nSET 1 GROUP: 2\nEND"])
     with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.judge_dedup"):
         _sim(judge=llm)
     spoiled = [r for r in caplog.records if "has no verdict" in r.getMessage()]
@@ -979,7 +957,7 @@ TIMS = [
 
 
 def test_the_judge_chooses_the_value_and_the_other_is_kept_in_dropped():
-    llm = ScriptedLLM(["SET 1 GROUP: 1, 2 | NAME: Tim Cook | KEEP: born=2\nEND"])
+    llm = NameOracleLLM(rounds=["SET 1 GROUP: 1, 2 | NAME: Tim Cook | KEEP: born=2\nEND"])
     sim = _sim(
         TIMS,
         judge=llm,
@@ -1036,20 +1014,12 @@ def test_a_first_finalize_of_many_new_names_does_not_widen_every_lookup():
     OF, not with any pending entity — asked the second way, every neighbour of
     a large first finalize matched, every lookup widened to k=1000, and the
     run timed out (Naseem's review of #355)."""
-    ks = []
-
-    class Recording(SimGraph):
-        async def query_raw(self, cypher, params=None):
-            if "db.idx.vector.queryNodes" in cypher:
-                ks.append(params["k"])
-            return await super().query_raw(cypher, params)
-
     rows = [
         [f"v{i:02d}", f"Vendor {i:02d}", f"Supplier number {i}.", "Organization"] for i in range(30)
     ]
-    sim = asyncio.run(simulate(rows, pending=[r[0] for r in rows], graph_class=Recording))
+    sim = asyncio.run(simulate(rows, pending=[r[0] for r in rows], graph_class=_LookupKs))
     assert sim.merged == 0
-    assert set(ks) == {11}, ks
+    assert set(sim.dedup._graph.ks) == {11}, sim.dedup._graph.ks
 
 
 def test_a_wide_lookup_asks_for_fewer_entities_per_query():
@@ -1146,7 +1116,9 @@ def test_whatever_the_judge_an_answer_counts_only_when_clean(answer):
 
 
 @pytest.mark.parametrize(
-    "first", [RuntimeError("model down"), [], [SetVerdict(), SetVerdict()]], ids=repr
+    "first",
+    [RuntimeError("model down"), [], [SetVerdict(), SetVerdict()]],
+    ids=["raises", "no verdicts", "one too many"],
 )
 def test_a_judge_call_that_raises_or_miscounts_answers_none_of_its_sets(first):
     judge = RecordingJudge(first, [SetVerdict(groups=[JudgeGroup(members=[0, 1])])])
@@ -1169,7 +1141,7 @@ def test_a_run_reports_what_its_judge_spent_in_that_run():
     grew while it ran, so one judge reused across runs is not counted twice. A
     judge that reports nothing adds nothing, and a key the run reports itself
     is left alone."""
-    judge = LLMJudge(ScriptedLLM([[IBM]]))
+    judge = LLMJudge(NameOracleLLM(rounds=[[IBM]]))
     first, second = _sim(judge=judge), _sim(judge=judge)
     assert first.dedup.last_judge_stats["llm_calls"] == 1
     assert second.dedup.last_judge_stats["llm_calls"] == 1
@@ -1192,27 +1164,10 @@ def test_a_widened_lookup_that_fails_leaves_its_entity_pending():
     """Ten nearest names that all match may have more past them — the reason
     the lookup widens. A widened lookup that fails is not a finished search:
     the entity stays pending for a later run, as when the first lookup fails."""
-
-    class WideFails(SimGraph):
-        async def query_raw(self, cypher, params=None):
-            if "db.idx.vector.queryNodes" in cypher and params["k"] > 11:
-                raise RuntimeError("query timed out")
-            return await super().query_raw(cypher, params)
-
-    rows = [[f"js{i}", "John Smith", f"Mention {i}.", "Person"] for i in range(15)]
+    rows = [list(r) for r in _JOHN_SMITHS]
     rows[0] += [None, False]
-    sim = asyncio.run(simulate(rows, pending=["js0"], graph_class=WideFails))
+    sim = asyncio.run(simulate(rows, pending=["js0"], graph_class=_WideFails))
     assert _retried(sim) == {"js0": "widened nearest-name lookup failed"}
-
-
-class _WideFails(SimGraph):
-    async def query_raw(self, cypher, params=None):
-        if "db.idx.vector.queryNodes" in cypher and params["k"] > 11:
-            raise RuntimeError("query timed out")
-        return await super().query_raw(cypher, params)
-
-
-_JOHN_SMITHS = [[f"js{i}", "John Smith", f"Mention {i}.", "Person"] for i in range(15)]
 
 
 def test_a_widened_lookup_that_fails_twice_lets_the_first_lookup_stand():
@@ -1286,7 +1241,8 @@ def test_a_long_form_only_another_entity_found_still_makes_an_acronym_ambiguous(
         ),
     ]
     sim = asyncio.run(simulate(rows, pending=["acme", "x"]))
-    assert not any(op.dup == "acme" for op in sim.ops), "two long forms: not folded by rule"
+    assert sim.ops == [], "two long forms: not folded by rule"
+    assert [frozenset(p) for p in sim.dedup._judge_pairs] == [frozenset(("acme", "lf2"))]
 
 
 def test_usage_reports_whole_numbers_only_and_reads_a_live_dict_right(caplog):
@@ -1319,7 +1275,7 @@ def test_usage_reports_whole_numbers_only_and_reads_a_live_dict_right(caplog):
     FinalizeResult(judge_stats=stats)  # validates
 
     lone = [["e1", "IBM", "Computer company.", ["Organization"], None, None, 0, [1.0, 0, 0]]]
-    stats = _sim(lone, judge=LLMJudge(ScriptedLLM([[IBM]]))).dedup.last_judge_stats
+    stats = _sim(lone, judge=LLMJudge(NameOracleLLM(rounds=[[IBM]]))).dedup.last_judge_stats
     assert stats["llm_calls"] == 0 and stats["llm_failed"] == 0
 
 

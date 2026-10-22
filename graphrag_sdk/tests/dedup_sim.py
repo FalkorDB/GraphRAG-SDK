@@ -12,6 +12,7 @@ covered on a real FalkorDB by ``test_dedup_records``, and the whole run by
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -19,6 +20,7 @@ from typing import Any
 import numpy as np
 
 from graphrag_sdk.core.models import JudgeGroup, SetVerdict
+from graphrag_sdk.core.providers.base import LLMBatchItem
 from graphrag_sdk.storage.dedup_judges import DedupJudge, LLMJudge
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator, _entity_from_row, _Run
 from graphrag_sdk.storage.judge_dedup import AttributeSchema
@@ -41,13 +43,11 @@ class Write:
 class Sim:
     merged: int
     writes: list[Write]
-    renames: list[PlanOp]
     nodes: dict[str, dict[str, Any]]
     ops: list[PlanOp]
     decisions: Decisions
     dedup: EntityDeduplicator
     run: _Run
-    prompts: list[str] = field(default_factory=list)
 
     @property
     def groups(self) -> list[list[str]]:
@@ -83,9 +83,9 @@ def _node(row: list[Any], stored: dict[str, Any]) -> dict[str, Any]:
 
 
 class SimGraph:
-    """Answers the three entity reads a run makes outside its records: rows
-    by id (both projections) and the nearest-name search, by cosine over the
-    nodes' vectors."""
+    """Answers the four entity reads a run makes outside its records: rows
+    by id (both projections), the declared attribute values, and the
+    nearest-name search, by cosine over the nodes' vectors."""
 
     def __init__(self, nodes: dict[str, dict[str, Any]]) -> None:
         self.nodes = nodes
@@ -167,9 +167,14 @@ class AllSameJudge(DedupJudge):
 
 class AllDifferentJudge(DedupJudge):
     """Finds every member of a set a different entity: for tests of what the
-    rules alone do, with nothing judged the same."""
+    rules alone do, with nothing judged the same. ``asked`` holds each set's
+    member names, as it was asked."""
+
+    def __init__(self) -> None:
+        self.asked: list[list[str]] = []
 
     async def judge(self, sets, *, retry=False):
+        self.asked.extend([ent.name for ent in s.entities] for s in sets)
         return [SetVerdict() for _ in sets]
 
 
@@ -186,6 +191,69 @@ class SameSpellingJudge(DedupJudge):
             groups = [JudgeGroup(members=m) for m in by_name.values() if len(m) > 1]
             verdicts.append(SetVerdict(groups=groups))
         return verdicts
+
+
+class NameOracleLLM:
+    """An LLM that answers ``LLMJudge``'s prompts by entity name.
+
+    ``same`` are the name groups that are one entity. ``rounds`` instead
+    answers call by call: the n-th call's name groups; ``None`` for a call
+    whose every prompt fails; a ``str`` returned verbatim, so it carries its
+    own ``END``. Calls past the list answer like the last one. ``fail`` names
+    entities whose prompts fail, every call; ``name`` is the name every merged
+    group is given (by default its first member's); ``keep`` maps an
+    attribute to the name of the member whose value a merged group keeps."""
+
+    def __init__(self, same=(), *, rounds=None, fail=(), keep=None, name=None):
+        self.rounds = list(rounds) if rounds is not None else [list(same)]
+        self.fail = set(fail)
+        self.keep = dict(keep or {})
+        self.name = name
+        self.prompts: list[str] = []
+        self.calls = 0
+        self.kw: dict[str, Any] = {}
+
+    async def abatch_invoke(self, prompts, **kw):
+        self.prompts.extend(prompts)
+        self.kw = kw
+        answer = self.rounds[min(self.calls, len(self.rounds) - 1)]
+        self.calls += 1
+        out = []
+        for i, prompt in enumerate(prompts):
+            if answer is None or any(name in prompt for name in self.fail):
+                out.append(LLMBatchItem(index=i, error=RuntimeError("judge down")))
+                continue
+            text = answer if isinstance(answer, str) else self._answer(prompt, answer)
+            out.append(LLMBatchItem(index=i, response=SimpleNamespace(content=text)))
+        return out
+
+    def _answer(self, prompt: str, same: list[set[str]]) -> str:
+        lines = []
+        for si, block in enumerate(re.split(r"--- Set \d+ ---\n", prompt)[1:], start=1):
+            block = block.split("\n\nDECISION PROCEDURE")[0]
+            names = re.findall(r"^(\d+)\. (.+?) \[", block, flags=re.M)
+            used: set[str] = set()
+            groups = []
+            for num, name in names:
+                if num in used:
+                    continue
+                grp = [n for n, nm in names if any({name, nm} <= set(g) for g in same)]
+                if len(grp) < 2:
+                    continue
+                used.update(grp)
+                keep = [
+                    f"{attr}={n}"
+                    for attr, owner in self.keep.items()
+                    for n, nm in names
+                    if n in grp and nm == owner
+                ]
+                groups.append(
+                    f"SET {si} GROUP: {', '.join(grp)} | NAME: {self.name or name}"
+                    + (f" | KEEP: {'; '.join(keep)}" if keep else "")
+                )
+            lines += groups or [f"SET {si} NONE"]
+        lines.append("END")
+        return "\n".join(lines)
 
 
 class _Store:
@@ -282,7 +350,6 @@ async def simulate(
     ops, decisions = dedup._plan(run)
 
     writes: list[Write] = []
-    renames: list[PlanOp] = []
     for op in ops:
         if op.op == ABSORB:
             s, d = nodes[op.survivor], nodes[op.dup]
@@ -303,15 +370,12 @@ async def simulate(
                 n for i, n in enumerate(names) if n != op.rename_to and n not in names[:i]
             ]
             p["name"] = op.rename_to
-            renames.append(op)
     return Sim(
         merged=len(writes),
         writes=writes,
-        renames=renames,
         nodes=nodes,
         ops=ops,
         decisions=decisions,
         dedup=dedup,
         run=run,
-        prompts=list(getattr(judge, "prompts", []) or []),
     )

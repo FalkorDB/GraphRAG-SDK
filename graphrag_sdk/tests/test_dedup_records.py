@@ -7,13 +7,10 @@ uses its own graph, dropped afterwards.
 from __future__ import annotations
 
 import os
-from uuid import uuid4
 
 import pytest
 
-from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
-from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.merge_query import (
     ALREADY_APPLIED,
     ALREADY_CHANGED,
@@ -50,32 +47,11 @@ from graphrag_sdk.storage.system_store import (
     deleted_record_clause,
 )
 
+from .conftest import lose_each_reply_once, rows
+
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_INTEGRATION") != "1", reason="Requires RUN_INTEGRATION=1"
 )
-
-
-@pytest.fixture
-async def graph():
-    conn = FalkorDBConnection(
-        ConnectionConfig(
-            host=os.getenv("FALKOR_HOST", "localhost"),
-            port=int(os.getenv("FALKOR_PORT", "6379")),
-            username=os.getenv("FALKOR_USERNAME") or None,
-            password=os.getenv("FALKOR_PASSWORD") or None,
-            graph_name=f"test_dedup_{uuid4().hex[:8]}",
-        )
-    )
-    store = GraphStore(conn)
-    yield store
-    try:
-        await store.delete_all()
-    finally:
-        await conn.close()
-
-
-async def rows(graph, cypher, params=None):
-    return (await graph.query_raw(cypher, params or {})).result_set or []
 
 
 async def held(graph) -> SystemStore:
@@ -124,6 +100,27 @@ async def absorb(
         },
     )
     return outcome(result[0], op)
+
+
+async def fold_and_absorb(store, graph, plan_run, op: PlanOp, read):
+    """Apply ``op``, the plan's first operation, with the write
+    ``EntityDeduplicator._fold`` computes from ``read``."""
+    fold = EntityDeduplicator(graph, None)._fold(op, read)
+    result = await store.fenced(
+        absorb_query(read.kinds, fold.sets, fold.labels),
+        {
+            **fold.params,
+            "plan_run": plan_run,
+            "page": 0,
+            "op": 0,
+            "dup": op.dup,
+            "dup_name": op.dup_name,
+            "survivor": op.survivor,
+            "survivor_name": op.survivor_name,
+            "handled": handled(read.kinds),
+        },
+    )
+    return outcome(result[0], 0)
 
 
 async def tim_cook(graph):
@@ -457,23 +454,8 @@ async def test_a_collision_keeps_the_chosen_value_and_the_other_in_dropped(graph
         keep='{"born": 1960}',
     )
     plan_run = await store.write_plan([op], Decisions())
-    where = {
-        "plan_run": plan_run,
-        "page": 0,
-        "op": 0,
-        "dup": "d",
-        "dup_name": "Timothy Cook",
-        "survivor": "s",
-        "survivor_name": "Tim Cook",
-    }
-
     async def apply(read):
-        fold = EntityDeduplicator(graph, None)._fold(op, read)
-        result = await store.fenced(
-            absorb_query(read.kinds, fold.sets, fold.labels),
-            {**fold.params, **where, "handled": handled(read.kinds)},
-        )
-        return outcome(result[0], 0)
+        return await fold_and_absorb(store, graph, plan_run, op, read)
 
     read = await read_for_merge(graph, "s", "d")
     await graph.query_raw("MATCH (s:__Entity__ {id: 's'}) SET s.born = 1962")  # ingest, between
@@ -500,23 +482,8 @@ async def test_a_decimal_read_back_rounded_does_not_block_the_merge(graph):
     store = await held(graph)
     op = PlanOp(ABSORB, 0, "s", "Tim Cook", dup="d", dup_name="Timothy Cook")
     plan_run = await store.write_plan([op], Decisions())
-    where = {
-        "plan_run": plan_run,
-        "page": 0,
-        "op": 0,
-        "dup": "d",
-        "dup_name": "Timothy Cook",
-        "survivor": "s",
-        "survivor_name": "Tim Cook",
-    }
-
     async def apply(read):
-        fold = EntityDeduplicator(graph, None)._fold(op, read)
-        result = await store.fenced(
-            absorb_query(read.kinds, fold.sets, fold.labels),
-            {**fold.params, **where, "handled": handled(read.kinds)},
-        )
-        return outcome(result[0], 0)
+        return await fold_and_absorb(store, graph, plan_run, op, read)
 
     for change in (
         "SET s.score = 0.31",  # a real edit
@@ -575,27 +542,6 @@ async def test_a_hand_off_with_no_pending_record_is_written_with_the_tick(graph)
     assert await store.apply_decisions(plan.plan_run, 0, [], created) is False
     assert len(await store.pending_pages()) == 1
     assert (await store.sealed_plan()).decision_done == [True]
-
-
-def lose_each_reply_once(graph, monkeypatch, marker: str) -> None:
-    """Apply every driver query holding ``marker``, then lose its reply, once
-    per distinct query: the connection sends it again, as after a timeout."""
-    import json
-
-    driver_graph = graph._conn._graph
-    real = driver_graph.query
-    lost: set[str] = set()
-
-    async def query(cypher, params=None, timeout=None):
-        result = await real(cypher, params=params, timeout=timeout)
-        key = cypher + json.dumps(params, sort_keys=True, default=str)
-        if marker in cypher and key not in lost:
-            lost.add(key)
-            raise ConnectionError("reply lost")
-        return result
-
-    graph._conn.config.retry_delay = 0.0
-    monkeypatch.setattr(driver_graph, "query", query)
 
 
 async def test_a_record_write_whose_reply_was_lost_is_written_once(graph, monkeypatch):

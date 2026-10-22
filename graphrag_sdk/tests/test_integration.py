@@ -1072,7 +1072,7 @@ class TestIncrementalUpdateInvariants:
             {},
         )
         await conn.query("CREATE (:Chunk {id: 'chunk-1', text: 'Alice at Acme'})", {})
-        # The duplicate holds both edge kinds, so all three remap queries run.
+        # The duplicate holds both edge kinds, so the merge query moves both.
         await conn.query(
             "MATCH (d:__Entity__ {id: 'alice-2'}), (o:__Entity__ {id: 'acme'}) "
             "CREATE (d)-[:RELATES {rel_type: 'WORKS_AT', source_chunk_ids: ['chunk-1']}]->(o)",
