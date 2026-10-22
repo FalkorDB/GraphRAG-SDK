@@ -554,6 +554,122 @@ async def test_apply_changes_in_git_diff_order_writes_every_edge_on_real_falkord
     assert await _consumed_edge_count(rag) == 3
 
 
+async def _node_counts(rag):
+    result = await rag._graph_store.query_raw(
+        "MATCH (n) RETURN count(n), count(CASE WHEN n:Document THEN 1 END), "
+        "count(CASE WHEN n:Chunk THEN 1 END)"
+    )
+    return result.result_set
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "relationship_source, via_set_ontology",
+    [("consumed_batch.csv", False), ("exports/consumed_batch.csv", True)],
+)
+async def test_a_relationship_declaration_replaces_a_proposed_node_table_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path, relationship_source, via_set_ontology
+):
+    """The file was ingested before anyone declared it, then declared as edges.
+
+    get_ontology(), ingest() and drop_table() all raised that the source was
+    registered under the other mapping kind.
+    """
+    entities = [Entity(label="Unit"), Entity(label="Batch")]
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(entities=entities, tables=_unit_and_batch_tables()),
+    )
+    for filename, content in (
+        ("unit.csv", "unit_id\nU-1\nU-2\n"),
+        ("batch.csv", "batch_id\nB-1\nB-2\n"),
+    ):
+        table = tmp_path / filename
+        table.write_text(content, encoding="utf-8")
+        await rag.ingest(str(table))
+    before = await _node_counts(rag)
+    path = write_csv(
+        tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20", "U-2,B-2,CONSUMED_BATCH,2026-09-21"]
+    )
+    await rag.ingest(str(path))
+    stored = (await rag._ontology_store.load()).tables
+    assert [(m.source, m.derived) for m in stored if m.signature == "consumed_batch"] == [
+        ("consumed_batch.csv", True)
+    ]
+    assert await _node_counts(rag) != before
+
+    declared = Ontology(
+        entities=entities,
+        tables=_unit_and_batch_tables(),
+        relationship_tables=[consumed_mapping(source=relationship_source)],
+    )
+    if via_set_ontology:
+        await rag.set_ontology(declared)
+        edges = rag
+    else:
+        edges = real_falkordb_rag_factory(
+            llm=llm, resolver=None, ontology=declared, connection=rag._conn
+        )
+    ontology = await edges.get_ontology()
+    assert sorted(m.source for m in ontology.tables) == ["batch.csv", "unit.csv"]
+    assert [m.source for m in ontology.relationship_tables] == [relationship_source]
+    # The proposal's Document, record chunks and row went with it, and its values.
+    assert await _node_counts(rag) == before
+    signed = await rag._graph_store.query_raw(
+        "MATCH (n) WHERE any(k IN keys(n) WHERE k STARTS WITH 'consumed_batch__') RETURN count(n)"
+    )
+    assert signed.result_set == [[0]]
+
+    assert (await edges.ingest(str(path))).relationships_written == 2
+    assert await _consumed_edge_count(rag) == 2
+    assert await _node_counts(rag) == before
+    await edges.drop_table(relationship_source)
+    assert await _consumed_edge_count(rag) == 0
+
+
+@pytest.mark.integration
+async def test_a_declared_node_table_is_not_replaced_by_a_relationship_declaration_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    from graphrag_sdk import TableMapping
+    from graphrag_sdk.storage.ontology_store import OntologyContradictionError
+
+    entities = [Entity(label="Unit"), Entity(label="Batch"), Entity(label="Consumption")]
+    node_table = TableMapping(source="consumed_batch.csv", label="Consumption", key="source")
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(entities=entities, tables=[*_unit_and_batch_tables(), node_table]),
+    )
+    for filename, content in (
+        ("unit.csv", "unit_id\nU-1\nU-2\n"),
+        ("batch.csv", "batch_id\nB-1\nB-2\n"),
+    ):
+        table = tmp_path / filename
+        table.write_text(content, encoding="utf-8")
+        await rag.ingest(str(table))
+    await rag.ingest(str(write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])))
+    before = await _node_counts(rag)
+    edges = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        connection=rag._conn,
+        ontology=Ontology(
+            entities=entities,
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[consumed_mapping()],
+        ),
+    )
+    with pytest.raises(OntologyContradictionError, match="other structured mapping kind"):
+        await edges.get_ontology()
+    assert await _node_counts(rag) == before
+    stored = (await rag._ontology_store.load()).tables
+    assert [(m.source, m.derived) for m in stored if m.signature == "consumed_batch"] == [
+        ("consumed_batch.csv", False)
+    ]
+
+
 def consumed_mapping(**changes: Any) -> RelationshipMapping:
     values: dict[str, Any] = {
         "source": "consumed_batch.csv",
@@ -1407,3 +1523,54 @@ class TestApplyChangesRunsRelationshipTablesLast:
             None,
         ]
         assert calls[-1] == ("ingest", "consumed_batch.csv")
+
+
+class TestOntologyInitializationReentry:
+    """Replacing a proposal mid-initialization deletes its Document, and that asks
+    for the ontology again from the task holding the initialization lock."""
+
+    @staticmethod
+    def _rag(mock_connection, llm, embedder) -> GraphRAG:
+        from graphrag_sdk.core.connection import ConnectionConfig
+
+        mock_connection.config = ConnectionConfig(graph_name="unit-test")
+        return GraphRAG(connection=mock_connection, llm=llm, embedder=embedder)
+
+    async def test_the_initializing_task_passes_through(self, mock_connection, llm, embedder):
+        import asyncio
+
+        rag = self._rag(mock_connection, llm, embedder)
+        runs: list[str] = []
+
+        async def initialize():
+            runs.append("initialize")
+            # What delete_document() reaches while a proposal is being replaced.
+            await rag._ensure_ontology_initialized()
+            rag._ontology_initialized = True
+
+        rag._initialize_ontology = initialize
+        await asyncio.wait_for(rag._ensure_ontology_initialized(), timeout=5)
+        assert runs == ["initialize"]
+        assert rag._ontology_init_task is None
+
+    async def test_another_task_still_waits_for_initialization(
+        self, mock_connection, llm, embedder
+    ):
+        import asyncio
+
+        rag = self._rag(mock_connection, llm, embedder)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def initialize():
+            started.set()
+            await release.wait()
+            rag._ontology_initialized = True
+
+        rag._initialize_ontology = initialize
+        first = asyncio.create_task(rag._ensure_ontology_initialized())
+        await started.wait()
+        second = asyncio.create_task(rag._ensure_ontology_initialized())
+        await asyncio.sleep(0.01)
+        assert not second.done()
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=5)

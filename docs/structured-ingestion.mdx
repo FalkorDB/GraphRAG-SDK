@@ -602,7 +602,10 @@ summary.proposed_mappings   # ["employees.csv"]
 
 You have two moves. **Change it** by declaring a `TableMapping` for the source in
 the ontology and ingesting again — the declaration replaces the proposal, however
-the path is spelled, and the load is a re-sync of the same table. **Remove it** with
+the path is spelled, and the load is a re-sync of the same table. Declaring the file
+as a `RelationshipMapping` instead replaces the proposal too: edges carry none of its
+rows, so the proposal is removed first, exactly as `drop_table()` removes it. A
+*declared* `TableMapping` is never replaced this way. **Remove it** with
 `drop_table()`:
 
 ```python

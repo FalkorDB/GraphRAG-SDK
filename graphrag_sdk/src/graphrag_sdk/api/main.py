@@ -395,6 +395,8 @@ class GraphRAG:
         # Serialises the ontology writers; see _ontology_lock().
         self._ontology_write_lock: asyncio.Lock | None = None
         self._ontology_write_loop: asyncio.AbstractEventLoop | None = None
+        # The task running _initialize_ontology(); see _ensure_ontology_initialized().
+        self._ontology_init_task: asyncio.Task[Any] | None = None
 
     @property
     def _global_ontology(self) -> Ontology:
@@ -514,13 +516,25 @@ class GraphRAG:
         one source, which every later ``load()`` read as a self-contradicting
         mapping. The second arrival now waits for the first and finds the flag
         set.
+
+        The initializing task itself passes straight through: removing a
+        proposal a declared relationship table replaces deletes its Document,
+        and that path asks for the ontology again. It would otherwise wait on
+        the lock it holds.
         """
         if self._ontology_initialized:
+            return
+        current = asyncio.current_task()
+        if current is not None and self._ontology_init_task is current:
             return
         async with self._ontology_lock():
             if self._ontology_initialized:
                 return
-            await self._initialize_ontology()
+            self._ontology_init_task = current
+            try:
+                await self._initialize_ontology()
+            finally:
+                self._ontology_init_task = None
 
     def _ontology_lock(self) -> asyncio.Lock:
         """The lock every writer of the ontology graph takes.
@@ -1220,6 +1234,30 @@ class GraphRAG:
         self._refuse_removing_an_endpoint_key(
             self._signed_properties_of(mapping), f"drop_table({source!r})"
         )
+        chunks_deleted, entities_deleted, touched, released = await self._remove_node_table(
+            mapping, source
+        )
+        logger.info(
+            "drop_table %s: %d record chunk(s) and %d orphaned entit(y/ies) deleted, "
+            "signed properties removed from %d node(s), identity released on %d",
+            wanted,
+            chunks_deleted,
+            entities_deleted,
+            touched,
+            released,
+        )
+        return await self._refresh_global_ontology()
+
+    async def _remove_node_table(
+        self, mapping: TableMapping, source: str
+    ) -> tuple[int, int, int, int]:
+        """The removal :meth:`drop_table` does for a node table, without its checks.
+
+        ``source`` is the name the caller gave, one more id a Document written
+        before the table stamp could have. The cached ontology is not refreshed.
+        Returns ``(chunks deleted, orphaned entities deleted, nodes a property
+        was removed from, nodes whose identity changed)``.
+        """
         # Every Document stamped with this table's signature, whatever id it was
         # loaded under, plus the two ids a Document written before the stamp
         # could have: the table's name, or the path the caller gave.
@@ -1238,18 +1276,9 @@ class GraphRAG:
         for label, property_name in self._signed_properties_of(mapping):
             await self._ontology_store.drop_entity_property(label, property_name)
         await self._ontology_store.drop_table_mapping(mapping.source)
-        self._natural_mappings.pop(wanted, None)
+        self._natural_mappings.pop(os.path.basename(os.path.normpath(source)), None)
         self._mapping_changes.discard(mapping.source)
-        logger.info(
-            "drop_table %s: %d record chunk(s) and %d orphaned entit(y/ies) deleted, "
-            "signed properties removed from %d node(s), identity released on %d",
-            wanted,
-            chunks_deleted,
-            entities_deleted,
-            touched,
-            released,
-        )
-        return await self._refresh_global_ontology()
+        return chunks_deleted, entities_deleted, touched, released
 
     def _refuse_removing_an_endpoint_key(
         self, removing: Sequence[tuple[str, str]], action: str
@@ -2576,7 +2605,41 @@ class GraphRAG:
         nobody has vouched for, and letting it take over would strip the first
         table's rows to their ids and leave its Document behind. It falls
         through to the store's signature check and is refused there, by name.
+
+        A declared relationship table replaces a proposal too: the SDK's warning
+        tells the user to declare the file, and they may declare it as edges.
+        Nothing carries a node table's rows over to edges, so the proposal goes
+        as :meth:`drop_table` takes it -- its Document and record chunks, what it
+        signed, its mapping -- before the relationship mapping is stored. A
+        *declared* node table is never replaced this way; the store refuses the
+        relationship declaration for that source.
         """
+        proposals = {mapping.signature: mapping for mapping in existing.tables if mapping.derived}
+        superseded = [
+            proposals[mapping.signature]
+            for mapping in incoming.relationship_tables
+            if mapping.signature in proposals
+        ]
+        for proposal in superseded:
+            self._refuse_removing_an_endpoint_key(
+                self._signed_properties_of(proposal),
+                f"declaring {proposal.source!r} as a relationship table",
+            )
+        for proposal in superseded:
+            chunks_deleted, entities_deleted, _, _ = await self._remove_node_table(
+                proposal, proposal.source
+            )
+            # WARNING, not INFO: a declaration deletes data here.
+            logger.warning(
+                "%s is declared as a relationship table, so the node table proposed for it "
+                "was removed: %d record chunk(s) and %d orphaned entit(y/ies) deleted",
+                proposal.source,
+                chunks_deleted,
+                entities_deleted,
+            )
+        if superseded:
+            existing = await self._ontology_store.load()
+
         by_signature = {mapping.signature: mapping for mapping in existing.tables}
         retired: dict[str, TableMapping] = {}
         for mapping in incoming.tables:
@@ -2935,9 +2998,10 @@ class GraphRAG:
         picks must be unique, the types must parse, the columns must exist. The
         result is stored in the ontology as ``derived``, so it is used by every
         later load, reported by finalize() as ``proposed_mappings``, and replaced
-        the moment a ``TableMapping`` is declared for the source. Without a
-        model, or when it cannot produce an acceptable answer, the file is read
-        as-is: typed columns, label from the filename, no name and so no join.
+        the moment a ``TableMapping`` or ``RelationshipMapping`` is declared for
+        the source. Without a model, or when it cannot produce an acceptable
+        answer, the file is read as-is: typed columns, label from the filename,
+        no name and so no join.
         """
         await self._ensure_ontology_initialized()
         declared_mapping = self._declared_mapping_for(source, document_id=document_id)
