@@ -27,7 +27,7 @@ You will need a running FalkorDB instance for integration work. The easiest way 
 docker compose up -d falkordb
 ```
 
-This exposes FalkorDB on the default Redis port (6379) and the browser UI on port 3000.
+This exposes FalkorDB on the default Redis port (6379) and the browser UI on port 3000. The integration tests refuse that port unless asked; see [Running Tests](#2-running-tests).
 
 ---
 
@@ -41,11 +41,15 @@ python -m pytest graphrag_sdk/tests/ -q
 
 There are 558 tests covering the ingestion pipeline, the GraphRAG facade, extraction strategies, resolution strategies, retrieval strategies, storage layers, and utilities. All tests use mock providers, so no live LLM or database connection is needed to run them.
 
-Run real-FalkorDB integration tests with:
+The real-FalkorDB integration tests create and drop `test_*` graphs, so run them against a disposable server. Start one on a free port and point the tests at it with `FALKOR_PORT` (and `FALKOR_HOST`, `FALKOR_USERNAME` and `FALKOR_PASSWORD` if needed):
 
 ```bash
-RUN_INTEGRATION=1 python -m pytest graphrag_sdk/tests/test_integration.py -m integration -q
+docker run -d --rm --name falkordb-test -p 6380:6379 falkordb/falkordb:v4.22.2
+RUN_INTEGRATION=1 FALKOR_PORT=6380 python -m pytest graphrag_sdk/tests/ -q
+docker stop falkordb-test
 ```
+
+With `RUN_INTEGRATION` set, the tests stop before connecting if the port is 6379, the default when `FALKOR_PORT` is unset: that is where a local FalkorDB with real data usually listens, including the one `docker compose` starts. If the server on 6379 is disposable, opt in with `FALKOR_TEST_ALLOW_6379=1`.
 
 These tests use scripted local providers, not live LLM APIs.
 
