@@ -182,8 +182,8 @@ class TestAddRelationPatternNode:
         (copy_cypher, _) = next(
             c for c in fake.calls if "MERGE (new)-[:HAS_PROPERTY]->(p2:Property" in c[0]
         )
-        carried = "p2.structured = (coalesce(p2.structured, false) OR coalesce(p.structured, false)"
-        assert carried in copy_cypher
+        assert "any(x IN props WHERE coalesce(x.structured, false)) AS structured" in copy_cypher
+        assert "p2.structured = (coalesce(p2.structured, false) OR structured)" in copy_cypher
 
 
 class TestRenameLabel:
