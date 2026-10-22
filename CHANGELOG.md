@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-22
+
+Structured ingestion: tables are declared on the ontology, and a row and a
+prose mention of the same thing become one node. `finalize()` deduplicates
+incrementally: it checks only new entities against the whole graph, a judge
+(an LLM by default) decides which are the same, and a run that is interrupted
+is finished by the next one. Extraction is more complete: a default relation
+vocabulary, GLiNER reading whole chunks, and a 384-token chunk default.
+Re-ingesting an unchanged document is a no-op. FalkorDB 6.0.x is supported
+and CI tests both engines.
+
+**Upgrading from 1.4.0:**
+
+- Upgrade the FalkorDB server to 4.20 or later first. This release refuses
+  an older server with `FalkorDBVersionError` before anything is written; that
+  includes `v4.18.0`, which 1.4.0's `docker-compose.yml` used.
+- `finalize()` and `deduplicate_entities()` call the LLM (the dedup judge);
+  in 1.4.0 they made no model call. `judge=False` raises `TypeError`; to keep
+  deduplication LLM-free, pass a `DedupJudge` of your own.
+- Entities in a graph built by 1.4.0 count as already checked. Run
+  `finalize(dedup_all=True)` once to check every entity.
+- `deduplicate_entities(fuzzy=True)` raises `ValueError`: the fuzzy phase is
+  removed. `fuzzy=False` and `similarity_threshold=` are still accepted for
+  this release, ignored, with a `DeprecationWarning`.
+- A `.csv`, `.tsv`, `.psv` or `.tab` file is read as table records, not prose;
+  `ingest(path, loader=TextLoader())` keeps the old behaviour.
+- `SemanticResolution` and `DescriptionMergeResolution` are removed (see
+  **Removed**).
+
 ### Added
 
 #### Structured ingestion — tables declared on the ontology, one node for a row and its mention
@@ -154,6 +183,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   response — before the generation call — plus the citations
   behind a grounded answer. Covered by
   `graphrag_sdk/tests/test_grounded_abstention.py`.
+
+- **`SpacyExtractor` and `CompositeExtractor`**, opt-in NER backends.
+  `SpacyExtractor` uses spaCy's NER (`graphrag-sdk[spacy]` plus a spaCy
+  model). `CompositeExtractor` chains extractors: the first one's entities
+  win where spans overlap and later ones fill the gaps, for example GLiNER
+  first and spaCy after it. One exception: a later span that contains an
+  earlier one and adds a word replaces it, so `Paris Observatory` from the
+  second extractor replaces `Paris` from the first. Both are importable from
+  `graphrag_sdk`; nothing changes unless you construct them.
+- **`ingest()` reports chunks whose extraction failed.** A chunk whose model
+  call failed used to add nothing while `ingest()` still reported success.
+  `IngestionResult.metadata["extraction"]` now carries `chunks_attempted`,
+  `chunks_skipped`, `failed_chunks` and `relation_failed_chunks`, and a
+  document with failed chunks is not marked unchanged, so the next ingest
+  retries it.
 
 ### Changed
 
@@ -441,6 +485,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rerank, and parsing those replies in pure Python was most of the client's
   CPU per question: about 48 ms down to 11 ms in our tests, so one process
   serves more concurrent questions.
+- **GLiNER loads one model per process and no longer serialises inference.**
+  Each document being ingested used to load its own copy of the model (six
+  documents, six copies), and a lock ran the chunks of a document one at a
+  time. The model is now cached by name and shared, and the lock is gone.
+- **GLiNER reads the whole chunk.** Text longer than the model's input
+  window used to be cut off without a warning; it is now read as overlapping
+  windows (`window_tokens`, `window_overlap=48`) and the results merged. The
+  confidence threshold is per model: `threshold=None` looks it up in
+  `GLiNERExtractor.DEFAULT_THRESHOLDS`, and an unknown model falls back to 0.5
+  with a warning. Spans just below the threshold (from `candidate_threshold`,
+  by default 25 % below it) reach the LLM step labelled `Unknown`, which types
+  or drops them; `candidate_threshold=None` turns this off.
+- **Ingest resolves duplicates by exact name only, with no model calls.**
+  The default `ingest()` resolver is
+  `ExactMatchResolution(llm=None, cross_label_merge=False)`: same normalised
+  name and same label within the document. `ExactMatchResolution` now matches
+  on `name` by default (it was `id`) and gains `llm`, `cross_label_merge` and
+  `force_summary_threshold`. Every merge keeps every description, as a
+  `descriptions` list and as `description` joined with `" | "`. `retrieve()`
+  and `completion()` warn once when documents were ingested and no
+  deduplication pass ran since.
+- **`LLMVerifiedResolution` finds more duplicates and makes fewer wrong
+  merges.** It runs only when passed as `resolver=` to `ingest()`, `update()`
+  or `apply_changes()`. Candidates are nominated in one stage by the similarity of `"name: description"`, whatever
+  their labels (`unified_threshold=0.65`). Pairs are checked five per model call
+  (`verification_max_pairs_per_call`). Pairs whose labels belong to different
+  families (a person and a place) are dropped before the model sees them
+  (`label_family_gate`), and a cross-label merge needs a second agreeing vote
+  with the pair swapped (`cross_label_vote`).
+- Higher minimum dependency versions, to versions with security fixes:
+  `python-dotenv>=1.2.2`, `pypdf>=6.15.0` (`pdf` extra) and
+  `litellm>=1.84.0` (`litellm` extra).
 
 ### Fixed
 - **A write batch holding the same entity or relationship twice lost a write.**
@@ -829,8 +905,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to generated Cypher. The working ontology is republished to the strategy on
   every change.
 
-- Fixed vector-search ordering so chunk, entity, and relationship searches use
-  similarity scores, with higher values indicating closer matches.
+- **Entity names are checked in code, not only by the prompt.** Specific
+  dates (`1896`, `14 January 1904`) are not entities when the ontology has no
+  `Date` type, while periods (`1820s`) are kept. `US`, `UN` and `EU` are no
+  longer dropped as the pronoun `us`. Operators and shell tokens (`+=`, `->`,
+  `cd`) are rejected even when the model returns them. `Document` and `Chunk`
+  are refused as entity types, since the store uses those labels for its own
+  nodes; an entity typed `Document` used to be stored as a file.
+- **`update(force=True)` keeps a document's structure.** It passed only the
+  file's plain text into the pipeline, so `StructuralChunking` fell back to
+  sentence chunking on a forced update of a Markdown file. The loaded
+  document, with its structural elements, now reaches the chunker.
 
 ### Removed
 
