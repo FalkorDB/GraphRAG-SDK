@@ -692,24 +692,60 @@ class TestGraphStoreUpsertRelationships:
                 f"ELSE {incoming}.`relationship_mapping_consumed_batch` END"
             ) in cypher
 
-    async def test_null_signed_relationship_property_is_removed(
-        self, graph_store, mock_connection
-    ):
+    async def test_null_signed_relationship_property_is_removed(self, graph_store, mock_connection):
+        """A blank cell is sent as null, which ``SET r += ...`` removes.
+
+        A REMOVE clause per combination of blank cells split a 500-row batch
+        into up to one query per row: 64 combinations with six optional
+        columns.
+        """
         await graph_store.upsert_relationships(
             [
                 GraphRelationship(
                     start_node_id="a",
-                    end_node_id="b",
+                    end_node_id=end,
                     type="RELATES",
                     properties={
                         "rel_type": "CONSUMED_BATCH",
-                        "consumed_batch__consumed_on": None,
+                        "consumed_batch__consumed_on": on,
+                        "consumed_batch__shift": shift,
+                        "note": None,
                     },
+                )
+                for end, on, shift in (
+                    ("b1", None, "night"),
+                    ("b2", "2026-09-20", None),
+                    ("b3", None, None),
+                    ("b4", "2026-09-21", "day"),
                 )
             ]
         )
-        cypher = upsert_calls(mock_connection)[0][0][0]
-        assert "REMOVE r.`consumed_batch__consumed_on`" in cypher
+        (write,) = upsert_calls(mock_connection)
+        cypher, params = write[0]
+        assert "REMOVE" not in cypher
+        assert "SET r += item.properties" in cypher
+        assert [item["properties"] for item in params["batch"]] == [
+            {
+                "rel_type": "CONSUMED_BATCH",
+                "consumed_batch__consumed_on": None,
+                "consumed_batch__shift": "night",
+            },
+            {
+                "rel_type": "CONSUMED_BATCH",
+                "consumed_batch__consumed_on": "2026-09-20",
+                "consumed_batch__shift": None,
+            },
+            {
+                "rel_type": "CONSUMED_BATCH",
+                "consumed_batch__consumed_on": None,
+                "consumed_batch__shift": None,
+            },
+            {
+                "rel_type": "CONSUMED_BATCH",
+                "consumed_batch__consumed_on": "2026-09-21",
+                "consumed_batch__shift": "day",
+            },
+        ], "only signed (table) properties are cleared; other blanks are left alone as before"
 
     async def test_upsert_drops_rels_with_empty_sanitized_ids(self, graph_store, mock_connection):
         rels = [

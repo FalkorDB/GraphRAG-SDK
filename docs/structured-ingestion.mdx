@@ -106,7 +106,10 @@ blank, missing or ambiguous are skipped and counted under a `skip` policy, and
 reported as `RelationshipResolutionError` under `error`.
 
 Resolution and writes use bounded batches (500 by default), so files larger
-than FalkorDB's result-set limit do not rely on one unbounded query. Re-running
+than FalkorDB's result-set limit do not rely on one unbounded query. Each
+distinct endpoint key is looked up once per ingest, and a key index the lookup
+has to create is waited for (up to 60 seconds) before the first lookup. A blank
+cell clears the edge's value in the same batch write as the other rows. Re-running
 `ingest()` is an idempotent upsert; relationship properties are signed with the
 mapping source, and source ownership is unioned when another relationship table
 describes the same edge, including when two nodes are merged (a renamed row folded

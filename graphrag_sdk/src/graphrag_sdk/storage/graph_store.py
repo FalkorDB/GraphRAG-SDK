@@ -766,14 +766,9 @@ class GraphStore:
             return 0
 
         # Group relationships by type
-        by_type: dict[tuple[str, tuple[str, ...]], list[GraphRelationship]] = {}
+        by_type: dict[str, list[GraphRelationship]] = {}
         for rel in relationships:
-            clear = tuple(
-                sorted(
-                    name for name, value in rel.properties.items() if value is None and "__" in name
-                )
-            )
-            by_type.setdefault((rel.type, clear), []).append(rel)
+            by_type.setdefault(rel.type, []).append(rel)
 
         # A snapshot number is read before ``SET r += ...`` overwrites it and
         # the larger of the stored and incoming one is kept.
@@ -789,11 +784,8 @@ class GraphStore:
             )
 
         count = 0
-        for (rel_type, clear_properties), group in by_type.items():
+        for rel_type, group in by_type.items():
             safe_rel_type = sanitize_cypher_label(rel_type)
-            clear_clause = "".join(
-                f" REMOVE r.`{sanitize_cypher_label(name)}`" for name in clear_properties
-            )
             # Sanitize IDs once and filter out empty endpoints
             pre_filter = len(group)
             cleaned_group: list[tuple[GraphRelationship, str, str]] = [
@@ -829,6 +821,15 @@ class GraphStore:
             ] = {}
             for rel, sid, eid in cleaned_group:
                 props = self._clean_properties(rel.properties)
+                # A blank signed property (a relationship table's empty cell)
+                # is sent as null, which ``SET r += ...`` removes. A REMOVE
+                # clause per combination of blank cells split each batch into
+                # up to one query per row.
+                props.update(
+                    (name, None)
+                    for name, value in rel.properties.items()
+                    if value is None and "__" in name
+                )
                 rel_key = self._merge_key_value(props.get("rel_type", "")) if is_relates else ""
                 key = (sid, eid, rel_key)
                 if key in folded:
@@ -888,7 +889,6 @@ class GraphStore:
                         f"    r.structured_sources = old_sources + "
                         f"[s IN sources WHERE NOT s IN old_sources]"
                         f"{batch_snapshot}"
-                        f"{clear_clause}"
                     )
                 else:
                     query = (
@@ -897,7 +897,6 @@ class GraphStore:
                         f"(b:`{safe_tgt}` {{id: item.end_id}}) "
                         f"MERGE (a)-[r:`{safe_rel_type}`]->(b) "
                         f"SET r += item.properties"
-                        f"{clear_clause}"
                     )
                 try:
                     await self._conn.query(query, {"batch": batch_data})
@@ -938,7 +937,6 @@ class GraphStore:
                                 f"    r.structured_sources = old_sources + "
                                 f"[s IN sources WHERE NOT s IN old_sources]"
                                 f"{item_snapshot}"
-                                f"{clear_clause}"
                             )
                         else:
                             q = (
@@ -946,7 +944,6 @@ class GraphStore:
                                 f"(b:`{safe_fb_tgt}` {{id: $end_id}}) "
                                 f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
                                 f"SET r += $properties"
-                                f"{clear_clause}"
                             )
                         params = {"start_id": sid, "end_id": eid, "properties": props}
                         try:

@@ -722,6 +722,82 @@ async def test_a_new_key_index_is_built_before_the_first_lookup_on_real_falkordb
     assert found == {key: [f"unit-{key[2:]}"] for key in keys}
 
 
+@pytest.mark.integration
+async def test_blank_cells_keep_each_batch_in_one_write_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """A blank cell clears the edge's value through null, in the batch's one write.
+
+    A REMOVE clause per combination of blank cells split each 500-row batch
+    into up to one query per row.
+    """
+    mapping = consumed_mapping(
+        properties={"consumed_on": Column("consumed_on", "DATE"), "shift": "shift"}
+    )
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[mapping],
+        ),
+    )
+    for filename, content in (
+        ("unit.csv", "unit_id\nU-1\nU-2\n"),
+        ("batch.csv", "batch_id\nB-1\nB-2\n"),
+    ):
+        table = tmp_path / filename
+        table.write_text(content, encoding="utf-8")
+        await rag.ingest(str(table))
+    path = tmp_path / "consumed_batch.csv"
+    watched = _Watched(rag._graph_store._conn)
+    rag._graph_store._conn = watched
+
+    async def ingest(rows):
+        path.write_text(
+            "source,target,type,consumed_on,shift\n" + "\n".join(rows) + "\n", encoding="utf-8"
+        )
+        watched.sent.clear()
+        assert (await rag.ingest(str(path))).relationships_written == len(rows)
+        writes = [cypher for cypher, _ in watched.sent if "UNWIND $batch AS item" in cypher]
+        assert len(writes) == 1
+        edges = await rag._graph_store.query_raw(
+            "MATCH (u:Unit)-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->(b:Batch) "
+            "RETURN u.unit__unit_id, b.batch__batch_id, "
+            "r.consumed_batch__consumed_on, r.consumed_batch__shift "
+            "ORDER BY u.unit__unit_id, b.batch__batch_id"
+        )
+        return edges.result_set
+
+    assert await ingest(
+        [
+            "U-1,B-1,CONSUMED_BATCH,2026-09-20,",
+            "U-1,B-2,CONSUMED_BATCH,,night",
+            "U-2,B-1,CONSUMED_BATCH,,",
+            "U-2,B-2,CONSUMED_BATCH,2026-09-21,day",
+        ]
+    ) == [
+        ["U-1", "B-1", "2026-09-20", None],
+        ["U-1", "B-2", None, "night"],
+        ["U-2", "B-1", None, None],
+        ["U-2", "B-2", "2026-09-21", "day"],
+    ]
+    assert await ingest(
+        [
+            "U-1,B-1,CONSUMED_BATCH,,day",
+            "U-1,B-2,CONSUMED_BATCH,2026-09-22,",
+            "U-2,B-1,CONSUMED_BATCH,2026-09-23,night",
+            "U-2,B-2,CONSUMED_BATCH,,",
+        ]
+    ) == [
+        ["U-1", "B-1", None, "day"],
+        ["U-1", "B-2", "2026-09-22", None],
+        ["U-2", "B-1", "2026-09-23", "night"],
+        ["U-2", "B-2", None, None],
+    ]
+
+
 def consumed_mapping(**changes: Any) -> RelationshipMapping:
     values: dict[str, Any] = {
         "source": "consumed_batch.csv",
@@ -1069,6 +1145,26 @@ class TestRelationshipIngestion:
         assert result.relationships_written == count
         assert max(store.resolve_sizes) <= store._BATCH_SIZE
         assert store.write_calls == 21
+
+    async def test_each_endpoint_key_is_looked_up_once(self, tmp_path):
+        """Not once per 500-row batch in each of two passes: 40 lookups for 150 keys.
+
+        The write pass also uses exactly the answers the check pass approved.
+        """
+        rows = [
+            f"U-{index % 100},B-{index // 100},CONSUMED_BATCH,2026-09-20" for index in range(5_000)
+        ]
+        path = write_csv(tmp_path, rows)
+        store = RelationshipStore()
+        store.entities = {
+            ("Unit", "unit__unit_id"): {f"U-{index}": [f"unit-{index}"] for index in range(100)},
+            ("Batch", "batch__batch_id"): {f"B-{index}": [f"batch-{index}"] for index in range(50)},
+        }
+        result = await RelationshipIngestionPipeline(CsvRecordLoader(), store).run(
+            str(path), consumed_mapping(), Context()
+        )
+        assert result.relationships_written == 5_000
+        assert store.resolve_sizes == [100, 50]
 
 
 class TestRelationshipReviewRegressions:

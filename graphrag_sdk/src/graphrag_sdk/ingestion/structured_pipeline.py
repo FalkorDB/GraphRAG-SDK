@@ -472,6 +472,10 @@ class RelationshipIngestionPipeline:
         # diagnostics.
         conflicts: dict[tuple[str, str, str], int] = {}
         first_rows: dict[tuple[str, str, str], int] = {}
+        # Every distinct key, so each is looked up once per ingest rather than
+        # once per row batch in each of the two passes below.
+        start_keys: dict[str, None] = {}
+        end_keys: dict[str, None] = {}
         for prepared in self._prepared(batch, mapping):
             result.rows += 1
             fingerprint = tuple(
@@ -485,6 +489,10 @@ class RelationshipIngestionPipeline:
                 continue
             seen[prepared.identity] = fingerprint
             first_rows[prepared.identity] = prepared.row
+            if prepared.start_key:
+                start_keys[prepared.start_key] = None
+            if prepared.end_key:
+                end_keys[prepared.end_key] = None
         # A fresh generation marks this attempt, not just the file's bytes.
         # Unchanged rows can resolve differently (e.g. newly ambiguous keys).
         # It is a number from the server clock, not a random token: cleanup
@@ -494,8 +502,11 @@ class RelationshipIngestionPipeline:
         snapshot_token = await self.graph_store.next_relationship_snapshot(marker)
 
         batch_size = int(getattr(self.graph_store, "_BATCH_SIZE", 500))
+        # The write pass reuses these answers, so it writes exactly the rows
+        # this check approved.
+        starts, ends = await self._resolve_keys(mapping, start_keys, end_keys, batch_size)
         for prepared_batch in self._prepared_batches(batch, mapping, batch_size, unique=True):
-            await self._resolve_batch(mapping, prepared_batch, result, collect_issues=True)
+            self._resolve_batch(mapping, prepared_batch, result, starts, ends, collect_issues=True)
         result.rows_skipped = len(result._failed_rows)
 
         has_fatal_missing = mapping.missing_endpoint == "error" and (
@@ -523,10 +534,12 @@ class RelationshipIngestionPipeline:
                     continue
                 seen[prepared.identity] = ()
                 unique_batch.append(prepared)
-            relationships = await self._resolve_batch(
+            relationships = self._resolve_batch(
                 mapping,
                 unique_batch,
                 result,
+                starts,
+                ends,
                 collect_issues=False,
                 snapshot_token=snapshot_token,
             )
@@ -597,32 +610,45 @@ class RelationshipIngestionPipeline:
         if pending:
             yield pending
 
-    async def _resolve_batch(
+    async def _resolve_keys(
+        self,
+        mapping: RelationshipMapping,
+        start_keys: dict[str, None],
+        end_keys: dict[str, None],
+        batch_size: int,
+    ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        """``key -> node ids`` for each endpoint, one lookup per ``batch_size`` keys."""
+
+        async def lookup(entity: str, key: str, keys: list[str]) -> dict[str, list[str]]:
+            resolved: dict[str, list[str]] = {}
+            for start in range(0, len(keys), batch_size):
+                resolved.update(
+                    await self.graph_store.resolve_by_property(
+                        entity, key, keys[start : start + batch_size]
+                    )
+                )
+            return resolved
+
+        if mapping.start.entity == mapping.end.entity and mapping.start.key == mapping.end.key:
+            combined = await lookup(
+                mapping.start.entity, mapping.start.key, list({**start_keys, **end_keys})
+            )
+            return combined, combined
+        starts = await lookup(mapping.start.entity, mapping.start.key, list(start_keys))
+        ends = await lookup(mapping.end.entity, mapping.end.key, list(end_keys))
+        return starts, ends
+
+    def _resolve_batch(
         self,
         mapping: RelationshipMapping,
         prepared_batch: list[_PreparedRelationship],
         result: RelationshipIngestionResult,
+        starts: dict[str, list[str]],
+        ends: dict[str, list[str]],
         *,
         collect_issues: bool,
         snapshot_token: int | None = None,
     ) -> list[GraphRelationship]:
-        start_keys = [item.start_key for item in prepared_batch if item.start_key]
-        end_keys = [item.end_key for item in prepared_batch if item.end_key]
-        if mapping.start.entity == mapping.end.entity and mapping.start.key == mapping.end.key:
-            combined = await self.graph_store.resolve_by_property(
-                mapping.start.entity,
-                mapping.start.key,
-                [*start_keys, *end_keys],
-            )
-            starts = ends = combined
-        else:
-            starts = await self.graph_store.resolve_by_property(
-                mapping.start.entity, mapping.start.key, start_keys
-            )
-            ends = await self.graph_store.resolve_by_property(
-                mapping.end.entity, mapping.end.key, end_keys
-            )
-
         relationships: list[GraphRelationship] = []
         for item in prepared_batch:
             start_candidates = starts.get(item.start_key, []) if item.start_key else []
