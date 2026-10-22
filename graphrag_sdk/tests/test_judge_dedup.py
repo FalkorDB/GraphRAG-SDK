@@ -1329,9 +1329,26 @@ def test_a_judges_usage_that_fails_or_is_not_a_dict_counts_nothing():
         def usage(self):
             return {"calls": np.int64(3), "cost_usd": 0.01, "ok": True}
 
-    assert counted_usage(Raises()) == {}
-    assert counted_usage(Nothing()) == {}
+    assert counted_usage(Raises()) is None
+    assert counted_usage(Nothing()) is None
     assert counted_usage(Numpy()) == {"calls": 3}
+    assert "calls" not in _sim(judge=Raises()).dedup.last_judge_stats
+
+
+def test_a_usage_unread_before_the_judge_was_asked_counts_nothing_for_it():
+    """Read as empty, a failed reading before the call made the one after it
+    count the judge's whole history — 100 calls, over earlier runs — as this
+    run's."""
+
+    class MeterOfflineAtFirst(RecordingJudge):
+        def usage(self):
+            if not self.asked:  # no call yet
+                raise RuntimeError("meter offline")
+            return {"calls": 100}
+
+    one_group = SetVerdict(groups=[JudgeGroup(members=[0, 1])])
+    stats = _sim(judge=MeterOfflineAtFirst([one_group])).dedup.last_judge_stats
+    assert stats["merged"] == 1 and stats.get("calls", 0) == 0
 
 
 def test_a_duplicate_an_applied_merge_deleted_is_not_listed_again():

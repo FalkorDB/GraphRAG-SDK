@@ -1197,7 +1197,7 @@ class EntityDeduplicator:
         # What the judge reports it spent, at 0 until it is asked: a run with
         # nothing to judge still has the keys.
         own = set(stats)
-        stats.update({key: 0 for key in counted_usage(judge) if key not in own})
+        stats.update({key: 0 for key in counted_usage(judge) or {} if key not in own})
         points = [
             ent
             for ent in run.points

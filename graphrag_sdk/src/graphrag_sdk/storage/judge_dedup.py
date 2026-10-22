@@ -622,25 +622,30 @@ async def ask_judge(
         verdicts.failed.update(sets[s])
     verdicts.unanswered = len(todo)
     after = counted_usage(judge, warn=True)
-    verdicts.usage = {key: n - before.get(key, 0) for key, n in after.items()}
+    # Unread at either end, what the judge spent here is unknown: counted as
+    # nothing, not as its whole history.
+    if before is not None and after is not None:
+        verdicts.usage = {key: n - before.get(key, 0) for key, n in after.items()}
     return verdicts
 
 
-def counted_usage(judge: DedupJudge, *, warn: bool = False) -> dict[str, int]:
+def counted_usage(judge: DedupJudge, *, warn: bool = False) -> dict[str, int] | None:
     """A copy of ``judge.usage()``, whole numbers only: ``judge_stats`` holds
     counts, and a fractional value (``cost_usd``) made ``FinalizeResult``
     raise at the end of ``finalize()``. A copy, because a judge may return
-    its live counters, which would read as nothing spent. ``warn`` logs what
-    is left out."""
+    its live counters, which would read as nothing spent. ``None`` when it
+    cannot be read — ``usage()`` raised or returned no mapping: read as
+    empty, a reading that failed before a call made the one after it count
+    the judge's whole history. ``warn`` logs what is left out."""
     try:
         usage = judge.usage()
     except Exception:
         logger.warning(
             "judge dedup: the judge's usage() failed; its counts are left out", exc_info=True
         )
-        return {}
+        return None
     if not isinstance(usage, Mapping):
-        return {}
+        return None
     kept = {
         k: int(v) for k, v in usage.items() if isinstance(v, Integral) and not isinstance(v, bool)
     }
