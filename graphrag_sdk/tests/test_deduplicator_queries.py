@@ -98,6 +98,10 @@ def test_relates_remaps_preserve_provenance() -> None:
         assert "source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]" in q, (
             "RELATES remap must union provenance rather than overwrite it:\n" + q
         )
+        # The relationship tables owning the edge are provenance too.
+        assert (
+            "structured_sources = old_sources + [x IN sources WHERE NOT x IN old_sources]" in q
+        ), "RELATES remap must union relationship-table ownership:\n" + q
 
 
 # ── Name grouping ───────────────────────────────────────────────

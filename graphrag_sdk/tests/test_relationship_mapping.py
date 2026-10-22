@@ -338,6 +338,64 @@ async def test_stored_mapping_with_a_missing_endpoint_key_does_not_stop_startup_
     assert (await again.get_ontology()).relationship_tables == []
 
 
+@pytest.mark.integration
+async def test_merged_nodes_keep_both_relationship_tables_ownership_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """Folding one Unit into another keeps every table's claim on the shared edge."""
+    from graphrag_sdk import TableMapping
+
+    by_unit = consumed_mapping(source="consumed_a.csv")
+    by_legacy = consumed_mapping(
+        source="consumed_b.csv", start=EndpointMapping("Unit", "legacy__legacy_id", "source")
+    )
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=[
+                TableMapping(source="unit.csv", label="Unit", key="unit_id", name="name"),
+                TableMapping(source="legacy.csv", label="Unit", key="legacy_id", name="name"),
+                TableMapping(source="batch.csv", label="Batch", key="batch_id", name="batch_id"),
+            ],
+            relationship_tables=[by_unit, by_legacy],
+        ),
+    )
+    for filename, content in (
+        ("unit.csv", "unit_id,name\nU-1,Alpha\n"),
+        ("legacy.csv", "legacy_id,name\nL-9,Gamma\n"),
+        ("batch.csv", "batch_id\nB-1\n"),
+        ("consumed_a.csv", "source,target,consumed_on\nU-1,B-1,2026-01-01\n"),
+        ("consumed_b.csv", "source,target,consumed_on\nL-9,B-1,2026-02-02\n"),
+    ):
+        (tmp_path / filename).write_text(content, encoding="utf-8")
+        await rag.ingest(str(tmp_path / filename))
+
+    async def edges():
+        result = await rag._graph_store.query_raw(
+            "MATCH (u:Unit)-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->(:Batch) "
+            "RETURN u.name, r.structured_sources, r.consumed_a__consumed_on, "
+            "r.consumed_b__consumed_on ORDER BY u.name"
+        )
+        return result.result_set
+
+    assert await edges() == [
+        ["Alpha", ["consumed_a"], "2026-01-01", None],
+        ["Gamma", ["consumed_b"], None, "2026-02-02"],
+    ]
+    # U-1 is renamed to Gamma, so its node is folded into L-9's.
+    (tmp_path / "unit.csv").write_text("unit_id,name\nU-1,Gamma\n", encoding="utf-8")
+    await rag.ingest(str(tmp_path / "unit.csv"))
+    merged = await edges()
+    assert len(merged) == 1
+    assert sorted(merged[0][1]) == ["consumed_a", "consumed_b"]
+    assert merged[0][2:] == ["2026-01-01", "2026-02-02"]
+    # consumed_b.csv still lists L-9 -> B-1, so the edge outlives consumed_a.csv.
+    await rag.drop_table("consumed_a.csv")
+    assert await edges() == [["Gamma", ["consumed_b"], None, "2026-02-02"]]
+
+
 def consumed_mapping(**changes: Any) -> RelationshipMapping:
     values: dict[str, Any] = {
         "source": "consumed_batch.csv",

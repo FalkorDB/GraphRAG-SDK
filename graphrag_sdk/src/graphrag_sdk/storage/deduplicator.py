@@ -235,6 +235,11 @@ def _merge_description(current: str, absorbed: str) -> str:
 # commonly, wrongly retained because their list shrank to the dup's
 # contribution alone).
 #
+# ``structured_sources`` -- the relationship tables that own the edge -- is
+# unioned the same way. Left to ``+=``, the survivor edge kept only the
+# duplicate's tables, so dropping or re-ingesting one of those deleted an edge
+# that another table, now forgotten, still lists.
+#
 # Two properties of these queries are load-bearing and easy to undo by
 # "simplifying" them:
 #
@@ -268,9 +273,12 @@ _REMAP_QUERIES = [
     "MERGE (s)-[nr:RELATES {rel_type: coalesce(r.rel_type, '')}]->(b) "
     "WITH r, nr, "
     "     coalesce(nr.source_chunk_ids, []) AS old, "
-    "     coalesce(r.source_chunk_ids, []) AS contrib "
+    "     coalesce(r.source_chunk_ids, []) AS contrib, "
+    "     coalesce(nr.structured_sources, []) AS old_sources, "
+    "     coalesce(r.structured_sources, []) AS sources "
     "SET nr += properties(r) "
-    "SET nr.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old] "
+    "SET nr.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old], "
+    "    nr.structured_sources = old_sources + [x IN sources WHERE NOT x IN old_sources] "
     "DELETE r",
     # Incoming RELATES to duplicate.
     #
@@ -291,9 +299,12 @@ _REMAP_QUERIES = [
     "MERGE (a)-[nr:RELATES {rel_type: coalesce(r.rel_type, '')}]->(s) "
     "WITH r, nr, "
     "     coalesce(nr.source_chunk_ids, []) AS old, "
-    "     coalesce(r.source_chunk_ids, []) AS contrib "
+    "     coalesce(r.source_chunk_ids, []) AS contrib, "
+    "     coalesce(nr.structured_sources, []) AS old_sources, "
+    "     coalesce(r.structured_sources, []) AS sources "
     "SET nr += properties(r) "
-    "SET nr.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old] "
+    "SET nr.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old], "
+    "    nr.structured_sources = old_sources + [x IN sources WHERE NOT x IN old_sources] "
     "DELETE r",
     # MENTIONED_IN edges — no source_chunk_ids on these, plain remap.
     "MATCH (dup:__Entity__ {id: $dup_id})-[r:MENTIONED_IN]->(c:Chunk) "

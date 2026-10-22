@@ -107,7 +107,8 @@ Resolution and writes use bounded batches (500 by default), so files larger
 than FalkorDB's result-set limit do not rely on one unbounded query. Re-running
 `ingest()` is an idempotent upsert; relationship properties are signed with the
 mapping source, and source ownership is unioned when another relationship table
-describes the same edge.
+describes the same edge, including when two nodes are merged (a renamed row folded
+into an existing node, or deduplication) and their edges become one.
 
 Each successful re-ingest is a **snapshot of that source**: edges missing from
 the new file lose that source's contribution. An edge supported by another
