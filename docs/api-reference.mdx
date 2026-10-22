@@ -917,7 +917,7 @@ VectorStore(connection, embedder=None, index_name="chunk_embeddings", embedding_
 | `create_fulltext_index` | `(label="Chunk", *properties) -> None` | Create fulltext index |
 | `ensure_indices` | `() -> None` | Create all standard indices |
 | `index_chunks` | `(chunks: TextChunks) -> int` | Embed and store chunk vectors |
-| `backfill_entity_embeddings` | `() -> int` | Embed all entities missing vectors. Not a dedup step: an entity it embeds counts as checked; run `finalize(dedup_all=True)` once after it |
+| `backfill_entity_embeddings` | `() -> int` | Embed all entities missing vectors. Not a dedup step: an entity it embeds counts as checked unless a `pending` record lists it; run `finalize(dedup_all=True)` once after it |
 | `embed_relationships` | `() -> int` | Embed fact text on RELATES edges |
 | `search` | `(query_vector, top_k=5, label="Chunk") -> list[dict]` | Vector similarity search |
 | `search_entities` | `(query_vector, top_k=5) -> list[dict]` | Entity vector search |

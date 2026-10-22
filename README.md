@@ -185,7 +185,8 @@ In file mode, `document_id` defaults to `os.path.normpath(source)` so
 no extra plumbing. See [`examples/07_incremental_updates.py`](graphrag_sdk/examples/07_incremental_updates.py).
 
 **Cost model.** `finalize()` deduplicates only the entities ingested
-since the last `finalize()` (they have no name vector yet), reaching
+since the last `finalize()` (they have no name vector yet) and any an
+earlier run left pending, reaching
 the rest of the graph through the vector index — its LLM calls,
 embeddings and merges follow the **change size**, not the graph size.
 Finding the entities missing a vector is a range scan of internal node

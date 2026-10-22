@@ -99,7 +99,7 @@ Entities below the NER confidence threshold get the special label `Unknown`.
 
 ### SDK system nodes
 
-Besides your data, the graph holds a small, fixed set of the SDK's own nodes under two labels: `__GraphRAGConfig__` (the embedding model and vector size the graph was written with) and `__GraphRAGProcessing__` (dedup work in progress — the run lock, the entities whose dedup check is owed, and an interrupted run's merge plan; a finished run leaves only what is still owed). They have no edges and no vector, so no traversal or search reaches them, and `get_statistics()` does not count them. Nothing the SDK does to deduplicate is written on your entities. See [Storage](/storage#sdk-system-nodes).
+Besides your data, the graph holds a small, fixed set of the SDK's own nodes under two labels: `__GraphRAGConfig__` (the embedding model and vector size the graph was written with) and `__GraphRAGProcessing__` (dedup work in progress — the run lock, the entities whose dedup check is owed, and an interrupted run's merge plan; a finished run leaves only what is still owed). They have no edges and no vector, so no traversal or search reaches them, and `get_statistics()` does not count them. No dedup marker or bookkeeping is written on your entities — only their name vectors, and what a merge folds into the survivor. See [Storage](/storage#sdk-system-nodes).
 
 ---
 

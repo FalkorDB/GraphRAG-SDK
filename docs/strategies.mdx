@@ -600,7 +600,9 @@ Decides which entities are the same real-world entity in `finalize()`'s cross-do
 ### ABC
 
 ```python
-from graphrag_sdk import DedupJudge, JudgeSet, SetVerdict
+from abc import ABC, abstractmethod
+
+from graphrag_sdk import JudgeSet, SetVerdict
 
 class DedupJudge(ABC):
     @abstractmethod
@@ -620,6 +622,8 @@ A run adds what its judge spent — how much `usage()` grew while it ran — to 
 **Output — `SetVerdict`:** `groups`, each a `JudgeGroup` of `members` (positions in `JudgeSet.entities`, two or more), an optional `name` for the merged entity (one of its members' names or aliases; any other is ignored) and an optional `keep` (`{attribute: member}`: whose value the merged entity keeps where they disagree; the other value goes to `<attribute>__dropped`). A member no group lists is a different entity; `SetVerdict()` means nothing in the set merges.
 
 ```python
+from graphrag_sdk import JudgeGroup, SetVerdict
+
 SetVerdict(groups=[JudgeGroup(members=[0, 1], name="Tim Cook", keep={"born": 1})])
 ```
 

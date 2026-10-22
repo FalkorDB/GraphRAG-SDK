@@ -78,7 +78,7 @@ All LLM-extracted relationships use the single `RELATES` edge type. The original
 
 ### Post-ingestion: Entity Deduplication
 
-Entity deduplication is handled post-ingestion via `deduplicate_entities()` rather than during the pipeline. This allows ingesting multiple documents independently, then deduplicating incrementally: the pending entities (new since the last run — they have no name vector yet — or awaiting a retry) are matched against their nearest names in the graph by `(canonical name, label)` — which prevents cross-type merging (e.g. Person "Paris" and Location "Paris" remain separate). The remaining candidates then go to the judge — a pluggable `DedupJudge`, `LLMJudge` by default; every run has one.
+Entity deduplication is handled post-ingestion via `deduplicate_entities()` rather than during the pipeline. This allows ingesting multiple documents independently, then deduplicating incrementally: the pending entities (new since the last run — they have no name vector yet — or awaiting a retry) are compared with their nearest names in the graph, found through the vector index. The exact phase groups them by `(canonical name, label)`, so no rule merges across types (Person "Paris" and Location "Paris" remain separate); the other candidates, whatever their spelling, go to the judge — a pluggable `DedupJudge`, `LLMJudge` by default; every run has one.
 
 ## Retrieval Flow
 

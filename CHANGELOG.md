@@ -194,15 +194,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     query per merge that moves every relationship of every type (the old remap
     moved only `RELATES` and `MENTIONED_IN`), folds the properties, deletes the
     duplicate and ticks the plan. An interrupted `finalize()` is finished by
-    the next one, from the ticks; nothing is merged twice or half. One run per
-    graph at a time: a second raises `DedupRunActiveError`, and a run that
-    stalls past its 10-minute heartbeat is taken over and writes nothing more.
+    the next one, from the ticks; nothing is merged twice or half. One dedup
+    run per graph at a time: a second — from another process, or a second
+    `finalize()` on the same `GraphRAG` — raises `DedupRunActiveError` and
+    leaves the running one untouched, and a run that stalls past its
+    10-minute heartbeat is taken over and writes nothing more.
   - `update()`, `delete_document()` and table re-syncs never wait for a running
     `finalize()`: each SDK delete or re-key leaves a `deleted` record in the
     same query, and a merge that would touch the entity is skipped and decided
     again next run (`FinalizeResult.dedup_merges_changed`). A table re-key into
     a taken id is one query that moves every edge type and, like a merge,
-    writes nothing if either node changed since it was read.
+    writes nothing if either node changed since it was read — a property, or
+    a label (`rename_entity()`).
   - Extracted mentions with the same spelling are judged rather than merged on
     the name alone (Paris, France and Paris, Texas); a table row still absorbs
     a same-named mention by rule — unless two rows share the name (also for a
@@ -253,8 +256,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     missed entities. Each connection asks the server its version once, before
     its first query, and refuses an older one with `FalkorDBVersionError` (a
     `DatabaseError`): `ingest()`, `query()`, `finalize()` and the rest fail
-    before anything is written. A server that does not report its version is
-    let through with a warning. CI, `docker-compose.yml`, the docs' `docker
+    before anything is written. A server that refuses to report its version
+    (an ACL, a disabled `MODULE LIST`) is let through with a warning; any other
+    error reply is retried like a query, and `close()` makes the next query ask
+    again. CI, `docker-compose.yml`, the docs' `docker
     run` lines and the examples use `v4.20.4`.
   - `finalize()` no longer calls `backfill_entity_embeddings()`: dedup writes
     every entity's name vector, listing the entity first, and a backfill after
