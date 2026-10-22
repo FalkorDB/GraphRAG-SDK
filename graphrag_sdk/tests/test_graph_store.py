@@ -735,6 +735,10 @@ class TestGraphStoreQueryRaw:
         await graph_store.query_raw("MATCH (n {id: $id})", {"id": "test"})
         mock_connection.query.assert_called_once_with("MATCH (n {id: $id})", {"id": "test"})
 
+    async def test_read_only_reaches_the_connection(self, graph_store, mock_connection):
+        await graph_store.query_raw("MATCH (n) RETURN n", read_only=True)
+        mock_connection.query.assert_called_once_with("MATCH (n) RETURN n", None, read_only=True)
+
 
 class TestGraphStoreDeleteAll:
     async def test_delete_all(self, graph_store, mock_connection):

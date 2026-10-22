@@ -235,6 +235,70 @@ class TestFalkorDBConnection:
             assert conn.graph is mock_graph
 
 
+class TestReadOnlyQuery:
+    """``read_only=True`` sends the query as GRAPH.RO_QUERY, which FalkorDB
+    refuses if the query would write."""
+
+    @staticmethod
+    def _conn(graph: MagicMock, retry_delay: float = 0.0) -> FalkorDBConnection:
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=retry_delay))
+        conn._graph = graph
+        conn._driver = MagicMock()
+        return conn
+
+    async def test_read_only_sends_ro_query(self):
+        graph = MagicMock(query=AsyncMock(), ro_query=AsyncMock(return_value="rows"))
+        conn = self._conn(graph)
+
+        assert await conn.query("MATCH (n) RETURN n", read_only=True) == "rows"
+        graph.ro_query.assert_awaited_once_with(
+            "MATCH (n) RETURN n", params=None, timeout=conn.config.query_timeout_ms
+        )
+        graph.query.assert_not_awaited()
+
+    async def test_default_sends_query(self):
+        graph = MagicMock(query=AsyncMock(return_value="rows"), ro_query=AsyncMock())
+        conn = self._conn(graph)
+
+        assert await conn.query("MATCH (n) RETURN n") == "rows"
+        graph.query.assert_awaited_once()
+        graph.ro_query.assert_not_awaited()
+
+    async def test_refused_write_fails_once_and_spares_the_breaker(self, caplog):
+        """A write refused under read-only is the query's fault, not the
+        database's: one attempt each time, a ``DatabaseError``, the breaker
+        stays closed, and no ERROR line, because the caller handles it."""
+        from redis.exceptions import ResponseError
+
+        refusal = "graph.RO_QUERY is to be executed only on read-only queries"
+        graph = MagicMock(ro_query=AsyncMock(side_effect=ResponseError(refusal)))
+        conn = self._conn(graph)
+
+        with caplog.at_level("DEBUG", logger="graphrag_sdk.core.connection"):
+            for _ in range(conn._breaker.failure_threshold + 1):
+                with pytest.raises(DatabaseError, match="read-only queries") as excinfo:
+                    await conn.query("CREATE (:Intruder)", read_only=True)
+                assert not isinstance(excinfo.value, DatabaseUnavailableError)
+
+        assert graph.ro_query.await_count == conn._breaker.failure_threshold + 1
+        assert await conn._breaker.allow_request()
+        assert "Non-transient FalkorDB query failure" in caplog.text
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+    async def test_temporary_reply_is_still_retried(self):
+        """Read-only changes how the query is sent, not which replies are
+        temporary: a full query queue is retried as for any other query."""
+        from redis.exceptions import ResponseError
+
+        graph = MagicMock(
+            ro_query=AsyncMock(side_effect=[ResponseError("Max pending queries exceeded"), "rows"])
+        )
+        conn = self._conn(graph, retry_delay=0.001)
+
+        assert await conn.query("MATCH (n) RETURN n", read_only=True) == "rows"
+        assert graph.ro_query.await_count == 2
+
+
 class TestFalkorDBConnectionTLS:
     def test_pool_omits_ssl_kwargs_when_ssl_disabled(self):
         from redis.asyncio import BlockingConnectionPool

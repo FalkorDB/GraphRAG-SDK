@@ -869,13 +869,29 @@ class GraphStore:
             logger.warning(f"Failed to get entities for chunk {chunk_id}: {exc}")
             return []
 
-    async def query_raw(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
+    async def query_raw(
+        self,
+        cypher: str,
+        params: dict[str, Any] | None = None,
+        *,
+        read_only: bool = False,
+    ) -> Any:
         """Execute a raw Cypher query.
 
         Escape hatch for advanced use cases. Prefer specific methods
         for standard operations.
+
+        Args:
+            cypher: The Cypher query string.
+            params: Optional query parameters.
+            read_only: Run with ``GRAPH.RO_QUERY`` so the database rejects
+                any write (use for model- or user-written queries).
         """
-        return await self._conn.query(cypher, params)
+        # The flag goes only when set, so a connection stand-in that takes
+        # just (cypher, params) keeps working for every other query.
+        if not read_only:
+            return await self._conn.query(cypher, params)
+        return await self._conn.query(cypher, params, read_only=read_only)
 
     # ── Statistics ────────────────────────────────────────────────
 

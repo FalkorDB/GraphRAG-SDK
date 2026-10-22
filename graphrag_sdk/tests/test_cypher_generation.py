@@ -135,10 +135,71 @@ class TestSanitizeCypher:
         result = _sanitize_cypher(cypher)
         assert "allShortestPaths" not in result
 
-    def test_removes_path_assignment(self):
-        cypher = "MATCH path = (a)-[:RELATES]->(b) RETURN a, b"
-        result = _sanitize_cypher(cypher)
-        assert "path =" not in result and "path=" not in result
+    def test_keeps_named_path(self):
+        """FalkorDB runs named paths; removing ``path =`` left ``RETURN path``
+        pointing at nothing."""
+        cypher = "MATCH path = (a)-[:RELATES]->(b) RETURN path LIMIT 5"
+        assert _sanitize_cypher(cypher) == cypher
+
+    def test_lowers_a_limit_above_the_cap(self):
+        result = _sanitize_cypher("MATCH (n) RETURN n.name LIMIT 1000000")
+        assert result == "MATCH (n) RETURN n.name LIMIT 100"
+
+    def test_keeps_a_limit_under_the_cap(self):
+        cypher = "MATCH (n) RETURN n.name LIMIT 10"
+        assert _sanitize_cypher(cypher) == cypher
+
+    def test_adds_the_default_limit(self):
+        result = _sanitize_cypher("MATCH (n) RETURN n.name;")
+        assert result == "MATCH (n) RETURN n.name\nLIMIT 25"
+
+    def test_a_limit_inside_with_does_not_bound_the_rows(self):
+        cypher = "MATCH (n) WITH n LIMIT 5 MATCH (n)--(m) RETURN m"
+        assert _sanitize_cypher(cypher) == cypher + "\nLIMIT 25"
+
+    def test_leaves_a_limit_inside_with_alone(self):
+        """Lowering it would change what the count is taken over."""
+        result = _sanitize_cypher("MATCH (n) WITH n LIMIT 500 RETURN count(n) AS c")
+        assert "WITH n LIMIT 500 " in result
+
+    def test_leaves_a_parameter_limit_alone(self):
+        cypher = "MATCH (n) RETURN n LIMIT $k"
+        assert _sanitize_cypher(cypher) == cypher
+
+    @pytest.mark.parametrize(
+        "cypher",
+        [
+            "MATCH (d:Document) WHERE d.path = 'docs/a.md' RETURN d.path LIMIT 5",
+            "MATCH (c:Chunk) WHERE c.text CONTAINS 'shortestPath(x)' RETURN c.text LIMIT 5",
+            'MATCH (c:Chunk) WHERE c.text = "say \\"shortestPath(\\"" RETURN c LIMIT 5',
+            "MATCH (c:Chunk) RETURN c.`shortestPath(` AS s LIMIT 5",
+            "MATCH (c:Chunk) // shortestPath( here\nRETURN c LIMIT 5",
+        ],
+    )
+    def test_never_edits_quoted_text(self, cypher):
+        assert _sanitize_cypher(cypher) == cypher
+
+    def test_rewrites_shortest_path_outside_quotes_only(self):
+        result = _sanitize_cypher(
+            "MATCH p = shortestPath((a)-[*]-(b)) WHERE a.name = 'shortestPath(' RETURN p"
+        )
+        assert result == "MATCH p = ((a)-[*]-(b)) WHERE a.name = 'shortestPath(' RETURN p\nLIMIT 25"
+
+    @pytest.mark.parametrize(
+        "cypher",
+        [
+            "MATCH (c:Chunk) WHERE c.text CONTAINS 'top LIMIT 5' RETURN c.text",
+            "MATCH (c:Chunk) RETURN c.text // LIMIT 5",
+            "MATCH (c:Chunk) WHERE c.text = 'never closed LIMIT 5 RETURN c",
+        ],
+    )
+    def test_a_limit_in_quotes_does_not_count(self, cypher):
+        assert _sanitize_cypher(cypher) == cypher + "\nLIMIT 25"
+
+    def test_restores_a_placeholder_mark_already_in_the_query(self):
+        """Text that looks like a placeholder must not be swapped for a quote."""
+        cypher = "MATCH (n) WHERE n.name = 'a' RETURN n\ue0000\ue001 LIMIT 5"
+        assert _sanitize_cypher(cypher) == cypher
 
 
 # ── execute_cypher_retrieval ──────────────────────────────────────
@@ -251,6 +312,26 @@ class TestExecuteCypherRetrieval:
         assert "Alice" in facts[0]
         assert "alice" in entities
         assert "bob" in entities
+
+    async def test_runs_the_query_read_only(self):
+        """The database, not only the keyword check, refuses a generated write."""
+        from unittest.mock import AsyncMock, MagicMock
+        from graphrag_sdk.core.models import LLMResponse
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(
+            return_value=LLMResponse(content="```cypher\nMATCH (n:Person) RETURN n.name\n```")
+        )
+        mock_graph = MagicMock()
+        mock_graph.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
+
+        await execute_cypher_retrieval(mock_graph, mock_llm, "test?")
+        mock_graph.query_raw.assert_awaited_once_with(
+            "MATCH (n:Person) RETURN n.name\nLIMIT 25", read_only=True
+        )
 
 
 # ── Schema-aware prompt + validator ──────────────────────────────

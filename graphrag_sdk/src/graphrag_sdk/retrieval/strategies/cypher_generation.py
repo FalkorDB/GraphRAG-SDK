@@ -290,12 +290,74 @@ def extract_cypher(text: str) -> str:
 
 # ── Cypher sanitization ─────────────────────────────────────────
 
+# Rows a generated query may return. They go straight into the answer prompt,
+# past the reranker that trims every other source, so each row costs prompt
+# space; the prompt's own examples ask for 15 to 25. A query without a LIMIT
+# gets the default, and a larger one is lowered to the cap.
+_DEFAULT_LIMIT = 25
+_MAX_LIMIT = 100
+
+# Text no cleanup step may change: string literals (backslash escapes
+# included), backtick-quoted names and comments. A quote the model never closed
+# runs to the end of the query. A stray placeholder mark is hidden too, so
+# restoring the pieces cannot misread it.
+_QUOTED = re.compile(
+    r"'(?:[^'\\]|\\.)*(?:'|\Z)"
+    r'|"(?:[^"\\]|\\.)*(?:"|\Z)'
+    r"|`[^`]*(?:`|\Z)"
+    r"|//[^\n]*"
+    r"|/\*.*?(?:\*/|\Z)"
+    r"|\ue000",
+    re.DOTALL,
+)
+_PLACEHOLDER = re.compile(r"\ue000(\d+)\ue001")
+
+
+def _hide_quoted(cypher: str) -> tuple[str, list[str]]:
+    """Swap every quoted piece of ``cypher`` for a numbered placeholder."""
+    pieces: list[str] = []
+
+    def hide(match: re.Match[str]) -> str:
+        pieces.append(match.group(0))
+        return f"\ue000{len(pieces) - 1}\ue001"
+
+    return _QUOTED.sub(hide, cypher), pieces
+
+
+def _restore_quoted(cypher: str, pieces: list[str]) -> str:
+    """Put back the pieces ``_hide_quoted`` took out, byte for byte."""
+    return _PLACEHOLDER.sub(lambda match: pieces[int(match.group(1))], cypher)
+
+
+def _bound_limit(cypher: str) -> str:
+    """Make the final RETURN give back at most ``_MAX_LIMIT`` rows.
+
+    Only the final RETURN decides how many rows come back. A LIMIT inside an
+    earlier ``WITH`` bounds what feeds the next step, and lowering it could
+    change an answer (a count over the first 500 becoming one over the first
+    100), so it is left as written. A LIMIT that is not a plain number
+    (``LIMIT $n``) is left as written too.
+    """
+    returns = list(re.finditer(r"\bRETURN\b", cypher, re.IGNORECASE))
+    tail_start = returns[-1].end() if returns else 0
+    limit = re.search(r"\bLIMIT\b\s*(\d+)?", cypher[tail_start:], re.IGNORECASE)
+    if limit is None:
+        return cypher.rstrip().rstrip(";") + f"\nLIMIT {_DEFAULT_LIMIT}"
+    if limit.group(1) is None or int(limit.group(1)) <= _MAX_LIMIT:
+        return cypher
+    start, end = tail_start + limit.start(1), tail_start + limit.end(1)
+    return cypher[:start] + str(_MAX_LIMIT) + cypher[end:]
+
 
 def _sanitize_cypher(cypher: str) -> str:
     """Fix common LLM-generated Cypher issues before execution.
 
-    Catches patterns that would cause FalkorDB runtime errors.
+    Catches patterns that would cause FalkorDB runtime errors and bounds the
+    rows the query returns. Quoted text is hidden from every step, so a value
+    such as ``d.path = 'docs/a.md'`` reaches the database as the model wrote it.
     """
+    cypher, quoted = _hide_quoted(cypher)
+
     # Remove shortestPath / allShortestPaths wrappers
     cypher = re.sub(
         r"\b(allShortestPaths|shortestPath)\s*\(",
@@ -303,14 +365,10 @@ def _sanitize_cypher(cypher: str) -> str:
         cypher,
         flags=re.IGNORECASE,
     )
-    # Remove path variable assignments: "path = MATCH" -> "MATCH"
-    cypher = re.sub(r"\bpath\s*=\s*", "", cypher, flags=re.IGNORECASE)
 
-    # Add LIMIT if missing (prevent runaway scans)
-    if not re.search(r"\bLIMIT\b", cypher, re.IGNORECASE):
-        cypher = cypher.rstrip().rstrip(";") + "\nLIMIT 25"
+    cypher = _bound_limit(cypher)
 
-    return cypher
+    return _restore_quoted(cypher, quoted)
 
 
 # ── Cypher validation ────────────────────────────────────────────
@@ -532,7 +590,9 @@ async def execute_cypher_retrieval(
     try:
         if ctx is not None:
             ctx.ensure_budget("Cypher execution")
-        result = await graph_store.query_raw(cypher)
+        # Read-only: the database itself refuses a write that got past
+        # validate_cypher's keyword checks.
+        result = await graph_store.query_raw(cypher, read_only=True)
     except LatencyBudgetExceededError:
         raise
     except Exception as exc:

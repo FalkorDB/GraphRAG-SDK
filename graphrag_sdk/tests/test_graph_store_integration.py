@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
+from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import GraphNode, GraphRelationship
 from graphrag_sdk.storage.graph_store import GraphStore
 
@@ -172,3 +173,37 @@ class TestOneKeyTwiceInOneCall:
             )
         ).result_set
         assert rows == [[["c1", "c2"]], [["c3"]]]
+
+
+class TestReadOnlyQueries:
+    """A query sent read-only, as text-to-Cypher sends the model's query,
+    cannot change the graph: the database itself refuses it."""
+
+    @pytest.mark.parametrize(
+        "write",
+        [
+            "CREATE (:Intruder {id: 'x'})",
+            "MATCH (n:Doc) SET n.path = 'changed'",
+            "MATCH (n:Doc) DETACH DELETE n",
+            "MERGE (:Intruder {id: 'y'})",
+        ],
+    )
+    async def test_a_write_is_refused_and_the_graph_is_unchanged(self, store, write):
+        await store.query_raw("CREATE (:Doc {id: 'd1', path: 'docs/a.md'})")
+
+        with pytest.raises(DatabaseError, match="read-only"):
+            await store.query_raw(write, read_only=True)
+
+        rows = await store.query_raw("MATCH (n) RETURN labels(n), n.path")
+        assert rows.result_set == [[["Doc"], "docs/a.md"]]
+
+    async def test_a_read_with_a_named_path_runs(self, store):
+        await store.query_raw(
+            "CREATE (:Doc {id: 'd1', path: 'docs/a.md'})-[:LINKS]->(:Doc {id: 'd2'})"
+        )
+        rows = await store.query_raw(
+            "MATCH path = (a:Doc)-[:LINKS]->(b:Doc) WHERE a.path = 'docs/a.md' "
+            "RETURN b.id, length(path) LIMIT 5",
+            read_only=True,
+        )
+        assert rows.result_set == [["d2", 1]]
