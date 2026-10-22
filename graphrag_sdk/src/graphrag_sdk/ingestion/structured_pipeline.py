@@ -11,7 +11,6 @@ import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
-from uuid import uuid4
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
@@ -483,7 +482,11 @@ class RelationshipIngestionPipeline:
             seen[prepared.identity] = fingerprint
         # A fresh generation marks this attempt, not just the file's bytes.
         # Unchanged rows can resolve differently (e.g. newly ambiguous keys).
-        snapshot_token = uuid4().hex
+        # It is a number from the server clock, not a random token: cleanup
+        # removes only rows an older run left, so two runs of this file at
+        # once cannot delete each other's edges.
+        marker = f"relationship_mapping_{mapping.signature}"
+        snapshot_token = await self.graph_store.next_relationship_snapshot(marker)
 
         batch_size = int(getattr(self.graph_store, "_BATCH_SIZE", 500))
         for prepared_batch in self._prepared_batches(batch, mapping, batch_size, unique=True):
@@ -515,7 +518,9 @@ class RelationshipIngestionPipeline:
                 snapshot_token=snapshot_token,
             )
             result.relationships += len(relationships)
-            written = await self.graph_store.upsert_relationships(relationships)
+            written = await self.graph_store.upsert_relationships(
+                relationships, snapshot_property=marker
+            )
             result.relationships_written += written
             if _reported_short(written, len(relationships)):
                 result.incomplete_writes.append(
@@ -526,7 +531,7 @@ class RelationshipIngestionPipeline:
         if not result.incomplete_writes:
             result.relationships_deleted = await self.graph_store.finalize_relationship_snapshot(
                 mapping.signature,
-                f"relationship_mapping_{mapping.signature}",
+                marker,
                 snapshot_token,
                 stale_properties
                 or [mapping.signed_name(prop) for prop in mapping.typed_properties],
@@ -586,7 +591,7 @@ class RelationshipIngestionPipeline:
         result: RelationshipIngestionResult,
         *,
         collect_issues: bool,
-        snapshot_token: str | None = None,
+        snapshot_token: int | None = None,
     ) -> list[GraphRelationship]:
         start_keys = [item.start_key for item in prepared_batch if item.start_key]
         end_keys = [item.end_key for item in prepared_batch if item.end_key]

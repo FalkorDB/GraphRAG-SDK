@@ -657,6 +657,41 @@ class TestGraphStoreUpsertRelationships:
         cypher = upsert_calls(mock_connection)[0][0][0]
         assert "coalesce(r.structured_sources, []) AS old_sources" in cypher
         assert "WHERE NOT s IN old_sources" in cypher
+        assert "old_snapshot" not in cypher
+
+    async def test_snapshot_number_never_moves_back(self, graph_store, mock_connection):
+        """A run that started earlier and writes later keeps the newer run's number."""
+
+        async def fail_batch(cypher, params=None):
+            if "UNWIND $batch AS item" in cypher:
+                raise Exception("fail")
+            return MagicMock()
+
+        mock_connection.query = AsyncMock(side_effect=fail_batch)
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={
+                        "rel_type": "CONSUMED_BATCH",
+                        "structured_sources": ["consumed_batch"],
+                        "relationship_mapping_consumed_batch": 7,
+                    },
+                )
+            ],
+            snapshot_property="relationship_mapping_consumed_batch",
+        )
+        batch, fallback = (call[0][0] for call in upsert_calls(mock_connection))
+        for cypher, incoming in ((batch, "item.properties"), (fallback, "$properties")):
+            assert "r.`relationship_mapping_consumed_batch` AS old_snapshot" in cypher
+            assert cypher.index("AS old_snapshot") < cypher.index("SET r +=")
+            assert (
+                "SET r.`relationship_mapping_consumed_batch` = CASE WHEN old_snapshot > "
+                f"{incoming}.`relationship_mapping_consumed_batch` THEN old_snapshot "
+                f"ELSE {incoming}.`relationship_mapping_consumed_batch` END"
+            ) in cypher
 
     async def test_null_signed_relationship_property_is_removed(
         self, graph_store, mock_connection
@@ -742,16 +777,38 @@ class TestRelationshipEndpointResolution:
         deleted = await graph_store.finalize_relationship_snapshot(
             "consumed_batch",
             "relationship_mapping_consumed_batch",
-            "snapshot",
+            1_700_000_000_000,
             ["consumed_batch__consumed_on"],
         )
         assert deleted == 2
         calls = mock_connection.query.call_args_list
+        # Only rows an older run left are stale; a newer run's are not.
+        for call in calls[:2]:
+            assert "coalesce(r.`relationship_mapping_consumed_batch`, 0) < $snapshot" in call[0][0]
+            assert call[0][1]["snapshot"] == 1_700_000_000_000
         assert "REMOVE r.`consumed_batch__consumed_on`" in calls[0][0][0]
         assert "[s IN r.structured_sources WHERE s <> $signature]" in calls[1][0][0]
         assert "relationship_cleanup_consumed_batch" in calls[2][0][0]
         assert "size(coalesce(r.source_chunk_ids, [])) = 0" in calls[2][0][0]
         assert "REMOVE r.`relationship_cleanup_consumed_batch`" in calls[3][0][0]
+
+    async def test_snapshot_number_is_the_clock_or_one_past_the_newest(
+        self, graph_store, mock_connection
+    ):
+        mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[[1_700_000_000_001]]))
+        number = await graph_store.next_relationship_snapshot("relationship_mapping_consumed_batch")
+        assert number == 1_700_000_000_001
+        cypher = mock_connection.query.call_args[0][0]
+        assert "max(r.`relationship_mapping_consumed_batch`) AS newest" in cypher
+        assert "timestamp() AS now" in cypher
+        assert "THEN now ELSE newest + 1 END" in cypher
+
+    async def test_dropping_a_source_outranks_every_run(self, graph_store, mock_connection):
+        mock_connection.query = AsyncMock(
+            side_effect=[MagicMock(result_set=[[1]]), MagicMock(), MagicMock()]
+        )
+        await graph_store.drop_relationship_source("consumed_batch", [])
+        assert mock_connection.query.call_args_list[0][0][1]["snapshot"] == 2**63 - 1
 
 class TestGraphStoreGetConnectedEntities:
     async def test_get_entities(self, graph_store, mock_connection):

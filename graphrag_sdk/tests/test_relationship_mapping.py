@@ -338,6 +338,123 @@ async def test_stored_mapping_with_a_missing_endpoint_key_does_not_stop_startup_
     assert (await again.get_ontology()).relationship_tables == []
 
 
+class _Interleaved:
+    """Delegate to a graph store, holding the named calls until an event is set.
+
+    ``before[name]`` is awaited before that call runs and ``after[name]`` is
+    set once it returns, so two pipelines on one graph run in a fixed order.
+    """
+
+    def __init__(self, store, *, before=None, after=None) -> None:
+        self._store = store
+        self._before = before or {}
+        self._after = after or {}
+
+    def __getattr__(self, name):
+        attr = getattr(self._store, name)
+        if name not in self._before and name not in self._after:
+            return attr
+
+        async def call(*args, **kwargs):
+            if name in self._before:
+                await self._before[name].wait()
+            result = await attr(*args, **kwargs)
+            if name in self._after:
+                self._after[name].set()
+            return result
+
+        return call
+
+
+@pytest.mark.integration
+async def test_two_runs_of_one_file_at_once_keep_every_edge_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """The run that started first and writes last cannot strip the other's edges.
+
+    Run B writes, run A rewrites the same edges, then B cleans up: with a
+    random token per run B's cleanup saw A's token on every edge and deleted
+    them all, and both runs reported success.
+    """
+    import asyncio
+
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[consumed_mapping()],
+        ),
+    )
+    path = await _ingest_units_batches_and_edges(rag, tmp_path)
+    a_started, a_wrote, b_wrote = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    run_a = RelationshipIngestionPipeline(
+        CsvRecordLoader(),
+        _Interleaved(
+            rag._graph_store,
+            before={"upsert_relationships": b_wrote},
+            after={"next_relationship_snapshot": a_started, "upsert_relationships": a_wrote},
+        ),
+    )
+    run_b = RelationshipIngestionPipeline(
+        CsvRecordLoader(),
+        _Interleaved(
+            rag._graph_store,
+            before={
+                "next_relationship_snapshot": a_started,
+                "finalize_relationship_snapshot": a_wrote,
+            },
+            after={"upsert_relationships": b_wrote},
+        ),
+    )
+    results = await asyncio.gather(
+        run_a.run(str(path), consumed_mapping(), Context()),
+        run_b.run(str(path), consumed_mapping(), Context()),
+    )
+    assert [
+        (r.relationships_written, r.relationships_deleted, r.incomplete_writes) for r in results
+    ] == [(2, 0, []), (2, 0, [])]
+    edges = await rag._graph_store.query_raw(
+        "MATCH (u:Unit)-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->(b:Batch) "
+        "RETURN u.unit__unit_id, b.batch__batch_id, r.structured_sources, "
+        "r.consumed_batch__consumed_on ORDER BY u.unit__unit_id"
+    )
+    assert edges.result_set == [
+        ["U-1", "B-1", ["consumed_batch"], "2026-09-20"],
+        ["U-2", "B-2", ["consumed_batch"], "2026-09-21"],
+    ]
+    # One run after another still removes a row the file no longer has.
+    write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])
+    assert (await rag.ingest(str(path))).relationships_deleted == 1
+    assert await _consumed_edge_count(rag) == 1
+
+
+@pytest.mark.integration
+async def test_rerun_outranks_a_stored_snapshot_ahead_of_the_clock_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """Two runs in one millisecond, or a server clock set back, still clean up."""
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[consumed_mapping()],
+        ),
+    )
+    path = await _ingest_units_batches_and_edges(rag, tmp_path)
+    # The last run's number is a day ahead of the clock the next run reads.
+    await rag._graph_store.query_raw(
+        "MATCH ()-[r:RELATES]->() "
+        "SET r.relationship_mapping_consumed_batch = timestamp() + 86400000"
+    )
+    write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])
+    assert (await rag.ingest(str(path))).relationships_deleted == 1
+    assert await _consumed_edge_count(rag) == 1
+
+
 @pytest.mark.integration
 async def test_merged_nodes_keep_both_relationship_tables_ownership_on_real_falkordb(
     real_falkordb_rag_factory, llm, tmp_path
@@ -419,14 +536,21 @@ class RelationshipStore:
         self.resolve_sizes: list[int] = []
         self.relationships: dict[tuple[str, str, str], Any] = {}
         self.write_calls = 0
+        self.snapshots = 0
+        self.snapshot_properties: list[str | None] = []
 
     async def resolve_by_property(self, label: str, prop: str, keys: list[str]):
         self.resolve_sizes.append(len(keys))
         values = self.entities.get((label, prop), {})
         return {key: values[key] for key in dict.fromkeys(keys) if key in values}
 
-    async def upsert_relationships(self, relationships):
+    async def next_relationship_snapshot(self, marker_property: str) -> int:
+        self.snapshots += 1
+        return self.snapshots
+
+    async def upsert_relationships(self, relationships, *, snapshot_property=None):
         self.write_calls += 1
+        self.snapshot_properties.append(snapshot_property)
         for relationship in relationships:
             key = (
                 relationship.start_node_id,
@@ -440,14 +564,14 @@ class RelationshipStore:
         self,
         signature: str,
         marker_property: str,
-        snapshot_token: str,
+        snapshot_token: int,
         signed_properties: list[str],
     ):
         stale = [
             key
             for key, relationship in self.relationships.items()
             if signature in relationship.properties.get("structured_sources", [])
-            and relationship.properties.get(marker_property) != snapshot_token
+            and relationship.properties.get(marker_property, 0) < snapshot_token
         ]
         for key in stale:
             del self.relationships[key]
@@ -616,6 +740,17 @@ class TestRelationshipIngestion:
         result = await pipeline.run(str(path), consumed_mapping(), Context())
         assert len(store.relationships) == 1
         assert result.relationships_deleted == 1
+
+    async def test_rows_carry_the_runs_snapshot_number_from_the_store(self, tmp_path):
+        """The number orders runs, and the store is told which property holds it."""
+        path = write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])
+        store = RelationshipStore()
+        pipeline = RelationshipIngestionPipeline(CsvRecordLoader(), store)
+        await pipeline.run(str(path), consumed_mapping(), Context())
+        await pipeline.run(str(path), consumed_mapping(), Context())
+        relationship = next(iter(store.relationships.values()))
+        assert relationship.properties["relationship_mapping_consumed_batch"] == 2
+        assert store.snapshot_properties == ["relationship_mapping_consumed_batch"] * 2
 
     async def test_conflicting_duplicate_is_rejected_before_writes(self, tmp_path):
         path = write_csv(

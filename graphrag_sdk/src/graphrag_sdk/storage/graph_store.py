@@ -675,11 +675,21 @@ class GraphStore:
         logger.debug(f"Upserted {count} reference nodes")
         return count
 
-    async def upsert_relationships(self, relationships: list[GraphRelationship]) -> int:
+    async def upsert_relationships(
+        self,
+        relationships: list[GraphRelationship],
+        *,
+        snapshot_property: str | None = None,
+    ) -> int:
         """Batch upsert relationships using UNWIND, grouped by type.
 
         Args:
             relationships: List of relationships to upsert.
+            snapshot_property: A RELATES property holding a relationship-table
+                run's snapshot number (see :meth:`next_relationship_snapshot`).
+                An edge keeps the larger of its stored and incoming number, so a
+                run that started earlier and writes later cannot make a newer
+                run's edges look stale to that run's cleanup.
 
         Returns:
             Number of relationships upserted.
@@ -696,6 +706,19 @@ class GraphStore:
                 )
             )
             by_type.setdefault((rel.type, clear), []).append(rel)
+
+        # A snapshot number is read before ``SET r += ...`` overwrites it and
+        # the larger of the stored and incoming one is kept.
+        old_snapshot = batch_snapshot = item_snapshot = ""
+        if snapshot_property:
+            safe_snapshot = sanitize_cypher_label(snapshot_property)
+            old_snapshot = f", r.`{safe_snapshot}` AS old_snapshot"
+            batch_snapshot, item_snapshot = (
+                f" SET r.`{safe_snapshot}` = CASE WHEN old_snapshot > "
+                f"{incoming}.`{safe_snapshot}` THEN old_snapshot "
+                f"ELSE {incoming}.`{safe_snapshot}` END"
+                for incoming in ("item.properties", "$properties")
+            )
 
         count = 0
         for (rel_type, clear_properties), group in by_type.items():
@@ -790,11 +813,13 @@ class GraphStore:
                         f"     coalesce(r.source_chunk_ids, []) AS old, "
                         f"     coalesce(item.properties.source_chunk_ids, []) AS contrib, "
                         f"     coalesce(r.structured_sources, []) AS old_sources, "
-                        f"     coalesce(item.properties.structured_sources, []) AS sources "
+                        f"     coalesce(item.properties.structured_sources, []) AS sources"
+                        f"{old_snapshot} "
                         f"SET r += item.properties "
                         f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old], "
                         f"    r.structured_sources = old_sources + "
                         f"[s IN sources WHERE NOT s IN old_sources]"
+                        f"{batch_snapshot}"
                         f"{clear_clause}"
                     )
                 else:
@@ -837,12 +862,14 @@ class GraphStore:
                                 f"     coalesce(r.source_chunk_ids, []) AS old, "
                                 f"     coalesce($properties.source_chunk_ids, []) AS contrib, "
                                 f"     coalesce(r.structured_sources, []) AS old_sources, "
-                                f"     coalesce($properties.structured_sources, []) AS sources "
+                                f"     coalesce($properties.structured_sources, []) AS sources"
+                                f"{old_snapshot} "
                                 f"SET r += props "
                                 f"SET r.source_chunk_ids = old + "
                                 f"[c IN contrib WHERE NOT c IN old], "
                                 f"    r.structured_sources = old_sources + "
                                 f"[s IN sources WHERE NOT s IN old_sources]"
+                                f"{item_snapshot}"
                                 f"{clear_clause}"
                             )
                         else:
@@ -867,19 +894,41 @@ class GraphStore:
         logger.debug(f"Upserted {count} relationships")
         return count
 
+    async def next_relationship_snapshot(self, marker_property: str) -> int:
+        """Return the snapshot number for a new relationship-table run.
+
+        It is the server clock in milliseconds, so a run that starts later
+        outranks one already running, and that run's cleanup leaves the later
+        run's edges alone. When an edge already holds that number or a larger
+        one (two runs in one millisecond, or a clock set back) it is one more
+        than the largest, so a re-ingest always outranks the run before it.
+        """
+        marker = sanitize_cypher_label(marker_property)
+        result = await self._conn.query(
+            "MATCH ()-[r:RELATES]->() "
+            f"WHERE r.`{marker}` IS NOT NULL "
+            f"WITH max(r.`{marker}`) AS newest "
+            "WITH newest, timestamp() AS now "
+            "RETURN CASE WHEN newest IS NULL OR now > newest THEN now ELSE newest + 1 END"
+        )
+        return int(result.result_set[0][0])
+
     async def finalize_relationship_snapshot(
         self,
         signature: str,
         marker_property: str,
-        snapshot_token: str,
+        snapshot_token: int,
         signed_properties: Sequence[str],
     ) -> int:
         """Remove stale contributions after a complete relationship-table write.
 
-        Current rows carry ``marker_property=snapshot_token``. Older rows from
-        the same mapping lose only that mapping's signed properties and source
-        marker. The physical edge is deleted only when no structured table and
-        no document chunk still supports it.
+        Current rows carry ``marker_property`` set to this run's
+        ``snapshot_token`` or a newer run's (:meth:`upsert_relationships` never
+        lowers it). Rows whose number is older than this run's lose only this
+        mapping's signed properties and source marker; a newer run's rows are
+        left alone, so two runs of one source at once cannot delete each
+        other's edges. The physical edge is deleted only when no structured
+        table and no document chunk still supports it.
         """
         marker = sanitize_cypher_label(marker_property)
         cleanup_marker = sanitize_cypher_label(f"relationship_cleanup_{signature}")
@@ -888,14 +937,14 @@ class GraphStore:
             await self._conn.query(
                 "MATCH ()-[r:RELATES]->() "
                 "WHERE $signature IN coalesce(r.structured_sources, []) "
-                f"AND coalesce(r.`{marker}`, '') <> $snapshot "
+                f"AND coalesce(r.`{marker}`, 0) < $snapshot "
                 f"REMOVE r.`{safe_property}`",
                 {"signature": signature, "snapshot": snapshot_token},
             )
         stale = await self._conn.query(
             "MATCH ()-[r:RELATES]->() "
             "WHERE $signature IN coalesce(r.structured_sources, []) "
-            f"AND coalesce(r.`{marker}`, '') <> $snapshot "
+            f"AND coalesce(r.`{marker}`, 0) < $snapshot "
             "SET r.structured_sources = "
             "[s IN r.structured_sources WHERE s <> $signature] "
             f"SET r.`{cleanup_marker}` = true "
@@ -937,7 +986,8 @@ class GraphStore:
         return await self.finalize_relationship_snapshot(
             signature,
             f"relationship_mapping_{signature}",
-            "__removed_relationship_mapping__",
+            # Newer than any run's number, so every row of the source is stale.
+            2**63 - 1,
             signed_properties,
         )
 
