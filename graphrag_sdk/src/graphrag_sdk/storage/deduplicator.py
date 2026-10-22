@@ -1793,6 +1793,8 @@ class EntityDeduplicator:
                 if i in plan.changed[page]:
                     changed_groups.add(op.group)
         recheck = set().union(*(members[g] for g in changed_groups))
+        # A member deleted or re-keyed since judging is gone, not owed a check.
+        recheck -= await store.deleted_among(recheck)
         for page, (decided, done) in enumerate(zip(plan.decisions, plan.decision_done)):
             if done:
                 continue
@@ -2243,7 +2245,9 @@ def _decide_records(
     """The pending records as one decision page leaves them, a new record for
     a hand-off no existing record can take, and how many entities it clears.
     Only records it changes are returned. ``recheck`` are the members of
-    groups with a changed operation: kept pending whatever the page says. The
+    groups with a changed operation: kept pending whatever the page says, and
+    listed when no record lists them — a ``dedup_all`` run's entities, a
+    survivor an earlier run checked — or they would look checked. The
     hand-off goes on the last record, or — with none left — on a new one;
     either way it is written in the query that ticks the page."""
     clear = set(decided.clear) - recheck
@@ -2272,20 +2276,22 @@ def _decide_records(
         if touched:
             updates.append(PendingPage(rec.page, ids, attempts, why, rec.claimed_run))
     listed = {eid for rec in records for eid in rec.ids}
-    handoff = [eid for eid in decided.handoff if eid not in listed]
-    if not handoff:
+    handoff = dict.fromkeys(decided.handoff, "")
+    handoff.update(dict.fromkeys(sorted(recheck), "changed during the run"))
+    ids = [eid for eid in handoff if eid not in listed]
+    if not ids:
         return updates, None, cleared
+    why = [handoff[eid] for eid in ids]
     if not records:
-        created = PendingPage(0, handoff, [0] * len(handoff), [""] * len(handoff))
-        return updates, created, cleared
+        return updates, PendingPage(0, ids, [0] * len(ids), why), cleared
     last = next((u for u in updates if u.page == records[-1].page), None)
     if last is None:
         rec = records[-1]
         last = PendingPage(rec.page, list(rec.ids), list(rec.attempts), list(rec.reasons))
         updates.append(last)
-    last.ids += handoff
-    last.attempts += [0] * len(handoff)
-    last.reasons += [""] * len(handoff)
+    last.ids += ids
+    last.attempts += [0] * len(ids)
+    last.reasons += why
     return updates, None, cleared
 
 

@@ -349,6 +349,38 @@ async def test_an_entity_an_update_deletes_mid_run_is_not_merged_and_its_group_r
     assert pending[1] == ["timothy"] and pending[3] == ["changed during the run"]
 
 
+async def test_in_a_dedup_all_run_a_changed_group_is_listed_pending(graph, monkeypatch):
+    """``dedup_all`` checks entities no record lists. A merge of theirs skipped
+    as changed used to leave them unlisted with their vectors — looking
+    checked, never retried by an ordinary run."""
+    await graph.query_raw(
+        "CREATE VECTOR INDEX FOR (n:__Entity__) ON (n.embedding) "
+        "OPTIONS {dimension: 4, similarityFunction: 'cosine'}"
+    )
+    await graph.query_raw(
+        "CREATE (:__Entity__:Person {id: 'tim', name: 'Tim Cook', description: 'Apple CEO', "
+        "embedding: vecf32($tim)}), "
+        "(:__Entity__:Person {id: 'timothy', name: 'Timothy Cook', "
+        "description: 'chief executive of Apple', embedding: vecf32($timothy)})",
+        {"tim": VECTORS["Tim Cook"], "timothy": VECTORS["Timothy Cook"]},
+    )
+    real = SystemStore.write_plan
+
+    async def then_an_update_deletes(self, ops, decisions):
+        plan_run = await real(self, ops, decisions)
+        (dup,) = [op.dup for op in ops if op.dup in ("timothy", "tim")]
+        await graph.delete_orphan_entities([dup])
+        return plan_run
+
+    monkeypatch.setattr(SystemStore, "write_plan", then_an_update_deletes)
+    dd = dedup(graph)
+    await dd.deduplicate(judge=LLMJudge(Judge([TIM, APPLE])), dedup_all=True)
+    assert dd.last_report.changed == 1
+    (kept,) = {"tim", "timothy"} & set(await entity_ids(graph))
+    (pending,) = [r for r in await records(graph) if r[0] == "pending"]
+    assert pending[1] == [kept] and pending[3] == ["changed during the run"]
+
+
 async def test_a_delete_outside_a_run_leaves_no_record(graph):
     await checked_graph(graph)
     await graph.delete_orphan_entities(["jobs"])

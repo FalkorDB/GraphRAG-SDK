@@ -598,3 +598,33 @@ def test_an_operation_an_earlier_attempt_ticked_says_what_that_attempt_did():
     assert outcome([True, True, 5, True, True, True, 0, False], 5) == APPLIED
     with pytest.raises(PlanStateError):
         outcome([True, True, 4, False, None, None, None, False], 5)
+
+
+class TestChangedGroupsStayPending:
+    """A merge skipped as changed leaves its group's checks incomplete. Members
+    no pending record lists — every entity of a ``dedup_all=True`` run, a
+    survivor checked in an earlier run — have to be listed, or they look
+    checked and no ordinary run retries them."""
+
+    def test_members_with_no_record_get_one(self):
+        from graphrag_sdk.storage.deduplicator import _decide_records
+        from graphrag_sdk.storage.system_store import Decisions
+
+        updates, created, cleared = _decide_records(
+            [], Decisions(clear=["s", "d"]), recheck={"s", "d"}
+        )
+        assert updates == [] and cleared == 0
+        assert created.ids == ["d", "s"] and created.reasons == ["changed during the run"] * 2
+
+    def test_a_member_already_listed_is_kept_and_the_others_join_its_record(self):
+        from graphrag_sdk.storage.deduplicator import _decide_records
+        from graphrag_sdk.storage.system_store import Decisions, PendingPage
+
+        listed = PendingPage(0, ["d"], [1], [""])
+        updates, created, _ = _decide_records(
+            [listed], Decisions(clear=["s", "d"]), recheck={"s", "d"}
+        )
+        assert created is None
+        assert [(u.ids, u.attempts, u.reasons) for u in updates] == [
+            (["d", "s"], [1, 0], ["changed during the run", "changed during the run"])
+        ]
