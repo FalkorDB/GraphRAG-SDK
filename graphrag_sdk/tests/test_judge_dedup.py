@@ -1287,3 +1287,18 @@ def test_usage_reports_whole_numbers_only_and_reads_a_live_dict_right(caplog):
     lone = [["e1", "IBM", "Computer company.", ["Organization"], None, None, 0, [1.0, 0, 0]]]
     stats = _sim(lone, judge=LLMJudge(ScriptedLLM([[IBM]]))).dedup.last_judge_stats
     assert stats["llm_calls"] == 0 and stats["llm_failed"] == 0
+
+
+def test_an_unresolved_entity_is_not_merged_by_rule_either():
+    """Unresolved means left out of every set and never merged automatically
+    until ``dedup_all`` retries it; the exact phase merged one by rule into a
+    new table row of its name. It is kept out, and on record as kept from it."""
+    from graphrag_sdk.storage.system_store import Unresolved
+
+    rows = [
+        ["row", "Acme", "anvils", "Organization", None, False],
+        ["u", "Acme", "a mention", "Organization"],
+    ]
+    quarantined = {"u": Unresolved(3, "no usable verdict", "")}
+    sim = asyncio.run(simulate(rows, pending=["row"], unresolved=quarantined))
+    assert sim.ops == [] and sim.run.blocked == {"u": {"Acme"}}

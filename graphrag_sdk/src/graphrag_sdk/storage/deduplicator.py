@@ -1096,12 +1096,19 @@ class EntityDeduplicator:
         pending_ids = {ent["id"] for ent in pending}
         near = [nid for found in hits.values() for nid, _, _ in found if nid not in pending_ids]
         self._near_ids = list(dict.fromkeys(near))
-        wanted = [
-            nid
-            for found in hits.values()
-            for nid, _, name in found
-            if nid not in pending_ids and could_group_any(name)
-        ]
+        wanted: list[str] = []
+        for eid, found in hits.items():
+            for nid, _, name in found:
+                if nid in pending_ids or not could_group_any(name):
+                    continue
+                if nid in run.unresolved:
+                    # Never merged automatically, by rule no more than by the
+                    # judge, until dedup_all retries it; who it was kept from
+                    # is on its record.
+                    if could_group(eid, name):
+                        run.blocked.setdefault(nid, set()).add(str(name_of[eid]))
+                    continue
+                wanted.append(nid)
         return list((await self._fetch_entities_by_ids(wanted, batch_size)).values())
 
     # ── 3. the judged phase ──

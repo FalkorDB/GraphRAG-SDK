@@ -236,6 +236,7 @@ async def simulate(
     pending: list[str] | None = None,
     graph_class: type | None = None,
     ontology: Any = None,
+    unresolved: dict[str, Any] | None = None,
 ) -> Sim:
     """Decide and apply one run over ``rows`` — ``[id, name, description,
     label or [labels], aliases, is_stub, degree, embedding]``, trailing
@@ -247,7 +248,8 @@ async def simulate(
     names the rows that are new (the rest are the graph's): only they are
     query points, and the exact phase finds the others through the
     nearest-name search, as a real run does; by default every row is a query
-    point, ``dedup_all``-style."""
+    point, ``dedup_all``-style. ``unresolved`` are the entities the run
+    loads as unresolved (``Unresolved`` by id)."""
     stored = stored or {}
     nodes = {row[0]: _node(row, stored.get(row[0], {})) for row in rows}
     graph = (graph_class or SimGraph)(nodes)
@@ -255,7 +257,7 @@ async def simulate(
     dedup._declared_labels = {label.lower() for label in declared_labels or set()}
     dedup._schema = AttributeSchema.from_ontology(ontology)
     dedup._dedup_all = pending is None
-    run = _Run()
+    run = _Run(unresolved=dict(unresolved or {}))
     points = list(nodes) if pending is None else list(pending)
     run.points = [_entity_from_row(graph._entity_row(eid)) for eid in points]
     run.listed = set(points)
