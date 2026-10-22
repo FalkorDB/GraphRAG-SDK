@@ -798,6 +798,71 @@ async def test_blank_cells_keep_each_batch_in_one_write_on_real_falkordb(
     ]
 
 
+@pytest.mark.integration
+async def test_cleanup_reads_only_the_tables_own_edges_in_chunks_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path, monkeypatch
+):
+    """Snapshot and cleanup queries read every RELATES edge in the graph,
+    document edges included, 3 + one per property times per ingest, and changed
+    every stale edge in one write. They now go through one index shared by all
+    relationship tables, a bounded number of edges per write."""
+    from graphrag_sdk.storage.graph_store import GraphStore
+
+    monkeypatch.setattr(GraphStore, "_RELATIONSHIP_CLEANUP_BATCH", 1)
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[consumed_mapping()],
+        ),
+    )
+    watched = _Watched(rag._graph_store._conn)
+    rag._graph_store._conn = watched
+    path = await _ingest_units_batches_and_edges(rag, tmp_path)
+    # A document's edge, and a document chunk that also supports U-2 -> B-2.
+    await rag._graph_store.query_raw(
+        "MATCH (u:Unit {unit__unit_id: 'U-1'}), (b:Batch {batch__batch_id: 'B-1'}) "
+        "CREATE (u)-[:RELATES {rel_type: 'MENTIONED_WITH', source_chunk_ids: ['c1']}]->(b)"
+    )
+    await rag._graph_store.query_raw(
+        "MATCH ()-[r:RELATES {rel_type: 'CONSUMED_BATCH'}]->(:Batch {batch__batch_id: 'B-2'}) "
+        "SET r.source_chunk_ids = ['c2']"
+    )
+    watched.sent.clear()
+    write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])
+    assert (await rag.ingest(str(path))).relationships_deleted == 1
+    await rag.drop_table("consumed_batch.csv")
+    reads = [
+        (cypher, params)
+        for cypher, params in watched.sent
+        if "structured_sources" in cypher and "UNWIND" not in cypher
+    ]
+    changes = [(cypher, params) for cypher, params in watched.sent if "UNWIND $edges" in cypher]
+
+    edges = await rag._graph_store.query_raw(
+        "MATCH (u:Unit)-[r:RELATES]->(b:Batch) "
+        "RETURN u.unit__unit_id, b.batch__batch_id, r.rel_type, r.source_chunk_ids, "
+        "r.structured_sources, r.consumed_batch__consumed_on, "
+        "r.relationship_mapping_consumed_batch ORDER BY r.rel_type, u.unit__unit_id"
+    )
+    assert edges.result_set == [
+        ["U-2", "B-2", "CONSUMED_BATCH", ["c2"], [], None, None],
+        ["U-1", "B-1", "MENTIONED_WITH", ["c1"], None, None, None],
+    ]
+    # The run's snapshot number and its cleanup's reads, then drop_table's.
+    assert len(reads) >= 4 and len(changes) == 2, "one edge per change"
+    for cypher, params in reads:
+        plan = str(await rag._conn._graph.explain(cypher, params))
+        assert "Edge By Index Scan" in plan, (cypher, plan)
+    for cypher, params in changes:
+        # FalkorDB 6.0.2 crashed setting structured_sources on edges a query
+        # was still reading through that index; the change goes by node id.
+        plan = str(await rag._conn._graph.explain(cypher, params))
+        assert "NodeByIdSeek" in plan and "Index Scan" not in plan, (cypher, plan)
+
+
 def consumed_mapping(**changes: Any) -> RelationshipMapping:
     values: dict[str, Any] = {
         "source": "consumed_batch.csv",
@@ -829,7 +894,7 @@ class RelationshipStore:
         values = self.entities.get((label, prop), {})
         return {key: values[key] for key in dict.fromkeys(keys) if key in values}
 
-    async def next_relationship_snapshot(self, marker_property: str) -> int:
+    async def next_relationship_snapshot(self, marker_property: str, signature: str) -> int:
         self.snapshots += 1
         return self.snapshots
 

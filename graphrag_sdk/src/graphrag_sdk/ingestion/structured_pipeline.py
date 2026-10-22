@@ -499,7 +499,9 @@ class RelationshipIngestionPipeline:
         # removes only rows an older run left, so two runs of this file at
         # once cannot delete each other's edges.
         marker = f"relationship_mapping_{mapping.signature}"
-        snapshot_token = await self.graph_store.next_relationship_snapshot(marker)
+        snapshot_token = await self.graph_store.next_relationship_snapshot(
+            marker, mapping.signature
+        )
 
         batch_size = int(getattr(self.graph_store, "_BATCH_SIZE", 500))
         # The write pass reuses these answers, so it writes exactly the rows

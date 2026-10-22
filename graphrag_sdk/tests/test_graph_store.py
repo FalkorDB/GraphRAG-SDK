@@ -798,52 +798,140 @@ class TestRelationshipEndpointResolution:
         ]
         assert [len(call[0][1]["keys"]) for call in lookups] == [500, 500, 1]
 
+    @staticmethod
+    def _answer(mock_connection, *found, stripped=None, snapshot=None):
+        """Index housekeeping finds nothing. Each cleanup read finds the next
+        count of stale edges, then none; each change strips what was found
+        (``stripped`` overrides that)."""
+        found = iter(found)
+        last = {"n": 0}
+
+        async def answer(cypher, params=None, **kwargs):
+            if _is_index_housekeeping(cypher):
+                return MagicMock(result_set=[])
+            if "max(r." in cypher:
+                return MagicMock(result_set=[[snapshot]])
+            if "LIMIT $limit" in cypher:
+                last["n"] = next(found, 0)
+                return MagicMock(result_set=[[index, index] for index in range(last["n"])])
+            if "UNWIND $edges" in cypher:
+                return MagicMock(result_set=[[last["n"] if stripped is None else stripped]])
+            return MagicMock(result_set=[])
+
+        mock_connection.query = AsyncMock(side_effect=answer)
+
+    @staticmethod
+    def _work(mock_connection):
+        return [
+            call[0]
+            for call in mock_connection.query.call_args_list
+            if not _is_index_housekeeping(call[0][0])
+        ]
+
     async def test_snapshot_cleanup_removes_only_one_sources_contribution(
         self, graph_store, mock_connection
     ):
-        mock_connection.query = AsyncMock(
-            side_effect=[
-                MagicMock(),
-                MagicMock(result_set=[[2]]),
-                MagicMock(),
-                MagicMock(),
-            ]
-        )
+        self._answer(mock_connection, 2)
         deleted = await graph_store.finalize_relationship_snapshot(
             "consumed_batch",
             "relationship_mapping_consumed_batch",
             1_700_000_000_000,
-            ["consumed_batch__consumed_on"],
+            ["consumed_batch__consumed_on", "consumed_batch__shift"],
         )
         assert deleted == 2
-        calls = mock_connection.query.call_args_list
+        (find, find_params), (strip, strip_params), (again, _) = self._work(mock_connection)
+        assert again == find, "reads again until nothing stale is left"
         # Only rows an older run left are stale; a newer run's are not.
-        for call in calls[:2]:
-            assert "coalesce(r.`relationship_mapping_consumed_batch`, 0) < $snapshot" in call[0][0]
-            assert call[0][1]["snapshot"] == 1_700_000_000_000
-        assert "REMOVE r.`consumed_batch__consumed_on`" in calls[0][0][0]
-        assert "[s IN r.structured_sources WHERE s <> $signature]" in calls[1][0][0]
-        assert "relationship_cleanup_consumed_batch" in calls[2][0][0]
-        assert "size(coalesce(r.source_chunk_ids, [])) = 0" in calls[2][0][0]
-        assert "REMOVE r.`relationship_cleanup_consumed_batch`" in calls[3][0][0]
+        for cypher, params in ((find, find_params), (strip, strip_params)):
+            assert "coalesce(r.`relationship_mapping_consumed_batch`, 0) < $snapshot" in cypher
+            assert params["snapshot"] == 1_700_000_000_000
+            assert params["signature"] == "consumed_batch"
+        assert strip_params["edges"] == [{"a": 0, "r": 0}, {"a": 1, "r": 1}]
+        # The change finds each edge again by id and checks it is still stale ...
+        assert "WHERE id(a) = edge.a" in strip and "WHERE id(r) = edge.r" in strip
+        assert "any(s IN r.structured_sources WHERE s = $signature)" in strip
+        # ... strips the source, its marker and every signed property ...
+        assert "SET r.structured_sources = rest" in strip
+        assert "[s IN r.structured_sources WHERE s <> $signature] AS rest" in strip
+        assert (
+            "REMOVE r.`relationship_mapping_consumed_batch`, r.`consumed_batch__consumed_on`, "
+            "r.`consumed_batch__shift`"
+        ) in strip
+        # ... and deletes an edge nothing else supports.
+        assert "size(rest) = 0 AND size(coalesce(r.source_chunk_ids, [])) = 0" in strip
+        assert "FOREACH (x IN unsupported | DELETE x)" in strip
+
+    async def test_snapshot_queries_read_only_the_sources_edges(self, graph_store, mock_connection):
+        """Each query used to read every RELATES edge in the graph, documents' too."""
+        self._answer(mock_connection, 1, 0, 1, snapshot=7)
+        await graph_store.next_relationship_snapshot(
+            "relationship_mapping_consumed_batch", "consumed_batch"
+        )
+        await graph_store.finalize_relationship_snapshot(
+            "consumed_batch", "relationship_mapping_consumed_batch", 7, []
+        )
+        await graph_store.drop_relationship_source("consumed_batch", [])
+        await graph_store.clear_relationship_source_property(
+            "consumed_batch", "CONSUMED_BATCH", "consumed_batch__shift"
+        )
+        creates = [
+            call[0][0]
+            for call in mock_connection.query.call_args_list
+            if "CREATE INDEX" in call[0][0]
+        ]
+        assert creates == ["CREATE INDEX FOR ()-[r:RELATES]-() ON (r.structured_sources)"], (
+            "one index shared by every table, created once"
+        )
+        work = self._work(mock_connection)
+        reads = [(cypher, params) for cypher, params in work if "UNWIND $edges" not in cypher]
+        assert len(reads) == 6, "the snapshot, two reads per cleanup, the property removal"
+        for cypher, params in reads:
+            # Not wrapped in coalesce(): FalkorDB 4.x then skips the index.
+            assert "WHERE $signature IN r.structured_sources" in cypher
+            assert "coalesce(r.structured_sources" not in cypher
+            assert params["signature"] == "consumed_batch"
+        for cypher, _ in work:
+            if "SET r.structured_sources" in cypher:
+                # FalkorDB 6.0.2 crashed setting the indexed list on edges a
+                # LIMIT left it still reading through that index.
+                assert "$signature IN r.structured_sources" not in cypher
+
+    async def test_a_large_cleanup_runs_in_bounded_chunks(self, graph_store, mock_connection):
+        """Dropping a 1M-edge table was one write that held the graph for seconds."""
+        chunk = graph_store._RELATIONSHIP_CLEANUP_BATCH
+        self._answer(mock_connection, chunk, chunk, 3)
+        deleted = await graph_store.drop_relationship_source("consumed_batch", [])
+        assert deleted == 2 * chunk + 3
+        work = self._work(mock_connection)
+        finds = [params for cypher, params in work if "LIMIT $limit" in cypher]
+        strips = [params for cypher, params in work if "UNWIND $edges" in cypher]
+        assert [params["limit"] for params in finds] == [chunk] * 4, "until a read finds none"
+        assert [len(params["edges"]) for params in strips] == [chunk, chunk, 3]
+
+    async def test_a_cleanup_that_strips_nothing_stops(self, graph_store, mock_connection):
+        """An edge the read keeps finding but the change cannot strip would loop."""
+        self._answer(mock_connection, 5, 5, 5, stripped=0)
+        assert await graph_store.drop_relationship_source("consumed_batch", []) == 0
+        assert len(self._work(mock_connection)) == 2
 
     async def test_snapshot_number_is_the_clock_or_one_past_the_newest(
         self, graph_store, mock_connection
     ):
-        mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[[1_700_000_000_001]]))
-        number = await graph_store.next_relationship_snapshot("relationship_mapping_consumed_batch")
+        self._answer(mock_connection, snapshot=1_700_000_000_001)
+        number = await graph_store.next_relationship_snapshot(
+            "relationship_mapping_consumed_batch", "consumed_batch"
+        )
         assert number == 1_700_000_000_001
-        cypher = mock_connection.query.call_args[0][0]
+        ((cypher, _),) = self._work(mock_connection)
         assert "max(r.`relationship_mapping_consumed_batch`) AS newest" in cypher
         assert "timestamp() AS now" in cypher
         assert "THEN now ELSE newest + 1 END" in cypher
 
     async def test_dropping_a_source_outranks_every_run(self, graph_store, mock_connection):
-        mock_connection.query = AsyncMock(
-            side_effect=[MagicMock(result_set=[[1]]), MagicMock(), MagicMock()]
-        )
+        self._answer(mock_connection, 1)
         await graph_store.drop_relationship_source("consumed_batch", [])
-        assert mock_connection.query.call_args_list[0][0][1]["snapshot"] == 2**63 - 1
+        assert {params["snapshot"] for _, params in self._work(mock_connection)} == {2**63 - 1}
+
 
 class TestGraphStoreGetConnectedEntities:
     async def test_get_entities(self, graph_store, mock_connection):

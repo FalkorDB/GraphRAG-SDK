@@ -959,22 +959,67 @@ class GraphStore:
         logger.debug(f"Upserted {count} relationships")
         return count
 
-    async def next_relationship_snapshot(self, marker_property: str) -> int:
+    # Rows one cleanup query strips or deletes, so dropping a large table is a
+    # series of short writes rather than one that holds the graph for seconds.
+    _RELATIONSHIP_CLEANUP_BATCH = 10_000
+
+    async def _ensure_relationship_source_index(self) -> None:
+        """Range-index ``RELATES.structured_sources``, once for every relationship table.
+
+        A table's snapshot and cleanup queries then read only the edges that
+        list it, through ``$signature IN r.structured_sources`` -- without the
+        index each one read every RELATES edge in the graph, document edges
+        included. One index for all tables: adding a field to RELATES makes
+        FalkorDB rebuild the whole RELATES index, embeddings included, so a
+        per-table index would rebuild it for every new table. Created here
+        rather than with the other indexes, so a graph that never ingests a
+        relationship table never pays that rebuild.
+        """
+        if self._indexed is None:
+            self._indexed = await self._read_range_indexes()
+        if ("RELATES", "structured_sources") in self._indexed:
+            return
+        # Not while the RELATES embedding index is still building: on FalkorDB
+        # 6.0.2 a field added while another one builds could come up empty.
+        await self._wait_for_index("RELATES", "RELATIONSHIP")
+        try:
+            await self._conn.query(
+                "CREATE INDEX FOR ()-[r:RELATES]-() ON (r.structured_sources)",
+                expected_errors=("already indexed",),
+            )
+        except Exception as exc:
+            if "already indexed" not in str(exc).lower():
+                logger.debug("Range index on RELATES.structured_sources not created: %s", exc)
+                return
+        self._indexed.add(("RELATES", "structured_sources"))
+        await self._wait_for_index("RELATES", "RELATIONSHIP")
+
+    async def next_relationship_snapshot(self, marker_property: str, signature: str) -> int:
         """Return the snapshot number for a new relationship-table run.
 
         It is the server clock in milliseconds, so a run that starts later
         outranks one already running, and that run's cleanup leaves the later
-        run's edges alone. When an edge already holds that number or a larger
-        one (two runs in one millisecond, or a clock set back) it is one more
-        than the largest, so a re-ingest always outranks the run before it.
+        run's edges alone. When one of the source's edges already holds that
+        number or a larger one (two runs in one millisecond, or a clock set
+        back) it is one more than the largest, so a re-ingest always outranks
+        the run before it.
+
+        The ``structured_sources`` index this reads through is created by the
+        run's cleanup, after its endpoint lookups: FalkorDB builds one index at
+        a time, and on a graph with many embedded edges the endpoint key index
+        those lookups need waited behind the RELATES rebuild. Without the index
+        this query reads every RELATES edge, once.
         """
         marker = sanitize_cypher_label(marker_property)
         result = await self._conn.query(
             "MATCH ()-[r:RELATES]->() "
-            f"WHERE r.`{marker}` IS NOT NULL "
+            # Not wrapped in coalesce(): FalkorDB 4.x then skips the index.
+            "WHERE $signature IN r.structured_sources "
+            f"AND r.`{marker}` IS NOT NULL "
             f"WITH max(r.`{marker}`) AS newest "
             "WITH newest, timestamp() AS now "
-            "RETURN CASE WHEN newest IS NULL OR now > newest THEN now ELSE newest + 1 END"
+            "RETURN CASE WHEN newest IS NULL OR now > newest THEN now ELSE newest + 1 END",
+            {"signature": signature},
         )
         return int(result.result_set[0][0])
 
@@ -994,52 +1039,72 @@ class GraphStore:
         left alone, so two runs of one source at once cannot delete each
         other's edges. The physical edge is deleted only when no structured
         table and no document chunk still supports it.
+
+        Stale edges are found through the ``structured_sources`` index, so only
+        this source's edges are read, and changed ``_RELATIONSHIP_CLEANUP_BATCH``
+        at a time. Finding and changing them are two queries: FalkorDB 6.0.2
+        crashed (a RediSearch lock assertion) when one query set
+        ``structured_sources`` on edges while its LIMIT left the scan of that
+        index open. The change finds each edge again by its start node's id
+        and checks it is still stale.
         """
+        await self._ensure_relationship_source_index()
         marker = sanitize_cypher_label(marker_property)
-        cleanup_marker = sanitize_cypher_label(f"relationship_cleanup_{signature}")
-        for property_name in signed_properties:
-            safe_property = sanitize_cypher_label(property_name)
-            await self._conn.query(
-                "MATCH ()-[r:RELATES]->() "
-                "WHERE $signature IN coalesce(r.structured_sources, []) "
-                f"AND coalesce(r.`{marker}`, 0) < $snapshot "
-                f"REMOVE r.`{safe_property}`",
-                {"signature": signature, "snapshot": snapshot_token},
-            )
-        stale = await self._conn.query(
-            "MATCH ()-[r:RELATES]->() "
-            "WHERE $signature IN coalesce(r.structured_sources, []) "
+        removed = ", ".join(
+            f"r.`{sanitize_cypher_label(name)}`"
+            for name in dict.fromkeys((marker_property, *signed_properties))
+        )
+        params: dict[str, Any] = {"signature": signature, "snapshot": snapshot_token}
+        find = (
+            "MATCH (a)-[r:RELATES]->() "
+            # Not wrapped in coalesce(): FalkorDB 4.x then skips the index.
+            "WHERE $signature IN r.structured_sources "
             f"AND coalesce(r.`{marker}`, 0) < $snapshot "
-            "SET r.structured_sources = "
-            "[s IN r.structured_sources WHERE s <> $signature] "
-            f"SET r.`{cleanup_marker}` = true "
-            f"REMOVE r.`{marker}` "
-            "RETURN count(r)",
-            {"signature": signature, "snapshot": snapshot_token},
+            "RETURN id(a), id(r) LIMIT $limit"
         )
-        await self._conn.query(
-            "MATCH ()-[r:RELATES]->() "
-            f"WHERE r.`{cleanup_marker}` = true "
-            "AND size(coalesce(r.source_chunk_ids, [])) = 0 "
-            "AND size(coalesce(r.structured_sources, [])) = 0 "
-            "DELETE r"
+        strip = (
+            "UNWIND $edges AS edge "
+            "MATCH (a) WHERE id(a) = edge.a "
+            # WITH between the MATCHes: FalkorDB 6.0.2 loses ``edge`` without it.
+            "WITH a, edge "
+            "MATCH (a)-[r:RELATES]->() WHERE id(r) = edge.r "
+            # any() rather than IN, so this query never reads that index.
+            "AND any(s IN r.structured_sources WHERE s = $signature) "
+            f"AND coalesce(r.`{marker}`, 0) < $snapshot "
+            "WITH r, [s IN r.structured_sources WHERE s <> $signature] AS rest "
+            "SET r.structured_sources = rest "
+            f"REMOVE {removed} "
+            "WITH collect(r) AS stale, collect(CASE WHEN size(rest) = 0 "
+            "AND size(coalesce(r.source_chunk_ids, [])) = 0 THEN r END) AS unsupported "
+            "FOREACH (x IN unsupported | DELETE x) "
+            "RETURN size(stale)"
         )
-        await self._conn.query(
-            "MATCH ()-[r:RELATES]->() "
-            f"WHERE r.`{cleanup_marker}` = true "
-            f"REMOVE r.`{cleanup_marker}`"
-        )
-        rows = getattr(stale, "result_set", None) or []
-        return int(rows[0][0]) if rows and rows[0] else 0
+        total = 0
+        while True:
+            found = await self._conn.query(
+                find, {**params, "limit": self._RELATIONSHIP_CLEANUP_BATCH}
+            )
+            edges = [{"a": row[0], "r": row[1]} for row in getattr(found, "result_set", None) or []]
+            if not edges:
+                return total
+            result = await self._conn.query(strip, {**params, "edges": edges})
+            rows = getattr(result, "result_set", None) or []
+            stripped = int(rows[0][0]) if rows and rows[0] else 0
+            total += stripped
+            # A stripped edge no longer lists the source, so the next read starts
+            # on the ones left; one that could not be stripped would come back.
+            if not stripped:
+                return total
 
     async def clear_relationship_source_property(
         self, signature: str, relationship_type: str, property_name: str
     ) -> None:
         """Retract a removed mapping property from surviving source-owned edges."""
+        await self._ensure_relationship_source_index()
         safe_property = sanitize_cypher_label(property_name)
         await self._conn.query(
             "MATCH ()-[r:RELATES]->() "
-            "WHERE r.rel_type = $type AND $signature IN coalesce(r.structured_sources, []) "
+            "WHERE $signature IN r.structured_sources AND r.rel_type = $type "
             f"REMOVE r.`{safe_property}`",
             {"signature": signature, "type": relationship_type},
         )

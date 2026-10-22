@@ -122,7 +122,14 @@ database clock when it starts, and its cleanup removes only what an older run
 left, so two runs of the same file at once (two workers, or one change delivered
 twice) keep each other's edges. If the file changed between them, the run that
 started last decides; an edge only the earlier run wrote can stay until the next
-ingest. Use `await rag.drop_table(
+ingest. The cleanup reads only the source's own edges, through a range index
+on `RELATES.structured_sources` that the first relationship-table ingest on a
+graph creates, and changes at most 10,000 edges per write. Creating that index
+makes FalkorDB rebuild the graph's RELATES index once, embeddings included: about
+two minutes for 100,000 edges with 256-dimension embeddings in our tests, during
+which FalkorDB 6.0 holds other writes for several seconds at a time. Ingest
+waits up to 60 seconds for it, then continues without the index (results are
+the same, only slower) until the build finishes. Use `await rag.drop_table(
 "consumed_batch.csv")` to remove the mapping and its contributions explicitly.
 Use `ingest()` again to refresh a relationship table; `update()` is for documents.
 `apply_changes(added=[path])` and `apply_changes(modified=[path])` also support
