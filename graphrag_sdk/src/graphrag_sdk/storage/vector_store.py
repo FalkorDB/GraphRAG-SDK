@@ -685,9 +685,10 @@ class VectorStore:
         entity's ``name`` (its id when it has none), and stores the vectors.
         Safe for incremental runs — only processes nodes without embeddings.
 
-        Not a dedup step. An entity without a vector is pending dedup, and one
-        with a vector and no pending record counts as checked, so a vector
-        written here skips that entity's check. ``finalize()`` does not call
+        Not a dedup step. A named entity without a vector is pending dedup,
+        and one with a vector and no pending record counts as checked, so a
+        vector written here skips that entity's check. (A nameless entity is
+        never judged: dedup embeds it by its id and lists it nowhere.) ``finalize()`` does not call
         this — its dedup embeds every entity, listing it first; after calling
         it directly, run ``finalize(dedup_all=True)`` once.
 
