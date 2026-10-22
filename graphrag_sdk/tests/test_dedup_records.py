@@ -297,13 +297,23 @@ async def test_a_property_written_after_the_read_stops_the_merge(graph):
         "MATCH (d:__Entity__ {id: 'd'}) SET d.title = 'CTO'",
         "MATCH (d:__Entity__ {id: 'd'}) SET d.phone = '555-0100'",
         "MATCH (s:__Entity__ {id: 's'}) SET s.title = 'Chairman'",
+        "MATCH (d:__Entity__ {id: 'd'}) SET d:Executive REMOVE d:Person",
+        "MATCH (s:__Entity__ {id: 's'}) SET s:Executive",
     ],
-    ids=["a shared value changed", "a property added", "the survivor's value changed"],
+    ids=[
+        "a shared value changed",
+        "a property added",
+        "the survivor's value changed",
+        "the duplicate's label renamed",
+        "a label added to the survivor",
+    ],
 )
 async def test_any_change_to_what_the_merge_folds_stops_it(graph, edit):
     """Both hold title 'CEO', so the fold neither carries nor collides on it.
     A write to it after the read, or a property added to the duplicate, used
-    to pass the check, and the duplicate was deleted with the new value."""
+    to pass the check, and the duplicate was deleted with the new value. The
+    labels the fold adds come from both nodes' labels: a label renamed since
+    the read came back on the survivor."""
     await tim_cook(graph)
     await graph.query_raw("MATCH (s:__Entity__ {id: 's'}) SET s.title = 'CEO'")
     store = await held(graph)
@@ -454,6 +464,7 @@ async def test_a_collision_keeps_the_chosen_value_and_the_other_in_dropped(graph
         keep='{"born": 1960}',
     )
     plan_run = await store.write_plan([op], Decisions())
+
     async def apply(read):
         return await fold_and_absorb(store, graph, plan_run, op, read)
 
@@ -482,6 +493,7 @@ async def test_a_decimal_read_back_rounded_does_not_block_the_merge(graph):
     store = await held(graph)
     op = PlanOp(ABSORB, 0, "s", "Tim Cook", dup="d", dup_name="Timothy Cook")
     plan_run = await store.write_plan([op], Decisions())
+
     async def apply(read):
         return await fold_and_absorb(store, graph, plan_run, op, read)
 

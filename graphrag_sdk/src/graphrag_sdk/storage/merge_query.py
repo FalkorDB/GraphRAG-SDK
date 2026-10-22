@@ -130,7 +130,8 @@ def snapshot_params(
     shared value is not folded, but the duplicate is deleted: an edit to it
     after the read would go with it. ``carry`` is what the fold copies from
     the duplicate; ``seen`` are further survivor properties it read (a
-    collision's ``__dropped`` history)."""
+    collision's ``__dropped`` history). Both nodes' labels too: the fold's
+    label writes are computed from them."""
     d_keys = sorted(k for k in read.dup if k not in _OWN_CLAUSES)
     on_survivor = {*d_keys, *seen} - _OWN_CLAUSES
     s_read = {k: read.keep[k] for k in on_survivor if read.keep.get(k) not in (None, "", [])}
@@ -139,6 +140,8 @@ def snapshot_params(
         "d_keys": d_keys,
         "own_clauses": sorted(_OWN_CLAUSES),
         "s_absent": sorted(on_survivor - s_read.keys()),
+        "s_labels": list(read.keep_labels),
+        "d_labels": list(read.dup_labels),
     }
     for side, values in (("s", s_read), ("d", {k: read.dup[k] for k in d_keys})):
         exact, near, near_lists = _split_decimals(values)
@@ -184,6 +187,15 @@ def _split_decimals(
         else:
             exact[key] = value
     return exact, near, near_lists
+
+
+def _unchanged_labels(side: str) -> str:
+    """Cypher: ``side`` has exactly the labels read, besides ``__Entity__``,
+    in any order."""
+    return (
+        f"AND size([l IN labels({side}) WHERE l <> '__Entity__']) = size(${side}_labels) "
+        f"AND all(l IN ${side}_labels WHERE l IN labels({side})) "
+    )
 
 
 def copy_on_server(carry: dict[str, Any]) -> list[str]:
@@ -303,6 +315,10 @@ _UNCHANGED = (
     + _unchanged_decimals("s")
     + _unchanged_decimals("d")
     + "AND all(k IN $s_absent WHERE s[k] IS NULL OR s[k] = '' OR s[k] = []) "
+    # The labels the fold adds and records come from both nodes' labels: one
+    # renamed since the read (rename_entity) would come back on the survivor.
+    + _unchanged_labels("s")
+    + _unchanged_labels("d")
 )
 # The duplicate's relationships of a type and direction the query has no block
 # for (``$handled``, from :func:`handled`), over ``OPTIONAL MATCH (d)-[x]-()``.
