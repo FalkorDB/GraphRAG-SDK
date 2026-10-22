@@ -145,6 +145,7 @@ from graphrag_sdk.storage.ontology_store import (
     OntologyModificationNotAllowedError,
     OntologyStore,
 )
+from graphrag_sdk.storage.system_store import DedupRunActiveError
 from graphrag_sdk.storage.vector_store import VectorStore
 
 __all__ = [
@@ -236,6 +237,7 @@ __all__ = [
     "RetrievalStrategy",
     # Storage
     "DedupJudge",
+    "DedupRunActiveError",
     "LLMJudge",
     "GraphStore",
     "OntologyContradictionError",

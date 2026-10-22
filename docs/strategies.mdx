@@ -592,7 +592,7 @@ class LLMReranker(RerankingStrategy):
 
 ## 7. DedupJudge
 
-Decides which entities are the same real-world entity in `finalize()`'s cross-document dedup. Every dedup run has a judge; there is no way to run without one. The run finds the candidates — each newly ingested entity with its nearest names from the vector index, in small sets of at most 8 — and the judge only says which members of a set are one entity. Whatever the judge, the run keeps the rest:
+Decides which entities are the same real-world entity in `finalize()`'s cross-document dedup. Every dedup run has a judge; there is no way to run without one. The run finds the candidates — each pending entity with its nearest names from the vector index, in small sets of at most 8 — and the judge only says which members of a set are one entity. Whatever the judge, the run keeps the rest:
 
 - **It checks every answer.** A member the set does not have, a member in two groups, or a name or `keep` pick on a one-member group make the answer no answer. A set without an answer is asked again, up to 2 more times (`retry=True`); then it waits for the next `finalize()`, and after 3 runs it is reported in `FinalizeResult.dedup_unresolved`.
 - **It does the merge.** The survivor, the label union, the descriptions list, the moved relationships and `<attribute>__dropped` follow the run's own rules. A judge never writes to the graph.

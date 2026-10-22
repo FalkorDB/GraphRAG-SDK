@@ -60,7 +60,7 @@ The knowledge graph contains these node types and edge types:
 |-------|---------|--------------|
 | `Document` | Source document metadata | No |
 | `Chunk` | Text chunk (fragment of a document) | Yes |
-| `__Entity__` | Secondary label on all extracted entities | Yes (after backfill) |
+| `__Entity__` | Secondary label on all extracted entities | Yes (written by `finalize()`'s dedup) |
 | `Person`, `Organization`, etc. | Primary entity labels — 11 defaults: Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method | Via `__Entity__` |
 
 ### Edge Types

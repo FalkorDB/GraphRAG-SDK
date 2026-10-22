@@ -105,7 +105,7 @@ async def main():
         )
         print(f"Nodes: {result.nodes_created}, Edges: {result.relationships_created}")
 
-        # Finalize: deduplicate entities, backfill embeddings, create indexes
+        # Finalize: deduplicate (and embed) entities, embed relationships, create indexes
         await rag.finalize()
 
         # Full RAG: retrieve + generate

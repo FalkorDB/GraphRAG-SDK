@@ -10,7 +10,7 @@ invoke/embed methods with your actual model calls.
 
 Prerequisites:
     pip install graphrag-sdk
-    docker run -p 6379:6379 falkordb/falkordb
+    docker run -p 6379:6379 falkordb/falkordb:v4.20.4
 """
 
 import asyncio

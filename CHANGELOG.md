@@ -200,10 +200,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `update()`, `delete_document()` and table re-syncs never wait for a running
     `finalize()`: each SDK delete or re-key leaves a `deleted` record in the
     same query, and a merge that would touch the entity is skipped and decided
-    again next run (`FinalizeResult.dedup_merges_changed`).
+    again next run (`FinalizeResult.dedup_merges_changed`). A table re-key into
+    a taken id is one query that moves every edge type and, like a merge,
+    writes nothing if either node changed since it was read.
   - Extracted mentions with the same spelling are judged rather than merged on
     the name alone (Paris, France and Paris, Texas); a table row still absorbs
-    a same-named mention by rule.
+    a same-named mention by rule — unless two rows share the name (also for a
+    declared label adopting a guessed one), or the mention's nearest-name
+    search did not finish, which go to the report or the judge instead.
   - A "different" answer writes nothing to the graph; the pair is judged
     again only if a later pending entity brings it into a set. An entity whose
     check did not complete — a failed lookup or judge call, an answer that was
@@ -250,8 +254,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     its first query, and refuses an older one with `FalkorDBVersionError` (a
     `DatabaseError`): `ingest()`, `query()`, `finalize()` and the rest fail
     before anything is written. A server that does not report its version is
-    let through with a warning. CI, `docker-compose.yml` and the docs' `docker
-    run` lines use `v4.20.4`.
+    let through with a warning. CI, `docker-compose.yml`, the docs' `docker
+    run` lines and the examples use `v4.20.4`.
   - `finalize()` no longer calls `backfill_entity_embeddings()`: dedup writes
     every entity's name vector, listing the entity first, and a backfill after
     it would embed entities ingested meanwhile without a check.
@@ -262,7 +266,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the judge. Ingest-time resolvers
     (`ingest(resolver=...)`) are unchanged.
   - **Upgrading:** upgrade the FalkorDB server to 4.20 or later first — 1.4.0
-    ran on older servers, this release refuses them. Entities a graph built by
+    ran on older servers, this release refuses them. `finalize()` and
+    `deduplicate_entities()` now call the LLM (the judge), where 1.4.0's made
+    no LLM call; to keep dedup LLM-free, pass a `DedupJudge` of your own, such
+    as one that groups by spelling (see Strategies). Entities a graph built by
     an earlier release already holds vectors for count as checked; the new ones
     are checked by the next `finalize()`. To check every entity once, run
     `finalize(dedup_all=True)`.
@@ -322,7 +329,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   abbreviations (`Corp.` → `corporation`) and one trailing legal form
   (`Ltd`, `Inc`, `GmbH`) are normalised, word order is not — `Morgan Stanley`
   and `Stanley Morgan` stay apart. A group holding a table row merges by rule;
-  with the judge on, a group of extracted mentions only goes to the judge.
+  a group of extracted mentions only goes to the judge.
   Spellings the rule deliberately declines to join (`M. Ellison` / `Maya
   Ellison`, a pure reordering) are never merged by the rule; the judge may
   merge them, and a pair it leaves apart is listed in
@@ -617,10 +624,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A merge no longer discards the duplicate's properties.** The deduplicator
   remapped edges only, so `DETACH DELETE` took the duplicate's properties with
   it — its description and every value only it knew. Properties are now carried onto the survivor in the same statement
-  that deletes the duplicate, with a value already on the survivor always
-  winning; the two descriptions are joined with `" | "` and the duplicate's
-  name is recorded in the survivor's `aliases`. The same policy applies when a
-  renamed table row is folded into a node that already holds its new id.
+  that deletes the duplicate: a value only the duplicate holds is copied, and
+  where both hold different values the judge's pick (`KEEP`) or else the
+  survivor's stays and the other goes to `<property>__dropped`; the two
+  descriptions are joined with `" | "` and the duplicate's name is recorded in
+  the survivor's `aliases`. When a renamed table row is folded into a node
+  that already holds its new id, that node's own values stay.
 
 - **Edge identity includes `rel_type`.** Every data edge is `RELATES` with its
   semantic type in `rel_type`, but the deduplicator's remap and the writers that

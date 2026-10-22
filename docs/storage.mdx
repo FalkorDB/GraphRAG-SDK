@@ -24,7 +24,7 @@ TextChunks         ───VectorStore──>  (:Chunk {embedding: vecf32(...)}
 Query vectors      <──VectorStore───  db.idx.vector.queryNodes(...)
 Keyword queries    <──VectorStore───  db.idx.fulltext.queryNodes(...)
 
-Duplicate entities ─EntityDeduplicator─> DETACH DELETE + edge remap
+Duplicate entities ─EntityDeduplicator─> one query: every edge moved, then DETACH DELETE
 ```
 
 ---
@@ -136,7 +136,7 @@ When chunks are ingested, their text is embedded and stored:
 
 ### Entity Embedding Backfill (backfill_entity_embeddings)
 
-After all documents are ingested, entity nodes need embeddings for vector search. This is done during `finalize()`:
+Embeds entity nodes that have no name vector. `finalize()` no longer calls it: dedup embeds every entity, listing it as pending first. Called directly it is not a dedup step — an entity with a vector and no pending record counts as checked — so run `finalize(dedup_all=True)` once afterwards. It runs these steps:
 
 1. **Query:** Find entities missing embeddings: `WHERE e.embedding IS NULL`
 2. **Embed:** Batch-embed entity names via `aembed_documents`
@@ -228,9 +228,9 @@ After ingesting multiple documents, the same real-world entity might exist as mu
 2. **Group** by `(canonical_name, label)` — the name is case-folded with accents, punctuation, inner dots (`A.I.` = `AI`) and a leading English article removed, `Surname, Given` un-inverted, common abbreviations expanded and one trailing legal form (`Ltd`, `Inc`) dropped; word order and the letters of non-Latin scripts are kept. Grouping by label prevents cross-type merging (Person "Paris" and Location "Paris" stay separate)
 3. **Fold acronyms:** a 3–6 letter name joins the group of the *single* same-label entity whose initials it spells (`AIHS` / `Ashford Island Historical Society`). An acronym with several candidate expansions is left alone
 4. **For each group with duplicates:**
-   - **Who decides:** when a group holds a node a declared table wrote, it merges here by rule, with no LLM. A group of extracted mentions only is handed to the judge (Phase 2) instead — the same spelling is evidence, not proof (Paris, France and Paris, Texas)
+   - **Who decides:** when a group holds a node a declared table wrote, it merges here by rule, with no LLM. A group of extracted mentions only is handed to the judge (Phase 2) instead — the same spelling is evidence, not proof (Paris, France and Paris, Texas) — and so is a group holding an entity whose nearest-name search did not finish: a second row of the name may lie past what it found
    - **Survivor:** A node a declared table wrote (it carries the row's key, so the table's next re-sync still finds it), then a real node over a placeholder, then the long form over an acronym, then the best-connected node (most RELATES and MENTIONED_IN edges), then the longest description, then the longest name. Two nodes written from declared keys are never merged into each other, whatever they are called
-   - **The merge** (applied from the sealed plan): one generated query per duplicate. The SDK reads which relationship types the duplicate has, and generates a block per type and direction that moves those edges to the survivor with the write path's own keys — `RELATES` keyed on `rel_type` with `source_chunk_ids` unioned rather than overwritten, every other type on its endpoints with `SET r += properties`; an edge between the duplicate and the survivor is dropped rather than turned into a self-loop. The survivor is bound before every `MERGE` (a path-`MERGE` with an unbound `(s {id})` creates an empty ghost `__Entity__` node), and every pattern expands from the bound duplicate (anchored on a labelled far end, the planner scans the whole label). In the same query the duplicate's `source_chunk_ids` are unioned into the survivor's, its description is joined onto the survivor's with `" | "` (each member kept once, in `descriptions`), its name is added to the survivor's `aliases` when it is not a spelling variant, and every other property the survivor lacks — a typed column a table signed, `is_stub` — is copied over. A property both hold with **different** values is a collision, and neither value is lost: the one the judge chose stays (its `KEEP`, on a judged merge), otherwise the survivor's, and the other is appended to `<property>__dropped` on the survivor — a list that later merges add to (two list values are unioned instead); `FinalizeResult.dedup_collisions` names each. Then `DETACH DELETE`. The query re-checks that nothing it was generated from has changed — a relationship type it has no block for, or a property ingest rewrote on either node — and writes nothing if so; the merge is read and generated again. An entity deleted, re-keyed or renamed since it was judged makes the merge *changed*: skipped, and its group decided again next run
+   - **The merge** (applied from the sealed plan): one generated query per duplicate. The SDK reads which relationship types the duplicate has, and generates a block per type and direction that moves those edges to the survivor with the write path's own keys — `RELATES` keyed on `rel_type` with `source_chunk_ids` unioned rather than overwritten, every other type on its endpoints with `SET r += properties`; an edge between the duplicate and the survivor is dropped rather than turned into a self-loop. The survivor is bound before every `MERGE` (a path-`MERGE` with an unbound `(s {id})` creates an empty ghost `__Entity__` node), and every pattern expands from the bound duplicate (anchored on a labelled far end, the planner scans the whole label). In the same query the duplicate's `source_chunk_ids` are unioned into the survivor's, its description is joined onto the survivor's with `" | "` (each member kept once, in `descriptions`), its name is added to the survivor's `aliases` when it is not a spelling variant, and every other property the survivor lacks — a typed column a table signed, `is_stub` — is copied over. A property both hold with **different** values is a collision, and neither value is lost: the one the judge chose stays (its `KEEP`, on a judged merge), otherwise the survivor's, and the other is appended to `<property>__dropped` on the survivor — a list that later merges add to (two list values are unioned instead); `FinalizeResult.dedup_collisions` names each. Then `DETACH DELETE`. The query re-checks that nothing it was generated from has changed — a relationship type it has no block for, a property of the duplicate added, removed or changed, or a new value on the survivor for one of those keys — and writes nothing if so; the merge is read and generated again. An entity deleted, re-keyed or renamed since it was judged makes the merge *changed*: skipped, and its group decided again next run
 
 ### Phase 2: Judged Cross-Document Dedup
 
@@ -266,7 +266,7 @@ They live beside the data, not in a graph of their own, because a dedup write mu
 
 ### Version
 
-GraphRAG SDK requires **FalkorDB 4.20 or later**. Before 4.20.0 every write to a node holding a vector left a stale copy in the vector index, and searches returned fewer neighbours than asked for (measured: 2–3 of 6 after one write) — and ingest, `update()` and dedup all write to such nodes. Each connection asks the server its version once, before its first query, and refuses an older one with `FalkorDBVersionError` (a `DatabaseError`), so nothing is written to it: `ingest()`, `query()`, `finalize()` and the rest fail at once, with the version found and how to upgrade. A server that does not report its version (`MODULE LIST` refused) is let through with a warning; one that cannot be reached is asked again on the next query.
+GraphRAG SDK requires **FalkorDB 4.20 or later**. Before 4.20.0 every write to a node holding a vector left a stale copy in the vector index, and searches returned fewer neighbours than asked for (measured: 2–3 of 6 after one write) — and ingest, `update()` and dedup all write to such nodes. Each connection asks the server its version once, before its first query, and refuses an older one with `FalkorDBVersionError` (a `DatabaseError`), so nothing is written to it: `ingest()`, `query()`, `finalize()` and the rest fail at once, with the version found and how to upgrade. A server that does not report its version (`MODULE LIST` refused) is let through with a warning; one that cannot be asked, after the usual retries, fails that query with `DatabaseUnavailableError` — no query runs unchecked — and is asked again by the next.
 
 ### Vector Storage
 
@@ -297,7 +297,7 @@ This is much faster than `MATCH (n) DETACH DELETE n` on large graphs.
 
 ### Retry Behavior
 
-The connection layer retries transient query failures up to 3 times using exponential backoff with jitter (`retry_delay * 2^attempt * random(0.5, 1.5)`) and employs a circuit breaker to short-circuit repeated failures. Non-transient errors (containing "already indexed", "already exists", or "unknown index") are raised immediately.
+The connection layer retries transient query failures up to 3 times using exponential backoff with jitter (`retry_delay * 2^attempt * random(0.5, 1.5)`) and employs a circuit breaker to short-circuit repeated failures. An error that says the query itself was rejected — a syntax error, an index that already exists, a missing parameter, a parameter FalkorDB cannot parse (NaN, infinity), and the like — is raised at once, without a retry and without counting toward the circuit breaker.
 
 ---
 

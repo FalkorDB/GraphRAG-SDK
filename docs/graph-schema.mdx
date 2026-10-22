@@ -85,7 +85,7 @@ The layers are connected by `MENTIONED_IN` edges, which link entities to the chu
 | `description` | `string` | Rich description from LLM extraction |
 | `source_chunk_ids` | `list[string]` | Chunks where this entity was found |
 | `spans` | `string` (JSON) | Character offsets: `{chunk_id: [{start, end}]}` |
-| `embedding` | `vecf32` | Vector embedding of the entity name, written by `finalize()`'s dedup. Its absence is what marks an entity pending dedup; nothing else is written on an entity for dedup |
+| `embedding` | `vecf32` | Vector embedding of the entity name, written by `finalize()`'s dedup. Its absence marks a new entity pending dedup (a `pending` system record marks the rest); nothing else is written on an entity for dedup |
 | `aliases` | `list[string]` | Other names the entity was merged under |
 | `descriptions` | `list[string]` | Every merged member's description (`description` joins them with `" \| "`) |
 | `merged_labels` | `string` | Labels a merge added, joined with `" \| "` |

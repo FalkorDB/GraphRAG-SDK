@@ -274,10 +274,9 @@ FinalizeResult(
 ### What it does (in order)
 
 1. Removes NULL-name stub entities (legacy cleanup).
-2. `deduplicate_entities()` — incremental: entities added since the last `finalize()` are checked against the whole graph (exact-name and acronym match, then one LLM judge pass over their nearest names).
-3. `backfill_entity_embeddings()` — embeds entity names that have no embedding yet (incremental-safe).
-4. `embed_relationships()` — embeds fact text on `RELATES` edges.
-5. `ensure_indices()` — rebuilds/verifies all indexes.
+2. `deduplicate_entities()` — incremental: the pending entities (added since the last `finalize()`, or left pending by it) are checked against the whole graph (exact-name and acronym match, then one judge pass over their nearest names). Dedup also writes every entity's name embedding.
+3. `embed_relationships()` — embeds fact text on `RELATES` edges.
+4. `ensure_indices()` — rebuilds/verifies all indexes.
 
 `apply_changes()` does not call it automatically: one `finalize()` after the batch judges all of the batch's new entities together, in fewer LLM calls than one per file.
 
