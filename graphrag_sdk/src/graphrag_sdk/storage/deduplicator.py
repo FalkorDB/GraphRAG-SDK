@@ -1012,7 +1012,13 @@ class EntityDeduplicator:
         stored on them. Only a neighbour the exact phase could group with a
         pending entity is read in full — the same canonical name, or an acronym
         / long-form pair; the rest are the judge's business. A failed lookup
-        leaves its entities pending for the next run."""
+        leaves its entities pending for the next run.
+
+        Two tests, on purpose. Whether to widen an entity's lookup asks of that
+        entity alone (see ``could_group``). Which neighbours to read asks of
+        every pending entity at once: an acronym's second long form may sit in
+        another entity's lookup, and only read together are the two seen to
+        make the acronym ambiguous."""
         pending = run.points
         name_of = {ent["id"]: ent["name"] for ent in pending}
         keys: dict[str, tuple[str, str | None, str | None]] = {}
@@ -1045,6 +1051,22 @@ class EntityDeduplicator:
                 or (acr_b is not None and acr_b == ini_a)
             )
 
+        pending_keys = [keys_of(n) for n in name_of.values() if isinstance(n, str) and n]
+        canonical = {key for key, _, _ in pending_keys}
+        acronyms = {acr for _, acr, _ in pending_keys if acr is not None}
+        initials = {ini for _, _, ini in pending_keys if ini is not None}
+
+        def could_group_any(name: Any) -> bool:
+            # ``could_group`` asked of every pending entity, one set lookup each.
+            if not isinstance(name, str) or not name:
+                return False
+            key, acr, ini = keys_of(name)
+            return (
+                key in canonical
+                or (ini is not None and ini in acronyms)
+                or (acr is not None and acr in initials)
+            )
+
         index = NameNeighbourIndex(self._graph, self._embedder)
         ids = [ent["id"] for ent in pending if ent["id"] not in run.unsearched]
         k = _EXACT_NEIGHBOUR_K
@@ -1075,9 +1097,9 @@ class EntityDeduplicator:
         self._near_ids = list(dict.fromkeys(near))
         wanted = [
             nid
-            for eid, found in hits.items()
+            for found in hits.values()
             for nid, _, name in found
-            if nid not in pending_ids and could_group(eid, name)
+            if nid not in pending_ids and could_group_any(name)
         ]
         return list((await self._fetch_entities_by_ids(wanted, batch_size)).values())
 

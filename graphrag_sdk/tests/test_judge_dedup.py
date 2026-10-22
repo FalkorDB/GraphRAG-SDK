@@ -1185,3 +1185,59 @@ def test_a_widened_lookup_that_fails_leaves_its_entity_pending():
     rows[0] += [None, False]
     sim = asyncio.run(simulate(rows, pending=["js0"], graph_class=WideFails))
     assert _retried(sim) == {"js0": "widened nearest-name lookup failed"}
+
+
+def test_a_long_form_only_another_entity_found_still_makes_an_acronym_ambiguous():
+    """Pending "ACME" finds one long form, a table row; a second sits only in
+    another pending entity's lookup. Read per entity, the second was never
+    read, ACME looked unambiguous, and the row absorbed it by rule. Which
+    neighbours are read asks of every pending entity at once."""
+    acme, media = [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]
+    rows = [
+        ["acme", "ACME", "a company", "Organization", None, None, 0, acme],
+        [
+            "lf1",
+            "Atlantic Coast Mining Enterprises",
+            "a miner",
+            "Organization",
+            None,
+            False,
+            0,
+            acme,
+        ],
+        [
+            "lf2",
+            "American Cable Media Enterprises",
+            "a broadcaster",
+            "Organization",
+            None,
+            None,
+            0,
+            media,
+        ],
+        [
+            "x",
+            "Coastline Media Group",
+            "a network",
+            "Organization",
+            None,
+            None,
+            0,
+            [0.0, 1.0, 0.01],
+        ],
+        *(
+            [
+                f"f{i}",
+                f"Unrelated Holding Number {i}",
+                "",
+                "Organization",
+                None,
+                None,
+                0,
+                [1.0, 0.001 * (i + 1), 0.0],
+            ]
+            for i in range(12)
+        ),
+    ]
+    sim = asyncio.run(simulate(rows, pending=["acme", "x"]))
+    assert not any(op.dup == "acme" for op in sim.ops), "two long forms: not folded by rule"
