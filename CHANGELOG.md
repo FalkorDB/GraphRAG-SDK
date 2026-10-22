@@ -320,6 +320,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file (`tests/test_integration.py`); the whole suite now runs with
   `RUN_INTEGRATION=1`, so every test that needs a live graph is exercised on
   every push rather than skipped.
+- **The integration tests refuse port 6379 unless asked.** They create and drop
+  `test_*` graphs, and a plain `RUN_INTEGRATION=1 pytest` ran them on
+  `localhost:6379`, where a local FalkorDB with real data usually listens. With
+  `RUN_INTEGRATION` set and `FALKOR_PORT` unset or 6379, the run now stops
+  before anything connects: point `FALKOR_PORT` at a disposable server, or set
+  `FALKOR_TEST_ALLOW_6379=1` if the one on 6379 is disposable. CI sets the
+  opt-in for its service container.
 - **A label a `Link` points at has one key column.** Two tables may both
   describe `Person` under their own keys and a person in both is one node
   holding both; but a link to `Person` cannot tell which id space its column

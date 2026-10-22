@@ -304,6 +304,57 @@ def mock_vector_store(embedder: MockEmbedder) -> MagicMock:
 
 # ── Real-FalkorDB integration helpers ───────────────────────────
 
+_DEFAULT_PORT = 6379
+_DEFAULT_PORT_OPT_IN = "FALKOR_TEST_ALLOW_6379"
+
+
+def falkordb_test_server() -> dict[str, Any]:
+    """The FalkorDB server the integration tests run against, as the ``host``,
+    ``port``, ``username`` and ``password`` keyword arguments of
+    ``ConnectionConfig`` or a ``Redis`` client. Read from ``$FALKOR_HOST``,
+    ``$FALKOR_PORT``, ``$FALKOR_USERNAME`` and ``$FALKOR_PASSWORD``.
+
+    The tests create and drop ``test_*`` graphs on that server, and 6379, the
+    default port, is where a local FalkorDB with real data usually listens. So
+    with ``RUN_INTEGRATION`` set, port 6379 stops the run before anything
+    connects, unless ``FALKOR_TEST_ALLOW_6379=1`` says the server there is
+    disposable.
+    """
+    port_value = os.getenv("FALKOR_PORT", str(_DEFAULT_PORT))
+    try:
+        port = int(port_value)
+    except ValueError:
+        pytest.exit(
+            f"FALKOR_PORT={port_value!r} is not a port number.",
+            returncode=pytest.ExitCode.USAGE_ERROR,
+        )
+    if (
+        os.getenv("RUN_INTEGRATION")
+        and port == _DEFAULT_PORT
+        and os.getenv(_DEFAULT_PORT_OPT_IN) != "1"
+    ):
+        pytest.exit(
+            f"Refusing to run the integration tests on port {_DEFAULT_PORT}: they "
+            "create and drop graphs on the server, and a local FalkorDB with real "
+            "data usually listens there. Point FALKOR_PORT (and FALKOR_HOST if "
+            f"needed) at a disposable server, or set {_DEFAULT_PORT_OPT_IN}=1 if "
+            f"the server on port {_DEFAULT_PORT} is disposable.",
+            returncode=pytest.ExitCode.USAGE_ERROR,
+        )
+    return {
+        "host": os.getenv("FALKOR_HOST", "localhost"),
+        "port": port,
+        "username": os.getenv("FALKOR_USERNAME") or None,
+        "password": os.getenv("FALKOR_PASSWORD") or None,
+    }
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionstart(session):
+    """Refuse the server before collection, not at the first test that connects."""
+    if os.getenv("RUN_INTEGRATION"):
+        falkordb_test_server()
+
 
 def pytest_report_header(config):
     """Name the FalkorDB server and engine the integration tests run against.
@@ -313,22 +364,12 @@ def pytest_report_header(config):
     """
     if not os.getenv("RUN_INTEGRATION"):
         return None
-    host = os.getenv("FALKOR_HOST", "localhost")
-    port_value = os.getenv("FALKOR_PORT", "6379")
-    try:
-        port = int(port_value)
-    except ValueError as exc:
-        return f"falkordb: {host}:{port_value} not readable ({exc})"
+    server = falkordb_test_server()
+    host, port = server["host"], server["port"]
     try:
         from redis import Redis
 
-        client = Redis(
-            host=host,
-            port=port,
-            username=os.getenv("FALKOR_USERNAME") or None,
-            password=os.getenv("FALKOR_PASSWORD") or None,
-            socket_timeout=5,
-        )
+        client = Redis(**server, socket_timeout=5)
         modules = client.module_list()
         client.close()
         ver = int(next(m for m in modules if m[b"name"] == b"graph")[b"ver"])
@@ -386,8 +427,8 @@ async def real_falkordb_rag_factory(embedder):
     caller-supplied LLM + resolver. Tests must call ``await rag.close()``
     or rely on the auto-cleanup at fixture teardown.
 
-    Skipped unless ``RUN_INTEGRATION=1`` is set. Connects to FalkorDB at
-    ``$FALKOR_HOST:$FALKOR_PORT`` (defaults ``localhost:6379``).
+    Skipped unless ``RUN_INTEGRATION=1`` is set. Connects to the server
+    ``falkordb_test_server()`` names.
     """
     if not os.getenv("RUN_INTEGRATION"):
         pytest.skip("Set RUN_INTEGRATION=1 to run real-FalkorDB integration tests")
@@ -399,10 +440,7 @@ async def real_falkordb_rag_factory(embedder):
 
     def _make(*, llm, resolver, ontology=None, **kwargs):
         config = ConnectionConfig(
-            host=os.getenv("FALKOR_HOST", "localhost"),
-            port=int(os.getenv("FALKOR_PORT", "6379")),
-            username=os.getenv("FALKOR_USERNAME") or None,
-            password=os.getenv("FALKOR_PASSWORD") or None,
+            **falkordb_test_server(),
             graph_name=f"test_{uuid4().hex[:8]}",
         )
         options = dict(
@@ -456,19 +494,13 @@ async def real_falkordb_rag_factory(embedder):
 
 @pytest.fixture
 async def graph():
-    """A ``GraphStore`` on a fresh, uniquely named graph of the FalkorDB at
-    ``$FALKOR_HOST:$FALKOR_PORT``, dropped afterwards."""
+    """A ``GraphStore`` on a fresh, uniquely named graph of the test server
+    (:func:`falkordb_test_server`), dropped afterwards."""
     from graphrag_sdk.core.connection import ConnectionConfig
     from graphrag_sdk.storage.graph_store import GraphStore
 
     conn = FalkorDBConnection(
-        ConnectionConfig(
-            host=os.getenv("FALKOR_HOST", "localhost"),
-            port=int(os.getenv("FALKOR_PORT", "6379")),
-            username=os.getenv("FALKOR_USERNAME") or None,
-            password=os.getenv("FALKOR_PASSWORD") or None,
-            graph_name=f"test_dedup_{uuid4().hex[:8]}",
-        )
+        ConnectionConfig(**falkordb_test_server(), graph_name=f"test_dedup_{uuid4().hex[:8]}")
     )
     store = GraphStore(conn)
     yield store
