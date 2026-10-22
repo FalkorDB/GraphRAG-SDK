@@ -536,6 +536,36 @@ class TestServerVersion:
             assert await conn.query("RETURN 1") == "ok"
         assert caplog.text.count("Could not read the FalkorDB server version") == 1
 
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "CLUSTERDOWN The cluster is down",
+            "TRYAGAIN Multiple keys request during rehashing of slot",
+            "OOM command not allowed when used memory > 'maxmemory'",
+        ],
+        ids=["clusterdown", "tryagain", "oom"],
+    )
+    async def test_an_error_that_passes_is_not_read_as_a_refusal(self, reply):
+        """Read as "will not say", one such reply left the connection checked
+        for good, with a warning; it is retried like a query instead."""
+        conn = self._conn(side_effect=[ResponseError(reply), [["name", "graph", "ver", 41803]]])
+        conn.config.retry_count = 2
+        with pytest.raises(FalkorDBVersionError, match="is 4.18.3"):
+            await conn.query("CREATE (:X)")
+        conn._graph.query.assert_not_awaited()
+
+    async def test_a_closed_connection_asks_again(self):
+        """``close()`` drops the client and the next query reconnects, maybe to
+        a server replaced meanwhile at the same address."""
+        conn = self._conn(return_value=[{"name": "graph", "ver": 42004}])
+        assert await conn.query("RETURN 1") == "ok"
+        await conn.close()
+        reopened = self._conn(return_value=[["name", "graph", "ver", 41802]])
+        conn._graph, conn._driver = reopened._graph, reopened._driver  # the reconnect
+        with pytest.raises(FalkorDBVersionError, match="is 4.18.2"):
+            await conn.query("CREATE (:X)")
+        conn._graph.query.assert_not_awaited()
+
     async def test_a_server_that_cannot_be_asked_fails_the_query_and_is_asked_again(self):
         """No query runs unchecked: a failed version question fails the query,
         and the next query asks again."""

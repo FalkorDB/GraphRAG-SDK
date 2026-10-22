@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 #: to such nodes.
 MIN_SERVER_VERSION = (4, 20, 0)
 
+#: Replies that mean a server will not answer ``MODULE LIST``: an ACL without
+#: the command, or a managed server that disabled or renamed it (which answers
+#: as an unknown command). ``CLUSTERDOWN``, ``TRYAGAIN``, ``OOM`` and the like
+#: are error replies too, and they pass.
+_MODULE_LIST_REFUSALS = ("noperm", "no permission", "unknown command")
+
 
 @dataclass
 class ConnectionConfig:
@@ -108,7 +114,7 @@ class FalkorDBConnection:
         self._graph: Any | None = None
         self._breaker = CircuitBreaker()
         # Set once the server's version passed, or was not reported (see
-        # _check_server_version).
+        # _check_server_version); cleared by close(), so a reconnect asks again.
         self._version_checked = False
         self._version_check_lock: asyncio.Lock | None = None
         self._version_check_loop: asyncio.AbstractEventLoop | None = None
@@ -351,14 +357,21 @@ class FalkorDBConnection:
     async def server_version(self) -> tuple[int, int, int] | None:
         """The FalkorDB module version, e.g. ``(4, 20, 4)``; ``None`` when the
         server does not say (``MODULE LIST`` refused, or no graph module). A
-        server that cannot be reached raises."""
+        server that cannot be reached, or answers with an error that passes,
+        raises: read as "will not say", one ``TRYAGAIN`` left the connection
+        unchecked for good."""
         self._ensure_client()
         assert self._driver is not None  # for type-checkers
-        from redis.exceptions import ResponseError
+        from redis.exceptions import NoPermissionError, ResponseError
 
         try:
             modules = await self._driver.execute_command("MODULE", "LIST")
-        except ResponseError:
+        except ResponseError as exc:
+            msg = str(exc).lower()
+            if not isinstance(exc, NoPermissionError) and not any(
+                marker in msg for marker in _MODULE_LIST_REFUSALS
+            ):
+                raise
             logger.debug("MODULE LIST refused", exc_info=True)
             return None
         for module in modules or []:
@@ -455,3 +468,5 @@ class FalkorDBConnection:
         self._pool = None
         self._driver = None
         self._graph = None
+        # The next query reconnects, perhaps to a server replaced meanwhile.
+        self._version_checked = False
