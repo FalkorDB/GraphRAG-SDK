@@ -1421,6 +1421,9 @@ class EntityDeduplicator:
 
         - two declared labels sharing a name, which is a real modelling conflict
           rather than a guess to correct
+        - a name two or more rows of the declared label share: the guess fits
+          each, and picking one would be a coin toss (as in the exact phase,
+          see :func:`_mentions_two_rows_could_own`)
         - a declared built-in label beside any other label: two things that
           share a name, one of which the extractor deliberately typed differently
         - names under only undeclared labels
@@ -1463,10 +1466,30 @@ class EntityDeduplicator:
             ):
                 continue  # adoption is by rule, and a member's search is partial
 
-            survivors = groups[(norm_name, declared[0])]
+            # Not one the exact phase already folded into another.
+            survivors = [
+                ent for ent in groups[(norm_name, declared[0])] if ent["id"] not in run.into
+            ]
             if not survivors:
                 continue
-            survivor = survivors[0]
+            rows = [ent for ent in survivors if ent.get("is_stub") is not None]
+            guesses = [ent for label in inferred for ent in groups[(norm_name, label)]]
+            ambiguous = _mentions_two_rows_could_own((rows or survivors)[0], [*rows, *guesses])
+            if ambiguous:
+                # Two rows of the declared label share the name: which one a
+                # guess meant is not decidable from it, as in the exact phase.
+                # Left apart, reported, and kept from the judge.
+                self._ambiguous_mentions.extend(ambiguous)
+                logger.info(
+                    "Not adopting %d mention(s) of %r into one of %d keyed %s rows: the "
+                    "name fits every row equally. Reported in probable_duplicates",
+                    len(guesses),
+                    survivors[0]["name"],
+                    len(rows),
+                    declared[0],
+                )
+                continue
+            survivor = max(survivors, key=_survivor_rank)
             for label in inferred:
                 for duplicate in groups[(norm_name, label)]:
                     if duplicate["id"] == survivor["id"]:

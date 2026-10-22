@@ -49,7 +49,7 @@ from graphrag_sdk.storage.judge_dedup import (
     make_groups_dense,
 )
 from graphrag_sdk.storage.merge_query import MergeRead
-from graphrag_sdk.storage.system_store import ABSORB, EXACT, JUDGE, PlanOp
+from graphrag_sdk.storage.system_store import ABSORB, ADOPT, EXACT, JUDGE, PlanOp
 
 from .dedup_sim import AllDifferentJudge, AllSameJudge, SimGraph, simulate
 
@@ -1481,3 +1481,35 @@ def test_an_entity_whose_lookup_failed_is_not_charged_for_a_verdict_it_got(pendi
     assert sim.groups == [["a", "b"]]
     assert _retried(sim) == {"a": "nearest-name lookup failed", "b": "nearest-name lookup failed"}
     assert sim.run.charged == {"a", "b"} and sorted(sim.decisions.refund) == ["a", "b"]
+
+
+_TWO_EMPLOYEES = [
+    ["e1", "John Smith", "an employee", "Employee", None, False],
+    ["e7", "John Smith", "another employee", "Employee", None, False],
+    ["m", "John Smith", "presented the roadmap", "Person"],
+]
+
+
+@pytest.mark.parametrize("order", [1, -1], ids=["e1 read first", "e7 read first"])
+def test_adoption_does_not_choose_between_two_rows_of_one_name(order):
+    """Two Employee rows are called "John Smith", and the extractor filed a
+    mention under Person. Adoption gave it to the first row read — a coin
+    toss on read order, which the exact phase's rule refuses. It is left
+    apart and reported, and kept from the judge, as the exact phase does."""
+    sim = asyncio.run(
+        simulate([list(r) for r in _TWO_EMPLOYEES[::order]], declared_labels={"Employee"})
+    )
+    assert sim.ops == []
+    pairs = {(n.id_a, n.id_b) for n in sim.dedup._ambiguous_mentions}
+    assert pairs == {("m", "e1"), ("m", "e7")}
+    assert {frozenset(("m", "e1")), frozenset(("m", "e7"))} <= sim.dedup._undecidable_pairs
+
+
+@pytest.mark.parametrize("order", [1, -1], ids=["row read first", "row read last"])
+def test_adoption_goes_to_the_row_whatever_the_read_order(order):
+    """With one row, the mention is the row's: picked by the survivor rank,
+    never an Employee mention the exact phase already folded into the row."""
+    rows = [_TWO_EMPLOYEES[0], ["x", "John Smith", "", "Employee"], _TWO_EMPLOYEES[2]]
+    sim = asyncio.run(simulate([list(r) for r in rows[::order]], declared_labels={"Employee"}))
+    adopted = {(op.dup, op.survivor) for op in sim.ops if op.policy == ADOPT}
+    assert adopted == {("m", "e1")}
