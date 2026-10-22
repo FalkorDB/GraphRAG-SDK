@@ -32,7 +32,14 @@ from graphrag_sdk.storage.merge_query import (
 from graphrag_sdk.storage.system_store import (
     ABSORB,
     JUDGE,
+    PENDING,
+    PLAN,
+    PLAN_HEADER,
+    PLAN_IDS,
+    PROCESSING_LABEL,
     RENAME,
+    RUN,
+    UNRESOLVED,
     Decisions,
     DedupRunActiveError,
     OwnershipLostError,
@@ -516,3 +523,46 @@ async def test_a_hand_off_with_no_pending_record_is_written_with_the_tick(graph)
     assert await store.apply_decisions(plan.plan_run, 0, [], created) is False
     assert len(await store.pending_pages()) == 1
     assert (await store.sealed_plan()).decision_done == [True]
+
+
+def lose_each_reply_once(graph, monkeypatch, marker: str) -> None:
+    """Apply every driver query holding ``marker``, then lose its reply, once
+    per distinct query: the connection sends it again, as after a timeout."""
+    import json
+
+    driver_graph = graph._conn._graph
+    real = driver_graph.query
+    lost: set[str] = set()
+
+    async def query(cypher, params=None, timeout=None):
+        result = await real(cypher, params=params, timeout=timeout)
+        key = cypher + json.dumps(params, sort_keys=True, default=str)
+        if marker in cypher and key not in lost:
+            lost.add(key)
+            raise ConnectionError("reply lost")
+        return result
+
+    graph._conn.config.retry_delay = 0.0
+    monkeypatch.setattr(driver_graph, "query", query)
+
+
+async def test_a_record_write_whose_reply_was_lost_is_written_once(graph, monkeypatch):
+    """A write that commits and loses its reply is sent again by the
+    connection's retry. Plan pages, decision pages, the header, pending and
+    unresolved records are written once all the same: with two copies of a
+    page, recovery read pages by position and ticked the wrong one."""
+    store = await held(graph)
+    lose_each_reply_once(graph, monkeypatch, f"CREATE (:{PROCESSING_LABEL}")
+    await store.add_pending(["a", "b"])
+    await store.add_unresolved({"u": Unresolved(3, "no usable verdict", "")})
+    op = PlanOp(ABSORB, 0, "s", "S", dup="d", dup_name="D", policy=JUDGE)
+    await store.write_plan([op], Decisions(clear=["a"]))
+    kinds = await rows(
+        graph,
+        f"MATCH (p:{PROCESSING_LABEL}) RETURN p.kind, count(p) ORDER BY p.kind",
+    )
+    assert kinds == [
+        [k, 1] for k in sorted((PENDING, PLAN, PLAN_HEADER, PLAN_IDS, RUN, UNRESOLVED))
+    ]
+    plan = await store.sealed_plan()
+    assert [len(ops) for ops in plan.ops] == [1] and len(plan.decisions) == 1

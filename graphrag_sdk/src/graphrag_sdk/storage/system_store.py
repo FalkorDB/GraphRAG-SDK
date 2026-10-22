@@ -69,6 +69,18 @@ PLAN_HEADER, PLAN, PLAN_IDS = "plan_header", "plan", "plan_ids"
 _GUARD = "FOREACH (_ IN CASE WHEN owned THEN [1] ELSE [] END | "
 
 
+def _once(key: str, carry: str = "") -> str:
+    """The head of a fenced write that creates a record only once. The
+    connection resends a query whose reply was lost, and a plain ``CREATE``
+    then writes the record twice; this finds the record ``key`` names (its
+    identifying properties) and writes nothing. ``carry`` are further
+    variables to keep in scope, each with a leading comma."""
+    return (
+        f"OPTIONAL MATCH (x:{PROCESSING_LABEL} {{{key}}}) WITH owned{carry}, x LIMIT 1 "
+        "FOREACH (_ IN CASE WHEN owned AND x IS NULL THEN [1] ELSE [] END | "
+    )
+
+
 def is_system_label(label: Any) -> bool:
     """Whether ``label`` belongs to an SDK system node, never to user data.
 
@@ -230,6 +242,9 @@ class SystemStore:
         self._graph = graph
         self._ttl_ms = int(ttl_ms)
         self.run_id: str | None = None
+        # Names each record this store creates without a key of its own
+        # (pending, unresolved), so a resent write finds it (see _once).
+        self._writes = 0
 
     # ── indexes ──────────────────────────────────────────────────
 
@@ -375,11 +390,21 @@ class SystemStore:
                 continue
             await self.fenced(
                 f"OPTIONAL MATCH (p:{PROCESSING_LABEL} {{kind: '{PENDING}'}}) "
-                f"WITH owned, coalesce(max(p.page), -1) + 1 AS page {_GUARD}"
-                f"CREATE (:{PROCESSING_LABEL} {{kind: '{PENDING}', page: page, ids: $ids, "
-                "attempts: $zeros, reasons: $blank})) RETURN owned",
-                {"ids": chunk, "zeros": [0] * len(chunk), "blank": [""] * len(chunk)},
+                "WITH owned, coalesce(max(p.page), -1) + 1 AS page "
+                + _once(f"kind: '{PENDING}', write: $write", ", page")
+                + f"CREATE (:{PROCESSING_LABEL} {{kind: '{PENDING}', write: $write, page: page, "
+                "ids: $ids, attempts: $zeros, reasons: $blank})) RETURN owned",
+                {
+                    "write": self._next_write(),
+                    "ids": chunk,
+                    "zeros": [0] * len(chunk),
+                    "blank": [""] * len(chunk),
+                },
             )
+
+    def _next_write(self) -> str:
+        self._writes += 1
+        return f"{self.run_id}:{self._writes}"
 
     async def write_pending(self, pages: Iterable[PendingPage]) -> None:
         """Replace the lists of existing ``pending`` records; a page left with
@@ -424,9 +449,11 @@ class SystemStore:
             if not chunk:
                 continue
             await self.fenced(
-                f"{_GUARD}CREATE (:{PROCESSING_LABEL} {{kind: '{UNRESOLVED}', ids: $ids, "
+                _once(f"kind: '{UNRESOLVED}', write: $write")
+                + f"CREATE (:{PROCESSING_LABEL} {{kind: '{UNRESOLVED}', write: $write, ids: $ids, "
                 "attempts: $attempts, reasons: $reasons, blocked_with: $blocked})) RETURN owned",
                 {
+                    "write": self._next_write(),
                     "ids": chunk,
                     "attempts": [entities[i].attempts for i in chunk],
                     "reasons": [entities[i].reason for i in chunk],
@@ -507,13 +534,16 @@ class SystemStore:
         Nothing has been merged when this is called. Every page is written
         before the header is sealed, so a crash part-way leaves an unsealed
         plan, which the next run deletes and replaces; a sealed plan is applied
-        to completion by whichever run finds it."""
+        to completion by whichever run finds it. Each record is written once,
+        even when a write is resent (see :func:`_once`): recovery reads the
+        pages in order and addresses them by position."""
         plan_run = self.run_id
         op_pages = _pages(ops)
         for page, chunk in enumerate(op_pages):
             columns = {col: [getattr(o, col) for o in chunk] for col in _PLAN_COLUMNS}
             await self.fenced(
-                f"{_GUARD}CREATE (:{PROCESSING_LABEL} {{kind: '{PLAN}', plan_run: $plan_run, "
+                _once(f"kind: '{PLAN}', plan_run: $plan_run, page: $page")
+                + f"CREATE (:{PROCESSING_LABEL} {{kind: '{PLAN}', plan_run: $plan_run, "
                 "page: $page, next: 0, changed: [], "
                 + ", ".join(f"{col}: ${col}" for col in _PLAN_COLUMNS)
                 + "})) RETURN owned",
@@ -534,14 +564,16 @@ class SystemStore:
                 col: pages[page] if page < len(pages) else [] for col, pages in columns.items()
             }
             await self.fenced(
-                f"{_GUARD}CREATE (:{PROCESSING_LABEL} {{kind: '{PLAN_IDS}', plan_run: $plan_run, "
+                _once(f"kind: '{PLAN_IDS}', plan_run: $plan_run, page: $page")
+                + f"CREATE (:{PROCESSING_LABEL} {{kind: '{PLAN_IDS}', plan_run: $plan_run, "
                 "page: $page, next: 0, "
                 + ", ".join(f"{col}: ${col}" for col in _DECISION_COLUMNS)
                 + "})) RETURN owned",
                 {"plan_run": plan_run, "page": page, **lists},
             )
         await self.fenced(
-            f"{_GUARD}CREATE (:{PROCESSING_LABEL} {{kind: '{PLAN_HEADER}', plan_run: $plan_run, "
+            _once(f"kind: '{PLAN_HEADER}', plan_run: $plan_run")
+            + f"CREATE (:{PROCESSING_LABEL} {{kind: '{PLAN_HEADER}', plan_run: $plan_run, "
             "pages: $pages, decision_pages: $dpages, sealed: true})) RETURN owned",
             {"plan_run": plan_run, "pages": len(op_pages), "dpages": n_dec},
         )
