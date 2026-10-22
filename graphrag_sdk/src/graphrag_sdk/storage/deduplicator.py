@@ -54,6 +54,7 @@ from graphrag_sdk.storage.merge_query import (
     STALE,
     MergeRead,
     absorb_query,
+    copy_on_server,
     handled,
     outcome,
     read_for_merge,
@@ -1703,12 +1704,8 @@ class EntityDeduplicator:
         for key in [k for k in carry if k in _FOLDED_KEYS or k.endswith(DROPPED_SUFFIX)]:
             carry.pop(key)
         # A value that does not survive the trip to the client and back (a
-        # point reads as a map, which no property may hold) is copied on the
-        # server, from the duplicate the query still holds.
-        for key in [k for k, v in carry.items() if not round_trips(v)]:
-            carry.pop(key)
-            name = key.replace("`", "``")
-            sets.append(f"s.`{name}` = d.`{name}`")
+        # point) is copied on the server, from the duplicate the query holds.
+        sets.extend(copy_on_server(carry))
         if carry:
             sets.append("s += $carry")
         if merged_labels != recorded:

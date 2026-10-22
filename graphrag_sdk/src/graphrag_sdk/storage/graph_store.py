@@ -23,7 +23,13 @@ from graphrag_sdk.core.models import (
     GraphRelationship,
 )
 from graphrag_sdk.storage.deduplicator import properties_to_carry
-from graphrag_sdk.storage.merge_query import fold_query, handled, read_for_merge
+from graphrag_sdk.storage.merge_query import (
+    copy_on_server,
+    fold_query,
+    handled,
+    read_for_merge,
+    snapshot_params,
+)
 from graphrag_sdk.storage.system_store import (
     CONFIG_LABEL,
     PROCESSING_LABEL,
@@ -525,6 +531,10 @@ class GraphStore:
         """Rename the node at ``old_id`` to ``new_id``, or fold it into what is there.
 
         Returns ``(renamed, merged)`` -- one of them 1.
+
+        Raises:
+            DatabaseError: the two nodes changed between every read and its
+                fold (``_FOLD_READS`` tries), or a query failed.
         """
         for _ in range(_FOLD_READS):
             read = await read_for_merge(self, new_id, old_id)
@@ -544,17 +554,28 @@ class GraphStore:
             # Something already sits at new_id — a prose mention of the same
             # name, typically. Fold the old node into it in one query, which
             # also makes the result pending dedup again: it now carries the
-            # row's identity, which no dedup run has seen with it.
+            # row's identity, which no dedup run has seen with it. The query
+            # unions provenance itself, from the values at write time, and
+            # writes nothing if anything this read saw has changed since.
             carry = properties_to_carry(read.keep, read.dup, never=self._NEVER_CARRY_ON_RECONCILE)
+            carry.pop("source_chunk_ids", None)
+            sets = copy_on_server(carry)
+            if carry:
+                sets.append("s += $carry")
             result = await self.query_raw(
-                fold_query(read.kinds),
-                {"old": old_id, "new": new_id, "carry": carry, "handled": handled(read.kinds)},
+                fold_query(read.kinds, sets),
+                {
+                    "old": old_id,
+                    "new": new_id,
+                    "handled": handled(read.kinds),
+                    **snapshot_params(read, carry),
+                },
             )
             if result.result_set and result.result_set[0][0] is True:
                 return 0, 1
         raise DatabaseError(
             f"Could not fold entity {old_id!r} into {new_id!r}: one of them kept changing "
-            "while it was read"
+            "between its read and the fold"
         )
 
     # The row about to be written sets ``is_stub`` itself; a placeholder's

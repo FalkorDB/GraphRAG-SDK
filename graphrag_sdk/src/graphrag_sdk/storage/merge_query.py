@@ -184,6 +184,19 @@ def _split_decimals(
     return exact, near, near_lists
 
 
+def copy_on_server(carry: dict[str, Any]) -> list[str]:
+    """``SET`` items that copy, on the server, the values of ``carry`` that do
+    not survive the trip to the client and back, removing them from it. A
+    point reads as a map, which no property may hold: sent back as read, the
+    query was refused. The query copies it from the duplicate ``d`` it holds."""
+    items = []
+    for key in [k for k, v in carry.items() if not round_trips(v)]:
+        carry.pop(key)
+        name = key.replace("`", "``")
+        items.append(f"s.`{name}` = d.`{name}`")
+    return items
+
+
 def round_trips(value: Any) -> bool:
     """Whether a value read from FalkorDB can be sent back and compared: not
     a map (how a point reads) and not a list holding one."""
@@ -271,6 +284,40 @@ def _unchanged_decimals(node: str) -> str:
     )
 
 
+# Everything a fold was computed from, unchanged since the read
+# (:func:`snapshot_params`), on the duplicate ``d`` and the survivor ``s``: a
+# write in between would otherwise be overwritten by a stale fold, or deleted
+# with the duplicate.
+_UNCHANGED = (
+    "coalesce(s.description, '') = $s_desc AND coalesce(s.descriptions, []) = $s_descs "
+    "AND coalesce(s.aliases, []) = $s_aliases AND coalesce(s.merged_labels, '') = $s_merged "
+    "AND coalesce(d.description, '') = $d_desc AND coalesce(d.descriptions, []) = $d_descs "
+    "AND coalesce(d.aliases, []) = $d_aliases AND coalesce(d.merged_labels, '') = $d_merged "
+    "AND all(k IN keys($s_seen) WHERE s[k] = $s_seen[k]) "
+    "AND all(k IN keys($d_seen) WHERE d[k] = $d_seen[k]) "
+    # No property added to the duplicate since the read: the values above and
+    # below cover every key it had.
+    "AND size([k IN keys(d) WHERE NOT k IN $own_clauses]) = size($d_keys) "
+    + _unchanged_decimals("s")
+    + _unchanged_decimals("d")
+    + "AND all(k IN $s_absent WHERE s[k] IS NULL OR s[k] = '' OR s[k] = []) "
+)
+# The duplicate's relationships of a type and direction the query has no block
+# for (``$handled``, from :func:`handled`), over ``OPTIONAL MATCH (d)-[x]-()``.
+# The parentheses matter: ``a + CASE ... END IN l`` parses as ``a + (... IN l)``.
+_UNHANDLED = (
+    "sum(CASE WHEN x IS NULL THEN 0 "
+    "WHEN (type(x) + CASE WHEN startNode(x) = d THEN ':out' ELSE ':in' END) IN $handled THEN 0 "
+    "ELSE 1 END)"
+)
+# The node-level provenance union, from the values at write time. A survivor
+# that had no provenance does not acquire an empty list.
+_UNION_PROVENANCE = (
+    "SET s.source_chunk_ids = CASE WHEN size(coalesce(d.source_chunk_ids, [])) = 0 "
+    "THEN s.source_chunk_ids ELSE coalesce(s.source_chunk_ids, []) + "
+    "[c IN d.source_chunk_ids WHERE NOT c IN coalesce(s.source_chunk_ids, [])] END"
+)
+
 # Only ``deleted`` records carry ``eid``, so the lookup is one index seek. Each
 # entity is aggregated to one node: there is no uniqueness constraint on
 # ``__Entity__.id``, and no write below may run once per copy.
@@ -283,28 +330,10 @@ _ABSORB_HEAD = (
     "WHERE d IS NOT NULL AND s.name = $survivor_name AND s <> d "
     f"WITH {_TICKED}, d, head(collect(s)) AS s "
     f"WITH {_TICKED}, d, s, (d IS NOT NULL AND s IS NOT NULL) AS present "
-    # The fields the fold was computed from, unchanged since the read: an
-    # ingest write in between would otherwise be overwritten by a stale fold.
-    f"WITH {_TICKED}, d, s, present, present "
-    "AND coalesce(s.description, '') = $s_desc AND coalesce(s.descriptions, []) = $s_descs "
-    "AND coalesce(s.aliases, []) = $s_aliases AND coalesce(s.merged_labels, '') = $s_merged "
-    "AND coalesce(d.description, '') = $d_desc AND coalesce(d.descriptions, []) = $d_descs "
-    "AND coalesce(d.aliases, []) = $d_aliases AND coalesce(d.merged_labels, '') = $d_merged "
-    "AND all(k IN keys($s_seen) WHERE s[k] = $s_seen[k]) "
-    "AND all(k IN keys($d_seen) WHERE d[k] = $d_seen[k]) "
-    # No property added to the duplicate since the read: the values above and
-    # below cover every key it had.
-    "AND size([k IN keys(d) WHERE NOT k IN $own_clauses]) = size($d_keys) "
-    + _unchanged_decimals("s")
-    + _unchanged_decimals("d")
-    + "AND all(k IN $s_absent WHERE s[k] IS NULL OR s[k] = '' OR s[k] = []) AS fresh "
-    # Every relationship type the duplicate has must have a block below. The
-    # parentheses matter: ``a + CASE ... END IN l`` parses as ``a + (... IN l)``.
+    f"WITH {_TICKED}, d, s, present, present AND {_UNCHANGED}AS fresh "
+    # Every relationship type the duplicate has must have a block below.
     "OPTIONAL MATCH (d)-[x]-() WHERE present "
-    f"WITH {_TICKED}, d, s, present, fresh, "
-    "sum(CASE WHEN x IS NULL THEN 0 "
-    "WHEN (type(x) + CASE WHEN startNode(x) = d THEN ':out' ELSE ':in' END) IN $handled THEN 0 "
-    "ELSE 1 END) AS unhandled "
+    f"WITH {_TICKED}, d, s, present, fresh, {_UNHANDLED} AS unhandled "
     f"WITH {_TICKED}, d, s, present, fresh, unhandled, "
     "(present AND fresh AND unhandled = 0) AS ok "
 )
@@ -369,10 +398,7 @@ def absorb_query(kinds: list[tuple[str, str]], sets: list[str], labels: list[str
     :func:`handled`) and :func:`snapshot_params`.
     """
     fold = [
-        # A survivor that had no provenance does not acquire an empty list.
-        "SET s.source_chunk_ids = CASE WHEN size(coalesce(d.source_chunk_ids, [])) = 0 "
-        "THEN s.source_chunk_ids ELSE coalesce(s.source_chunk_ids, []) + "
-        "[c IN d.source_chunk_ids WHERE NOT c IN coalesce(s.source_chunk_ids, [])] END",
+        _UNION_PROVENANCE,
         *(f"SET {item}" for item in sets),
         *(f"SET s:`{sanitize_cypher_label(label)}`" for label in labels),
     ]
@@ -386,30 +412,35 @@ def absorb_query(kinds: list[tuple[str, str]], sets: list[str], labels: list[str
     )
 
 
-def fold_query(kinds: list[tuple[str, str]]) -> str:
+def fold_query(kinds: list[tuple[str, str]], sets: list[str]) -> str:
     """One query that folds the node ``$old`` into the node ``$new``, outside
-    any plan: a table re-key whose new id is already taken. Every edge moves
-    as :func:`absorb_query` moves them; ``$carry`` is set on the node that
-    stays, and its name vector is dropped — it now holds the row's identity,
-    which no dedup run has checked; both ids get a ``deleted`` record while a
-    dedup run exists; the old node is deleted. All or nothing: as several
-    queries, a dedup merge applied in between saw the old node half-moved and
-    split the entity. Returns ``ok``, false — and nothing written — when
-    either node is gone or the old one has a relationship type ``kinds``
-    lacks (``$handled``, from :func:`handled`); the caller reads again."""
+    any plan: a table re-key whose new id is already taken. All or nothing,
+    and built from :func:`absorb_query`'s own parts: every edge moves as it
+    moves them; provenance is unioned from the values at write time; ``sets``
+    (``SET`` items on ``s``, as for :func:`absorb_query`) are applied; the
+    name vector is dropped — the node now holds the row's identity, which no
+    dedup run has checked; both ids get a ``deleted`` record while a dedup
+    run exists; the old node is deleted. As several queries, a dedup merge
+    applied in between saw the old node half-moved and split the entity.
+
+    Returns ``ok``, false — and nothing written — when either node is gone,
+    when anything the fold was computed from changed since the read
+    (:func:`snapshot_params`, with ``d`` the old node and ``s`` the new), or
+    when the old node has a relationship type ``kinds`` lacks (``$handled``,
+    from :func:`handled`); the caller reads again."""
     carried = "d, s, ok"
+    fold = [_UNION_PROVENANCE, *(f"SET {item}" for item in sets), "SET s.embedding = null"]
     return (
         "OPTIONAL MATCH (d:__Entity__ {id: $old}) WITH head(collect(d)) AS d "
         "OPTIONAL MATCH (s:__Entity__ {id: $new}) WHERE d IS NOT NULL AND s <> d "
         "WITH d, head(collect(s)) AS s "
-        "OPTIONAL MATCH (d)-[x]-() WHERE s IS NOT NULL "
-        "WITH d, s, sum(CASE WHEN x IS NULL THEN 0 "
-        "WHEN (type(x) + CASE WHEN startNode(x) = d THEN ':out' ELSE ':in' END) IN $handled THEN 0 "
-        "ELSE 1 END) AS unhandled "
-        "WITH d, s, (d IS NOT NULL AND s IS NOT NULL AND unhandled = 0) AS ok "
+        "WITH d, s, (d IS NOT NULL AND s IS NOT NULL) AS present "
+        f"WITH d, s, present, present AND {_UNCHANGED}AS fresh "
+        "OPTIONAL MATCH (d)-[x]-() WHERE present "
+        f"WITH d, s, present, fresh, {_UNHANDLED} AS unhandled "
+        "WITH d, s, (present AND fresh AND unhandled = 0) AS ok "
         + "".join(_move_block(t, direction, carried) for t, direction in kinds)
-        + "FOREACH (_ IN CASE WHEN ok THEN [1] ELSE [] END | "
-        "SET s += $carry SET s.embedding = null) "
+        + f"FOREACH (_ IN CASE WHEN ok THEN [1] ELSE [] END | {' '.join(fold)}) "
         + deleted_record_clause("CASE WHEN ok THEN [$old, $new] ELSE [] END")
         + "FOREACH (_ IN CASE WHEN ok THEN [1] ELSE [] END | DETACH DELETE d) "
         "RETURN ok"

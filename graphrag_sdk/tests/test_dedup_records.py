@@ -647,3 +647,79 @@ async def test_a_table_rekey_folds_into_the_taken_id_in_one_query(graph):
         "MATCH (n:__Entity__ {id: 'new'}) RETURN n.role, n.embedding IS NULL, n.source_chunk_ids",
     ) == [["supplier", True, ["c1"]]]
     assert await store.deleted_among(["old", "new"]) == {"old", "new"}
+
+
+async def _globex_and_initech(graph):
+    """A re-synced row's old node (Globex) and the node at its new id."""
+    await graph.query_raw(
+        "CREATE (o:__Entity__:Organization {id: 'old', name: 'Globex', role: 'supplier', "
+        "source_chunk_ids: ['c1']}), "
+        "(n:__Entity__:Organization {id: 'new', name: 'Initech', source_chunk_ids: ['c5']}), "
+        "(c:Chunk {id: 'c1'}), (o)-[:MENTIONED_IN]->(c)"
+    )
+
+
+@pytest.mark.parametrize(
+    "edit, check, expected",
+    [
+        (
+            "MATCH (o:__Entity__ {id: 'old'}) SET o.phone = '555-0100'",
+            "MATCH (n:__Entity__ {id: 'new'}) RETURN n.phone",
+            [["555-0100"]],
+        ),
+        (
+            "MATCH (o:__Entity__ {id: 'old'}) SET o.role = 'partner'",
+            "MATCH (n:__Entity__ {id: 'new'}) RETURN n.role",
+            [["partner"]],
+        ),
+        (
+            "MATCH (o:__Entity__ {id: 'old'}) SET o.source_chunk_ids = ['c1', 'c2']",
+            "MATCH (n:__Entity__ {id: 'new'}) RETURN n.source_chunk_ids",
+            [[["c5", "c1", "c2"]]],
+        ),
+        (
+            "MATCH (n:__Entity__ {id: 'new'}) SET n.source_chunk_ids = ['c5', 'c9']",
+            "MATCH (n:__Entity__ {id: 'new'}) RETURN n.source_chunk_ids",
+            [[["c5", "c9", "c1"]]],
+        ),
+    ],
+    ids=[
+        "a property added",
+        "a value changed",
+        "provenance grew",
+        "the new node's provenance grew",
+    ],
+)
+async def test_a_rekey_fold_keeps_a_concurrent_edit(graph, monkeypatch, edit, check, expected):
+    """A write between the fold's read and the fold — an ingest, a dedup merge
+    into either node — was overwritten by what the read saw, or deleted with
+    the old node. The fold checks what it was computed from, reads again when
+    that changed, and unions provenance from the values at write time."""
+    import graphrag_sdk.storage.graph_store as graph_store_module
+
+    await _globex_and_initech(graph)
+    real, reads = graph_store_module.read_for_merge, []
+
+    async def read_then_edit(g, survivor, dup):
+        read = await real(g, survivor, dup)
+        reads.append(read)
+        if len(reads) == 1:
+            await graph.query_raw(edit)
+        return read
+
+    monkeypatch.setattr(graph_store_module, "read_for_merge", read_then_edit)
+    assert await graph._move_entity("old", "new") == (0, 1)
+    assert await rows(graph, check) == expected
+    assert await rows(graph, "MATCH (n:__Entity__ {id: 'old'}) RETURN count(n)") == [[0]]
+
+
+async def test_a_rekey_fold_carries_a_point_property(graph):
+    """A point reads back as a map, which no property may hold: carried as
+    read, FalkorDB refused the fold; it is copied on the server."""
+    await _globex_and_initech(graph)
+    await graph.query_raw(
+        "MATCH (o:__Entity__ {id: 'old'}) SET o.site = point({latitude: 32.07, longitude: 34.78})"
+    )
+    assert await graph._move_entity("old", "new") == (0, 1)
+    ((latitude,),) = await rows(graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.site.latitude")
+    assert latitude == pytest.approx(32.07)
