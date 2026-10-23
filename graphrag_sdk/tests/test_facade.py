@@ -455,6 +455,26 @@ class TestGraphRAGDefaultExtractor:
         assert "Person" in extractor.entity_types
         assert "Company" in extractor.entity_types
 
+    async def test_persisted_ontology_reaches_default_extractor(self, mock_conn, embedder, llm, sample_ontology):
+        """A persisted ontology loaded at init must reach the default extractor (#363)."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        assert not g.ontology.entities
+        g._ontology_store = MagicMock()
+        g._ontology_store.load = AsyncMock(return_value=sample_ontology)
+
+        await g._initialize_ontology()
+
+        assert g.ontology is g._global_ontology
+        extractor = g._default_extractor()
+        assert "Person" in extractor.entity_types
+        assert "Company" in extractor.entity_types
+
+    def test_default_extractor_prefers_global_ontology(self, mock_conn, embedder, llm, sample_ontology):
+        """The extractor reads the global ontology when it has entities (#363)."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._global_ontology = sample_ontology
+        extractor = g._default_extractor()
+        assert "Person" in extractor.entity_types
 
 class TestGraphRAGFinalize:
     """A8: finalize() must return a typed FinalizeResult."""
