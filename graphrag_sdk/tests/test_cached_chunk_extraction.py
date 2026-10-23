@@ -352,6 +352,103 @@ class TestRelationshipRebuild:
             "new-2",
         }
 
+    async def test_distinct_facts_between_same_pair_kept(self, ontology, ctx):
+        """Two facts between one pair are two edges, not one.
+
+        Every edge is RELATES, so keying on the pair alone dropped the second
+        fact from the rebuilt GraphData — and update()'s stale-edge sweep then
+        deleted it from the graph. Each must keep its own properties and its
+        remapped provenance, so the sweep sees both as supported.
+        """
+        rows = [
+            ChunkEntityRow(
+                chunk_id=cid,
+                entity_id=eid,
+                label="Person",
+                name=eid,
+                source_chunk_ids=[cid],
+            )
+            for cid in ("old-1", "old-2")
+            for eid in ("alice", "acme")
+        ]
+        store = FakeGraphStore(
+            chunk_texts=[("old-1", "alpha"), ("old-2", "beta")],
+            entity_rows=rows,
+            rel_rows=[
+                ChunkRelationshipRow(
+                    chunk_id="old-1",
+                    start_entity_id="alice",
+                    end_entity_id="acme",
+                    rel_type="WORKS_AT",
+                    fact="(Alice, WORKS_AT, Acme)",
+                ),
+                ChunkRelationshipRow(
+                    chunk_id="old-1",
+                    start_entity_id="alice",
+                    end_entity_id="acme",
+                    rel_type="FOUNDED",
+                    fact="(Alice, FOUNDED, Acme)",
+                ),
+                ChunkRelationshipRow(
+                    chunk_id="old-2",
+                    start_entity_id="alice",
+                    end_entity_id="acme",
+                    rel_type="FOUNDED",
+                    fact="(Alice, FOUNDED, Acme)",
+                ),
+            ],
+        )
+        strategy = CachedChunkExtraction(RecordingExtractor(), store, "doc-1")
+
+        result = await strategy.extract(
+            TextChunks(chunks=[_chunk("alpha", 0, "new-1"), _chunk("beta", 1, "new-2")]),
+            ontology,
+            ctx,
+        )
+
+        by_type = {r.properties["rel_type"]: r.properties for r in result.relationships}
+        assert set(by_type) == {"WORKS_AT", "FOUNDED"}
+        assert by_type["WORKS_AT"]["fact"] == "(Alice, WORKS_AT, Acme)"
+        assert by_type["WORKS_AT"]["source_chunk_ids"] == ["new-1"]
+        assert by_type["FOUNDED"]["fact"] == "(Alice, FOUNDED, Acme)"
+        assert by_type["FOUNDED"]["source_chunk_ids"] == ["new-1", "new-2"]
+
+    async def test_missing_rel_type_rows_fold_together(self, ontology, ctx):
+        """None and "" are one key, as in the store's coalesce(rel_type, '')."""
+        rows = [
+            ChunkEntityRow(
+                chunk_id=cid,
+                entity_id=eid,
+                label="Person",
+                name=eid,
+                source_chunk_ids=[cid],
+            )
+            for cid in ("old-1", "old-2")
+            for eid in ("a", "b")
+        ]
+        store = FakeGraphStore(
+            chunk_texts=[("old-1", "alpha"), ("old-2", "beta")],
+            entity_rows=rows,
+            rel_rows=[
+                ChunkRelationshipRow(
+                    chunk_id="old-1", start_entity_id="a", end_entity_id="b", rel_type=None
+                ),
+                ChunkRelationshipRow(
+                    chunk_id="old-2", start_entity_id="a", end_entity_id="b", rel_type=""
+                ),
+            ],
+        )
+        strategy = CachedChunkExtraction(RecordingExtractor(), store, "doc-1")
+
+        result = await strategy.extract(
+            TextChunks(chunks=[_chunk("alpha", 0, "new-1"), _chunk("beta", 1, "new-2")]),
+            ontology,
+            ctx,
+        )
+
+        assert len(result.relationships) == 1
+        assert result.relationships[0].properties["source_chunk_ids"] == ["new-1", "new-2"]
+
 
 class TestLabelLessEntity:
     async def test_label_less_entity_falls_back_to_extraction(self, ontology, ctx):
@@ -1167,6 +1264,77 @@ class TestRelationshipMergeUnion:
         )
         merged = CachedChunkExtraction._merge([a, b])
         assert len(merged.relationships) == 2
+
+    def _typed(self, rel_type, fact, srcs):
+        props = {"fact": fact, "source_chunk_ids": list(srcs)}
+        if rel_type is not None:
+            props["rel_type"] = rel_type
+        return GraphRelationship(
+            start_node_id="alice", end_node_id="acme", type="RELATES", properties=props
+        )
+
+    def test_distinct_rel_types_between_same_pair_stay_separate(self):
+        cached = GraphData(nodes=[], relationships=[self._typed("WORKS_AT", "works at", ["newA"])])
+        fresh = GraphData(nodes=[], relationships=[self._typed("FOUNDED", "founded", ["newB"])])
+
+        merged = CachedChunkExtraction._merge([cached, fresh])
+
+        by_type = {r.properties["rel_type"]: r.properties for r in merged.relationships}
+        assert by_type["WORKS_AT"] == {
+            "rel_type": "WORKS_AT",
+            "fact": "works at",
+            "source_chunk_ids": ["newA"],
+        }
+        assert by_type["FOUNDED"] == {
+            "rel_type": "FOUNDED",
+            "fact": "founded",
+            "source_chunk_ids": ["newB"],
+        }
+
+    def test_same_rel_type_still_unioned(self):
+        cached = GraphData(nodes=[], relationships=[self._typed("FOUNDED", "old", ["newA"])])
+        fresh = GraphData(nodes=[], relationships=[self._typed("FOUNDED", "new", ["newB"])])
+
+        merged = CachedChunkExtraction._merge([cached, fresh])
+
+        assert len(merged.relationships) == 1
+        props = merged.relationships[0].properties
+        assert props["fact"] == "new"
+        assert props["source_chunk_ids"] == ["newA", "newB"]
+
+    def test_none_and_missing_rel_type_are_one_key(self):
+        a = GraphData(nodes=[], relationships=[self._typed(None, "x", ["c1"])])
+        b = GraphData(nodes=[], relationships=[self._typed("", "x", ["c2"])])
+        b.relationships[0].properties["rel_type"] = None
+
+        merged = CachedChunkExtraction._merge([a, b])
+
+        assert len(merged.relationships) == 1
+        assert merged.relationships[0].properties["source_chunk_ids"] == ["c1", "c2"]
+
+    async def test_extracted_only_facts_survive_merge(self, ontology, ctx):
+        """extract() routes the inner result through _merge even with zero
+        cache hits, so two fresh facts between one pair must both come out."""
+        inner = RecordingExtractor(
+            GraphData(
+                nodes=[],
+                relationships=[
+                    self._typed("WORKS_AT", "works at", ["new-1"]),
+                    self._typed("FOUNDED", "founded", ["new-1"]),
+                ],
+            )
+        )
+        strategy = CachedChunkExtraction(inner, FakeGraphStore(), "doc-1")
+
+        result = await strategy.extract(
+            TextChunks(chunks=[_chunk("fresh", 0, "new-1")]), ontology, ctx
+        )
+
+        assert strategy.cached_chunk_count == 0
+        assert sorted(r.properties["rel_type"] for r in result.relationships) == [
+            "FOUNDED",
+            "WORKS_AT",
+        ]
 
     def test_direction_is_not_collapsed(self):
         fwd = GraphData(
