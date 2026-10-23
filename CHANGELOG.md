@@ -443,6 +443,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves more concurrent questions.
 
 ### Fixed
+- **`update()` with `cache_unchanged_chunks` kept one fact per entity pair.**
+  `CachedChunkExtraction` keyed `RELATES` edges on the pair (rebuilding from
+  the cache) or on `(start, "RELATES", end)` (merging), never on `rel_type`, so
+  `Alice WORKS_AT Acme` and `Alice FOUNDED Acme` collapsed into one edge. The
+  cached path dropped the second fact and the stale-edge sweep then deleted it
+  from the graph; the merge path, which every extracted part goes through even
+  with no cache hits, overwrote the first fact's `rel_type`, `fact` and
+  `description`. Both now key on `rel_type` the way `upsert_relationships()`
+  does (#361).
 - **A write batch holding the same entity or relationship twice lost a write.**
   In one `UNWIND ... MERGE` call FalkorDB 4.x kept the first row's values and
   6.0.x the last, and on both only one row's `source_chunk_ids` survived, so an
