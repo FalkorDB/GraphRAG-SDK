@@ -566,6 +566,10 @@ class GraphRAG:
                 ontology_for(mapping)
             )
 
+        # Keep the working ontology in step with what was just loaded or
+        # registered, as _refresh_global_ontology() does; otherwise the default
+        # extractor still sees the empty constructor ontology (#363).
+        self.ontology = self._global_ontology
         self._ontology_initialized = True
 
     async def get_ontology(self) -> Ontology:
@@ -2890,7 +2894,8 @@ class GraphRAG:
 
     def _default_extractor(self) -> ExtractionStrategy:
         """Return default GraphExtraction with ontology entity types if available."""
-        entity_types = [e.label for e in self.ontology.entities] if self.ontology.entities else None
+        ontology = self._global_ontology if self._global_ontology.entities else self.ontology
+        entity_types = [e.label for e in ontology.entities] if ontology.entities else None
         return GraphExtraction(
             llm=self.llm,
             entity_types=entity_types,
