@@ -1,11 +1,11 @@
 ---
 title: "GraphRAG SDK"
-description: "The most accurate Graph RAG framework. Build knowledge graphs from documents and query them with natural language, on FalkorDB."
+description: "The most accurate Graph RAG framework. Build knowledge graphs from documents and tables and query them with natural language, on FalkorDB."
 ---
 
 **The most accurate Graph RAG framework. Built on [FalkorDB](https://www.falkordb.com/).**
 
-GraphRAG SDK builds knowledge graphs from documents and answers questions over them using graph-based retrieval-augmented generation. Every pipeline step is a swappable strategy behind an abstract interface.
+GraphRAG SDK builds knowledge graphs from documents and tables and answers questions over them using graph-based retrieval-augmented generation. Every pipeline step is a swappable strategy behind an abstract interface.
 
 <Card title="Reducing LLM Hallucinations" icon="shield-check" href="/reducing-llm-hallucinations">
   How grounded retrieval, source provenance, and an explicit abstention path make answers verifiable instead of guessed.
@@ -14,17 +14,22 @@ GraphRAG SDK builds knowledge graphs from documents and answers questions over t
 ## Key Highlights
 
 - **#1 on GraphRAG-Bench** — 66.09 ACC on Novel and 76.87 on Medical ([benchmark](/benchmark))
-- **Simple API** -- `ingest()` + `completion()` with sensible defaults
+- **Simple API** -- `ingest()` + `finalize()` + `completion()` with sensible defaults
+- **Documents and tables in one graph** -- a CSV row and a prose mention of the same thing are one node, with declared column types ([Structured Ingestion](/structured-ingestion))
+- **Incremental and crash-safe** -- re-ingest only what changed, and `finalize()` deduplicates only the new entities, with an LLM judge
 - **100+ LLM providers** via LiteLLM (OpenAI, Azure, Anthropic, Cohere, Ollama, and more)
-- **Fully modular** -- swap chunking, extraction, resolution, retrieval, and reranking strategies
-- **Production-ready** -- async-first, connection pooling, circuit breaker, batched writes
+- **Fully modular** -- swap chunking, extraction, resolution, retrieval, reranking and dedup-judge strategies
+- **Production-ready** -- async-first, connection pooling, retries, circuit breaker, batched writes
 - **Full provenance** -- every answer traces back to its source document and chunk
 
 ## Quick Start
 
+GraphRAG SDK needs FalkorDB 4.20 or later (6.0.x is supported too).
+
 ```bash
-pip install graphrag-sdk[litellm]
-docker run -p 6379:6379 falkordb/falkordb:v4.22.2
+pip install graphrag-sdk[litellm,pdf]
+docker run -d -p 6379:6379 -p 3000:3000 --name falkordb falkordb/falkordb:v4.22.2
+export OPENAI_API_KEY="sk-..."
 ```
 
 ```python
@@ -34,25 +39,29 @@ from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
 async def main():
     async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
-        llm=LiteLLM(model="openai/gpt-4o"),
-        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
+        llm=LiteLLM(model="openai/gpt-4.1"),
+        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
     ) as rag:
         await rag.ingest("my_document.pdf")
-        await rag.finalize()
+        await rag.finalize()   # cross-document dedup, embeddings, indexes
         answer = await rag.completion("What is the main topic?")
         print(answer.answer)
 
 asyncio.run(main())
 ```
 
+`finalize()` runs once after a batch of ingests. It checks only the entities added since the last call, and asks an LLM judge which candidates are the same entity.
+
 ## Next Steps
 
 - [Getting Started](/getting-started) -- Full tutorial from install to first query
-- [Architecture](/architecture) -- How the 9-step pipeline works
+- [Architecture](/architecture) -- How the ingestion and retrieval pipelines work
+- [Structured Ingestion](/structured-ingestion) -- Tables (CSV, TSV) declared on the ontology
 - [Reducing LLM Hallucinations](/reducing-llm-hallucinations) -- Grounded retrieval, provenance, and abstention
 - [Strategies](/strategies) -- All swappable strategy ABCs and built-in options
 - [Ontology Discovery](/ontology-discovery) -- Auto-draft a schema from a corpus (`method="llm"` or `method="grounded"` with DBpediaCatalog)
 - [Ontology Evolution](/ontology-evolution) -- Safely change schema on a populated graph
 - [Incremental Updates](/incremental-updates) -- `update()`, `delete_document()`, `apply_changes()`, `finalize()`
+- [Configuration](/configuration) -- Connection, timeouts, chunking, retrieval and dedup settings
 - [Benchmark](/benchmark) -- Methodology and reproduction instructions
 - [API Reference](/api-reference) -- Full API documentation
