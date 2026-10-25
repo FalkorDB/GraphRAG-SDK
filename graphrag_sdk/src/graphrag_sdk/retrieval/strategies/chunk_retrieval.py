@@ -156,9 +156,11 @@ async def retrieve_chunks(
         "ORDER BY id ASC "
         "LIMIT 5",
     )
+    # Each query fails on its own: the record query does not depend on the
+    # vector ranking of the first.
     if eids_2hop_chunk:
-        try:
-            for two_hop_query in two_hop_queries:
+        for two_hop_query in two_hop_queries:
+            try:
                 if ctx is not None:
                     ctx.ensure_budget("2-hop chunk retrieval")
                 result = await graph_store.query_raw(
@@ -168,10 +170,10 @@ async def retrieve_chunks(
                     cid = row[0]
                     text = row[1] if len(row) > 1 else ""
                     _add(cid, text, "2hop_mentioned")
-        except LatencyBudgetExceededError:
-            raise
-        except Exception as exc:
-            logger.debug("2-hop chunk retrieval failed: %s", exc)
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:
+                logger.debug("2-hop chunk retrieval failed: %s", exc)
 
     # The fulltext and vector paths come from indexes and are filtered here.
     for cid in await inactive_chunk_ids(graph_store, list(chunks), ctx=ctx):

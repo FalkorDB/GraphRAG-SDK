@@ -1259,6 +1259,24 @@ class TestChunksAlignedWithIngestion:
         assert "c.embedding IS NULL" in two_hop[1] and two_hop[1].endswith("LIMIT 5")
         assert not any("COLLECT" in c for c in two_hop)
 
+    async def test_a_failed_embedded_2hop_query_still_runs_the_record_query(
+        self, mp_graph_store, mp_vector_store
+    ):
+        from graphrag_sdk.retrieval.strategies.chunk_retrieval import retrieve_chunks
+
+        async def query_raw(cypher, params=None):
+            if "neighbor:__Entity__" in cypher and "c.embedding IS NOT NULL" in cypher:
+                raise RuntimeError("vector function unavailable")
+            if "neighbor:__Entity__" in cypher:
+                return MagicMock(result_set=[["row-1", "Acme | ORG-42"]])
+            return MagicMock(result_set=[])
+
+        mp_graph_store.query_raw = AsyncMock(side_effect=query_raw)
+        chunks, _, _ = await retrieve_chunks(
+            mp_vector_store, mp_graph_store, "q", [0.1], [], [], [("acme__org", {"name": "Acme"})]
+        )
+        assert chunks == {"row-1": "Acme | ORG-42"}
+
     async def test_graph_paths_drop_inactive_chunks_before_their_caps(
         self, mp_graph_store, mp_vector_store
     ):
