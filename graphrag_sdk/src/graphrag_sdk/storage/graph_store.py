@@ -1045,8 +1045,10 @@ class GraphStore:
         at a time. Finding and changing them are two queries: FalkorDB 6.0.2
         crashed (a RediSearch lock assertion) when one query set
         ``structured_sources`` on edges while its LIMIT left the scan of that
-        index open. The change finds each edge again by its start node's id
-        and checks it is still stale.
+        index open. The change finds each edge again by the ids of both its
+        nodes and checks it is still stale: matching only the start node made
+        every row walk all of that node's RELATES edges, so cleanup took time
+        rows x out-degree (38 s for 20,000 edges from one node).
         """
         await self._ensure_relationship_source_index()
         marker = sanitize_cypher_label(marker_property)
@@ -1056,18 +1058,22 @@ class GraphStore:
         )
         params: dict[str, Any] = {"signature": signature, "snapshot": snapshot_token}
         find = (
-            "MATCH (a)-[r:RELATES]->() "
+            "MATCH (a)-[r:RELATES]->(b) "
             # Not wrapped in coalesce(): FalkorDB 4.x then skips the index.
             "WHERE $signature IN r.structured_sources "
             f"AND coalesce(r.`{marker}`, 0) < $snapshot "
-            "RETURN id(a), id(r) LIMIT $limit"
+            "RETURN id(a), id(r), id(b) LIMIT $limit"
         )
         strip = (
             "UNWIND $edges AS edge "
             "MATCH (a) WHERE id(a) = edge.a "
             # WITH between the MATCHes: FalkorDB 6.0.2 loses ``edge`` without it.
             "WITH a, edge "
-            "MATCH (a)-[r:RELATES]->() WHERE id(r) = edge.r "
+            "MATCH (b) WHERE id(b) = edge.b "
+            "WITH a, b, edge "
+            # Both ends bound: the engine checks the edges between a and b only,
+            # instead of every edge leaving a.
+            "MATCH (a)-[r:RELATES]->(b) WHERE id(r) = edge.r "
             # any() rather than IN, so this query never reads that index.
             "AND any(s IN r.structured_sources WHERE s = $signature) "
             f"AND coalesce(r.`{marker}`, 0) < $snapshot "
@@ -1084,7 +1090,10 @@ class GraphStore:
             found = await self._conn.query(
                 find, {**params, "limit": self._RELATIONSHIP_CLEANUP_BATCH}
             )
-            edges = [{"a": row[0], "r": row[1]} for row in getattr(found, "result_set", None) or []]
+            edges = [
+                {"a": row[0], "r": row[1], "b": row[2]}
+                for row in getattr(found, "result_set", None) or []
+            ]
             if not edges:
                 return total
             result = await self._conn.query(strip, {**params, "edges": edges})

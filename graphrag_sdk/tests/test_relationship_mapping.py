@@ -629,6 +629,109 @@ async def test_a_relationship_declaration_replaces_a_proposed_node_table_on_real
 
 
 @pytest.mark.integration
+async def test_a_proposal_whose_key_an_edge_table_uses_is_not_replaced_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """Replacing a proposed node table removes its signed key from the nodes;
+    when a relationship table resolves an endpoint by that key, the
+    declaration is refused and nothing is removed."""
+    from graphrag_sdk import TableMapping
+
+    batch = TableMapping(source="batch.csv", label="Batch", key="batch_id", name="batch_id")
+    base = Ontology(entities=[Entity(label="Batch")], tables=[batch])
+    rag = real_falkordb_rag_factory(llm=llm, resolver=None, ontology=base)
+    (tmp_path / "batch.csv").write_text("batch_id\nB-1\nB-2\n", encoding="utf-8")
+    await rag.ingest(str(tmp_path / "batch.csv"))
+    (tmp_path / "unit.csv").write_text("unit_id\nU-1\nU-2\n", encoding="utf-8")
+    await rag.ingest(str(tmp_path / "unit.csv"))  # undeclared: stored as a proposal
+    consumed = RelationshipMapping(
+        source="consumed_batch.csv",
+        start=EndpointMapping("unit", "unit__unit_id", "source"),
+        end=EndpointMapping("Batch", "batch__batch_id", "target"),
+        type="CONSUMED_BATCH",
+    )
+    edges = tmp_path / "consumed_batch.csv"
+    edges.write_text("source,target\nU-1,B-1\nU-2,B-2\n", encoding="utf-8")
+    with_edges = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        connection=rag._conn,
+        ontology=base.model_copy(update={"relationship_tables": [consumed]}),
+    )
+    assert (await with_edges.ingest(str(edges))).relationships_written == 2
+
+    unit_as_edges = RelationshipMapping(
+        source="unit.csv",
+        start=EndpointMapping("Batch", "batch__batch_id", "unit_id"),
+        end=EndpointMapping("Batch", "batch__batch_id", "unit_id"),
+        type="SAME",
+    )
+    replacing = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        connection=rag._conn,
+        ontology=base.model_copy(update={"relationship_tables": [unit_as_edges]}),
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"declaring 'unit\.csv' as a relationship table.*'consumed_batch\.csv' uses "
+        r"unit\.unit__unit_id as its start endpoint key",
+    ):
+        await replacing.get_ontology()
+    stored = await rag._ontology_store.load()
+    assert [(m.source, m.derived) for m in stored.tables if m.source == "unit.csv"] == [
+        ("unit.csv", True)
+    ]
+    assert [m.source for m in stored.relationship_tables] == ["consumed_batch.csv"]
+    keys = {(e.label, p.name) for e in stored.entities for p in e.properties}
+    assert ("unit", "unit__unit_id") in keys
+    held = await rag._graph_store.query_raw(
+        "MATCH (u:unit) WHERE u.unit__unit_id IS NOT NULL RETURN count(u)"
+    )
+    assert held.result_set == [[2]]
+    assert await _consumed_edge_count(rag) == 2
+
+
+@pytest.mark.integration
+async def test_cleanup_of_many_edges_from_one_node_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """Cleanup found each stale edge by its start node only, so every row
+    walked all of that node's edges: 20,000 edges from one unit took 38 s
+    per cleanup and a re-ingest timed out. This pins the result on such a
+    hub; the query binds both ends (see test_graph_store)."""
+    n = 3_000
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[consumed_mapping()],
+        ),
+    )
+    (tmp_path / "unit.csv").write_text("unit_id\nU-1\n", encoding="utf-8")
+    await rag.ingest(str(tmp_path / "unit.csv"))
+    (tmp_path / "batch.csv").write_text(
+        "batch_id\n" + "\n".join(f"B-{i}" for i in range(n)) + "\n", encoding="utf-8"
+    )
+    await rag.ingest(str(tmp_path / "batch.csv"))
+    rows = [f"U-1,B-{i},CONSUMED_BATCH,2026-09-20" for i in range(n)]
+    assert (await rag.ingest(str(write_csv(tmp_path, rows)))).relationships_written == n
+
+    await rag.ingest(str(write_csv(tmp_path, rows[: n // 2])))
+    assert await _consumed_edge_count(rag) == n // 2
+    kept = await rag._graph_store.query_raw(
+        "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->(b) "
+        "RETURN min(b.batch__batch_id), count(DISTINCT b)"
+    )
+    assert kept.result_set == [["B-0", n // 2]]
+
+    await rag.drop_table("consumed_batch.csv")
+    assert await _consumed_edge_count(rag) == 0
+
+
+@pytest.mark.integration
 async def test_a_declared_node_table_is_not_replaced_by_a_relationship_declaration_on_real_falkordb(
     real_falkordb_rag_factory, llm, tmp_path
 ):

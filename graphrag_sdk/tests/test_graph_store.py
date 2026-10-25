@@ -833,7 +833,7 @@ class TestRelationshipEndpointResolution:
                 return MagicMock(result_set=[[snapshot]])
             if "LIMIT $limit" in cypher:
                 last["n"] = next(found, 0)
-                return MagicMock(result_set=[[index, index] for index in range(last["n"])])
+                return MagicMock(result_set=[[index, index, index] for index in range(last["n"])])
             if "UNWIND $edges" in cypher:
                 return MagicMock(result_set=[[last["n"] if stripped is None else stripped]])
             return MagicMock(result_set=[])
@@ -866,9 +866,12 @@ class TestRelationshipEndpointResolution:
             assert "coalesce(r.`relationship_mapping_consumed_batch`, 0) < $snapshot" in cypher
             assert params["snapshot"] == 1_700_000_000_000
             assert params["signature"] == "consumed_batch"
-        assert strip_params["edges"] == [{"a": 0, "r": 0}, {"a": 1, "r": 1}]
-        # The change finds each edge again by id and checks it is still stale ...
-        assert "WHERE id(a) = edge.a" in strip and "WHERE id(r) = edge.r" in strip
+        assert strip_params["edges"] == [{"a": 0, "r": 0, "b": 0}, {"a": 1, "r": 1, "b": 1}]
+        # The change finds each edge again by the ids of both ends — binding
+        # only the start node walked all its edges per row (rows x out-degree)
+        # — and checks it is still stale ...
+        assert "WHERE id(a) = edge.a" in strip and "WHERE id(b) = edge.b" in strip
+        assert "MATCH (a)-[r:RELATES]->(b) WHERE id(r) = edge.r" in strip
         assert "any(s IN r.structured_sources WHERE s = $signature)" in strip
         # ... strips the source, its marker and every signed property ...
         assert "SET r.structured_sources = rest" in strip
