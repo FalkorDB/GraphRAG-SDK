@@ -877,7 +877,9 @@ class GraphStore:
         # 16.6 s on 4.x and timed out.
         order = "ORDER BY id " if max_hops == 1 else ""
         query = (
-            f"MATCH (c {{id: $chunk_id}})-[*1..{max_hops}]-(e:__Entity__) "
+            # Labelled, so the lookup uses the Chunk id index instead of a scan
+            # over every node.
+            f"MATCH (c:Chunk {{id: $chunk_id}})-[*1..{max_hops}]-(e:__Entity__) "
             f"RETURN DISTINCT e.id AS id, labels(e) AS labels, properties(e) AS props "
             f"{order}LIMIT 50"
         )
