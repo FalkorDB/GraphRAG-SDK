@@ -193,8 +193,9 @@ does not embed an edge only relationship tables own; an edge a document also
 supports is embedded as before. Find the edges with graph queries (`rag.query()`, or
 text-to-Cypher with `enable_cypher=True`), or by following edges from an entity
 found by name, which needs the endpoint nodes to have a `name` (`name=` on their
-`TableMapping`). On an edge a document also wrote, the table's write replaces
-the document's `fact` with that same text; the edge keeps the document's chunks.
+`TableMapping`). On an edge a document also wrote, the table's write keeps the
+document's `fact`, chunks and embedding. If the document's cleanup later leaves
+the edge to the table alone, its embedding is removed.
 
 ### JSON and server integration
 

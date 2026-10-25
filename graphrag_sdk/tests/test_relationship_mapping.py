@@ -814,6 +814,144 @@ async def test_relationship_table_edges_are_not_embedded_on_real_falkordb(
     assert embedded.result_set == [["U-1", False], ["U-2", True]]
 
 
+async def _units_batches_rag(real_falkordb_rag_factory, llm, tmp_path, mapping=None):
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[mapping or consumed_mapping()],
+        ),
+    )
+    for filename, content in (
+        ("unit.csv", "unit_id\nU-1\nU-2\n"),
+        ("batch.csv", "batch_id\nB-1\nB-2\n"),
+    ):
+        (tmp_path / filename).write_text(content, encoding="utf-8")
+        await rag.ingest(str(tmp_path / filename))
+    return rag
+
+
+@pytest.mark.integration
+async def test_a_table_write_keeps_a_documents_fact_on_a_shared_edge_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """The table's fact is one template per mapping; replacing a document's
+    left the document's embedding on an edge whose fact no longer said it."""
+    rag = await _units_batches_rag(real_falkordb_rag_factory, llm, tmp_path)
+    await rag._graph_store.query_raw(
+        "MATCH (u:Unit {unit__unit_id:'U-1'}), (b:Batch {batch__batch_id:'B-1'}) "
+        "CREATE (u)-[:RELATES {rel_type:'CONSUMED_BATCH', fact:'U-1 used batch B-1 on Monday', "
+        "source_chunk_ids:['chunk-1']}]->(b)"
+    )
+    path = write_csv(
+        tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20", "U-2,B-2,CONSUMED_BATCH,2026-09-21"]
+    )
+    assert (await rag.ingest(str(path))).relationships_written == 2
+    facts = await rag._graph_store.query_raw(
+        "MATCH (u:Unit)-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() "
+        "RETURN u.unit__unit_id, r.fact ORDER BY u.unit__unit_id"
+    )
+    assert facts.result_set == [
+        ["U-1", "U-1 used batch B-1 on Monday"],
+        ["U-2", "(Unit, CONSUMED_BATCH, Batch)"],
+    ]
+
+
+@pytest.mark.integration
+async def test_an_edge_left_to_a_table_loses_its_embedding_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """When a document's cleanup leaves an embedded edge with table ownership
+    only, its vector goes: such edges are not embedded, and the old vector
+    kept taking relationship-search slots."""
+    rag = await _units_batches_rag(real_falkordb_rag_factory, llm, tmp_path)
+    path = write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])
+    await rag.ingest(str(path))
+    await rag._graph_store.query_raw(
+        "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() "
+        "SET r.source_chunk_ids = ['chunk-1'], r.embedding = vecf32($v)",
+        {"v": [0.1] * rag._vector_store.embedding_dimension},
+    )
+    unit = await rag._graph_store.query_raw("MATCH (u:Unit {unit__unit_id:'U-1'}) RETURN u.id")
+
+    await rag._graph_store.delete_stale_relationships([unit.result_set[0][0]], ["chunk-1"])
+
+    left = await rag._graph_store.query_raw(
+        "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() "
+        "RETURN size(r.source_chunk_ids), r.embedding IS NULL"
+    )
+    assert left.result_set == [[0, True]]
+
+
+@pytest.mark.integration
+async def test_a_dropped_column_is_cleared_in_bounded_writes_and_published_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """Dropping a mapping column cleared it in one write over every edge, and
+    the running instance still offered it to text-to-Cypher."""
+    with_shift = consumed_mapping(
+        properties={"consumed_on": Column("consumed_on", "DATE"), "shift": "shift"}
+    )
+    rag = await _units_batches_rag(real_falkordb_rag_factory, llm, tmp_path, with_shift)
+    path = tmp_path / "consumed_batch.csv"
+    path.write_text(
+        "source,target,type,consumed_on,shift\n"
+        "U-1,B-1,CONSUMED_BATCH,2026-09-20,night\nU-2,B-2,CONSUMED_BATCH,2026-09-21,day\n",
+        encoding="utf-8",
+    )
+    await rag.ingest(str(path))
+    without_shift = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        connection=rag._conn,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[consumed_mapping()],
+        ),
+    )
+    await without_shift.get_ontology()
+    without_shift._graph_store._RELATIONSHIP_CLEANUP_BATCH = 1
+    watched = _Watched(without_shift._graph_store._conn)
+    without_shift._graph_store._conn = watched
+
+    await without_shift.ingest(str(path))
+
+    cleared = await rag._graph_store.query_raw(
+        "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() "
+        "WHERE r.consumed_batch__shift IS NOT NULL RETURN count(r)"
+    )
+    assert cleared.result_set == [[0]]
+    writes = [c for c, _ in watched.sent if "REMOVE r.`consumed_batch__shift`" in c]
+    assert len(writes) >= 2, "one bounded write per batch, not one over every edge"
+    published = {
+        (relation.label, prop.name)
+        for relation in without_shift._global_ontology.relations
+        for prop in relation.properties
+    }
+    assert ("CONSUMED_BATCH", "consumed_batch__shift") not in published
+
+
+@pytest.mark.integration
+async def test_two_nodes_sharing_an_id_are_an_ambiguous_endpoint_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """Nothing makes entity ids unique; two nodes with one id and one key were
+    one candidate, so the default 'error' policy accepted the row and the
+    write matched both nodes."""
+    rag = await _units_batches_rag(real_falkordb_rag_factory, llm, tmp_path)
+    await rag._graph_store.query_raw(
+        "MATCH (u:Unit {unit__unit_id:'U-1'}) "
+        "CREATE (:__Entity__:Unit {id: u.id, unit__unit_id: 'U-1', name: 'U-1'})"
+    )
+    path = write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])
+    with pytest.raises(RelationshipResolutionError):
+        await rag.ingest(str(path))
+    assert await _consumed_edge_count(rag) == 0
+
+
 @pytest.mark.integration
 async def test_cleanup_of_many_edges_from_one_node_on_real_falkordb(
     real_falkordb_rag_factory, llm, tmp_path
@@ -1924,6 +2062,39 @@ class TestRelationshipReviewRegressions:
         rag._ontology_store.drop_relation_property.assert_awaited_once_with(
             "CONSUMED_BATCH", "consumed_batch__consumed_on"
         )
+
+
+class TestRedeclarationMovesKeyAndEndpointTogether:
+    """A declaration that moves a node table's key and the relationship
+    endpoint keyed on it together leaves nothing depending on the old key; the
+    stored relationship mapping it replaces must not be counted."""
+
+    async def test_a_combined_redeclaration_is_allowed(self, mock_connection, llm, embedder):
+        from graphrag_sdk import TableMapping
+        from graphrag_sdk.core.connection import ConnectionConfig
+
+        mock_connection.config = ConnectionConfig(graph_name="unit-test")
+        rag = GraphRAG(connection=mock_connection, llm=llm, embedder=embedder)
+        batch = TableMapping(source="batch.csv", label="Batch", key="batch_id", name="batch_id")
+        entities = [Entity(label="Unit"), Entity(label="Batch")]
+        stored = Ontology(
+            entities=entities,
+            tables=[
+                TableMapping(source="unit.csv", label="Unit", key="unit_id", name="unit_id"),
+                batch,
+            ],
+            relationship_tables=[consumed_mapping()],
+        )
+        rekeyed_unit = TableMapping(source="unit.csv", label="Unit", key="code", name="code")
+        moved = consumed_mapping(start=EndpointMapping("Unit", "unit__code", "source"))
+        both = Ontology(
+            entities=entities, tables=[rekeyed_unit, batch], relationship_tables=[moved]
+        )
+        only_the_table = Ontology(entities=entities, tables=[rekeyed_unit, batch])
+
+        rag._refuse_a_redeclaration_that_drops_an_endpoint_key(both, stored)
+        with pytest.raises(ValueError, match=r"redeclaring 'unit\.csv'"):
+            rag._refuse_a_redeclaration_that_drops_an_endpoint_key(only_the_table, stored)
 
 
 class TestRelationshipEndpointKeyGuard:

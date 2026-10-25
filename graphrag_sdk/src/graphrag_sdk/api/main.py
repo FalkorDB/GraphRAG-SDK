@@ -2539,6 +2539,20 @@ class GraphRAG:
                         f"{prop.type}."
                     )
 
+    @staticmethod
+    def _relationship_tables_after(
+        incoming: Ontology, existing: Ontology
+    ) -> list[RelationshipMapping]:
+        """The relationship tables a declaration leaves: its own, and every
+        stored one it does not redeclare. A stored mapping the declaration
+        replaces no longer needs its old keys, so moving a node table's key
+        and the relationship endpoint keyed on it together is allowed."""
+        redeclared = {mapping.signature for mapping in incoming.relationship_tables}
+        return [
+            *(m for m in existing.relationship_tables if m.signature not in redeclared),
+            *incoming.relationship_tables,
+        ]
+
     def _refuse_a_redeclaration_that_drops_an_endpoint_key(
         self, incoming: Ontology, existing: Ontology
     ) -> None:
@@ -2553,7 +2567,7 @@ class GraphRAG:
         """
         by_source = {mapping.source: mapping for mapping in existing.tables}
         proposals = {mapping.signature: mapping for mapping in existing.tables if mapping.derived}
-        depending = [*existing.relationship_tables, *incoming.relationship_tables]
+        depending = self._relationship_tables_after(incoming, existing)
         for mapping in incoming.tables:
             previous = by_source.get(mapping.source)
             if previous is None and not mapping.derived:
@@ -2653,7 +2667,7 @@ class GraphRAG:
         ]
         # The incoming relationship tables count too: one that replaces a
         # proposal may resolve its own endpoints by that proposal's key.
-        depending = [*existing.relationship_tables, *incoming.relationship_tables]
+        depending = self._relationship_tables_after(incoming, existing)
         for proposal in superseded:
             self._refuse_removing_an_endpoint_key(
                 self._signed_properties_of(proposal),
@@ -2949,6 +2963,7 @@ class GraphRAG:
                 for relationship_type in mapping.relationship_types
                 for prop in mapping.typed_properties
             }
+            dropped = False
             for relationship_type, property_name in old_properties:
                 if (relationship_type, property_name) not in current_relation_properties:
                     await self._graph_store.clear_relationship_source_property(
@@ -2957,6 +2972,11 @@ class GraphRAG:
                     await self._ontology_store.drop_relation_property(
                         relationship_type, property_name
                     )
+                    dropped = True
+            if dropped:
+                # As the other ontology changes do: otherwise this instance
+                # still offered text-to-Cypher the properties just removed.
+                await self._refresh_global_ontology()
         return result
 
     # Suffixes the record loader can read. One of these means the source is

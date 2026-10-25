@@ -493,7 +493,10 @@ class GraphStore:
             found = await self.query_raw(
                 f"UNWIND $keys AS k "
                 f"MATCH (n:__Entity__:`{safe_label}` {{`{safe_property}`: k}}) "
-                "RETURN k, collect(DISTINCT n.id)",
+                # Not DISTINCT: two nodes sharing one id (nothing makes ids
+                # unique) are two matches, refused as ambiguous, rather than
+                # one candidate the write then MATCHes twice.
+                "RETURN k, collect(n.id)",
                 {"keys": batch},
             )
             for row in getattr(found, "result_set", None) or []:
@@ -800,14 +803,22 @@ class GraphStore:
 
         # A snapshot number is read before ``SET r += ...`` overwrites it and
         # the larger of the stored and incoming one is kept.
+        #
+        # A relationship-table write also keeps the ``fact`` of an edge a
+        # document supports: the table's is one template per mapping, and
+        # replacing the document's left the embedding of the document's text
+        # on an edge whose fact no longer said it (finalize() does not
+        # re-embed an edge that has an embedding).
         old_snapshot = batch_snapshot = item_snapshot = ""
         if snapshot_property:
             safe_snapshot = sanitize_cypher_label(snapshot_property)
-            old_snapshot = f", r.`{safe_snapshot}` AS old_snapshot"
+            old_snapshot = f", r.`{safe_snapshot}` AS old_snapshot, r.fact AS old_fact"
             batch_snapshot, item_snapshot = (
                 f" SET r.`{safe_snapshot}` = CASE WHEN old_snapshot > "
                 f"{incoming}.`{safe_snapshot}` THEN old_snapshot "
-                f"ELSE {incoming}.`{safe_snapshot}` END"
+                f"ELSE {incoming}.`{safe_snapshot}` END, "
+                "r.fact = CASE WHEN size(old) > 0 AND old_fact IS NOT NULL "
+                "THEN old_fact ELSE r.fact END"
                 for incoming in ("item.properties", "$properties")
             )
 
@@ -1140,15 +1151,46 @@ class GraphStore:
     async def clear_relationship_source_property(
         self, signature: str, relationship_type: str, property_name: str
     ) -> None:
-        """Retract a removed mapping property from surviving source-owned edges."""
+        """Retract a removed mapping property from surviving source-owned edges.
+
+        In ``_RELATIONSHIP_CLEANUP_BATCH`` edges per write, found and changed
+        by two queries as in :meth:`finalize_relationship_snapshot`: one write
+        over every edge of a large source could hold the graph or time out.
+        An edge drops out of the next read once the property is gone.
+        """
         await self._ensure_relationship_source_index()
         safe_property = sanitize_cypher_label(property_name)
-        await self._conn.query(
-            "MATCH ()-[r:RELATES]->() "
+        params: dict[str, Any] = {"signature": signature, "type": relationship_type}
+        find = (
+            "MATCH (a)-[r:RELATES]->(b) "
             "WHERE $signature IN r.structured_sources AND r.rel_type = $type "
-            f"REMOVE r.`{safe_property}`",
-            {"signature": signature, "type": relationship_type},
+            f"AND r.`{safe_property}` IS NOT NULL "
+            "RETURN id(a), id(r), id(b) LIMIT $limit"
         )
+        clear = (
+            "UNWIND $edges AS edge "
+            "MATCH (a) WHERE id(a) = edge.a "
+            "WITH a, edge "
+            "MATCH (b) WHERE id(b) = edge.b "
+            "WITH a, b, edge "
+            "MATCH (a)-[r:RELATES]->(b) WHERE id(r) = edge.r "
+            f"REMOVE r.`{safe_property}` "
+            "RETURN count(r)"
+        )
+        while True:
+            found = await self._conn.query(
+                find, {**params, "limit": self._RELATIONSHIP_CLEANUP_BATCH}
+            )
+            edges = [
+                {"a": row[0], "r": row[1], "b": row[2]}
+                for row in getattr(found, "result_set", None) or []
+            ]
+            if not edges:
+                return
+            result = await self._conn.query(clear, {**params, "edges": edges})
+            rows = getattr(result, "result_set", None) or []
+            if not (rows and rows[0] and rows[0][0]):
+                return
 
     async def drop_relationship_source(
         self, signature: str, signed_properties: Sequence[str]
@@ -1916,6 +1958,20 @@ class GraphStore:
                 "RETURN count(r) AS n",
                 {"ids": batch},
             )
+            # An edge a relationship table still owns survives without its
+            # last chunk; it is no longer embedded (see embed_relationships),
+            # so its old vector goes too rather than keep taking search slots.
+            await self._conn.query(
+                "UNWIND $ids AS eid "
+                "MATCH (e:__Entity__ {id: eid})-[r:RELATES]-(:__Entity__) "
+                "WHERE r.source_chunk_ids IS NOT NULL "
+                "AND size(r.source_chunk_ids) = 0 "
+                "AND size(coalesce(r.structured_sources, [])) > 0 "
+                "AND r.embedding IS NOT NULL "
+                "WITH DISTINCT r "
+                "REMOVE r.embedding",
+                {"ids": batch},
+            )
             deleted += r.result_set[0][0] if r.result_set else 0
         return deleted
 
@@ -2621,6 +2677,12 @@ class GraphStore:
         is extended in place; it is the fresh copy ``_clean_properties`` made.
         """
         merged = {**acc, **props}
+        # Relationship-table ownership is unioned like provenance, so two
+        # tables' writes of one edge in a call keep both owners.
+        owners = acc.get("structured_sources")
+        new_owners = props.get("structured_sources")
+        if union_provenance and isinstance(owners, list) and isinstance(new_owners, list):
+            merged["structured_sources"] = owners + [x for x in new_owners if x not in owners]
         old = acc.get("source_chunk_ids")
         contrib = props.get("source_chunk_ids")
         if union_provenance and isinstance(old, list):

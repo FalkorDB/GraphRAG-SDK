@@ -845,6 +845,28 @@ class TestGraphStoreUpsertRelationships:
             },
         ], "only signed (table) properties are cleared; other blanks are left alone as before"
 
+    async def test_one_call_writing_an_edge_for_two_tables_keeps_both_owners(
+        self, graph_store, mock_connection
+    ):
+        """The fold kept the later write's ``structured_sources``; dropping
+        that table could then delete an edge the other one still lists."""
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={"rel_type": "CONSUMED_BATCH", "structured_sources": [source]},
+                )
+                for source in ("consumed_batch", "usage_log")
+            ]
+        )
+        (write,) = upsert_calls(mock_connection)
+        assert write[0][1]["batch"][0]["properties"]["structured_sources"] == [
+            "consumed_batch",
+            "usage_log",
+        ]
+
     async def test_an_empty_signed_list_clears_the_prior_value(self, graph_store, mock_connection):
         """A LIST cell with no items casts to ``[]``, which ``_clean_properties``
         drops; left out of the write, the edge kept an earlier run's list."""
@@ -1532,11 +1554,15 @@ class TestGraphStoreDocumentLifecycle:
         """
         mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[[0]]))
         await graph_store.delete_stale_relationships(["unit-1"], ["chunk-1"])
-        strip, delete = (call[0][0] for call in mock_connection.query.call_args_list)
+        strip, delete, unembed = (call[0][0] for call in mock_connection.query.call_args_list)
         assert "SET r.source_chunk_ids = remaining" in strip
         assert "DELETE r" in delete
         assert "AND size(r.source_chunk_ids) = 0 " in delete
         assert "AND size(coalesce(r.structured_sources, [])) = 0 " in delete
+        # The survivor a table still owns loses its document-era embedding:
+        # it is no longer embedded, and the old vector kept taking search slots.
+        assert "AND size(coalesce(r.structured_sources, [])) > 0 " in unembed
+        assert "REMOVE r.embedding" in unembed
 
 
 class TestMergedLabelsBecomeRealLabels:

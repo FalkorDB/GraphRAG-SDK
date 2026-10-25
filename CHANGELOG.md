@@ -63,7 +63,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports the counts. Relationship (vector) search does not return these edges
   — every edge of one mapping carries the same template `fact` and no endpoint
   names — so `finalize()` does not embed an edge only relationship tables own,
-  and they are found by graph queries, or from an entity found by name.
+  and they are found by graph queries, or from an entity found by name. On an
+  edge a document also supports, the document's `fact` and embedding are kept.
 
 - **A relationship table is a snapshot of its source, and an edge is shared,
   not owned.** The table's properties are signed (`consumed_batch__consumed_on`)
