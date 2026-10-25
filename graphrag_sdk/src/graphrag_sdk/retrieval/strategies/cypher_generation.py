@@ -43,12 +43,37 @@ _ALL_LABELS = _ENTITY_LABELS | _STRUCTURAL_LABELS
 _RESERVED_ENTITY_PROPS = (
     ("name", "STRING", "entity name"),
     ("description", "STRING", "entity description"),
+    # Written by dedup: the names a merge folded into this entity, including
+    # its name before a rename. A question may use any of them.
+    ("aliases", "LIST", "other names this entity is known by (may be absent)"),
 )
 _RESERVED_REL_PROPS = (
     ("rel_type", "STRING", "original relation type as a string"),
-    ("fact", "STRING", "evidence text for the relation"),
-    ("src_name", "STRING", "source entity name"),
-    ("tgt_name", "STRING", "target entity name"),
+    ("description", "STRING", "evidence text for the relation"),
+    ("fact", "STRING", "the relation as text: (source, TYPE, target): evidence"),
+    # A dedup merge moves the edge but keeps these as extracted, so they can
+    # name an entity that no longer exists; the endpoints are authoritative.
+    (
+        "src_name",
+        "STRING",
+        "source name at extraction time (may be outdated; use startNode(r).name)",
+    ),
+    (
+        "tgt_name",
+        "STRING",
+        "target name at extraction time (may be outdated; use endNode(r).name)",
+    ),
+)
+
+# Default extraction vocabulary, shown as a hint when the ontology declares no
+# relations: extraction prefers these labels but keeps others verbatim.
+_COMMON_REL_TYPES_SHOWN = 31
+
+# A rel_type value (WORKS_AT, LOCATED_IN): a column holding one is not an entity.
+_REL_TYPE_VALUE_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
+# Columns that hold relation labels or types rather than entity names.
+_NON_ENTITY_COLUMNS = re.compile(
+    r"(^|_)(rel|rels|relation|relationship|type|types|label|labels)(_|$|\d)"
 )
 
 _NUMERIC_TYPES = frozenset({"INTEGER", "FLOAT"})
@@ -98,7 +123,10 @@ def render_ontology_block(ontology: Ontology | None) -> str:
         rel_labels = []
 
     lines: list[str] = []
-    lines.append("### Entity node labels (all entities also carry `__Entity__`):")
+    lines.append(
+        "### Entity node labels (all entities also carry `__Entity__`; a merged "
+        "entity can carry more than one type label):"
+    )
     for label in labels:
         lines.append(f"- {label}")
         lines.append("    Properties:")
@@ -124,6 +152,15 @@ def render_ontology_block(ontology: Ontology | None) -> str:
         lines.append(f"      - {name} ({typ}){d}  # declared on RELATES via rel_type filters")
     if rel_labels:
         lines.append("    Allowed `rel_type` values: " + ", ".join(rel_labels))
+    else:
+        from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+            DEFAULT_RELATION_TYPES,
+        )
+
+        lines.append(
+            "    Common `rel_type` values (UPPER_SNAKE_CASE; preferred, not exhaustive): "
+            + ", ".join(DEFAULT_RELATION_TYPES[:_COMMON_REL_TYPES_SHOWN])
+        )
     lines.append("- MENTIONED_IN: connects entity to Chunk node (provenance)")
     lines.append("- PART_OF: connects Document to Chunk")
     lines.append("- NEXT_CHUNK: connects Chunk to next sequential Chunk")
@@ -179,9 +216,15 @@ You are a Cypher query generator for a FalkorDB graph database.
    columns without aliases when both are `.name`.
 3. Do NOT use the `path =` variable syntax. Instead use explicit node/edge variables.
 4. Keep queries simple: 1-2 MATCH clauses maximum. Add LIMIT 25 to prevent huge result sets.
-5. Use CONTAINS for fuzzy name matching: `WHERE e.name CONTAINS 'keyword'`
+5. Use CONTAINS for fuzzy name matching, and check aliases too, since a merged
+   entity keeps its other names there:
+   `WHERE toLower(e.name) CONTAINS 'keyword'
+      OR any(a IN coalesce(e.aliases, []) WHERE toLower(a) CONTAINS 'keyword')`
 6. Generate READ-ONLY queries only — no CREATE, DELETE, SET, MERGE, REMOVE.
 7. Always include a RETURN clause.
+8. Give the first node pattern a label (`__Entity__`, an entity type, `Chunk`
+   or `Document`), and RETURN properties (`e.name`, `e.description`), never
+   whole nodes or edges.
 
 ## Strategy: use entity TYPE LABELS for routing, not rel_type
 Instead of guessing the exact rel_type string, leverage the typed entity labels:
@@ -196,7 +239,8 @@ Instead of guessing the exact rel_type string, leverage the typed entity labels:
 Question: "Who is connected to the old lighthouse?"
 ```cypher
 MATCH (e:__Entity__)-[r:RELATES]-(other:__Entity__)
-WHERE e.name CONTAINS 'lighthouse'
+WHERE toLower(e.name) CONTAINS 'lighthouse'
+   OR any(a IN coalesce(e.aliases, []) WHERE toLower(a) CONTAINS 'lighthouse')
 RETURN other.name AS name, labels(other) AS type, r.rel_type AS relation, r.fact AS evidence
 LIMIT 25
 ```
@@ -478,6 +522,67 @@ async def generate_cypher(
     return None
 
 
+_MAX_VALUE_DESCRIPTION_CHARS = 300
+
+
+def _graph_value_name(val: Any) -> str:
+    """The ``name`` of a node value, or ""."""
+    props = getattr(val, "properties", None)
+    if isinstance(props, dict) and hasattr(val, "labels"):
+        name = props.get("name")
+        return name.strip() if isinstance(name, str) else ""
+    return ""
+
+
+def _render_value(val: Any) -> str:
+    """A result value as context text.
+
+    A node or edge printed whole would carry every property, including the
+    embedding vector and dedup bookkeeping (``descriptions``,
+    ``merged_labels``, ``*__dropped``); only what reads as an answer is kept.
+    """
+    props = getattr(val, "properties", None)
+    if not isinstance(props, dict):
+        return str(val)
+    desc = props.get("description") or ""
+    if isinstance(desc, str) and len(desc) > _MAX_VALUE_DESCRIPTION_CHARS:
+        desc = desc[:_MAX_VALUE_DESCRIPTION_CHARS].rsplit(" ", 1)[0] + " …"
+    head = props.get("name") if hasattr(val, "labels") else props.get("rel_type")
+    head = head or getattr(val, "relation", "") or ""
+    if head and desc:
+        return f"{head}: {desc}"
+    return str(head or desc or "")
+
+
+async def _resolve_entities(
+    graph_store: Any, names: list[str], ctx: Context | None
+) -> dict[str, dict]:
+    """Entity id -> {name, description} for the names that match an entity."""
+    wanted = sorted({n.lower() for n in names if n})[:50]
+    if not wanted:
+        return {}
+    try:
+        if ctx is not None:
+            ctx.ensure_budget("Cypher entity resolution")
+        result = await graph_store.query_raw(
+            "MATCH (e:__Entity__) "
+            "WHERE toLower(e.name) IN $names "
+            "   OR any(a IN coalesce(e.aliases, []) WHERE toLower(a) IN $names) "
+            "RETURN e.id, e.name, e.description ORDER BY e.id LIMIT 50",
+            {"names": wanted},
+        )
+    except LatencyBudgetExceededError:
+        raise
+    except Exception as exc:
+        logger.debug("Cypher entity resolution failed: %s", exc)
+        return {}
+    return {
+        row[0]: {"name": row[1] or "", "description": (row[2] or "") if len(row) > 2 else ""}
+        for row in result.result_set
+        if row and row[0]
+    }
+
+
 def _column_names(result: Any) -> list[str]:
     """Best-effort column names for a query result.
 
@@ -552,12 +657,16 @@ async def execute_cypher_retrieval(
     # context. FalkorDB returns header entries as (type, name) pairs.
     column_names = _column_names(result)
 
+    names: list[str] = []
     for row in result.result_set:
         parts: list[str] = []
         for index, val in enumerate(row):
             if val is None:
                 continue
-            s = str(val).strip()
+            node_name = _graph_value_name(val)
+            if node_name:
+                names.append(node_name)
+            s = _render_value(val).strip()
             if not s or s in ("[]", "{}"):
                 continue
             label = column_names[index] if index < len(column_names) else ""
@@ -574,18 +683,25 @@ async def execute_cypher_retrieval(
         line = " | ".join(parts)
         fact_strings.append(line)
 
-        # Extract entity names (strings that look like names, not numbers/lists)
-        for val in row:
+        # Candidate entity names: short strings that are not numbers, lists or
+        # relation labels (a `r.rel_type AS relation` column).
+        for index, val in enumerate(row):
+            label = column_names[index].lower() if index < len(column_names) else ""
             if (
                 isinstance(val, str)
-                and len(val) > 1
-                and len(val) < 100
+                and 1 < len(val) < 100
                 and not val.startswith(("(", "[", "{"))
                 and not val.replace(".", "").isdigit()
+                and not _REL_TYPE_VALUE_RE.match(val.strip())
+                and not (label and _NON_ENTITY_COLUMNS.search(label))
             ):
-                eid = val.strip().lower().replace(" ", "_")
-                if eid and eid not in entities:
-                    entities[eid] = {"name": val.strip(), "description": ""}
+                names.append(val.strip())
+
+    # Entities only as the graph knows them: real ids (so relationship
+    # expansion and MENTIONED_IN find them) and current names, matched by
+    # name or alias. A value that names no entity (an evidence sentence, a
+    # date) is context in the fact lines, not an entry point.
+    entities = await _resolve_entities(graph_store, names, ctx)
 
     logger.debug(
         "Cypher retrieval: %d facts, %d entities from: %s",

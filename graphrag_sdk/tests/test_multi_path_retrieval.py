@@ -569,7 +569,7 @@ class TestMultiPathRetrieval:
             embedder=MockEmbedder(dimension=8),
             llm=MockLLM(responses=["test"]),
         )
-        assert s._chunk_top_k == 15
+        assert s._chunk_top_k == 20  # sized for the default 384-token chunks
         assert s._max_entities == 30
         assert s._max_relationships == 20
         assert s._rel_top_k == 15
@@ -953,3 +953,312 @@ class TestSiblingExpansionIntegration:
 
         sibling_queries = [q for q in queries_seen if "hub" in q.lower() and "sibling" in q.lower()]
         assert len(sibling_queries) == 0
+
+
+# -- Retrieval aligned with what 1.5.0 ingestion writes --
+
+
+class TestRelationLines:
+    def test_description_preferred_and_triple_not_repeated(self):
+        from graphrag_sdk.retrieval.strategies.result_assembly import format_relation_line
+
+        line = format_relation_line(
+            "Alice", "WORKS_AT", "Acme", "Alice is an engineer.", "(Alice, WORKS_AT, Acme): x"
+        )
+        assert line == "Alice —[WORKS_AT]→ Acme: Alice is an engineer."
+
+    def test_fact_used_without_its_stored_triple(self):
+        from graphrag_sdk.retrieval.strategies.result_assembly import format_relation_line
+
+        assert (
+            format_relation_line("A", "R", "B", "", "(Old A, R, B): evidence")
+            == "A —[R]→ B: evidence"
+        )
+        assert format_relation_line("A", "R", "B", "", "(A, R, B)") == "A —[R]→ B"
+
+    def test_long_merged_description_is_capped(self):
+        from graphrag_sdk.retrieval.strategies.result_assembly import assemble_raw_result
+
+        long_desc = " | ".join(["Alice is a senior engineer at Acme"] * 40)
+        raw = assemble_raw_result(
+            [("alice__person", {"name": "Alice", "description": long_desc})], [], [], []
+        )
+        content = raw.records[0]["content"]
+        assert content.startswith("## Key Entities\n- Alice: ")
+        assert len(content) < 500 and content.endswith("…")
+
+
+class TestEdgeEndpoints:
+    async def test_relates_hits_use_real_ids_and_descriptions(self):
+        vector = MagicMock()
+        vector.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "Alice",
+                    "type": "WORKS_AT",
+                    "tgt_name": "Acme Corp",
+                    "fact": "(Al, WORKS_AT, Acme Corp): works there",
+                    "description": "works there",
+                    "src_id": "alice__person",
+                    "tgt_id": "acme_corp__organization",
+                    "src_description": "An engineer.",
+                    "tgt_description": "A company.",
+                    "score": 0.9,
+                }
+            ]
+        )
+        facts, entities = await search_relates_edges(vector, [0.1], rel_top_k=3)
+
+        assert facts == [("Alice —[WORKS_AT]→ Acme Corp: works there", 0.9)]
+        # Real ids, so expansion and chunk lookups by id find these entities;
+        # no descriptions, the fact line already places them.
+        assert entities == {
+            "alice__person": {"name": "Alice", "description": ""},
+            "acme_corp__organization": {"name": "Acme Corp", "description": ""},
+        }
+
+    async def test_hits_without_ids_fall_back_to_name_ids(self):
+        vector = MagicMock()
+        vector.search_relationships = AsyncMock(
+            return_value=[
+                {"src_name": "Bob", "type": "KNOWS", "tgt_name": "Eve", "fact": "", "score": 0.5}
+            ]
+        )
+        _, entities = await search_relates_edges(vector, [0.1])
+        assert set(entities) == {"bob", "eve"}
+
+
+class TestRelationshipExpansion:
+    async def test_matches_both_directions_and_ranks_by_question(self):
+        from graphrag_sdk.retrieval.strategies.relationship_expansion import expand_relationships
+
+        seen: list[tuple[str, dict]] = []
+
+        async def query_raw(cypher, params=None):
+            seen.append((cypher, params or {}))
+            result = MagicMock()
+            result.result_set = []
+            if len(seen) == 1:
+                # src, rel, tgt, description, fact, distance, far end (unordered on purpose)
+                result.result_set = [
+                    ["Bob", "FOUNDED", "Acme", "Bob founded Acme.", "", 0.40, "bob__person"],
+                    ["Acme", "LOCATED_IN", "Paris", "Acme is in Paris.", "", 0.10, "paris__loc"],
+                    ["Acme", "EMPLOYS", "Eve", "", "", None, "eve__person"],
+                ]
+            return result
+
+        store = MagicMock()
+        store.query_raw = AsyncMock(side_effect=query_raw)
+        lines = await expand_relationships(
+            store, [("acme__organization", {"name": "Acme"})], query_vector=[0.1, 0.2]
+        )
+
+        first = seen[0][0]
+        assert "-[r:RELATES]-(b:__Entity__)" in first  # undirected: incoming edges count
+        assert "vec.cosineDistance(r.embedding, vecf32($qv))" in first
+        assert seen[0][1]["qv"] == [0.1, 0.2]
+        # Round 2 expands the far ends, closest edge first.
+        assert seen[1][1]["eids"] == ["paris__loc", "bob__person", "eve__person"]
+        assert lines == [
+            "Acme —[LOCATED_IN]→ Paris: Acme is in Paris.",
+            "Bob —[FOUNDED]→ Acme: Bob founded Acme.",
+            "Acme —[EMPLOYS]→ Eve",  # no embedding: kept, ranked last
+        ]
+
+    async def test_walk_stops_and_never_reexpands(self):
+        from graphrag_sdk.retrieval.strategies.relationship_expansion import expand_relationships
+
+        calls: list[list[str]] = []
+
+        async def query_raw(cypher, params=None):
+            calls.append(params["eids"])
+            result = MagicMock()
+            # Every entity points back at "a": nothing new to expand after round 1.
+            result.result_set = [["A", "R", "B", "", "", 0.2, "a"]]
+            return result
+
+        store = MagicMock()
+        store.query_raw = AsyncMock(side_effect=query_raw)
+        await expand_relationships(store, [("a", {"name": "A"})], query_vector=[0.1])
+        assert calls == [["a"]]
+
+    async def test_without_a_vector_keeps_graph_order(self):
+        from graphrag_sdk.retrieval.strategies.relationship_expansion import expand_relationships
+
+        result = MagicMock()
+        result.result_set = [["X", "R", "Y", "", "", 0.0, "y"], ["Y", "S", "Z", "", "", 0.0, "z"]]
+        store = MagicMock()
+        store.query_raw = AsyncMock(return_value=result)
+        lines = await expand_relationships(store, [("x", {"name": "X"})], max_relationships=1)
+        assert lines == ["X —[R]→ Y"]
+        assert "cosineDistance" not in store.query_raw.call_args_list[0][0][0]
+
+    async def test_relationship_lines_already_in_facts_are_not_repeated(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "A",
+                    "type": "R",
+                    "tgt_name": "B",
+                    "description": "d",
+                    "score": 0.9,
+                    "src_id": "a",
+                    "tgt_id": "b",
+                },
+            ]
+        )
+
+        async def query_raw(cypher, params=None):
+            result = MagicMock()
+            result.result_set = []
+            if "RETURN r, b.id AS other" in cypher and "a" in params["eids"]:
+                result.result_set = [
+                    ["A", "R", "B", "d", "", 0.1, "b"],
+                    ["A", "S", "C", "e", "", 0.2, "c"],
+                ]
+            return result
+
+        mp_graph_store.query_raw = AsyncMock(side_effect=query_raw)
+        s = MultiPathRetrieval(
+            graph_store=mp_graph_store,
+            vector_store=mp_vector_store,
+            embedder=mp_embedder,
+            llm=mp_llm,
+        )
+        result = await s.search("What is A related to?")
+        by_section = {i.metadata.get("section"): i.content for i in result.items}
+        assert "A —[R]→ B: d" in by_section["facts"]
+        assert "A —[R]→ B: d" not in by_section["relationships"]
+        assert "A —[S]→ C: e" in by_section["relationships"]
+
+
+class TestAliasLookup:
+    async def test_exact_and_contains_passes_read_aliases(self, mp_graph_store, mp_vector_store):
+        from graphrag_sdk.retrieval.strategies.entity_discovery import discover_entities
+
+        queries: list[str] = []
+
+        async def capture(cypher, params=None):
+            queries.append(cypher)
+            return MagicMock(result_set=[])
+
+        mp_graph_store.query_raw = AsyncMock(side_effect=capture)
+        await discover_entities(mp_graph_store, mp_vector_store, ["Real Jardín Botánico"], [])
+        exact, contains = queries[0], queries[1]
+        assert "e.aliases" in exact and "toLower(al) = toLower(kw)" in exact
+        assert "e.aliases" in contains and "CONTAINS toLower(kw)" in contains
+
+
+class TestChunksAlignedWithIngestion:
+    async def test_chunks_of_pending_or_deleting_documents_are_left_out(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
+        mp_vector_store.search_chunks = AsyncMock(
+            return_value=[
+                {"id": "live", "text": "The live passage.", "score": 0.9},
+                {"id": "pending", "text": "The half-written new version.", "score": 0.95},
+            ]
+        )
+        seen: list[str] = []
+
+        async def query_raw(cypher, params=None):
+            seen.append(cypher)
+            result = MagicMock()
+            result.result_set = []
+            if "__pending__" in cypher and "pending_delete" in cypher:
+                result.result_set = [["pending"]]
+            return result
+
+        mp_graph_store.query_raw = AsyncMock(side_effect=query_raw)
+        s = MultiPathRetrieval(
+            graph_store=mp_graph_store,
+            vector_store=mp_vector_store,
+            embedder=mp_embedder,
+            llm=mp_llm,
+        )
+        result = await s.search("What does the passage say?")
+        passages = [i.content for i in result.items if i.metadata.get("section") == "passages"]
+        assert passages and "The live passage." in passages[0]
+        assert "half-written" not in passages[0]
+
+    async def test_same_text_under_two_ids_is_one_passage(self, mp_graph_store, mp_vector_store):
+        from graphrag_sdk.retrieval.strategies.chunk_retrieval import retrieve_chunks
+
+        mp_vector_store.search_chunks = AsyncMock(
+            return_value=[
+                {"id": "a", "text": "Same text.", "score": 0.9},
+                {"id": "b", "text": "Same text.", "score": 0.9},
+            ]
+        )
+        chunks, _, _ = await retrieve_chunks(
+            mp_vector_store, mp_graph_store, "q", [0.1], [], [], []
+        )
+        assert chunks == {"a": "Same text."}
+
+    async def test_mentioned_in_keeps_unembedded_record_chunks(
+        self, mp_graph_store, mp_vector_store
+    ):
+        from graphrag_sdk.retrieval.strategies.chunk_retrieval import retrieve_chunks
+
+        captured: list[str] = []
+
+        async def query_raw(cypher, params=None):
+            captured.append(cypher)
+            return MagicMock(result_set=[])
+
+        mp_graph_store.query_raw = AsyncMock(side_effect=query_raw)
+        await retrieve_chunks(
+            mp_vector_store, mp_graph_store, "q", [0.1], [], [], [("acme__org", {"name": "Acme"})]
+        )
+        mention = next(c for c in captured if "MENTIONED_IN]->(c:Chunk)" in c and "eid, c" in c)
+        assert "WHERE c.embedding IS NOT NULL" not in mention
+        assert "CASE WHEN c.embedding IS NULL" in mention
+        two_hop = next(c for c in captured if "neighbor:__Entity__" in c)
+        assert "ORDER BY dist ASC, id ASC" in two_hop
+
+    async def test_rerank_embeds_only_candidates_without_a_stored_vector(self):
+        embedder = MagicMock()
+        embedder.aembed_documents = AsyncMock(return_value=[[1.0, 0.0]])
+        candidates = {f"c{i}": f"text {i}" for i in range(10)}
+        stored = {f"c{i}": [0.0, 1.0] for i in range(9)}  # c9 is a record chunk
+
+        ranked = await rerank_chunks(embedder, [1.0, 0.0], candidates, 3, stored_embeddings=stored)
+
+        embedder.aembed_documents.assert_awaited_once()
+        assert embedder.aembed_documents.call_args[0][0] == ["text 9"]
+        assert ranked[0] == "text 9"  # closest to the question, not ranked last
+
+
+class TestEntityLookupDetails:
+    async def test_short_acronyms_skip_the_contains_pass(self, mp_graph_store, mp_vector_store):
+        from graphrag_sdk.retrieval.strategies.entity_discovery import discover_entities
+
+        calls: list[tuple[str, dict]] = []
+
+        async def capture(cypher, params=None):
+            calls.append((cypher, params or {}))
+            return MagicMock(result_set=[])
+
+        mp_graph_store.query_raw = AsyncMock(side_effect=capture)
+        await discover_entities(mp_graph_store, mp_vector_store, ["US", "Acme"], [])
+        exact_params, contains_params = calls[0][1], calls[1][1]
+        assert exact_params["keywords"] == ["US", "Acme"]
+        assert contains_params["keywords"] == ["Acme"]
+        assert "ORDER BY rank ASC, id ASC" in calls[0][0]
+
+
+class TestCypherPromptKnowsTheGraph:
+    def test_prompt_lists_aliases_and_common_relation_types(self):
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            build_ontology_prompt,
+            render_ontology_block,
+        )
+
+        block = render_ontology_block(None)
+        assert "aliases (LIST)" in block
+        assert "Common `rel_type` values" in block and "LOCATED_IN" in block
+        assert "startNode(r).name" in block  # src_name is marked as possibly outdated
+        prompt = build_ontology_prompt(None, "Who?")
+        assert "coalesce(e.aliases, [])" in prompt

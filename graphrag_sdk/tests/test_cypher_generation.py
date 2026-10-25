@@ -243,14 +243,19 @@ class TestExecuteCypherRetrieval:
         )
         result_mock = MagicMock()
         result_mock.result_set = [["Alice"], ["Bob"]]
+        resolved = MagicMock()
+        # Only Alice is an entity in the graph; names resolve to real ids.
+        resolved.result_set = [["alice__person", "Alice", "An engineer."]]
         mock_graph = MagicMock()
-        mock_graph.query_raw = AsyncMock(return_value=result_mock)
+        mock_graph.query_raw = AsyncMock(side_effect=[result_mock, resolved])
 
         facts, entities = await execute_cypher_retrieval(mock_graph, mock_llm, "test?")
         assert len(facts) == 2
         assert "Alice" in facts[0]
-        assert "alice" in entities
-        assert "bob" in entities
+        assert entities == {"alice__person": {"name": "Alice", "description": "An engineer."}}
+        resolve_cypher, resolve_params = mock_graph.query_raw.call_args_list[1][0]
+        assert "e.aliases" in resolve_cypher
+        assert resolve_params == {"names": ["alice", "bob"]}
 
 
 # ── Schema-aware prompt + validator ──────────────────────────────
@@ -404,16 +409,73 @@ class TestCypherResultsAreInterpretable:
         assert facts == ["person: Alice Smith | age: 34", "person: Bob Jones | age: 45"]
 
     async def test_entity_names_are_still_collected_for_the_entity_section(self):
+        from unittest.mock import AsyncMock, MagicMock
+
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
             execute_cypher_retrieval,
         )
 
+        graph = self._graph([[1, "person"]], [["Alice Smith"]])
+        rows = graph.query_raw.return_value
+        resolved = MagicMock()
+        resolved.result_set = [["alice_smith__person", "Alice Smith", ""]]
+        graph.query_raw = AsyncMock(side_effect=[rows, resolved])
         _, entities = await execute_cypher_retrieval(
-            self._graph([[1, "person"]], [["Alice Smith"]]),
+            graph,
             self._llm("MATCH (p:Person) RETURN p.name AS person LIMIT 25"),
             "Who is there?",
         )
-        assert entities["alice_smith"]["name"] == "Alice Smith"
+        assert entities["alice_smith__person"]["name"] == "Alice Smith"
+
+    async def test_relation_labels_are_not_taken_for_entities(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        graph = self._graph(
+            [[1, "name"], [1, "relation"], [1, "kind"]], [["Acme", "LOCATED_IN", "WORKS_AT"]]
+        )
+        rows = graph.query_raw.return_value
+        resolved = MagicMock()
+        resolved.result_set = []
+        graph.query_raw = AsyncMock(side_effect=[rows, resolved])
+        await execute_cypher_retrieval(
+            graph,
+            self._llm("MATCH (e:__Entity__)-[r:RELATES]-() RETURN e.name AS name LIMIT 25"),
+            "What?",
+        )
+        # The relation column and the UPPER_SNAKE value are never looked up.
+        assert graph.query_raw.call_args_list[1][0][1] == {"names": ["acme"]}
+
+    async def test_a_returned_node_shows_name_and_description_only(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        class Node:  # the shape of falkordb.Node
+            labels = ["Person"]
+            properties = {
+                "name": "Alice",
+                "description": "An engineer.",
+                "embedding": [0.123, 0.456],
+                "merged_labels": "Person",
+            }
+
+        graph = self._graph([[1, "e"]], [[Node()]])
+        rows = graph.query_raw.return_value
+        resolved = MagicMock()
+        resolved.result_set = [["alice__person", "Alice", "An engineer."]]
+        graph.query_raw = AsyncMock(side_effect=[rows, resolved])
+        facts, entities = await execute_cypher_retrieval(
+            graph, self._llm("MATCH (e:Person) RETURN e LIMIT 25"), "Who?"
+        )
+        assert facts == ["e: Alice: An engineer."]
+        assert "0.123" not in facts[0]
+        assert list(entities) == ["alice__person"]
 
     async def test_a_missing_header_degrades_to_unlabelled_rows(self):
         """A header is never essential, and a driver that omits it must not fail
