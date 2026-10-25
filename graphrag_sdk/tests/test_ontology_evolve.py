@@ -31,6 +31,7 @@ def store_factory():
         fake = _FakeGraph()
         conn = MagicMock()
         conn._ensure_client = MagicMock()
+        conn._check_server_version = AsyncMock()  # a supported server
         conn._driver = SimpleNamespace(select_graph=MagicMock(return_value=fake))
         return OntologyStore(conn, "kg"), fake
 

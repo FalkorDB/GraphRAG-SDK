@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import math
 import re
-from types import SimpleNamespace
 
 import pytest
 
@@ -18,9 +17,6 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.core.providers import Embedder
 from graphrag_sdk.ingestion.resolution_strategies.base import (
-    RESOLUTION_DISTINCT_IDS,
-    RESOLUTION_REJECTED_PAIRS,
-    RESOLUTION_SKIP_PAIRS,
     flatten_remap,
     remap_relationships,
 )
@@ -35,7 +31,7 @@ from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import
     labels_compatible,
 )
 
-from .conftest import MockEmbedder, MockLLM
+from .conftest import MockLLM
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -204,52 +200,6 @@ class TestPhase1ExactMatch:
         result = await resolver.resolve(gd, ctx)
         assert result.merged_count == 0
         assert len(result.nodes) == 2
-
-    async def test_declared_distinct_and_settled_pairs_are_not_merged_on_their_name(self):
-        """Two keyed rows called Alice Smith and a mention of the name.
-
-        The caller says the rows are distinct and the mention's pairs settled.
-        Phase 1 used to merge all three on the name before the hints were read,
-        and the LLM was asked to summarise the descriptions of a merge that the
-        caller had ruled out. Now the hinted nodes skip the name merge; the
-        embedding phase, which honours the hints, is where they are judged.
-        """
-        gd = GraphData(
-            nodes=[
-                GraphNode(id="e-1", label="Person", properties={"name": "Alice Smith"}),
-                GraphNode(id="e-2", label="Person", properties={"name": "Alice Smith"}),
-                GraphNode(id="mention", label="Person", properties={"name": "Alice Smith"}),
-                GraphNode(id="b1", label="Person", properties={"name": "Bob"}),
-                GraphNode(id="b2", label="Person", properties={"name": "bob"}),
-            ],
-            relationships=[],
-        )
-        ctx = Context(
-            metadata={
-                RESOLUTION_DISTINCT_IDS: {"e-1", "e-2"},
-                RESOLUTION_SKIP_PAIRS: {
-                    frozenset(("mention", "e-1")),
-                    frozenset(("mention", "e-2")),
-                },
-            }
-        )
-        llm = MockLLM(["YES"] * 4, strict=True)
-        resolver = LLMVerifiedResolution(llm=llm, embedder=MockEmbedder())
-
-        result = await resolver.resolve(gd, ctx)
-
-        assert {n.id for n in result.nodes} >= {"e-1", "e-2", "mention"}
-        assert not ({"e-1", "e-2", "mention"} & set(result.remap)), "no hinted node was remapped"
-        assert result.merged_count == 1, "Bob and bob still merge: nothing was said about them"
-        assert llm._call_index == 0, "nothing about the hinted nodes was put to the model"
-
-
-# ── Phase 1 description + provenance merging ─────────────────────────────────
-#
-# These exercise the same-label half of exact_match_merge() in
-# resolution_strategies/base.py, which LLMVerifiedResolution is now the only
-# caller of. Coverage moved here from the deleted test_description_merge.py /
-# test_semantic_resolution.py suites.
 
 
 class TestPhase1DescriptionMerge:
@@ -3032,34 +2982,6 @@ class TestPhase1HonoursTheFamilyGate:
         assert llm._call_index > 0
 
 
-class TestFinalizeResolverUsesTheLiveFloor:
-    """`finalize()` lowers the candidate floor because names differ more across
-    sources than within one document. It set `soft_threshold`, which the
-    unified stage — on by default — never reads, so the lowered floor did
-    nothing and the 0.60-0.65 band was dropped anyway.
-    """
-
-    def test_both_floors_are_lowered_together(self):
-        from graphrag_sdk.api.main import _CROSS_SOURCE_SOFT_THRESHOLD, GraphRAG
-
-        resolver = GraphRAG._default_finalize_resolver(
-            SimpleNamespace(llm=MockLLM([]), embedder=ControlledEmbedder({}))
-        )
-        assert resolver.soft_threshold == _CROSS_SOURCE_SOFT_THRESHOLD
-        assert resolver.unified_threshold == _CROSS_SOURCE_SOFT_THRESHOLD
-
-    def test_the_floor_the_resolver_will_actually_use_is_the_lowered_one(self):
-        from graphrag_sdk.api.main import _CROSS_SOURCE_SOFT_THRESHOLD, GraphRAG
-
-        resolver = GraphRAG._default_finalize_resolver(
-            SimpleNamespace(llm=MockLLM([]), embedder=ControlledEmbedder({}))
-        )
-        live_floor = (
-            resolver.unified_threshold if resolver.unified_stage else resolver.soft_threshold
-        )
-        assert live_floor == _CROSS_SOURCE_SOFT_THRESHOLD
-
-
 class TestPhase1SecondVote:
     """Phase 1 merges on the name alone, so one YES was the only thing between
     a same-name homograph and a merge. The same second vote the embedding
@@ -3127,69 +3049,6 @@ class TestPhase1SecondVote:
         assert {n.label for n in result.nodes} == {"Person"}
 
 
-class TestPass2HonoursSettledPairs:
-    """`finalize()` hands the resolver what earlier runs already decided. The
-    embedding pass read it; PASS 2 did not, so a rejected cross-label pair
-    could be re-merged by a door that does not care what was decided before.
-    """
-
-    @staticmethod
-    def _pair():
-        desc = "Ran the Whitford archive."
-        vectors = {"Eleanor Whitford": _angle(0.0), "Whitford Eleanor": _angle(0.1)}
-        gd = GraphData(
-            nodes=[
-                GraphNode(
-                    id="n1",
-                    label="Person",
-                    properties={"name": "Eleanor Whitford", "description": desc},
-                ),
-                GraphNode(
-                    id="n2",
-                    label="Engineer",
-                    properties={"name": "Whitford Eleanor", "description": desc},
-                ),
-            ],
-            relationships=[],
-        )
-        return gd, ControlledEmbedder(vectors)
-
-    def _resolver(self, llm, embedder):
-        return LLMVerifiedResolution(
-            llm=llm,
-            embedder=embedder,
-            unified_stage=False,
-            cross_label_merge=True,
-            cross_label_min_descriptions=0,
-            label_family_gate=False,
-            cross_label_vote=False,
-        )
-
-    async def test_a_skip_pair_is_not_re_asked(self, ctx):
-        gd, embedder = self._pair()
-        llm = PairScriptedLLM({frozenset({"Eleanor Whitford", "Whitford Eleanor"}): True})
-        ctx.metadata[RESOLUTION_SKIP_PAIRS] = {frozenset({"n1", "n2"})}
-        result = await self._resolver(llm, embedder).resolve(gd, ctx)
-        assert llm.asked == []
-        assert len(result.nodes) == 2
-
-    async def test_two_declared_identities_are_not_merged(self, ctx):
-        gd, embedder = self._pair()
-        llm = PairScriptedLLM({frozenset({"Eleanor Whitford", "Whitford Eleanor"}): True})
-        ctx.metadata[RESOLUTION_DISTINCT_IDS] = {"n1", "n2"}
-        result = await self._resolver(llm, embedder).resolve(gd, ctx)
-        assert llm.asked == []
-        assert len(result.nodes) == 2
-
-    async def test_an_unsettled_pair_still_merges(self, ctx):
-        """The filter must be the caller's decisions, not a blanket refusal."""
-        gd, embedder = self._pair()
-        llm = PairScriptedLLM({frozenset({"Eleanor Whitford", "Whitford Eleanor"}): True})
-        result = await self._resolver(llm, embedder).resolve(gd, ctx)
-        assert llm.asked
-        assert len(result.nodes) == 1
-
-
 class TestPass2FamilyGateIsNotBypassedTransitively:
     """The unified path carries families on the cluster root; PASS 2 did not,
     so the same Person ~ Engineer ~ Institution chain defeated its gate too.
@@ -3247,63 +3106,6 @@ class TestPass2FamilyGateIsNotBypassedTransitively:
             assert not ("Person" in labels and "Institution" in labels), (
                 f"a survivor carries both families: {labels}"
             )
-
-
-class TestAnUnansweredVoteIsNotAPermanentRejection:
-    """A vetoed pair is written to RESOLUTION_REJECTED_PAIRS so later runs do
-    not pay to re-ask. A second call that FAILS carries no verdict, and
-    recording it as a rejection makes one transient error permanent.
-    """
-
-    class _YesThenBroken(MockLLM):
-        """Confirms on the first ask, returns something unparseable on the vote."""
-
-        def __init__(self) -> None:
-            super().__init__(responses=["YES"])
-            self.round = 0
-
-        def invoke(self, prompt: str, **kwargs):
-            self._call_index += 1
-            self.round += 1
-            numbers = re.findall(r"--- Pair (\d+) ---", prompt)
-            if self.round == 1:
-                body = (
-                    "\n".join(f"{n}. A vs B | rule: test | YES" for n in numbers)
-                    if numbers
-                    else "YES\nsame"
-                )
-                return LLMResponse(content=body)
-            return LLMResponse(content="I cannot help with that.")
-
-    async def test_a_failed_vote_does_not_record_a_rejection(self, ctx):
-        desc = "Engineer who built the Fresnel apparatus."
-        vectors = {
-            f"Ada Lovelace: {desc}": _angle(0.0),
-            f"A. Lovelace: {desc}": _angle(0.3),
-        }
-        gd = GraphData(
-            nodes=[
-                GraphNode(
-                    id="n1",
-                    label="Person",
-                    properties={"name": "Ada Lovelace", "description": desc},
-                ),
-                GraphNode(
-                    id="n2",
-                    label="Engineer",
-                    properties={"name": "A. Lovelace", "description": desc},
-                ),
-            ],
-            relationships=[],
-        )
-        result = await LLMVerifiedResolution(
-            llm=self._YesThenBroken(), embedder=ControlledEmbedder(vectors)
-        ).resolve(gd, ctx)
-
-        # The unrepeated YES is dropped...
-        assert len(result.nodes) == 2
-        # ...but nothing is remembered as decided, so a later run can re-ask.
-        assert not ctx.metadata.get(RESOLUTION_REJECTED_PAIRS)
 
 
 class TestClusteringIsBoundedPerComponent:
@@ -3372,65 +3174,6 @@ class TestClusteringIsBoundedPerComponent:
         assert len(result.nodes) == 4
 
 
-class TestDefinitiveRejectionsArePersisted:
-    """A definitive NO is remembered so a later run need not pay to re-ask it;
-    an unanswered pair is not, so it stays askable.
-    """
-
-    @staticmethod
-    def _pair():
-        desc = "Ran the Whitford archive."
-        vectors = {"Eleanor Whitford": _angle(0.0), "Whitford Eleanor": _angle(0.1)}
-        gd = GraphData(
-            nodes=[
-                GraphNode(
-                    id="n1",
-                    label="Person",
-                    properties={"name": "Eleanor Whitford", "description": desc},
-                ),
-                GraphNode(
-                    id="n2",
-                    label="Engineer",
-                    properties={"name": "Whitford Eleanor", "description": desc},
-                ),
-            ],
-            relationships=[],
-        )
-        return gd, ControlledEmbedder(vectors)
-
-    async def test_pass2_explicit_no_is_remembered(self, ctx):
-        gd, embedder = self._pair()
-        llm = PairScriptedLLM({frozenset({"Eleanor Whitford", "Whitford Eleanor"}): False})
-        await LLMVerifiedResolution(
-            llm=llm,
-            embedder=embedder,
-            unified_stage=False,
-            cross_label_merge=True,
-            cross_label_min_descriptions=0,
-            label_family_gate=False,
-            cross_label_vote=False,
-        ).resolve(gd, ctx)
-        assert frozenset({"n1", "n2"}) in ctx.metadata.get(RESOLUTION_REJECTED_PAIRS, set())
-
-    async def test_an_unanswered_pass2_pair_is_not_remembered(self, ctx):
-        class _Mute(MockLLM):
-            def invoke(self, prompt: str, **kwargs):
-                self._call_index += 1
-                return LLMResponse(content="I cannot help with that.")
-
-        gd, embedder = self._pair()
-        await LLMVerifiedResolution(
-            llm=_Mute(responses=[""]),
-            embedder=embedder,
-            unified_stage=False,
-            cross_label_merge=True,
-            cross_label_min_descriptions=0,
-            label_family_gate=False,
-            cross_label_vote=False,
-        ).resolve(gd, ctx)
-        assert not ctx.metadata.get(RESOLUTION_REJECTED_PAIRS)
-
-
 class TestPass2CapOfZeroSendsNothing:
     """cross_label_max_pairs=0 must not reach the provider at all: an empty
     block list still packs into one (0, 0) window, i.e. an empty prompt.
@@ -3468,10 +3211,7 @@ class TestPass2CapOfZeroSendsNothing:
 
 
 class TestPhase1VoteParseFailureIsNotARejection:
-    """A malformed second-vote reply withdraws the approval but must not be
-    stored: `agreed[k] = startswith("YES")` put "MAYBE" in as False, which the
-    veto branch then read as an explicit NO and persisted for good.
-    """
+    """A malformed second-vote reply withdraws the approval."""
 
     class _YesThenMaybe(MockLLM):
         def __init__(self) -> None:
@@ -3513,7 +3253,5 @@ class TestPhase1VoteParseFailureIsNotARejection:
             label_family_gate=False,
         ).resolve(gd, ctx)
 
-        # The unrepeated approval is withdrawn...
+        # The unrepeated approval is withdrawn.
         assert {n.label for n in result.nodes} == {"Person", "Engineer"}
-        # ...but nothing is remembered, so a later run can ask again.
-        assert not ctx.metadata.get(RESOLUTION_REJECTED_PAIRS)

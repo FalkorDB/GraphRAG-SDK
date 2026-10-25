@@ -24,7 +24,7 @@ TARGET edges.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -110,6 +110,7 @@ def store_factory(fake_graph):
     def _make(data_graph_name: str = "kg") -> OntologyStore:
         conn = MagicMock()
         conn._ensure_client = MagicMock()
+        conn._check_server_version = AsyncMock()  # a supported server
         conn._driver = SimpleNamespace(select_graph=MagicMock(return_value=fake_graph))
         return OntologyStore(conn, data_graph_name)
 

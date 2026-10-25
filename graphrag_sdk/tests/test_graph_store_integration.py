@@ -16,6 +16,8 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.models import GraphNode, GraphRelationship
 from graphrag_sdk.storage.graph_store import GraphStore
 
+from .conftest import falkordb_test_server
+
 
 @pytest.fixture
 async def store():
@@ -23,10 +25,7 @@ async def store():
         pytest.skip("Set RUN_INTEGRATION=1 to run real-FalkorDB integration tests")
     connection = FalkorDBConnection(
         ConnectionConfig(
-            host=os.getenv("FALKOR_HOST", "localhost"),
-            port=int(os.getenv("FALKOR_PORT", "6379")),
-            username=os.getenv("FALKOR_USERNAME") or None,
-            password=os.getenv("FALKOR_PASSWORD") or None,
+            **falkordb_test_server(),
             graph_name=f"test_gs_{uuid4().hex[:8]}",
             retry_delay=0.01,
         )

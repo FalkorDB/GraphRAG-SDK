@@ -13,7 +13,7 @@
   <a href="https://github.com/FalkorDB/GraphRAG-SDK"><img src="https://img.shields.io/github/stars/FalkorDB/GraphRAG-SDK?style=social" alt="GitHub Stars"></a>
 </p>
 
-![knowledge-graph-construction-b](https://github.com/user-attachments/assets/69066899-0168-4e14-b359-f68c5b6c1e75)
+![GraphRAG-SDK pipeline: load, chunk & lexical graph → extract, refine & persist → multi-path retrieval](assets/graphrag-sdk-pipeline.gif)
 
 
 Most GraphRAG systems work in demos and break under production constraints. GraphRAG SDK was built from real deployments around a simple idea: the retrieval harness matters more than the model. The result is a modular, benchmark-leading framework with predictable cost and sensible defaults that gets you from raw documents to cited answers in under 5 minutes.
@@ -77,9 +77,11 @@ Vectors match similar chunks. The graph traverses relationships. Every answer ci
 
 ```bash
 pip install graphrag-sdk[litellm]
-docker run -d -p 6379:6379 -p 3000:3000 --name falkordb falkordb/falkordb:latest
+docker run -d -p 6379:6379 -p 3000:3000 --name falkordb falkordb/falkordb:v4.22.2
 export OPENAI_API_KEY="sk-..."
 ```
+
+> GraphRAG SDK needs a FalkorDB server **4.20 or later** and refuses an older one at its first query, with `FalkorDBVersionError`. Keep the image tag: a bare `falkordb/falkordb` reuses whatever image Docker has cached, which may be older.
 
 > For PDF ingestion, install the `pdf` extra instead: `pip install graphrag-sdk[litellm,pdf]`.
 > Ingestion sanitizes unsupported control characters in IDs and string properties before graph upserts, which helps avoid FalkorDB Cypher parse errors on noisy PDFs.
@@ -103,7 +105,7 @@ async def main():
         )
         print(f"Nodes: {result.nodes_created}, Edges: {result.relationships_created}")
 
-        # Finalize: deduplicate entities, backfill embeddings, create indexes
+        # Finalize: deduplicate (and embed) entities, embed relationships, create indexes
         await rag.finalize()
 
         # Full RAG: retrieve + generate
@@ -162,7 +164,7 @@ async with GraphRAG(connection=ConnectionConfig(...), llm=..., embedder=...) as 
         modified=["docs/api.md"],
         deleted=["docs/removed_page.md"],
     )
-    await graph.finalize()  # once per batch — finalize is O(graph size)
+    await graph.finalize()  # once per batch — dedup cost follows the change size
 
     # Per-file outcomes are wrapped in BatchEntry — the batch never raises.
     for entry in result.added + result.modified + result.deleted:
@@ -182,14 +184,17 @@ In file mode, `document_id` defaults to `os.path.normpath(source)` so
 `update("docs/x.md")` matches the original `ingest("docs/x.md")` with
 no extra plumbing. See [`examples/07_incremental_updates.py`](graphrag_sdk/examples/07_incremental_updates.py).
 
-**Cost model.** `finalize()` runs cross-document deduplication, which
-scans the full entity table — its cost is **O(graph size)**, not
-O(change size). Embedding backfill within `finalize()` is O(change
-size) (only nodes/edges missing embeddings get touched). For CI use
-cases, batch all PR changes through `apply_changes` and call
-`finalize` **once** at the end of the run, not per file — per-file
-`finalize` multiplies the dedup constant by the number of files
-touched.
+**Cost model.** `finalize()` deduplicates only the entities ingested
+since the last `finalize()` (they have no name vector yet) and any an
+earlier run left pending, reaching
+the rest of the graph through the vector index — its LLM calls,
+embeddings and merges follow the **change size**, not the graph size.
+Finding the entities missing a vector is a range scan of internal node
+ids (1M entities in about 1.1 s), so a `finalize()` with nothing pending
+does no dedup work. For CI
+use cases, batch all PR changes through `apply_changes` and call
+`finalize` **once** at the end of the run: one call judges the whole
+batch's new entities together, in fewer LLM calls than one per file.
 
 **Crash safety.** `update()` uses an idempotent rollforward cutover:
 the new content is written to a `__pending__` Document, then a single
@@ -215,7 +220,8 @@ guards the default.
 | Area | Step | Cost |
 | --- | --- | --- |
 | Ingestion | Extract entities & relations | LLM |
-| Ingestion | Resolve & deduplicate entities | LLM |
+| Ingestion | Resolve entities within a document (exact match) | — |
+| Finalize | Deduplicate new entities across documents (LLM judge) | LLM |
 | Ingestion | Embed & index | LLM |
 | Retrieval | Vector search | DB |
 | Retrieval | Full-text search | DB |

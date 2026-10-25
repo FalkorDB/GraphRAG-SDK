@@ -12,7 +12,7 @@ PR diff has all three change types in one go, and apply_changes routes
 each list to the right primitive so consumer code stays flat.
 
 Prerequisites:
-    docker run -p 6379:6379 falkordb/falkordb
+    docker run -p 6379:6379 falkordb/falkordb:v4.22.2
     pip install graphrag-sdk[litellm]
     export OPENAI_API_KEY="sk-..."
 """
@@ -96,8 +96,8 @@ async def main():
         )
 
         # ── 6. Finalize ONCE at the end of the batch ───────────────
-        # finalize() is O(graph size) for cross-document dedup, so
-        # call it after the whole batch — never per file. apply_changes
+        # finalize() judges the batch's new entities together, so call
+        # it after the whole batch — never per file. apply_changes
         # deliberately does not call finalize internally.
         finalize_result = await rag.finalize()
         print(
