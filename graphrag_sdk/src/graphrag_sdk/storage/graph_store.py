@@ -849,14 +849,18 @@ class GraphStore:
             ] = {}
             for rel, sid, eid in cleaned_group:
                 props = self._clean_properties(rel.properties)
-                # A blank signed property (a relationship table's empty cell)
-                # is sent as null, which ``SET r += ...`` removes. A REMOVE
-                # clause per combination of blank cells split each batch into
-                # up to one query per row.
+                # A blank signed property (a relationship table's empty cell,
+                # or a LIST cell with no items, which ``_clean_properties``
+                # drops) is sent as null, which ``SET r += ...`` removes;
+                # left out, the edge kept the value an earlier run wrote. A
+                # REMOVE clause per combination of blank cells split each
+                # batch into up to one query per row.
                 props.update(
                     (name, None)
                     for name, value in rel.properties.items()
-                    if value is None and "__" in name
+                    if "__" in name
+                    and name not in props
+                    and (value is None or isinstance(value, list))
                 )
                 rel_key = self._merge_key_value(props.get("rel_type", "")) if is_relates else ""
                 key = (sid, eid, rel_key)

@@ -695,8 +695,15 @@ class RelationshipMapping:
             raise MappingError("RelationshipMapping.source must be non-empty")
         if not isinstance(self.start, EndpointMapping) or not isinstance(self.end, EndpointMapping):
             raise MappingError("RelationshipMapping.start and .end must be EndpointMapping objects")
-        fixed = bool(self.type and self.type.strip())
-        dynamic = bool(self.type_column and self.type_column.strip())
+        # A blank type is no type. Validated as absent but left as "", it was
+        # read back as a fixed type by relationship_types and type_for, so
+        # type="" with type_column= wrote "" and skipped allowed_types.
+        if self.type is not None and not self.type.strip():
+            self.type = None
+        if self.type_column is not None and not self.type_column.strip():
+            self.type_column = None
+        fixed = self.type is not None
+        dynamic = self.type_column is not None
         if fixed == dynamic:
             raise MappingError(
                 "RelationshipMapping must declare exactly one of type= or type_column="

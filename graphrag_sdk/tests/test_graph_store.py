@@ -845,6 +845,25 @@ class TestGraphStoreUpsertRelationships:
             },
         ], "only signed (table) properties are cleared; other blanks are left alone as before"
 
+    async def test_an_empty_signed_list_clears_the_prior_value(self, graph_store, mock_connection):
+        """A LIST cell with no items casts to ``[]``, which ``_clean_properties``
+        drops; left out of the write, the edge kept an earlier run's list."""
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={"rel_type": "TAGGED", "tagged__tags": [], "notes": []},
+                )
+            ]
+        )
+        (write,) = upsert_calls(mock_connection)
+        assert write[0][1]["batch"][0]["properties"] == {
+            "rel_type": "TAGGED",
+            "tagged__tags": None,
+        }, "an empty signed list is cleared; other empty lists are left out as before"
+
     async def test_upsert_drops_rels_with_empty_sanitized_ids(self, graph_store, mock_connection):
         rels = [
             GraphRelationship(start_node_id="\x00", end_node_id="valid", type="R"),

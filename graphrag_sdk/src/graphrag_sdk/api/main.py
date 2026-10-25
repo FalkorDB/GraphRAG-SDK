@@ -1274,7 +1274,10 @@ class GraphRAG:
         return chunks_deleted, entities_deleted, touched, released
 
     def _refuse_removing_an_endpoint_key(
-        self, removing: Sequence[tuple[str, str]], action: str
+        self,
+        removing: Sequence[tuple[str, str]],
+        action: str,
+        relationship_tables: Sequence[RelationshipMapping] | None = None,
     ) -> None:
         """Raise if a relationship table resolves an endpoint by a property in ``removing``.
 
@@ -1283,14 +1286,20 @@ class GraphRAG:
         first touch and needs its endpoint keys declared, so taking one away
         leaves a mapping no later instance can register. The relationship table
         goes first, as a table goes before :meth:`drop_entity` of its label.
+        ``relationship_tables`` defaults to the ones this instance knows; a
+        declaration passes the stored ones and its own.
         """
+        if relationship_tables is None:
+            relationship_tables = self._global_ontology.relationship_tables
         wanted = set(removing)
-        using = [
-            (mapping.source, f"{endpoint.entity}.{endpoint.key} as its {side} endpoint key")
-            for mapping in self._global_ontology.relationship_tables
-            for side, endpoint in (("start", mapping.start), ("end", mapping.end))
-            if (endpoint.entity, endpoint.key) in wanted
-        ]
+        using = list(
+            dict.fromkeys(
+                (mapping.source, f"{endpoint.entity}.{endpoint.key} as its {side} endpoint key")
+                for mapping in relationship_tables
+                for side, endpoint in (("start", mapping.start), ("end", mapping.end))
+                if (endpoint.entity, endpoint.key) in wanted
+            )
+        )
         if not using:
             return
         detail = "; ".join(f"{source!r} uses {what}" for source, what in using)
@@ -2358,6 +2367,7 @@ class GraphRAG:
         # with the rejected mapping persisted and the dropped column's values
         # already gone from every node.
         self._refuse_a_contradicting_declaration(incoming, existing)
+        self._refuse_a_redeclaration_that_drops_an_endpoint_key(incoming, existing)
         existing = await self._retire_superseded_proposals(incoming, existing)
         # Name -> declared type, not just the name set. Pass 2 needs the type to
         # tell a property already declared from one it has to add.
@@ -2529,6 +2539,34 @@ class GraphRAG:
                         f"{prop.type}."
                     )
 
+    def _refuse_a_redeclaration_that_drops_an_endpoint_key(
+        self, incoming: Ontology, existing: Ontology
+    ) -> None:
+        """Raise, before anything is written, if a redeclared table stops
+        signing a key a relationship table resolves its endpoints by.
+
+        Changing a table's key column (``key="unit_id"`` to ``key="code"``)
+        takes ``unit__unit_id`` off every node in
+        :meth:`_retract_what_the_declaration_dropped`; a relationship table
+        keyed on it then failed to register after the values were gone.
+        Pure, like :meth:`_refuse_a_contradicting_declaration`.
+        """
+        by_source = {mapping.source: mapping for mapping in existing.tables}
+        proposals = {mapping.signature: mapping for mapping in existing.tables if mapping.derived}
+        depending = [*existing.relationship_tables, *incoming.relationship_tables]
+        for mapping in incoming.tables:
+            previous = by_source.get(mapping.source)
+            if previous is None and not mapping.derived:
+                previous = proposals.get(mapping.signature)
+            if previous is None:
+                continue
+            dropped = set(self._signed_properties_of(previous)) - set(
+                self._signed_properties_of(mapping)
+            )
+            self._refuse_removing_an_endpoint_key(
+                sorted(dropped), f"redeclaring {mapping.source!r}", depending
+            )
+
     async def _retract_what_the_declaration_dropped(
         self, previous: TableMapping, mapping: TableMapping, existing: Ontology
     ) -> None:
@@ -2613,10 +2651,14 @@ class GraphRAG:
             for mapping in incoming.relationship_tables
             if mapping.signature in proposals
         ]
+        # The incoming relationship tables count too: one that replaces a
+        # proposal may resolve its own endpoints by that proposal's key.
+        depending = [*existing.relationship_tables, *incoming.relationship_tables]
         for proposal in superseded:
             self._refuse_removing_an_endpoint_key(
                 self._signed_properties_of(proposal),
                 f"declaring {proposal.source!r} as a relationship table",
+                depending,
             )
         for proposal in superseded:
             chunks_deleted, entities_deleted, _, _ = await self._remove_node_table(

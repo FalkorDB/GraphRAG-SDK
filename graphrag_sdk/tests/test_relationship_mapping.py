@@ -693,6 +693,128 @@ async def test_a_proposal_whose_key_an_edge_table_uses_is_not_replaced_on_real_f
 
 
 @pytest.mark.integration
+async def test_changing_a_tables_key_column_is_refused_under_a_relationship_table_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """Redeclaring unit.csv with another key column takes unit__unit_id off
+    every Unit; the relationship table keyed on it then could not register,
+    after the values were already gone. Refused before anything is written."""
+    from graphrag_sdk import TableMapping
+
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[consumed_mapping()],
+        ),
+    )
+    await _ingest_units_batches_and_edges(rag, tmp_path)
+    rekeyed = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        connection=rag._conn,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=[
+                TableMapping(source="unit.csv", label="Unit", key="code", name="code"),
+                _unit_and_batch_tables()[1],
+            ],
+        ),
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"redeclaring 'unit\.csv'.*'consumed_batch\.csv' uses Unit\.unit__unit_id "
+        r"as its start endpoint key.*drop_table\('consumed_batch\.csv'\) first",
+    ):
+        await rekeyed.get_ontology()
+    held = await rag._graph_store.query_raw(
+        "MATCH (u:Unit) WHERE u.unit__unit_id IS NOT NULL RETURN count(u)"
+    )
+    assert held.result_set == [[2]]
+    stored = await rag._ontology_store.load()
+    assert [m.key for m in stored.tables if m.source == "unit.csv"] == ["unit_id"]
+    assert await _consumed_edge_count(rag) == 2
+
+
+@pytest.mark.integration
+async def test_a_relationship_table_keyed_on_the_proposal_it_replaces_is_refused_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """The incoming declaration is checked too: a relationship table that
+    replaces a proposed node table but resolves an endpoint by that
+    proposal's key would delete the key it needs."""
+    from graphrag_sdk import TableMapping
+
+    batch = TableMapping(source="batch.csv", label="Batch", key="batch_id", name="batch_id")
+    base = Ontology(entities=[Entity(label="Batch")], tables=[batch])
+    rag = real_falkordb_rag_factory(llm=llm, resolver=None, ontology=base)
+    (tmp_path / "batch.csv").write_text("batch_id\nB-1\nB-2\n", encoding="utf-8")
+    await rag.ingest(str(tmp_path / "batch.csv"))
+    (tmp_path / "unit.csv").write_text("unit_id\nU-1\nU-2\n", encoding="utf-8")
+    await rag.ingest(str(tmp_path / "unit.csv"))  # undeclared: stored as a proposal
+    self_keyed = RelationshipMapping(
+        source="unit.csv",
+        start=EndpointMapping("unit", "unit__unit_id", "unit_id"),
+        end=EndpointMapping("Batch", "batch__batch_id", "unit_id"),
+        type="SAME",
+    )
+    replacing = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        connection=rag._conn,
+        ontology=base.model_copy(update={"relationship_tables": [self_keyed]}),
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"declaring 'unit\.csv' as a relationship table.*'unit\.csv' uses "
+        r"unit\.unit__unit_id as its start endpoint key",
+    ):
+        await replacing.get_ontology()
+    stored = await rag._ontology_store.load()
+    assert [(m.source, m.derived) for m in stored.tables if m.source == "unit.csv"] == [
+        ("unit.csv", True)
+    ]
+    held = await rag._graph_store.query_raw(
+        "MATCH (u:unit) WHERE u.unit__unit_id IS NOT NULL RETURN count(u)"
+    )
+    assert held.result_set == [[2]]
+
+
+@pytest.mark.integration
+async def test_relationship_table_edges_are_not_embedded_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """Each table edge carries its mapping's one template fact and no endpoint
+    names: embedded, they took relationship-search slots that retrieval then
+    discarded. Only edges a document also supports are embedded."""
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[consumed_mapping()],
+        ),
+    )
+    await _ingest_units_batches_and_edges(rag, tmp_path)
+    # One of the two edges is also a document's fact.
+    await rag._graph_store.query_raw(
+        "MATCH (:Unit {unit__unit_id: 'U-2'})-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() "
+        "SET r.source_chunk_ids = ['chunk-1']"
+    )
+
+    assert await rag._vector_store.embed_relationships() == 1
+
+    embedded = await rag._graph_store.query_raw(
+        "MATCH (u:Unit)-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() "
+        "RETURN u.unit__unit_id, r.embedding IS NOT NULL ORDER BY u.unit__unit_id"
+    )
+    assert embedded.result_set == [["U-1", False], ["U-2", True]]
+
+
+@pytest.mark.integration
 async def test_cleanup_of_many_edges_from_one_node_on_real_falkordb(
     real_falkordb_rag_factory, llm, tmp_path
 ):
@@ -823,6 +945,41 @@ async def test_a_new_key_index_is_built_before_the_first_lookup_on_real_falkordb
     )
     assert statuses == [["OPERATIONAL"]]
     assert found == {key: [f"unit-{key[2:]}"] for key in keys}
+
+
+@pytest.mark.integration
+async def test_an_empty_list_cell_clears_the_edges_list_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """A LIST cell with no items ("," parses to no items) clears the list an
+    earlier run wrote; it used to be dropped from the write and kept."""
+    mapping = consumed_mapping(properties={"tags": Column("tags", "LIST")})
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=_unit_and_batch_tables(),
+            relationship_tables=[mapping],
+        ),
+    )
+    for filename, content in (("unit.csv", "unit_id\nU-1\n"), ("batch.csv", "batch_id\nB-1\n")):
+        (tmp_path / filename).write_text(content, encoding="utf-8")
+        await rag.ingest(str(tmp_path / filename))
+    path = tmp_path / "consumed_batch.csv"
+
+    async def tags(cell: str):
+        path.write_text(
+            f"source,target,type,tags\nU-1,B-1,CONSUMED_BATCH,{cell}\n", encoding="utf-8"
+        )
+        assert (await rag.ingest(str(path))).relationships_written == 1
+        result = await rag._graph_store.query_raw(
+            "MATCH ()-[r:RELATES {rel_type:'CONSUMED_BATCH'}]->() RETURN r.consumed_batch__tags"
+        )
+        return result.result_set
+
+    assert await tags('"a,b"') == [[["a", "b"]]]
+    assert await tags('","') == [[None]]
 
 
 @pytest.mark.integration
@@ -1157,6 +1314,20 @@ def write_csv(tmp_path, rows: list[str]):
 
 
 class TestRelationshipMappingModel:
+    def test_a_blank_fixed_type_does_not_bypass_allowed_types(self):
+        """type="" passed validation as "no fixed type" but was read back as
+        one, so every row got the empty type and allowed_types was skipped."""
+        mapping = consumed_mapping(
+            type="", type_column="type", allowed_types=["CONSUMED_BATCH"], properties={}
+        )
+        assert mapping.type is None
+        assert mapping.relationship_types == ["CONSUMED_BATCH"]
+        assert mapping.type_for({"type": "CONSUMED_BATCH"}) == "CONSUMED_BATCH"
+        with pytest.raises(MappingError, match="expected one of CONSUMED_BATCH"):
+            mapping.type_for({"type": "SOMETHING_ELSE"})
+        with pytest.raises(MappingError, match="exactly one of type= or type_column="):
+            consumed_mapping(type="  ", properties={})
+
     def test_json_round_trip(self):
         ontology = Ontology(relationship_tables=[consumed_mapping()])
         restored = Ontology.model_validate_json(ontology.model_dump_json())
