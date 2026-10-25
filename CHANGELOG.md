@@ -58,11 +58,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or several, raises `RelationshipResolutionError` with the counts and up to
   100 samples, and nothing is written. Exact duplicate rows collapse; two rows
   for one edge with different properties are refused, unless a skip policy
-  drops them anyway. Writes go in batches of 500, a blank cell clears the
-  edge's value, and `RelationshipIngestionResult` reports the counts.
-  Relationship (vector) search does not return these edges — every edge of one
-  mapping carries the same template `fact` and no endpoint names — so they are
-  found by graph queries, or from an entity found by name.
+  drops them anyway. Writes go in batches of 500, a blank cell (or a `LIST`
+  cell with no items) clears the edge's value, and `RelationshipIngestionResult`
+  reports the counts. Relationship (vector) search does not return these edges
+  — every edge of one mapping carries the same template `fact` and no endpoint
+  names — so `finalize()` does not embed an edge only relationship tables own,
+  and they are found by graph queries, or from an entity found by name.
 
 - **A relationship table is a snapshot of its source, and an edge is shared,
   not owned.** The table's properties are signed (`consumed_batch__consumed_on`)
@@ -72,8 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other relationship table and no document chunk supports it. Deleting a
   document keeps an edge a table still lists, and merging two nodes keeps every
   table on the merged edge. Each run is numbered from the database clock and
-  its cleanup removes only what older runs left, so two workers ingesting one
-  file at once keep each other's edges. Cleanup waits until every batch is
+  its cleanup removes only what older runs left, which keeps most edges when
+  two workers ingest one file at once; the runs are not serialized, so ingest
+  one relationship file at a time. Cleanup waits until every batch is
   written, so after a short write (`incomplete_writes`) or an exception a plain
   retry converges. It reads only the table's own edges, through one range index
   on `RELATES.structured_sources` that the first relationship-table ingest on a
@@ -93,8 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proposal; a declared `TableMapping` is never replaced, and a relationship
   table cannot share a property signature with any other table. While a
   relationship table resolves an endpoint by a key, `drop_table()` of the node
-  table that signs it, `drop_attribute()` and `rename_attribute()` of it raise
-  `ValueError` naming the relationship table; a stored mapping whose key is
+  table that signs it, `drop_attribute()` and `rename_attribute()` of it,
+  redeclaring that table with another key column, and declaring a proposal
+  whose key it uses as a relationship table raise `ValueError` naming the
+  relationship table, before anything is written; a stored mapping whose key is
   already gone is skipped with a warning when the ontology loads, so the graph
   still opens.
 

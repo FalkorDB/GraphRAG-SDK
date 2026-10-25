@@ -138,11 +138,14 @@ ingest resolves its key to exactly one node again. `rows_skipped` and
 `endpoint_errors` name those rows. The default `error` policies raise before
 anything is written, so the edge stays.
 
-Each run is numbered from the database clock when it starts, and its cleanup
-removes only what an older run left, so two runs of the same file at once (two
-workers, or one change delivered twice) keep each other's edges. If the file
-changed between them, the run that started last decides; an edge only the
-earlier run wrote can stay until the next ingest. The cleanup reads only the
+**Ingest one relationship file at a time.** Each run is numbered from the
+database clock when it starts, and its cleanup removes only what an older run
+left, which keeps most edges when two runs of the same file overlap (two
+workers, or one change delivered twice). The runs are not serialized, though:
+an older run that finishes last can write back values a newer run replaced, and
+an edge only the earlier run wrote can stay until the next ingest. Use one
+worker per relationship file, or wait for one `ingest()` / `apply_changes()` of
+it to return before starting the next. The cleanup reads only the
 source's own edges, through a range index on `RELATES.structured_sources` that
 the first relationship-table ingest on a graph creates, and changes at most
 10,000 edges per write. Creating that index
@@ -185,9 +188,9 @@ rewrites every row, then cleans up.
 
 Relationship-only rows have no record chunks, and relationship (vector) search
 does not return their edges. Every edge of one mapping carries the same `fact`
-text, `(Unit, CONSUMED_BATCH, Batch)`, and no endpoint names, so retrieval drops
-these hits, though once `finalize()` has embedded the edges they still take
-relationship-search slots. Find the edges with graph queries (`rag.query()`, or
+text, `(Unit, CONSUMED_BATCH, Batch)`, and no endpoint names, so `finalize()`
+does not embed an edge only relationship tables own; an edge a document also
+supports is embedded as before. Find the edges with graph queries (`rag.query()`, or
 text-to-Cypher with `enable_cypher=True`), or by following edges from an entity
 found by name, which needs the endpoint nodes to have a `name` (`name=` on their
 `TableMapping`). On an edge a document also wrote, the table's write replaces
