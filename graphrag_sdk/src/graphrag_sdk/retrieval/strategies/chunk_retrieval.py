@@ -18,6 +18,18 @@ _CHUNK_DISTANCE = (
     "CASE WHEN c.embedding IS NULL THEN 3.0 ELSE vec.cosineDistance(c.embedding, vecf32($qv)) END"
 )
 
+# Keeps chunk ``c`` only if no Document it is PART_OF is inactive: the
+# ``<id>__pending__<hex>`` copy an ``update()`` writes before cutover, or a
+# document marked ``pending_delete`` (see :func:`inactive_chunk_ids`). Applied
+# in the graph paths before their per-path caps, so an inactive chunk cannot
+# take a slot and then be dropped, leaving the slot empty. A chunk with no
+# Document is kept.
+# Projected, then tested: FalkorDB rejects a pattern comprehension inside WHERE.
+_INACTIVE_DOCS = (
+    "[(d:Document)-[:PART_OF]->(c) "
+    "WHERE d.id CONTAINS '__pending__' OR d.pending_delete = true | d.id] AS inactive"
+)
+
 
 async def retrieve_chunks(
     vector_store: Any,
@@ -97,6 +109,8 @@ async def retrieve_chunks(
             result = await graph_store.query_raw(
                 "UNWIND $eids AS eid "
                 "MATCH (e:__Entity__ {id: eid})-[:MENTIONED_IN]->(c:Chunk) "
+                f"WITH eid, c, {_INACTIVE_DOCS} "
+                "WHERE size(inactive) = 0 "
                 f"WITH eid, c, {_CHUNK_DISTANCE} AS dist "
                 "ORDER BY eid, dist ASC, c.id ASC "
                 "WITH eid, COLLECT(c) AS cs "
@@ -115,36 +129,51 @@ async def retrieve_chunks(
         except Exception as exc:
             logger.debug("MENTIONED_IN chunk retrieval failed: %s", exc)
 
-    # Path D: 2-hop entity→neighbor→chunk (batched UNWIND), the closest 20
-    # to the question; without an order the LIMIT kept an arbitrary 20. As in
-    # Path C, unembedded record chunks get slots of their own (5).
+    # Path D: 2-hop entity→neighbor→chunk (batched UNWIND): the 20 embedded
+    # chunks closest to the question, then up to 5 unembedded record chunks,
+    # as two bounded queries. Each keeps only its LIMIT while sorting, where
+    # one collected list would hold every chunk a hub entity reaches.
     eids_2hop_chunk = [eid for eid, _ in entity_list[:10]]
+    two_hop_match = (
+        "UNWIND $eids AS eid "
+        "MATCH (e:__Entity__ {id: eid})-[:RELATES]-(neighbor:__Entity__)"
+        "-[:MENTIONED_IN]->(c:Chunk) "
+    )
+    two_hop_queries = (
+        two_hop_match + "WHERE c.embedding IS NOT NULL "
+        "WITH DISTINCT c "
+        f"WITH c, {_INACTIVE_DOCS} "
+        "WHERE size(inactive) = 0 "
+        "WITH c, vec.cosineDistance(c.embedding, vecf32($qv)) AS dist "
+        "RETURN c.id AS id, c.text AS text "
+        "ORDER BY dist ASC, id ASC "
+        "LIMIT 20",
+        two_hop_match + "WHERE c.embedding IS NULL "
+        "WITH DISTINCT c "
+        f"WITH c, {_INACTIVE_DOCS} "
+        "WHERE size(inactive) = 0 "
+        "RETURN c.id AS id, c.text AS text "
+        "ORDER BY id ASC "
+        "LIMIT 5",
+    )
     if eids_2hop_chunk:
         try:
-            if ctx is not None:
-                ctx.ensure_budget("2-hop chunk retrieval")
-            result = await graph_store.query_raw(
-                "UNWIND $eids AS eid "
-                "MATCH (e:__Entity__ {id: eid})-[:RELATES]-(neighbor:__Entity__)"
-                "-[:MENTIONED_IN]->(c:Chunk) "
-                f"WITH DISTINCT c, {_CHUNK_DISTANCE} AS dist "
-                "ORDER BY dist ASC, c.id ASC "
-                "WITH COLLECT(c) AS cs "
-                "WITH [x IN cs WHERE x.embedding IS NOT NULL][..20] "
-                "  + [x IN cs WHERE x.embedding IS NULL][..5] AS kept "
-                "UNWIND kept AS c "
-                "RETURN c.id AS id, c.text AS text",
-                {"eids": eids_2hop_chunk, "qv": query_vector},
-            )
-            for row in result.result_set:
-                cid = row[0]
-                text = row[1] if len(row) > 1 else ""
-                _add(cid, text, "2hop_mentioned")
+            for two_hop_query in two_hop_queries:
+                if ctx is not None:
+                    ctx.ensure_budget("2-hop chunk retrieval")
+                result = await graph_store.query_raw(
+                    two_hop_query, {"eids": eids_2hop_chunk, "qv": query_vector}
+                )
+                for row in result.result_set:
+                    cid = row[0]
+                    text = row[1] if len(row) > 1 else ""
+                    _add(cid, text, "2hop_mentioned")
         except LatencyBudgetExceededError:
             raise
         except Exception as exc:
             logger.debug("2-hop chunk retrieval failed: %s", exc)
 
+    # The fulltext and vector paths come from indexes and are filtered here.
     for cid in await inactive_chunk_ids(graph_store, list(chunks), ctx=ctx):
         chunks.pop(cid, None)
         sources.pop(cid, None)

@@ -1251,10 +1251,37 @@ class TestChunksAlignedWithIngestion:
         # chunks of the same entity cannot crowd its table row out.
         assert "[x IN cs WHERE x.embedding IS NOT NULL][..3]" in mention
         assert "[x IN cs WHERE x.embedding IS NULL][..1]" in mention
-        two_hop = next(c for c in captured if "neighbor:__Entity__" in c)
-        assert "ORDER BY dist ASC, c.id ASC" in two_hop
-        assert "[x IN cs WHERE x.embedding IS NOT NULL][..20]" in two_hop
-        assert "[x IN cs WHERE x.embedding IS NULL][..5]" in two_hop
+        # 2-hop: two bounded queries, never one list of every reachable chunk.
+        two_hop = [c for c in captured if "neighbor:__Entity__" in c]
+        assert len(two_hop) == 2
+        assert "c.embedding IS NOT NULL" in two_hop[0] and two_hop[0].endswith("LIMIT 20")
+        assert "ORDER BY dist ASC, id ASC" in two_hop[0]
+        assert "c.embedding IS NULL" in two_hop[1] and two_hop[1].endswith("LIMIT 5")
+        assert not any("COLLECT" in c for c in two_hop)
+
+    async def test_graph_paths_drop_inactive_chunks_before_their_caps(
+        self, mp_graph_store, mp_vector_store
+    ):
+        from graphrag_sdk.retrieval.strategies.chunk_retrieval import retrieve_chunks
+
+        captured: list[str] = []
+
+        async def query_raw(cypher, params=None):
+            captured.append(cypher)
+            return MagicMock(result_set=[])
+
+        mp_graph_store.query_raw = AsyncMock(side_effect=query_raw)
+        await retrieve_chunks(
+            mp_vector_store, mp_graph_store, "q", [0.1], [], [], [("acme__org", {"name": "Acme"})]
+        )
+        graph_paths = [c for c in captured if "MENTIONED_IN]->(c:Chunk)" in c]
+        assert len(graph_paths) == 3
+        for cypher in graph_paths:
+            check = cypher.index("WHERE size(inactive) = 0")
+            assert "__pending__" in cypher and "pending_delete" in cypher
+            # Filtered before the cap: COLLECT (MENTIONED_IN) or LIMIT (2-hop).
+            cap = cypher.index("COLLECT") if "COLLECT" in cypher else cypher.index("LIMIT")
+            assert check < cap
 
     async def test_a_pending_copy_reached_first_does_not_hide_the_live_passage(
         self, mp_graph_store, mp_vector_store
