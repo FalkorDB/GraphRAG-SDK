@@ -24,7 +24,8 @@ _MAX_ENTITY_DESCRIPTION_CHARS = 400
 # Ingestion stores ``fact`` as "(src, TYPE, tgt): description". The line
 # below already names both ends and the type, so only the text after the
 # triple is kept.
-_FACT_TRIPLE_PREFIX_RE = re.compile(r"^\([^()]*\)(?::\s*)?")
+# One level of nested parentheses is allowed: "Python (language)".
+_FACT_TRIPLE_PREFIX_RE = re.compile(r"^\((?:[^()]|\([^()]*\))*\)(?::\s*)?")
 
 
 def format_relation_line(
@@ -60,8 +61,9 @@ async def rerank_chunks(
     """Rank candidates by cosine similarity, take top_k.
 
     When ``stored_embeddings`` covers >=90% of candidates, uses
-    pre-computed vectors from the graph (zero API calls).  Falls back
-    to re-embedding via the embedder when coverage is insufficient.
+    pre-computed vectors from the graph and embeds only the candidates
+    without one (one call, or none when every candidate has a vector).
+    Falls back to re-embedding all candidates when coverage is insufficient.
 
     Returns:
         Top-k chunk texts ranked by cosine similarity to query.

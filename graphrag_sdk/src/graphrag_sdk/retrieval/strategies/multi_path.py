@@ -22,7 +22,6 @@ from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.chunk_retrieval import (
     fetch_chunk_documents,
-    inactive_chunk_ids,
     retrieve_chunks,
 )
 from graphrag_sdk.retrieval.strategies.cypher_generation import (
@@ -178,7 +177,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         chunk_top_k: int = 20,
         max_entities: int = 30,  # Upper bound before reranking; balances recall vs noise
         max_relationships: int = 20,  # Cap on RELATES edges per query
-        rel_top_k: int = 15,  # Matched to chunk_top_k for balanced fact/passage coverage
+        rel_top_k: int = 15,
         keyword_limit: int = 10,  # Fulltext search keyword budget from query decomposition
         enable_cypher: bool = False,  # Text-to-Cypher path (experimental, off by default)
         ontology: Ontology | None = None,  # forwarded to Cypher generation when enable_cypher
@@ -324,12 +323,8 @@ class MultiPathRetrieval(RetrievalStrategy):
             simple_kw,
             entity_list,
             ctx=ctx,
+            vector_top_k=max(15, self._chunk_top_k),
         )
-        # Leave out chunks of a document that is mid-update or being deleted.
-        for cid in await inactive_chunk_ids(self._graph, list(candidate_chunks), ctx=ctx):
-            candidate_chunks.pop(cid, None)
-            chunk_sources.pop(cid, None)
-            chunk_embeddings.pop(cid, None)
         ctx.log(
             f"MultiPath [6/9]: {len(candidate_chunks)} candidate chunks "
             f"({len(chunk_embeddings)} with stored embeddings)"

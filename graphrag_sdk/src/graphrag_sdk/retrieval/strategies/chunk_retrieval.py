@@ -13,8 +13,9 @@ logger = logging.getLogger(__name__)
 
 # Distance of chunk ``c`` from the question; a chunk with no embedding (a
 # structured record) ranks after every embedded one instead of being dropped.
+# Above 2.0, the largest cosine distance, so it never ties an embedded chunk.
 _CHUNK_DISTANCE = (
-    "CASE WHEN c.embedding IS NULL THEN 2.0 ELSE vec.cosineDistance(c.embedding, vecf32($qv)) END"
+    "CASE WHEN c.embedding IS NULL THEN 3.0 ELSE vec.cosineDistance(c.embedding, vecf32($qv)) END"
 )
 
 
@@ -27,8 +28,18 @@ async def retrieve_chunks(
     simple_kw: list[str],
     entity_list: list[tuple[str, dict]],
     ctx: Context | None = None,
+    vector_top_k: int = 15,
 ) -> tuple[dict[str, str], dict[str, str], dict[str, list[float]]]:
     """4-path chunk retrieval: fulltext + vector + MENTIONED_IN + 2-hop.
+
+    Chunks of a document that is mid-update or being deleted are left out
+    (:func:`inactive_chunk_ids`), and then the same text under two ids is kept
+    once. In that order: a pending copy reached first must not displace the
+    live passage it duplicates and then be filtered away itself.
+
+    Args:
+        vector_top_k: Candidates from the chunk vector search; at least the
+            number of passages the caller keeps after reranking.
 
     Returns:
         chunks: dict of chunk_id -> chunk_text
@@ -37,15 +48,11 @@ async def retrieve_chunks(
     """
     chunks: dict[str, str] = {}
     sources: dict[str, str] = {}
-    texts: set[str] = set()
 
     def _add(cid: str, text: str, source: str) -> None:
-        # The same text under two ids (an update in flight, or one passage
-        # ingested twice) is one passage to the answer.
-        if cid and text and cid not in chunks and text not in texts:
+        if cid and text and cid not in chunks:
             chunks[cid] = text
             sources[cid] = source
-            texts.add(text)
 
     # Path A: Fulltext search
     fulltext_queries = [query] + llm_kw[:6] + simple_kw[:4]
@@ -65,7 +72,7 @@ async def retrieve_chunks(
     try:
         if ctx is not None:
             ctx.ensure_budget("chunk vector search")
-        results = await vector_store.search_chunks(query_vector, top_k=15)
+        results = await vector_store.search_chunks(query_vector, top_k=vector_top_k)
         for c in results:
             _add(c.get("id", ""), c.get("text", ""), "vector")
     except LatencyBudgetExceededError:
@@ -79,8 +86,9 @@ async def retrieve_chunks(
     # COLLECT(c)[..3] picked an arbitrary 3, almost never including the
     # chunks most relevant to the current query. Ranking by cosine here
     # surfaces the chunks closest to the query intent. Chunks without an
-    # embedding are kept, after the embedded ones: structured-record chunks
-    # are never embedded and are reached only through their entities.
+    # embedding get a slot of their own: structured-record chunks are never
+    # embedded and are reached only through their entities, so an entity
+    # with three prose chunks must not crowd its own table row out.
     eids_mention = [eid for eid, _ in entity_list[:15]]
     if eids_mention:
         try:
@@ -91,7 +99,9 @@ async def retrieve_chunks(
                 "MATCH (e:__Entity__ {id: eid})-[:MENTIONED_IN]->(c:Chunk) "
                 f"WITH eid, c, {_CHUNK_DISTANCE} AS dist "
                 "ORDER BY eid, dist ASC, c.id ASC "
-                "WITH eid, COLLECT(c)[..3] AS chunks "
+                "WITH eid, COLLECT(c) AS cs "
+                "WITH eid, [x IN cs WHERE x.embedding IS NOT NULL][..3] "
+                "  + [x IN cs WHERE x.embedding IS NULL][..1] AS chunks "
                 "UNWIND chunks AS c "
                 "RETURN eid, c.id AS id, c.text AS text",
                 {"eids": eids_mention, "qv": query_vector},
@@ -106,7 +116,8 @@ async def retrieve_chunks(
             logger.debug("MENTIONED_IN chunk retrieval failed: %s", exc)
 
     # Path D: 2-hop entity→neighbor→chunk (batched UNWIND), the closest 20
-    # to the question; without an order the LIMIT kept an arbitrary 20.
+    # to the question; without an order the LIMIT kept an arbitrary 20. As in
+    # Path C, unembedded record chunks get slots of their own (5).
     eids_2hop_chunk = [eid for eid, _ in entity_list[:10]]
     if eids_2hop_chunk:
         try:
@@ -117,9 +128,12 @@ async def retrieve_chunks(
                 "MATCH (e:__Entity__ {id: eid})-[:RELATES]-(neighbor:__Entity__)"
                 "-[:MENTIONED_IN]->(c:Chunk) "
                 f"WITH DISTINCT c, {_CHUNK_DISTANCE} AS dist "
-                "RETURN c.id AS id, c.text AS text "
-                "ORDER BY dist ASC, id ASC "
-                "LIMIT 20",
+                "ORDER BY dist ASC, c.id ASC "
+                "WITH COLLECT(c) AS cs "
+                "WITH [x IN cs WHERE x.embedding IS NOT NULL][..20] "
+                "  + [x IN cs WHERE x.embedding IS NULL][..5] AS kept "
+                "UNWIND kept AS c "
+                "RETURN c.id AS id, c.text AS text",
                 {"eids": eids_2hop_chunk, "qv": query_vector},
             )
             for row in result.result_set:
@@ -130,6 +144,18 @@ async def retrieve_chunks(
             raise
         except Exception as exc:
             logger.debug("2-hop chunk retrieval failed: %s", exc)
+
+    for cid in await inactive_chunk_ids(graph_store, list(chunks), ctx=ctx):
+        chunks.pop(cid, None)
+        sources.pop(cid, None)
+    # The same text under two ids (an update in flight, or one passage
+    # ingested twice) is one passage to the answer; the first one reached stays.
+    texts: set[str] = set()
+    for cid, text in list(chunks.items()):
+        if text in texts:
+            chunks.pop(cid)
+            sources.pop(cid, None)
+        texts.add(text)
 
     # Batch-fetch stored embeddings for all collected chunks
     embeddings: dict[str, list[float]] = {}

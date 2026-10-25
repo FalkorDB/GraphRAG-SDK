@@ -427,16 +427,14 @@ class TestCypherResultsAreInterpretable:
         )
         assert entities["alice_smith__person"]["name"] == "Alice Smith"
 
-    async def test_relation_labels_are_not_taken_for_entities(self):
+    async def test_relation_columns_are_not_taken_for_entities(self):
         from unittest.mock import AsyncMock, MagicMock
 
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
             execute_cypher_retrieval,
         )
 
-        graph = self._graph(
-            [[1, "name"], [1, "relation"], [1, "kind"]], [["Acme", "LOCATED_IN", "WORKS_AT"]]
-        )
+        graph = self._graph([[1, "name"], [1, "relation"]], [["Acme", "LOCATED_IN"]])
         rows = graph.query_raw.return_value
         resolved = MagicMock()
         resolved.result_set = []
@@ -446,8 +444,41 @@ class TestCypherResultsAreInterpretable:
             self._llm("MATCH (e:__Entity__)-[r:RELATES]-() RETURN e.name AS name LIMIT 25"),
             "What?",
         )
-        # The relation column and the UPPER_SNAKE value are never looked up.
+        # The relation column is never looked up.
         assert graph.query_raw.call_args_list[1][0][1] == {"names": ["acme"]}
+
+    async def test_an_underscore_entity_name_is_looked_up(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        graph = self._graph([[1, "name"]], [["GPT_4"]])
+        rows = graph.query_raw.return_value
+        resolved = MagicMock()
+        resolved.result_set = [["gpt_4__technology", "GPT_4", "A language model."]]
+        graph.query_raw = AsyncMock(side_effect=[rows, resolved])
+        _, entities = await execute_cypher_retrieval(
+            graph,
+            self._llm("MATCH (e:Technology) RETURN e.name AS name LIMIT 25"),
+            "Which model?",
+        )
+        assert graph.query_raw.call_args_list[1][0][1] == {"names": ["gpt_4"]}
+        assert "gpt_4__technology" in entities
+
+    async def test_names_keep_first_seen_order_before_the_cap(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.retrieval.strategies.cypher_generation import _resolve_entities
+
+        graph = MagicMock()
+        graph.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
+        names = [f"zeta {i}" for i in range(50)] + ["alpha"]
+        await _resolve_entities(graph, names, None)
+        wanted = graph.query_raw.call_args[0][1]["names"]
+        assert len(wanted) == 50
+        assert wanted[0] == "zeta 0" and "alpha" not in wanted
 
     async def test_a_returned_node_shows_name_and_description_only(self):
         from unittest.mock import AsyncMock, MagicMock

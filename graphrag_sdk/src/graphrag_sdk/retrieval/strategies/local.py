@@ -9,6 +9,7 @@ from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import RawSearchResult
+from graphrag_sdk.core.tables import RESERVED_PROPERTY_NAMES
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 
 logger = logging.getLogger(__name__)
@@ -16,14 +17,26 @@ logger = logging.getLogger(__name__)
 # Longest entity description shown next to a chunk.
 _MAX_ENTITY_DESCRIPTION_CHARS = 300
 
+# Properties the SDK writes for itself: the reserved keys, plus dedup
+# bookkeeping. Everything else on an entity is the application's data (a
+# table's ``employees__salary``, an extracted ``age``) and is shown.
+_INTERNAL_PROPS = RESERVED_PROPERTY_NAMES | {
+    "descriptions",
+    "aliases",
+    "merged_labels",
+    "mention_edge_count",
+}
+_DROPPED_SUFFIX = "__dropped"
+
 
 def _entity_text(entity: dict[str, Any]) -> str:
-    """``name (Type): description`` for one connected entity.
+    """``name (Type): description [attr: value, ...]`` for one connected entity.
 
     Only what reads as context: the raw property map also holds the name
     embedding, provenance (``source_chunk_ids``) and dedup bookkeeping
     (``descriptions``, ``merged_labels``, ``*__dropped``), none of which
-    belongs in an LLM prompt.
+    belongs in an LLM prompt. The application's own scalar attributes are
+    kept: they can carry facts the matched passage does not.
     """
     props = entity.get("properties") or {}
     name = props.get("name") or entity.get("id") or ""
@@ -36,6 +49,16 @@ def _entity_text(entity: dict[str, Any]) -> str:
         if len(desc) > _MAX_ENTITY_DESCRIPTION_CHARS:
             desc = desc[:_MAX_ENTITY_DESCRIPTION_CHARS].rsplit(" ", 1)[0] + " …"
         text += f": {desc}"
+    attrs = [
+        f"{key}: {value}"
+        for key, value in sorted(props.items())
+        if key not in _INTERNAL_PROPS
+        and not key.endswith(_DROPPED_SUFFIX)
+        and isinstance(value, (str, int, float, bool))
+        and value != ""
+    ]
+    if attrs:
+        text += f" [{', '.join(attrs)}]"
     return text
 
 

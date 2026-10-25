@@ -69,8 +69,6 @@ _RESERVED_REL_PROPS = (
 # relations: extraction prefers these labels but keeps others verbatim.
 _COMMON_REL_TYPES_SHOWN = 31
 
-# A rel_type value (WORKS_AT, LOCATED_IN): a column holding one is not an entity.
-_REL_TYPE_VALUE_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
 # Columns that hold relation labels or types rather than entity names.
 _NON_ENTITY_COLUMNS = re.compile(
     r"(^|_)(rel|rels|relation|relationship|type|types|label|labels)(_|$|\d)"
@@ -255,7 +253,10 @@ LIMIT 25
 Question: "How are Alice and the castle connected?"
 ```cypher
 MATCH (a:__Entity__)-[r1:RELATES]-(mid:__Entity__)-[r2:RELATES]-(b:__Entity__)
-WHERE a.name CONTAINS 'Alice' AND b.name CONTAINS 'castle'
+WHERE (toLower(a.name) CONTAINS 'alice'
+       OR any(x IN coalesce(a.aliases, []) WHERE toLower(x) CONTAINS 'alice'))
+  AND (toLower(b.name) CONTAINS 'castle'
+       OR any(x IN coalesce(b.aliases, []) WHERE toLower(x) CONTAINS 'castle'))
 RETURN a.name AS from_entity, r1.rel_type AS rel1,
   mid.name AS via_entity, r2.rel_type AS rel2, b.name AS to_entity
 LIMIT 15
@@ -270,7 +271,8 @@ RETURN count(p) AS person_count
 Question: "What did the professor discover?"
 ```cypher
 MATCH (p:Person)-[r:RELATES]->(thing:__Entity__)
-WHERE p.name CONTAINS 'professor'
+WHERE toLower(p.name) CONTAINS 'professor'
+   OR any(a IN coalesce(p.aliases, []) WHERE toLower(a) CONTAINS 'professor')
 RETURN p.name AS person, thing.name AS discovery, r.rel_type AS relationship, r.fact AS evidence
 LIMIT 20
 ```
@@ -558,7 +560,8 @@ async def _resolve_entities(
     graph_store: Any, names: list[str], ctx: Context | None
 ) -> dict[str, dict]:
     """Entity id -> {name, description} for the names that match an entity."""
-    wanted = sorted({n.lower() for n in names if n})[:50]
+    # First seen first: the cap must not favour names early in the alphabet.
+    wanted = list(dict.fromkeys(n.lower() for n in names if n))[:50]
     if not wanted:
         return {}
     try:
@@ -683,8 +686,10 @@ async def execute_cypher_retrieval(
         line = " | ".join(parts)
         fact_strings.append(line)
 
-        # Candidate entity names: short strings that are not numbers, lists or
-        # relation labels (a `r.rel_type AS relation` column).
+        # Candidate entity names: short strings that are not numbers or lists,
+        # outside relation/type columns (a `r.rel_type AS relation` column).
+        # A value is not judged by its spelling (GPT_4 is a name):
+        # _resolve_entities keeps only the ones that name an entity.
         for index, val in enumerate(row):
             label = column_names[index].lower() if index < len(column_names) else ""
             if (
@@ -692,7 +697,6 @@ async def execute_cypher_retrieval(
                 and 1 < len(val) < 100
                 and not val.startswith(("(", "[", "{"))
                 and not val.replace(".", "").isdigit()
-                and not _REL_TYPE_VALUE_RE.match(val.strip())
                 and not (label and _NON_ENTITY_COLUMNS.search(label))
             ):
                 names.append(val.strip())

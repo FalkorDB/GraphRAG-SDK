@@ -21,8 +21,9 @@ logger = logging.getLogger(__name__)
 _ROUNDS: tuple[tuple[int, int], ...] = ((15, 10), (8, 5), (5, 5))
 
 # Distance given to an edge with no embedding (written by finalize()), so it
-# ranks after every embedded edge instead of being dropped.
-_UNEMBEDDED_DISTANCE = 2.0
+# ranks after every embedded edge instead of being dropped. Above 2.0, the
+# largest cosine distance, so it never ties an embedded edge.
+_UNEMBEDDED_DISTANCE = 3.0
 
 # Columns of one relation row, given the edge as ``r``. Direction and names
 # come from the edge's endpoints: the walk matches edges in either direction,
@@ -61,14 +62,15 @@ async def expand_relationships(
     the question and the edge embedding (written by ``finalize()``): each
     round keeps the closest edges per entity, the next round expands the far
     ends of the closest edges, and the closest edges overall are returned.
-    Without it, edges come in graph order.
+    Without it, each entity's edges are ordered by neighbour id and
+    relationship type, and the lines are returned in the order reached.
 
     Returns:
         List of formatted relationship strings, closest first.
     """
     has_vector = query_vector is not None
     params_base: dict[str, Any] = {"qv": query_vector} if has_vector else {}
-    scored: list[tuple[float, int, str]] = []  # (distance, arrival order, line)
+    scored: list[tuple[float, int, str]] = []  # (distance, order reached, line)
     seen: set[tuple[str, str, str]] = set()
     expanded: set[str] = set()
     frontier = [eid for eid, _ in entity_list]
@@ -125,5 +127,7 @@ async def expand_relationships(
         frontier = [other for _, other in reached]
 
     if has_vector:
-        scored.sort(key=lambda s: (s[0], s[1]))
+        # Equal distances break on the line itself: the order rows arrive in
+        # is not guaranteed by the query.
+        scored.sort(key=lambda s: (s[0], s[2]))
     return [line for _, _, line in scored[:max_relationships]]

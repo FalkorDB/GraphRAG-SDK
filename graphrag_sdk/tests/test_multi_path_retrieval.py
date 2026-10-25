@@ -959,6 +959,15 @@ class TestSiblingExpansionIntegration:
 
 
 class TestRelationLines:
+    def test_triple_with_parentheses_in_a_name_is_not_repeated(self):
+        from graphrag_sdk.retrieval.strategies.result_assembly import format_relation_line
+
+        line = format_relation_line(
+            "Python (language)", "USES", "Java", "", "(Python (language), USES, Java)"
+        )
+        assert "(Python (language), USES, Java)" not in line
+        assert line.startswith("Python (language) —[USES]→ Java")
+
     def test_description_preferred_and_triple_not_repeated(self):
         from graphrag_sdk.retrieval.strategies.result_assembly import format_relation_line
 
@@ -1029,6 +1038,29 @@ class TestEdgeEndpoints:
 
 
 class TestRelationshipExpansion:
+    async def test_equal_distances_break_on_the_line_not_arrival_order(self):
+        from graphrag_sdk.retrieval.strategies.relationship_expansion import expand_relationships
+
+        calls = {"n": 0}
+
+        async def query_raw(cypher, params=None):
+            calls["n"] += 1
+            result = MagicMock()
+            result.result_set = []
+            if calls["n"] == 1:
+                result.result_set = [
+                    ["Acme", "EMPLOYS", "Zoe", "", "", 0.2, "zoe__person"],
+                    ["Acme", "EMPLOYS", "Ann", "", "", 0.2, "ann__person"],
+                ]
+            return result
+
+        store = MagicMock()
+        store.query_raw = AsyncMock(side_effect=query_raw)
+        lines = await expand_relationships(
+            store, [("acme__organization", {"name": "Acme"})], query_vector=[0.1]
+        )
+        assert lines == ["Acme —[EMPLOYS]→ Ann", "Acme —[EMPLOYS]→ Zoe"]
+
     async def test_matches_both_directions_and_ranks_by_question(self):
         from graphrag_sdk.retrieval.strategies.relationship_expansion import expand_relationships
 
@@ -1214,9 +1246,53 @@ class TestChunksAlignedWithIngestion:
         )
         mention = next(c for c in captured if "MENTIONED_IN]->(c:Chunk)" in c and "eid, c" in c)
         assert "WHERE c.embedding IS NOT NULL" not in mention
-        assert "CASE WHEN c.embedding IS NULL" in mention
+        assert "CASE WHEN c.embedding IS NULL THEN 3.0" in mention
+        # Unembedded record chunks get slots of their own, so three prose
+        # chunks of the same entity cannot crowd its table row out.
+        assert "[x IN cs WHERE x.embedding IS NOT NULL][..3]" in mention
+        assert "[x IN cs WHERE x.embedding IS NULL][..1]" in mention
         two_hop = next(c for c in captured if "neighbor:__Entity__" in c)
-        assert "ORDER BY dist ASC, id ASC" in two_hop
+        assert "ORDER BY dist ASC, c.id ASC" in two_hop
+        assert "[x IN cs WHERE x.embedding IS NOT NULL][..20]" in two_hop
+        assert "[x IN cs WHERE x.embedding IS NULL][..5]" in two_hop
+
+    async def test_a_pending_copy_reached_first_does_not_hide_the_live_passage(
+        self, mp_graph_store, mp_vector_store
+    ):
+        from graphrag_sdk.retrieval.strategies.chunk_retrieval import retrieve_chunks
+
+        mp_vector_store.search_chunks = AsyncMock(
+            return_value=[
+                {"id": "pending", "text": "Same text.", "score": 0.95},
+                {"id": "live", "text": "Same text.", "score": 0.9},
+            ]
+        )
+
+        async def query_raw(cypher, params=None):
+            result = MagicMock()
+            result.result_set = []
+            if "__pending__" in cypher and "pending_delete" in cypher:
+                result.result_set = [["pending"]]
+            return result
+
+        mp_graph_store.query_raw = AsyncMock(side_effect=query_raw)
+        chunks, sources, _ = await retrieve_chunks(
+            mp_vector_store, mp_graph_store, "q", [0.1], [], [], []
+        )
+        assert chunks == {"live": "Same text."}
+        assert list(sources) == ["live"]
+
+    async def test_vector_search_fetches_as_many_candidates_as_passages_kept(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
+        s = MultiPathRetrieval(
+            graph_store=mp_graph_store,
+            vector_store=mp_vector_store,
+            embedder=mp_embedder,
+            llm=mp_llm,
+        )
+        await s.search("What does the passage say?")
+        assert mp_vector_store.search_chunks.call_args.kwargs["top_k"] == 20
 
     async def test_rerank_embeds_only_candidates_without_a_stored_vector(self):
         embedder = MagicMock()
@@ -1247,6 +1323,21 @@ class TestEntityLookupDetails:
         assert exact_params["keywords"] == ["US", "Acme"]
         assert contains_params["keywords"] == ["Acme"]
         assert "ORDER BY rank ASC, id ASC" in calls[0][0]
+
+    async def test_only_short_acronyms_skip_the_contains_query(
+        self, mp_graph_store, mp_vector_store
+    ):
+        from graphrag_sdk.retrieval.strategies.entity_discovery import discover_entities
+
+        calls: list[str] = []
+
+        async def capture(cypher, params=None):
+            calls.append(cypher)
+            return MagicMock(result_set=[])
+
+        mp_graph_store.query_raw = AsyncMock(side_effect=capture)
+        await discover_entities(mp_graph_store, mp_vector_store, ["US", "UK"], [])
+        assert not any("CONTAINS toLower(kw)" in c for c in calls)
 
 
 class TestCypherPromptKnowsTheGraph:

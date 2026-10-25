@@ -164,39 +164,41 @@ async def discover_entities(
         # Pass a2: CONTAINS with per-keyword quota and shorter-name priority.
         # Excludes exact matches (already added in pass a1) so the quota
         # isn't spent re-fetching them.
-        try:
-            if ctx is not None:
-                ctx.ensure_budget("entity contains search")
-            result = await graph_store.query_raw(
-                "UNWIND $keywords AS kw "
-                "CALL { "
-                "  WITH kw "
-                "  MATCH (e:__Entity__) "
-                "  WHERE (toLower(e.name) CONTAINS toLower(kw) "
-                "         OR any(al IN coalesce(e.aliases, []) "
-                "                WHERE toLower(al) CONTAINS toLower(kw))) "
-                "    AND toLower(e.name) <> toLower(kw) "
-                "    AND none(al IN coalesce(e.aliases, []) WHERE toLower(al) = toLower(kw)) "
-                "  RETURN e.id AS id, e.name AS name, e.description AS desc "
-                "  ORDER BY size(e.name) ASC, toLower(e.name) ASC, e.id ASC "
-                "  LIMIT 5 "
-                "} "
-                "RETURN id, name, desc",
-                {"keywords": contains_batch},
-            )
-            for row in result.result_set:
-                _add(
-                    row[0],
-                    {
-                        "name": row[1] if len(row) > 1 else "",
-                        "description": row[2] if len(row) > 2 else "",
-                    },
-                    "cypher_contains",
+        # Skipped when every keyword is a short acronym.
+        if contains_batch:
+            try:
+                if ctx is not None:
+                    ctx.ensure_budget("entity contains search")
+                result = await graph_store.query_raw(
+                    "UNWIND $keywords AS kw "
+                    "CALL { "
+                    "  WITH kw "
+                    "  MATCH (e:__Entity__) "
+                    "  WHERE (toLower(e.name) CONTAINS toLower(kw) "
+                    "         OR any(al IN coalesce(e.aliases, []) "
+                    "                WHERE toLower(al) CONTAINS toLower(kw))) "
+                    "    AND toLower(e.name) <> toLower(kw) "
+                    "    AND none(al IN coalesce(e.aliases, []) WHERE toLower(al) = toLower(kw)) "
+                    "  RETURN e.id AS id, e.name AS name, e.description AS desc "
+                    "  ORDER BY size(e.name) ASC, toLower(e.name) ASC, e.id ASC "
+                    "  LIMIT 5 "
+                    "} "
+                    "RETURN id, name, desc",
+                    {"keywords": contains_batch},
                 )
-        except LatencyBudgetExceededError:
-            raise
-        except Exception as exc:
-            logger.debug("Entity CONTAINS search failed: %s", exc)
+                for row in result.result_set:
+                    _add(
+                        row[0],
+                        {
+                            "name": row[1] if len(row) > 1 else "",
+                            "description": row[2] if len(row) > 2 else "",
+                        },
+                        "cypher_contains",
+                    )
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:
+                logger.debug("Entity CONTAINS search failed: %s", exc)
 
     # Path b: Fulltext search on entity index
     for kw in all_keywords[:6]:
