@@ -1,12 +1,16 @@
 ---
 title: "How GraphRAG SDK Stores Graphs in FalkorDB"
 sidebarTitle: "Storage"
-description: "How GraphRAG SDK's GraphStore and VectorStore persist nodes, embeddings, and indexes in FalkorDB, plus how EntityDeduplicator merges entities after ingestion."
+description: "How GraphRAG SDK's GraphStore and VectorStore persist nodes, embeddings, and indexes in FalkorDB, how EntityDeduplicator merges entities after ingestion, and which FalkorDB servers the SDK runs on."
 ---
 
-The storage layer is the bridge between the SDK's Python objects and FalkorDB's graph database. Two classes handle everything: **GraphStore** manages node and relationship writes, and **VectorStore** manages embeddings, indexes, and search. A third class, **EntityDeduplicator**, handles post-ingestion entity merging.
+The storage layer is the bridge between the SDK's Python objects and FalkorDB's graph database. Two classes handle everything: **GraphStore** manages node and relationship writes, and **VectorStore** manages embeddings, indexes, and search. A third class, **EntityDeduplicator**, handles post-ingestion entity merging, with a **DedupJudge** deciding which candidates are the same entity.
 
 This document explains how each one works, what Cypher queries they generate, and how to tune them.
+
+<Warning>
+GraphRAG SDK requires **FalkorDB 4.20 or later**. An older server is refused before anything is written, with `FalkorDBVersionError`. See [Version](#version) below for why, and for the upgrade order.
+</Warning>
 
 ---
 
@@ -38,20 +42,43 @@ Duplicate entities ─EntityDeduplicator─> one query: every edge moved, then D
 Nodes and relationships are written in batches of **500 items** per query. The pattern:
 
 ```cypher
--- Nodes
+-- Entity nodes
 UNWIND $batch AS item
 MERGE (n:`Person` {id: item.id})
+WITH n, item,
+     coalesce(n.source_chunk_ids, []) AS old,
+     coalesce(item.properties.source_chunk_ids, []) AS contrib
 SET n += item.properties
+SET n.source_chunk_ids = CASE WHEN size(contrib) = 0 THEN n.source_chunk_ids
+                         ELSE old + [c IN contrib WHERE NOT c IN old] END
 SET n:__Entity__
 
--- Relationships (with label hints)
+-- RELATES edges (with label hints), keyed on rel_type as well as the pair
 UNWIND $batch AS item
 MATCH (a:`__Entity__` {id: item.start_id}), (b:`__Entity__` {id: item.end_id})
-MERGE (a)-[r:`RELATES`]->(b)
+MERGE (a)-[r:`RELATES` {rel_type: coalesce(item.properties.rel_type, '')}]->(b)
+WITH r, item,
+     coalesce(r.source_chunk_ids, []) AS old,
+     coalesce(item.properties.source_chunk_ids, []) AS contrib
 SET r += item.properties
+SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]
 ```
 
+Structural nodes (`Document`, `Chunk`) and every other edge type use a plain `MERGE ... SET n += item.properties`, keyed on `id` for nodes and on the two endpoints for edges.
+
 **Why MERGE, not CREATE?** MERGE is idempotent — if a node or relationship already exists, it updates the properties rather than creating a duplicate. This makes re-ingestion safe.
+
+**Edge identity includes `rel_type`.** Every extracted fact is a `RELATES` edge with its semantic type in `rel_type`, so `Alice WORKS_AT Acme` and `Alice FOUNDED Acme` are two edges between the same two nodes. Keying the `MERGE` on the endpoints alone would keep one edge per pair and overwrite the other fact.
+
+**Provenance is a union.** An entity's `source_chunk_ids`, and a `RELATES` edge's, list every chunk that mentioned it across documents. Each write appends the chunks the node or edge does not have yet, instead of replacing the list, and a write that carries no list (a table row, a re-embed) leaves it alone. `update()` and `delete_document()` remove the chunks they delete from every entity the document touched.
+
+### Repeated Keys in One Batch
+
+A batch can hold the same entity or relationship twice, for example an entity seen in two chunks of one document. FalkorDB resolves a repeated key inside one `UNWIND ... MERGE` differently by engine (4.x kept the first row's values, 6.0.x the last), and only one row's `source_chunk_ids` survived on either. `upsert_nodes()` and `upsert_relationships()` therefore merge rows that share a key before sending the batch, as if they were written one at a time: later properties win, and for entities and `RELATES` edges the chunk lists are combined. Other labels and edge types keep the last write's list.
+
+### Range Indexes on `id`
+
+Every write is `MERGE (n:Label {id: ...})`, and a `MERGE` can only use an index on the label in its own pattern. Without one, writing *n* nodes costs O(n²): 4,000 table rows took 15.2 s, and take 1.9 s with the index. So before it first writes into a label, `GraphStore` creates range indexes on `id` and `entity_key` for that label (and on `__Entity__.id`, which relationship writes match endpoints by). `ensure_indices()` also creates `id` range indexes on `Document`, `Chunk` and `__Entity__`. The indexes the graph already has are read once per store, so reopening a graph creates nothing and logs nothing. `delete_all()` resets this memory along with the graph.
 
 ### Label Hints
 
@@ -80,7 +107,7 @@ All properties go through `_clean_properties()` before writing:
 
 | Input Type | Treatment |
 |-----------|-----------|
-| `str`, `int`, `float`, `bool` | Stored as-is |
+| `str`, `int`, `float`, `bool` | Stored as-is (control characters are stripped from strings) |
 | `list` | Items filtered to primitives only, empty lists dropped |
 | `dict` | Serialized to JSON string |
 | `None` | Dropped entirely |
@@ -118,7 +145,7 @@ FalkorDB 6.0.x rejects the older `db.idx.fulltext.createNodeIndex(label, field, 
 **Relationship vector indexes** use the edge index syntax:
 
 ```
-CREATE VECTOR INDEX FOR ()-[e:`RELATES`]->() ON (e.embedding)
+CREATE VECTOR INDEX FOR ()-[e:RELATES]->() ON (e.embedding)
 OPTIONS {dimension:256, similarityFunction:'cosine'}
 ```
 
@@ -139,7 +166,7 @@ When chunks are ingested, their text is embedded and stored:
 
 ### Entity Embedding Backfill (backfill_entity_embeddings)
 
-Embeds entity nodes that have no name vector. `finalize()` no longer calls it: dedup embeds every entity, listing it as pending first. Called directly it is not a dedup step — an entity with a vector and no pending record counts as checked — so run `finalize(dedup_all=True)` once afterwards. It runs these steps:
+Embeds entity nodes that have no name vector. `finalize()` does not call it: dedup embeds every entity, listing it as pending first. Called directly it is not a dedup step — an entity with a vector and no pending record counts as checked — so run `finalize(dedup_all=True)` once afterwards. It runs these steps:
 
 1. **Query:** Find entities missing embeddings: `WHERE e.embedding IS NULL`
 2. **Embed:** Batch-embed entity names via `aembed_documents`
@@ -166,6 +193,8 @@ RELATES edges with a `fact` property but no embedding are batch-embedded:
 
 ### Search Methods
 
+FalkorDB's vector procedures yield a cosine *distance* in `score`. Every vector search turns it into a similarity, `1 - score`, so in every result **a higher score means a closer match**, and results are ordered highest first.
+
 **Vector search on Chunk nodes:**
 ```cypher
 CALL db.idx.vector.queryNodes('Chunk', 'embedding', $fetch_k, vecf32($vector))
@@ -186,7 +215,7 @@ Equally close nodes are cut by id, not by the order the engine lists them (Falko
 
 **Vector search on RELATES edges (with fallback):**
 ```cypher
--- Primary (FalkorDB >= 4.2):
+-- Primary (edge vector index):
 CALL db.idx.vector.queryRelationships('RELATES', 'embedding', $top_k, vecf32($vector))
 YIELD relationship AS r, score
 RETURN r.src_name AS src, r.rel_type AS type, r.tgt_name AS tgt, r.fact AS fact, (1-score) AS score
@@ -220,9 +249,9 @@ During retrieval, the `rerank_chunks()` function uses **stored embeddings** when
 
 ### ensure_indices()
 
-Creates all 5 standard indexes in one call. Tracks state internally (`_indices_ensured`) to avoid redundant creation. Called automatically after each `ingest()` call, and re-run during `finalize()` (which resets the flag).
+Creates, in one call, the `id` range indexes on `Document`, `Chunk` and `__Entity__`, and the five search indexes: the `Chunk`, `__Entity__` and `RELATES` vector indexes and the `Chunk` and `__Entity__` fulltext indexes. It returns a dict naming each (`range_ids`, `vector_Chunk`, `vector_Entity`, `vector_RELATES`, `fulltext_Chunk`, `fulltext_Entity`) with whether it is in place after this call — `True` whether it was created now or already existed, `False` when creation failed — which `finalize()` reports as `FinalizeResult.indexes`. Tracks state internally (`_indices_ensured`) to avoid redundant creation, and returns `{}` when an earlier call already ensured everything. Called automatically after each prose `ingest()` and each `update()` that writes (a table's first ingest creates only the range indexes it writes through), and re-run during `finalize()` (which resets the flag, so `finalize()` always reports every key).
 
-FalkorDB builds an index over existing data in the background after `CREATE ... INDEX` returns, and a vector search on it finds nothing until the build ends. `ensure_indices()` therefore waits until `db.indexes()` reports every index built before it returns (up to 10 minutes, logging progress every 10 s), so a search right after `ingest()` sees the data. On a large first ingest this wait is most of the time `ingest()` spends after extraction.
+FalkorDB builds an index over existing data in the background after `CREATE ... INDEX` returns, and a vector search on it finds nothing until the build ends. `ensure_indices()` therefore waits until `db.indexes()` reports every index built before it returns (up to 10 minutes, logging progress every 10 s), so a search right after `ingest()` sees the data.
 
 ---
 
@@ -230,36 +259,105 @@ FalkorDB builds an index over existing data in the background after `CREATE ... 
 
 After ingesting multiple documents, the same real-world entity might exist as multiple nodes (e.g., "Alice" from doc 1 and "Alice Smith" from doc 5). The deduplicator merges them.
 
-**It is incremental.** An entity is *pending* when it has no name vector, or when a `pending` system record lists it (see [SDK system nodes](#sdk-system-nodes)). Ingest writes entities without a vector and marks nothing on them, so a new entity is pending as written. A dedup run lists every entity without a vector in a `pending` record *before* it embeds it, so no crash can leave an unchecked entity looking checked. It then reaches the rest of the graph through indexes — the `__Entity__.embedding` vector index for nearest names, `__Entity__.id` for reads and merges — never by reading every entity. A run clears an entity's record once its check completes, so a second run with nothing pending does no work. An entity ingested while a run works is found by the next one. An entity whose check did not complete stays pending and is retried: a failed lookup or judge call, an answer that was not a clean partition, a group held for one, or a merge an `update()` changed. After 3 judged runs without a usable verdict it becomes *unresolved*: it is reported in `FinalizeResult.dedup_unresolved`, left out of every candidate set and never merged automatically, until `dedup_all=True` retries it. A table re-sync that renames a row drops its vector, so the row is checked under its new name. `deduplicate_entities(dedup_all=True)` / `finalize(dedup_all=True)` checks every entity — once, after vectors were written outside `finalize()`.
+**It is incremental.** An entity is *pending* when it has no name vector, or when a `pending` system record lists it (see [SDK system nodes](#sdk-system-nodes)). Ingest writes entities without a vector and marks nothing on them, so a new entity is pending as written. A dedup run lists every entity without a vector in a `pending` record *before* it embeds it, so no crash can leave an unchecked entity looking checked. It then reaches the rest of the graph through indexes — the `__Entity__.embedding` vector index for nearest names, `__Entity__.id` for reads and merges — never by loading every entity; finding the entities without a vector is one scan in windows of internal node ids. A run clears an entity's record once its check completes, so a second run with nothing pending does no work. An entity ingested while a run works is found by the next one. An entity whose check did not complete stays pending and is retried: a failed lookup or judge call, an answer that was not a clean partition, a group held for one, or a merge an `update()` changed. Each run that puts it before the judge charges it one attempt, given back only when it was held for a neighbour's failed set or kept pending by a failed lookup alone; after 3 charged runs whose check did not complete (no usable verdict, a run interrupted mid-judging, or a merge an `update()` changed), the next run makes it *unresolved*: it is reported in `FinalizeResult.dedup_unresolved`, left out of every candidate set and never merged automatically, until `dedup_all=True` retries it. A table re-sync that renames a row drops its vector, so the row is checked under its new name. `deduplicate_entities(dedup_all=True)` / `finalize(dedup_all=True)` checks every entity — once, after vectors were written outside `finalize()` — and retries the unresolved ones. An entity with no name (a fact row keyed on a reading id) is given the vector of its id, as retrieval embeds it, and is never listed: the judge cannot judge a name it does not have.
 
-**Every merge is decided before any is written.** A run takes the graph's dedup lock (a second concurrent `finalize()` raises `DedupRunActiveError`), decides the merges of both phases below, writes them as a **merge plan**, seals it, and only then applies it. Each merge is **one atomic query** that moves every relationship the duplicate has (every type, both directions), folds its properties into the survivor, deletes it, and ticks itself off in the plan. A crash at any point is picked up by the next run: before sealing, nothing was merged and the work is judged again; after sealing, the next run finishes the plan from its ticks, and nothing is merged twice or half. A run that stalls past the lock's 10-minute heartbeat is taken over, and every write it makes afterwards checks — in the same query — that it still holds the lock, so it changes nothing.
+The cost follows the pending entities, not the graph. Measured: adding 1,000 entities to a graph of about 39,000 finalized in 4.5 s with a fake LLM, where the earlier whole-graph flow spent about 256 s and 5,982 LLM calls on dedup on every call. On a labeled set of 277 entities (138 true pairs, gpt-4.1, 3 runs), precision rose from 0.81 to 0.92–0.93 and F1 from 0.71–0.73 to 0.83–0.84, with 5 LLM calls instead of 14.
+
+**Every merge is decided before any is written.** A run takes the graph's dedup lock — one run per graph at a time: a second `finalize()` or `deduplicate_entities()`, from another process or on the same `GraphRAG`, raises `DedupRunActiveError` as soon as it reaches dedup (for `finalize()`, after its first step, the stub cleanup) and leaves the running one untouched — then decides the merges of both phases below, writes them as a **merge plan**, seals it, and only then applies it. Each merge is **one atomic query** that moves every relationship the duplicate has (every type, both directions), folds its properties into the survivor, deletes it, and ticks itself off in the plan. A crash at any point is picked up by the next run: before sealing, nothing was merged and the work is judged again; after sealing, the next run finishes the plan from its ticks, and nothing is merged twice or half. A live run refreshes its heartbeat every 30 s. A run that stalls past the lock's 10-minute heartbeat is taken over, and every write it makes afterwards checks — in the same query — that it still holds the lock, so it changes nothing. A run that stops with a sealed plan unfinished leaves its lock expired rather than released, so the next run takes it at once and finishes the plan first.
+
+<Note>
+`DedupRunActiveError` is exported from `graphrag_sdk`. Catch it when several workers may call `finalize()` on one graph. Nothing is lost by it: whatever is still pending when the running run finishes, including entities ingested while it worked, is checked by the next `finalize()`.
+</Note>
 
 ### Phase 1: Exact Name Match (Always Runs)
 
 1. **Fetch** the pending entities with their primary label (the non-`__Entity__` label), and their 10 nearest names from the vector index — searched from the vector stored on each entity — that could share a group with them (same canonical name or an acronym pair); when all 10 do, the lookup widens tenfold for that entity (up to 1,000), so twenty mentions of one name are all found
-2. **Group** by `(canonical_name, label)` — the name is case-folded with accents, punctuation, inner dots (`A.I.` = `AI`) and a leading English article removed, `Surname, Given` un-inverted, common abbreviations expanded and one trailing legal form (`Ltd`, `Inc`) dropped; word order and the letters of non-Latin scripts are kept. Grouping by label prevents cross-type merging (Person "Paris" and Location "Paris" stay separate)
+2. **Group** by `(canonical_name, label)` — the name is case-folded with accents, punctuation, apostrophes (`O'Brien` = `OBrien`), inner dots (`A.I.` = `AI`) and a leading English article removed, `&` read as `and`, `Surname, Given` un-inverted, common abbreviations expanded (`Corp.` → `corporation`, `Intl` → `international`) and one trailing legal form (`Ltd`, `Inc`, `GmbH`, `LLC`, `PLC`, ...) dropped. Words that are also ordinary words — `Group`, `Holding`, `Co`, `Company` — are not dropped, so `Sony Group Corporation` and `Sony Corporation` stay apart. Word order is kept (`Morgan Stanley` and `Stanley Morgan` stay apart), and so are the letters of non-Latin scripts (`Отдел 5` and `Кабинет 5` stay apart) and a symbol glued to a word (`C`, `C#` and `C++` stay apart, while `C#` still equals `C Sharp`). Grouping by label prevents cross-type merging (Person "Paris" and Location "Paris" stay separate)
 3. **Fold acronyms:** a 3–6 letter name joins the group of the *single* same-label entity whose initials it spells (`AIHS` / `Ashford Island Historical Society`). An acronym with several candidate expansions is left alone
 4. **For each group with duplicates:**
    - **Who decides:** when a group holds a node a declared table wrote, it merges here by rule, with no LLM. A group of extracted mentions only is handed to the judge (Phase 2) instead — the same spelling is evidence, not proof (Paris, France and Paris, Texas) — and so is a group holding an entity whose nearest-name search did not finish: a second row of the name may lie past what it found
-   - **Survivor:** A node a declared table wrote (it carries the row's key, so the table's next re-sync still finds it), then a real node over a placeholder, then the long form over an acronym, then the best-connected node (most RELATES and MENTIONED_IN edges), then the longest description, then the longest name. Two nodes written from declared keys are never merged into each other, whatever they are called
+   - **Survivor:** A node a declared table wrote (it carries the row's key, so the table's next re-sync still finds it), then a real node over a placeholder, then the long form over an acronym, then the best-connected node (most RELATES and MENTIONED_IN edges), then the longest description, then the longest name, then the id, so a tie settles the same way on every run. Two nodes written from declared keys are never merged into each other, whatever they are called. A mention whose name two keyed rows share joins neither row: it is left apart, kept from the judge and listed in `FinalizeResult.probable_duplicates`
    - **The merge** (applied from the sealed plan): one generated query per duplicate. The SDK reads which relationship types the duplicate has, and generates a block per type and direction that moves those edges to the survivor with the write path's own keys — `RELATES` keyed on `rel_type` with `source_chunk_ids` unioned rather than overwritten, every other type on its endpoints with `SET r += properties`; an edge between the duplicate and the survivor is dropped rather than turned into a self-loop. The survivor is bound before every `MERGE` (a path-`MERGE` with an unbound `(s {id})` creates an empty ghost `__Entity__` node), and every pattern expands from the bound duplicate (anchored on a labelled far end, the planner scans the whole label). In the same query the duplicate's `source_chunk_ids` are unioned into the survivor's, its description is joined onto the survivor's with `" | "` (each member kept once, in `descriptions`), its name is added to the survivor's `aliases` when it is not a spelling variant, and every other property the survivor lacks — a typed column a table signed, `is_stub` — is copied over. A property both hold with **different** values is a collision, and neither value is lost: the one the judge chose stays (its `KEEP`, on a judged merge), otherwise the survivor's, and the other is appended to `<property>__dropped` on the survivor — a list that later merges add to (two list values are unioned instead); `FinalizeResult.dedup_collisions` names each. Then `DETACH DELETE`. The query re-checks that nothing it was generated from has changed — a relationship type it has no block for, a property of the duplicate added, removed or changed, a new value on the survivor for one of those keys, or a label added to or removed from either node — and writes nothing if so; the merge is read and generated again. An entity deleted, re-keyed or renamed since it was judged makes the merge *changed*: skipped, and its group decided again next run
+5. **A declared type beats a guessed one.** The exact phase never merges across labels, with one exception. When a name exists under exactly one label a [table mapping](/structured-ingestion) declared and under one or more labels nothing declared, the declared entity absorbs the guesses: a `Concept` the extractor guessed for "Carbon Farming" joins the `MitigationPractice` a mapping declared. The adopted node's labels do not carry over, since its label was the guess being corrected. This applies only to declared labels outside the built-in entity types (`Person`, `Organization`, ...), because the extractor always had those and a different label there was a choice, not a fallback. Two declared labels sharing a name stay apart, and so does a name two rows of the declared label share. Names left under more than one label are reported in `FinalizeResult.unmerged_name_collisions`
 
 ### Phase 2: Judged Cross-Document Dedup
 
 Ingest resolves per document, so `Airbus` in one file and `Airbus SE` in another never meet until here. Every run has a judge: a [`DedupJudge`](/strategies#7-dedupjudge), `LLMJudge` with the GraphRAG LLM unless `finalize(judge=...)` is given another. The run (`storage/judge_dedup.py`) nominates the candidates and checks every answer; the judge decides identity only — it is given sets and returns verdicts, and never writes a merge. It works over the pending entities, with the exact phase's decisions applied in memory (an entity it absorbs is represented by its survivor):
 
-1. **Nominate** candidate pairs without an LLM: the 5 nearest names of each pending entity from the `__Entity__` vector index at cosine ≥ 0.5 (searched from the stored vectors, 250 entities per query, one result row each), plus the same-spelling pairs of extracted mentions and the ambiguous acronym/long-form pairs Phase 1 handed over. Descriptions are not embedded
+1. **Nominate** candidate pairs without an LLM: the 5 nearest names of each pending entity from the `__Entity__` vector index at cosine ≥ 0.5 (searched from the stored vectors, up to 250 entities per query and at most 2,500 result rows per query, so a wide lookup stays well inside the query timeout), plus the same-spelling pairs of extracted mentions and the ambiguous acronym/long-form pairs Phase 1 handed over. Descriptions are not embedded
 2. **Group** candidates into dense sets of at most 8: more than half of a set's pairs must be nominated edges, so a chain A–B–C–D where only neighbours are similar (exactly half) cannot form one set (agreements in separate sets still chain, step 4); an edge left between two sets is its own 2-member set. Whole sets are packed into prompts of ≤ 3,000 tokens; the entity text is rendered one line per entity — name, labels, up to 5 existing aliases, description, and the values it holds for the attributes your ontology declares for its type(s) (`born: 1960; role: "CEO"`) — flattened and quoted, and the prompt tells the model it is untrusted document data. Each prompt opens with the types its members carry and their declared attributes (only those types, not the whole ontology); a node already merged under two types shows the attributes of both
-3. **Judge** — the judge partitions each set into same-referent groups (no similarity scores shown) and gives each group of two or more its best name, copied from the members' names and aliases. Two different values of a fact that does not change (a birth or founding date, a birthplace, an identifier) mean different entities; a value only one side holds is not a contradiction; a value that changes over time (an age, a title) is weak evidence. Where a group's members disagree on an attribute, the judge also says whose value the merged entity keeps (`| KEEP: born=1`): a member number, never a value it writes itself. Measured on a small labelled set (gpt-4.1, 3 runs each): namesakes told apart only by a birth year or birthplace were merged every time without the values shown, and kept apart every time with them; the same person with a changed age or title still merged. The answer lists only groups of two or more (`SET 1 GROUP: 1, 4 | NAME: …`), or `SET 2 NONE` for a set where nothing merges; a member no line lists is a different entity from the rest of its set. Leaving out the one-member lines cut answer tokens by about two thirds (measured on the 6-document experiment: 569 → 194 tokens, 4 → 2 calls), and the model, freed of them, stopped the slip that had kept Tim Cook and Timothy Cook apart. The answer ends with the line `END`: since unlisted members count as different, an answer cut short after a group line would otherwise turn the groups it never reached into "different" verdicts. Without `END`, the set of a last group line is unanswered (a last `NONE` line closed its set, so a forgotten `END` there costs nothing). `LLMJudge` usually reuses the GraphRAG LLM, so an output limit set on it for short answers (`max_tokens`) is raised to 4,096 for judge calls (`LLMJudge(min_output_tokens=)` sets the floor; `None` keeps the LLM's own limit, for a server with a small context window); it never sets a limit itself, since a reasoning model spends output tokens on thought. (This step describes `LLMJudge`; a judge of your own gets the same sets as `JudgeSet`s and answers with `SetVerdict`s.) Whatever the judge, an answer counts only when it is clean — no member the set lacks, no member in two groups, no merged name or `KEEP` on a one-member group; a set without one — a failed call, a malformed answer, or one cut before `END` — is asked again (`retry=True`; `LLMJudge` then asks it on its own), up to 2 more times. Every set is judged before anything is merged
+3. **Judge** — the judge partitions each set into same-referent groups (no similarity scores shown) and gives each group of two or more its best name, copied from the members' names and aliases. Two different values of a fact that does not change (a birth or founding date, a birthplace, an identifier) mean different entities; a value only one side holds is not a contradiction; a value that changes over time (an age, a title) is weak evidence. Where a group's members disagree on an attribute, the judge also says whose value the merged entity keeps (`| KEEP: born=1`): a member number, never a value it writes itself. Measured on a small labelled set (gpt-4.1): namesakes told apart only by a birth year or birthplace were merged every time without the values shown, and kept apart every time with them. The answer lists only groups of two or more (`SET 1 GROUP: 1, 4 | NAME: …`), or `SET 2 NONE` for a set where nothing merges; a member no line lists is a different entity from the rest of its set. Leaving out the one-member lines cut answer tokens by about two thirds. The answer ends with the line `END`: since unlisted members count as different, an answer cut short after a group line would otherwise turn the groups it never reached into "different" verdicts. Without `END`, the set of a last group line is unanswered (a last `NONE` line closed its set, so a forgotten `END` there costs nothing). `LLMJudge` usually reuses the GraphRAG LLM, so an output limit set on it for short answers (`max_tokens`) is raised to 4,096 for judge calls (`LLMJudge(min_output_tokens=)` sets the floor; `None` keeps the LLM's own limit, for a server with a small context window); it never sets a limit itself, since a reasoning model spends output tokens on thought. (This step describes `LLMJudge`; a judge of your own gets the same sets as `JudgeSet`s and answers with `SetVerdict`s.) Whatever the judge, an answer counts only when it is clean — no member the set lacks, no member in two groups, no merged name or `KEEP` on a one-member group; a set without one — a failed call, a malformed answer, or one cut before `END` — is asked again (`retry=True`; `LLMJudge` then asks it on its own), up to 2 more times. Every set is judged before anything is merged
 4. **Resolve** over the whole run: agreements are unioned across sets — "AAPL" = "Apple Inc." in one set and "Apple Inc." = "Apple" in another become one group — but never into a group holding a pair the judge kept apart in a set, or a protected pair (two keyed rows, a mention two rows could own; neither is ever put to the judge). A group that holds a member of a set that never got a usable answer is **held**: that answer could still change it, so nothing in it merges and its pending members are checked again (one held only because of a neighbour's failed set gets its judged attempt back)
 5. **Same → merge**, by the Phase 1 rules and the same single query: survivor by the Phase 1 rank; every member's description kept; other names kept in `aliases`; provenance and missing properties carried; every edge moved. The survivor gains every member's label, as Cypher labels and on record in `merged_labels`, and takes the judge's name for the group when it is one of the members' own names or aliases (its old name moves to `aliases`, and its name vector is replaced; the id does not change; a table row keeps its declared name). The rename is the group's last operation in the plan
 6. **Different → nothing** is written to the entities: the pending entity's check is complete, and the pair is put to the judge again only if a later pending entity brings it into a set
 
-gpt-4.1 made 9 wrong merges where gpt-4o-mini made 51 on the benchmark corpus, so give `LLMJudge` a gpt-4.1-class model: `finalize(judge=LLMJudge(gpt41))`. Statistics (entities, neighbours, candidates, sets, judge calls, failed calls, unanswered sets, agreed pairs, merges decided, and what the judge spent: `LLMJudge`'s prompts in `llm_calls`) are in `EntityDeduplicator.last_judge_stats` and `FinalizeResult.judge_stats`; what the run left — still pending, unresolved, merges skipped as changed — is in `EntityDeduplicator.last_report` and on `FinalizeResult`. There is no run without a judge — `judge=False` raises `TypeError` — so nothing waits for a judged run that may never come. A run with nothing pending asks the judge nothing.
+gpt-4.1 made 9 wrong merges where gpt-4o-mini made 51 on the benchmark corpus, so give `LLMJudge` a gpt-4.1-class model: `finalize(judge=LLMJudge(gpt41))`. There is no run without a judge — `judge=False` raises `TypeError` — so nothing waits for a judged run that may never come. A run with nothing pending asks the judge nothing.
+
+#### The judge component
+
+```python
+from graphrag_sdk import DedupJudge, JudgeGroup, JudgeSet, LLMJudge, SetVerdict
+
+# The default: LLMJudge with the GraphRAG instance's llm.
+await rag.finalize()
+
+# Another model for the judge only.
+await rag.finalize(judge=LLMJudge(judge_llm, max_concurrency=None, min_output_tokens=4096))
+
+# A judge of your own: no LLM at all.
+class SpellingJudge(DedupJudge):
+    async def judge(self, sets: list[JudgeSet], *, retry: bool = False) -> list[SetVerdict | None]:
+        verdicts = []
+        for s in sets:
+            by_name: dict[str, list[int]] = {}
+            for i, ent in enumerate(s.entities):
+                by_name.setdefault(ent.name.casefold(), []).append(i)
+            verdicts.append(SetVerdict(groups=[
+                JudgeGroup(members=m) for m in by_name.values() if len(m) > 1
+            ]))
+        return verdicts
+
+await rag.finalize(judge=SpellingJudge())
+```
+
+- **`JudgeSet`** — one candidate set: `entities` (each a `JudgeEntity` with `name`, `labels`, `aliases`, `description` and `attributes`, the values it holds for its types' declared attributes) and `types` (each a `JudgeType` with `label`, `description` and its declared `attributes`).
+- **`SetVerdict`** — the answer for one set: `groups`, a list of `JudgeGroup(members=[positions], name=None, keep={})`. `name` is the merged entity's name and is used only when it is one of the members' own names or aliases; `keep` maps an attribute to the member whose value the merged entity keeps. A member no group lists is a different entity from the rest of its set. Return `None` for a set the judge could not decide.
+- **`retry=True`** marks a second or third ask of sets that got no usable answer; `LLMJudge` then sends one set per prompt.
+- **`usage()`** — optional running totals of what the judge spent, as whole numbers. The run adds what it spent to `judge_stats`. `LLMJudge` reports `llm_calls` (prompts sent) and `llm_failed` (prompts that got no response).
+- **`LLMJudge(llm, *, max_concurrency=None, min_output_tokens=4096)`** — `max_concurrency=None` uses the LLM's own; `min_output_tokens` is the output floor described in step 3, and `None` keeps the LLM's own limit.
+
+Whatever the judge, the run checks each answer, re-asks a set without a usable one, and keeps the merge itself. See [Strategies](/strategies#7-dedupjudge) for more.
+
+#### Statistics and the report
+
+`FinalizeResult.judge_stats` (also `EntityDeduplicator.last_judge_stats`) holds the judged phase's counts: `entities`, `neighbours`, `candidates`, `sets`, `judge_calls` (rounds: the first ask and each re-ask), `judge_failed`, `unanswered_sets`, `agreed_pairs`, `merged`, and whatever the judge reports through `usage()` (`llm_calls` and `llm_failed` for `LLMJudge`). `FinalizeResult.judge_calls` repeats the round count; the number of LLM prompts is `judge_stats["llm_calls"]`. What the run left — still pending, unresolved, merges skipped as changed, property collisions — is in `EntityDeduplicator.last_report` and on `FinalizeResult` (see [Incremental Updates](/incremental-updates#finalizeresult)).
+
+### What a Merge Keeps
+
+Every merge, by rule or by the judge, keeps what the duplicate carried:
+
+| What | How it is kept |
+|---|---|
+| Relationships | Every relationship of every type and direction moves to the survivor. `RELATES` edges stay keyed on `rel_type` with `source_chunk_ids` unioned; an edge between the two nodes is dropped rather than turned into a self-loop |
+| Description | Each member's description is kept once in the `descriptions` list, and `description` is that list joined with `" \| "` |
+| Name | The duplicate's name, and its own aliases, go to the survivor's `aliases` (a spelling variant of the survivor's name is not added). A judged group may also rename the survivor to the judge's name; the old name moves to `aliases`, the id does not change, and the name vector is replaced. A table row keeps its declared name |
+| Labels | A judged merge gives the survivor every member's label, as real Cypher labels and on record in `merged_labels` (a `" \| "`-joined string), so a later merge carries them on. A merge by rule carries only the labels the duplicate had itself absorbed; an adoption carries none |
+| Provenance | The node-level `source_chunk_ids` are unioned |
+| Properties | A property only the duplicate has is copied. Where both hold different values, the judge's `KEEP` pick stays (on a judged merge), otherwise the survivor's, and the other value is appended to `<property>__dropped` (a list) on the survivor. Two list values are unioned instead. Each collision is named in `FinalizeResult.dedup_collisions` |
+
+### Deprecated Arguments
+
+The fuzzy name-embedding phase is removed: finalize-time dedup is the exact phase plus the judge. `deduplicate_entities()` still accepts `fuzzy=False` and `similarity_threshold=` for now, ignored, with a `DeprecationWarning`; `fuzzy=True` raises `ValueError`. Ingest-time resolvers (`ingest(resolver=...)`) are unchanged.
+
+<Note>
+`finalize()` and `deduplicate_entities()` call the LLM through the default `LLMJudge`. To keep dedup LLM-free, pass a `DedupJudge` of your own, such as the `SpellingJudge` above.
+</Note>
 
 ### Running alongside `update()` and deletes
 
 `update()`, `delete_document()` and a table re-sync may run while `finalize()` deduplicates; they never wait. Every SDK query that deletes or re-keys an entity leaves a `deleted` record in the same query while a dedup run is in progress, and a planned merge that would touch such an entity is skipped as changed. FalkorDB runs one write at a time per graph, and each merge and each SDK delete is a single query, so every delete lands either before a merge — which sees the record — or after it, as an ordinary delete. Deletes you issue with your own Cypher are not covered.
+
+A table re-sync that re-keys a renamed row into an id another node already holds folds the two nodes in one query, the same way a merge does: every edge type moves, and nothing is written if either node changed since it was read — a property, an edge type, or a label (for example after `rename_entity()`). The folded node is pending dedup again, since no run has seen it with the row's identity.
 
 ### SDK system nodes
 
@@ -268,9 +366,9 @@ The SDK keeps a small, fixed set of its own nodes in the data graph, under two l
 | Label | Holds | Lifetime |
 |---|---|---|
 | `__GraphRAGConfig__` | what the data *is*: the embedding model and vector size the stored vectors were written with | as long as the graph |
-| `__GraphRAGProcessing__` | dedup work in progress, by `kind`: `run` (the lock: owner, heartbeat), `pending` (entities whose check is owed, with their judged attempts), `unresolved` (entities no longer retried, with the reason and who they were kept from), `deleted` (entities an SDK path removed during a run), and the merge plan (`plan_header`, `plan`, `plan_ids`) | until the work completes; a finished run leaves only `pending` and `unresolved` records still owed |
+| `__GraphRAGProcessing__` | dedup work in progress, by `kind`: `run` (the lock: owner, heartbeat), `pending` (entities whose check is owed, with their judged attempts), `unresolved` (entities no longer retried, with the reason and who they were kept from), `deleted` (entities an SDK path removed during a run), and the merge plan (`plan_header`, `plan`, `plan_ids`) | until the work completes; a finished run leaves only `pending` and `unresolved` records still owed (and, after a run that had nothing to plan, the `deleted` records of deletes made while it ran, cleared by the next run) |
 
-They live beside the data, not in a graph of their own, because a dedup write must check that its run still owns the lock *in the same query* that changes entities, and a FalkorDB query cannot span two graphs. They have no edges and no vector, so no traversal or search reaches them, and `get_statistics()` does not count them. Range indexes on `kind` and `eid` keep every check one index lookup.
+They live beside the data, not in a graph of their own, because a dedup write must check that its run still owns the lock *in the same query* that changes entities, and a FalkorDB query cannot span two graphs. They have no edges and no vector, so no traversal or search reaches them, and `get_statistics()` does not count them: its `node_count` subtracts them and its `entity_types` leaves out every `__GraphRAG*` label. Range indexes on `kind` and `eid` keep every check one index lookup.
 
 ---
 
@@ -279,6 +377,28 @@ They live beside the data, not in a graph of their own, because a dedup write mu
 ### Version
 
 GraphRAG SDK requires **FalkorDB 4.20 or later**. Before 4.20.0 every write to a node holding a vector left a stale copy in the vector index, and searches returned fewer neighbours than asked for (measured: 2–3 of 6 after one write) — and ingest, `update()` and dedup all write to such nodes. Each connection asks the server its version once, before its first query (and again after `close()`), and refuses an older one with `FalkorDBVersionError` (a `DatabaseError`), so nothing is written to it: `ingest()`, `query()`, `finalize()` and the rest fail at once, with the version found and how to upgrade. A server that does not report its version (`MODULE LIST` refused by an ACL, or disabled) is let through with a warning; an error reply that passes, such as `TRYAGAIN`, is retried like a query; one that cannot be asked, after the usual retries, fails that query with `DatabaseUnavailableError` — no query runs unchecked — and is asked again by the next.
+
+```python
+from graphrag_sdk import FalkorDBVersionError
+
+try:
+    await rag.ingest("report.pdf")
+except FalkorDBVersionError as e:
+    print(e)  # names the version found and the minimum, 4.20
+```
+
+**Supported engines.** FalkorDB ships two engines: 4.x is the C engine and 6.x the Rust engine. They differ in index DDL, procedures, error text and the order of unordered rows, and the SDK runs on both. CI runs the integration suite against a pinned release of each, `v4.22.2` and `6.0.2`; `docker-compose.yml`, the examples and the `docker run` lines in these docs use `falkordb/falkordb:v4.22.2`.
+
+**Upgrade order.** Upgrade the FalkorDB server to 4.20 or later *first*, then the SDK: the SDK refuses an older server rather than running on it. A graph built on an older server needs no migration. Entities it already holds vectors for count as checked, and new ones are checked by the next `finalize()`; to check every entity once, run `finalize(dedup_all=True)`.
+
+### Deterministic Results
+
+FalkorDB 4.x and 6.0.x list unordered rows differently, so any result cut by a `LIMIT` or a cap would change after a server upgrade. The SDK orders before it cuts:
+
+- `search_chunks()` and `search_entities()` break ties by id (see [Search Methods](#search-methods)); fulltext search orders by score, then id.
+- `get_connected_entities()` keeps the 50 entities with the lowest ids at `max_hops=1`. Beyond one hop the engine's order is kept, because ordering would need every path before the `LIMIT`.
+- The relation-pattern backfill orders the chunk pairs its cap shows the LLM; `GraphVisualizer.sample_nodes()` and a new relation pattern's copied properties are ordered too.
+- A dedup merge's survivor is ranked down to the id, so a tie settles the same way on every run.
 
 ### Vector Storage
 
@@ -294,22 +414,24 @@ Node vector search uses 4 arguments:
 db.idx.vector.queryNodes('Label', 'property', $top_k, vecf32($vector))
 ```
 
-Relationship vector search (FalkorDB >= 4.2):
+Relationship vector search:
 ```
 db.idx.vector.queryRelationships('RELATES', 'embedding', $top_k, vecf32($vector))
 ```
 
 ### Graph Deletion
 
-For fast graph deletion, use `GRAPH.DELETE` (the Redis-level command):
+`rag.delete_all()` deletes the graph with `GRAPH.DELETE` (the Redis-level command), and drops its paired ontology graph too:
 ```python
-await rag.graph_store.delete_all()  # Uses GRAPH.DELETE internally
+await rag.delete_all()  # Uses GRAPH.DELETE internally
 ```
-This is much faster than `MATCH (n) DETACH DELETE n` on large graphs.
+This is much faster than `MATCH (n) DETACH DELETE n` on large graphs. The indexes go with the graph, and the SDK forgets which ones it created, so the next ingest creates them again before it writes.
 
 ### Retry Behavior
 
-The connection layer makes up to `retry_count` attempts per query (default 3: the first try and two retries), with exponential backoff and jitter between them (`retry_delay * 2^attempt * random(0.5, 1.5)`), and employs a circuit breaker to short-circuit repeated failures. Everything that is not a server reply is retried (a lost connection or socket timeout, `LOADING`), and of the server's replies only the temporary ones (a full query queue, `BUSY`, `NOREPLICAS`, `MISCONF`, a cluster redirect or failover, a read-only replica, out of memory); one that outlasts every attempt raises `DatabaseUnavailableError`. A query the server rejects, or a read it stops at its timeout, raises `DatabaseError` at once, without retrying or counting against the breaker. See [Configuration](/configuration#retry-behavior).
+The connection layer makes up to `retry_count` attempts per query (default 3: the first try and two retries), with exponential backoff and jitter between them (`retry_delay * 2^attempt * random(0.5, 1.5)`), and employs a circuit breaker to short-circuit repeated failures. Everything that is not a server reply is retried (a lost connection or socket timeout, `LOADING`), and of the server's replies only the temporary ones (a full query queue, `BUSY`, `NOREPLICAS`, `MISCONF`, a cluster redirect or failover, a read-only replica, out of memory); one that outlasts every attempt raises `DatabaseUnavailableError`. A query the server rejects, or one it stops with "Query timed out", raises `DatabaseError` at once, without retrying; a rejection counts as a healthy answer for the circuit breaker. If you catch `DatabaseUnavailableError` to detect an outage, catch `DatabaseError` for these.
+
+**Timeouts.** The server stops a read at `query_timeout_ms` (default 10,000 ms). The client waits `query_timeout_ms` + 5 s for each reply (with no limit when `query_timeout_ms` is `None`), so a query that takes 5–10 s gets its answer instead of failing on the client. Opening a connection and `ping()` still give up after 5 s, and the driver's first probe of the server waits 5 s for each reply, though redis-py retries that probe on its own (measured with redis-py 8.1: about 60 s against a server that accepts connections and never answers, before `DatabaseUnavailableError`). On a server that stops answering queries once the connection is open, a query raises `DatabaseUnavailableError` after about 48 s at the defaults (46–50 s, with the jitter): each of the `retry_count` attempts waits `query_timeout_ms` + 5 s, plus the backoff between them. Lower `query_timeout_ms` or `retry_count` to fail sooner. See [Configuration](/configuration#retry-behavior).
 
 ---
 
@@ -324,5 +446,7 @@ The connection layer makes up to `retry_count` attempts per query (default 3: th
 | [`storage/dedup_judges/`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/dedup_judges) | `DedupJudge` — the judge component — and `LLMJudge`, the default: prompt, packing, parsing |
 | [`storage/merge_query.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/merge_query.py) | The single generated query that applies one merge: every edge moved, the fold, the delete and the plan tick |
 | [`storage/system_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/system_store.py) | SystemStore — the `__GraphRAGProcessing__` records: the dedup lock, pending/unresolved/deleted records, the merge plan, fenced writes |
+| [`storage/identity.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/identity.py) | `canonical_key()` for the exact phase, and the near-miss finder behind `FinalizeResult.probable_duplicates` (reports, never merges) |
+| [`storage/ontology_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/ontology_store.py) | OntologyStore — the persisted ontology in the paired `<graph_name>__ontology` graph |
 | [`utils/cypher.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/utils/cypher.py) | sanitize_cypher_label() and other Cypher utilities |
 | [`core/connection.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/core/connection.py) | FalkorDBConnection — async client, connection pooling, retry |
