@@ -431,7 +431,7 @@ class TestMultiPathRetrieval:
     async def test_2hop_relationship_expansion(
         self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
     ):
-        """2-hop relationship expansion should be attempted for top entities."""
+        """The walk expands the far end of an edge, reaching a second link."""
         mp_vector_store.search_relationships = AsyncMock(
             return_value=[
                 {
@@ -440,22 +440,27 @@ class TestMultiPathRetrieval:
                     "tgt_name": "Acme",
                     "fact": "",
                     "score": 0.9,
+                    "src_id": "alice__person",
+                    "tgt_id": "acme__org",
                 },
             ]
         )
 
-        call_count = {"two_hop_rel": 0}
+        expanded: list[list[str]] = []
 
         async def mock_query_raw(cypher, params=None):
-            if "r1" in cypher and "r2" in cypher:
-                call_count["two_hop_rel"] += 1
-                result = MagicMock()
-                result.result_set = [
-                    ["Alice", "WORKS_AT", "Acme", "LOCATED_IN", "NYC"],
-                ]
-                return result
             result = MagicMock()
             result.result_set = []
+            if "RETURN r, b.id AS other" in cypher:
+                eids = params["eids"]
+                expanded.append(eids)
+                # src, rel, tgt, description, fact, distance, far end id
+                if "alice__person" in eids:
+                    result.result_set = [["Alice", "WORKS_AT", "Bob", "", "", 0.3, "bob__person"]]
+                elif "bob__person" in eids:
+                    result.result_set = [
+                        ["Bob", "LIVES_IN", "NYC", "Bob lives in NYC.", "", 0.1, "nyc__location"]
+                    ]
             return result
 
         mp_graph_store.query_raw = AsyncMock(side_effect=mock_query_raw)
@@ -466,9 +471,12 @@ class TestMultiPathRetrieval:
             embedder=mp_embedder,
             llm=mp_llm,
         )
-        result = await s.search("Where is Alice's company located?")
+        result = await s.search("Where does Alice's colleague live?")
         assert isinstance(result, RetrieverResult)
-        assert call_count["two_hop_rel"] >= 1
+        # Round 2 expanded Bob, reached only through Alice's edge.
+        assert any("bob__person" in eids for eids in expanded[1:])
+        rels = [i.content for i in result.items if i.metadata.get("section") == "relationships"]
+        assert rels and "Bob —[LIVES_IN]→ NYC: Bob lives in NYC." in rels[0]
 
     async def test_source_document_tags(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
         """Passages should include [Source: <path>] with the full Document.path verbatim.
