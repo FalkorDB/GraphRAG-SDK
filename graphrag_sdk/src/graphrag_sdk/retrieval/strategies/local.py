@@ -13,6 +13,31 @@ from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 
 logger = logging.getLogger(__name__)
 
+# Longest entity description shown next to a chunk.
+_MAX_ENTITY_DESCRIPTION_CHARS = 300
+
+
+def _entity_text(entity: dict[str, Any]) -> str:
+    """``name (Type): description`` for one connected entity.
+
+    Only what reads as context: the raw property map also holds the name
+    embedding, provenance (``source_chunk_ids``) and dedup bookkeeping
+    (``descriptions``, ``merged_labels``, ``*__dropped``), none of which
+    belongs in an LLM prompt.
+    """
+    props = entity.get("properties") or {}
+    name = props.get("name") or entity.get("id") or ""
+    if not name:
+        return ""
+    types = [lbl for lbl in entity.get("labels") or [] if not lbl.startswith("__")]
+    text = f"{name} ({', '.join(types)})" if types else str(name)
+    desc = props.get("description") or ""
+    if isinstance(desc, str) and desc:
+        if len(desc) > _MAX_ENTITY_DESCRIPTION_CHARS:
+            desc = desc[:_MAX_ENTITY_DESCRIPTION_CHARS].rsplit(" ", 1)[0] + " …"
+        text += f": {desc}"
+    return text
+
 
 class LocalRetrieval(RetrievalStrategy):
     """Vector similarity + 1-hop graph traversal retrieval.
@@ -102,8 +127,9 @@ class LocalRetrieval(RetrievalStrategy):
 
             entities = record.get("entities", [])
             if entities:
-                entity_strs = [str(e) for e in entities]
-                parts.append("Related entities: " + ", ".join(entity_strs))
+                entity_strs = [s for s in (_entity_text(e) for e in entities) if s]
+                if entity_strs:
+                    parts.append("Related entities: " + "; ".join(entity_strs))
 
             items.append(
                 RetrieverResultItem(

@@ -10,6 +10,7 @@ from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+from graphrag_sdk.retrieval.strategies.result_assembly import format_relation_line
 
 logger = logging.getLogger(__name__)
 
@@ -48,22 +49,27 @@ async def search_relates_edges(
             src = rel.get("src_name", "")
             tgt = rel.get("tgt_name", "")
             rel_type = rel.get("type", "")
-            fact = rel.get("fact", "")
             score = float(rel.get("score", 0.0))
             if src and rel_type and tgt:
-                line = f"{src} —[{rel_type}]→ {tgt}"
-                if fact:
-                    line += f": {fact}"
+                line = format_relation_line(
+                    src, rel_type, tgt, rel.get("description", ""), rel.get("fact", "")
+                )
                 fact_strings.append((line, score))
-            # Add entities as graph entry points
-            if src:
-                src_id = src.strip().lower().replace(" ", "_")
-                if src_id not in entities:
-                    entities[src_id] = {"name": src, "description": ""}
-            if tgt:
-                tgt_id = tgt.strip().lower().replace(" ", "_")
-                if tgt_id not in entities:
-                    entities[tgt_id] = {"name": tgt, "description": ""}
+            # The endpoints become entry points for relationship expansion
+            # and chunk retrieval, which look entities up by id. A hit from an
+            # older store carries no ids; fall back to the name as before.
+            # Their descriptions stay out: the fact line already says how they
+            # relate to the question, and describing every endpoint of every
+            # matched edge filled the entity section with side entities that
+            # pulled single-fact answers off course (GraphRAG-Bench Fact
+            # Retrieval, gpt-4.1: 65.3 -> 60.7 with them shown).
+            for side in ("src", "tgt"):
+                name = rel.get(f"{side}_name", "")
+                if not name:
+                    continue
+                eid = rel.get(f"{side}_id") or name.strip().lower().replace(" ", "_")
+                if eid not in entities:
+                    entities[eid] = {"name": name, "description": ""}
     except LatencyBudgetExceededError:
         raise
     except Exception as exc:
@@ -110,6 +116,10 @@ async def discover_entities(
             continue
         seen_kw.add(k_low)
         kw_batch.append(kw)
+    # Short acronyms ("US", "EU", kept as entities since 1.5.0) only match
+    # exactly or by fulltext: as a substring they hit unrelated names
+    # ("Austria", "Museum") and spend the per-keyword quota on noise.
+    contains_batch = [kw for kw in kw_batch if not (len(kw) <= 3 and kw.isupper())]
 
     if kw_batch:
         # Pass a1: exact-name matches, capped per keyword. Inserted first
@@ -122,8 +132,16 @@ async def discover_entities(
                 "UNWIND $keywords AS kw "
                 "CALL { "
                 "  WITH kw "
-                "  MATCH (e:__Entity__) WHERE toLower(e.name) = toLower(kw) "
+                "  MATCH (e:__Entity__) "
+                "  WHERE toLower(e.name) = toLower(kw) "
+                # A dedup merge keeps the names it folded away as aliases.
+                "     OR any(al IN coalesce(e.aliases, []) WHERE toLower(al) = toLower(kw)) "
+                # A direct name match beats an alias match; id breaks ties.
+                # The rank is computed in a WITH: FalkorDB 6.0 rejects an
+                # outer variable (kw) referenced in a subquery's ORDER BY.
+                "  WITH e, CASE WHEN toLower(e.name) = toLower(kw) THEN 0 ELSE 1 END AS rank "
                 "  RETURN e.id AS id, e.name AS name, e.description AS desc "
+                "  ORDER BY rank ASC, id ASC "
                 "  LIMIT 3 "
                 "} "
                 "RETURN id, name, desc",
@@ -154,14 +172,17 @@ async def discover_entities(
                 "CALL { "
                 "  WITH kw "
                 "  MATCH (e:__Entity__) "
-                "  WHERE toLower(e.name) CONTAINS toLower(kw) "
+                "  WHERE (toLower(e.name) CONTAINS toLower(kw) "
+                "         OR any(al IN coalesce(e.aliases, []) "
+                "                WHERE toLower(al) CONTAINS toLower(kw))) "
                 "    AND toLower(e.name) <> toLower(kw) "
+                "    AND none(al IN coalesce(e.aliases, []) WHERE toLower(al) = toLower(kw)) "
                 "  RETURN e.id AS id, e.name AS name, e.description AS desc "
                 "  ORDER BY size(e.name) ASC, toLower(e.name) ASC, e.id ASC "
                 "  LIMIT 5 "
                 "} "
                 "RETURN id, name, desc",
-                {"keywords": kw_batch},
+                {"keywords": contains_batch},
             )
             for row in result.result_set:
                 _add(
@@ -253,7 +274,7 @@ async def expand_sibling_entities(
             "WHERE NOT sibling.id IN $found_ids "
             "RETURN DISTINCT sibling.id AS id, sibling.name AS name, "
             "sibling.description AS desc "
-            "ORDER BY sibling.name "
+            "ORDER BY sibling.name, sibling.id "
             "LIMIT $limit",
             {"found_ids": found_ids, "limit": max_siblings},
         )
