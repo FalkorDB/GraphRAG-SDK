@@ -50,7 +50,7 @@ below).
 Retrieval is handled by `MultiPathRetrieval`
 ([`multi_path.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/multi_path.py)),
 the SDK's default retrieval strategy. It runs several independent search
-mechanisms in parallel and merges their results, so a fact only needs to be
+mechanisms and merges their results, so a fact only needs to be
 found by *one* path to make it into the final context — see
 [Retrieval](/retrieval) for the full step-by-step breakdown. The mechanisms
 named in the opening paragraph map onto it like this:
@@ -62,15 +62,15 @@ passages with similar meaning, even without shared keywords) and over
 `RELATES` edges (finds structured facts — `Entity —[REL]→ Entity` — by
 meaning). They use different FalkorDB procedures: chunk and entity search call
 `db.idx.vector.queryNodes`, while edge search calls
-`db.idx.vector.queryRelationships` (FalkorDB ≥ 4.2), falling back to a
-`vec.cosineDistance` Cypher scan when that query fails or the graph has no
-`RELATES` vector index
+`db.idx.vector.queryRelationships`, falling back to a
+`vec.cosineDistance` Cypher scan when that query fails, or returns nothing
+while the graph has no `RELATES` vector index
 (`search_relates_edges()` in
 [`entity_discovery.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py),
 `retrieve_chunks()` in
 [`chunk_retrieval.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/chunk_retrieval.py)).
 
-Both paths return a similarity score, but note where that score is and isn't
+Both paths return a similarity score (higher is closer), but note where that score is and isn't
 used as a filter: facts are thresholded by `filter_facts_by_relevance()`,
 whereas chunk retrieval applies **no similarity floor** — it takes the top *k*
 and ranks them. Scores reach you, but low-relevance passages are not dropped
@@ -78,7 +78,7 @@ for you.
 
 ### Full-text / keyword search
 
-A fulltext index over chunk text and entity names catches exact keyword and
+Fulltext indexes over chunk text and over entity names and descriptions catch exact keyword and
 name matches that embedding similarity sometimes misses — useful for rare
 proper nouns, IDs, or terms the embedding model doesn't weight heavily. This
 runs as an independent path alongside vector search rather than as a
@@ -97,48 +97,51 @@ the connection is a graph edge, not a coincidence of vocabulary.
 
 ### Ontology-guided text-to-Cypher
 
-The LLM can optionally generate a read-only Cypher query against the graph
-schema for questions that need structural answers (counts, exact lists,
-multi-hop paths) that text search can't express
+The LLM can optionally generate a read-only Cypher query against the
+ontology for questions that need structural answers (counts, averages, exact
+lists, multi-hop paths) that text search can't express
 (`execute_cypher_retrieval()` in
 [`cypher_generation.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/cypher_generation.py)).
-**This path is off by default** (`enable_cypher=False`) and adds latency when
-enabled — treat it as an opt-in capability to turn on once your ontology is
-stable, not a default-on feature:
+The rows reach the answering model labelled with their column names
+(`average_age: 39.5`) under a heading that names the question the query
+answers, so an aggregate is never an unattributed number. Typed columns
+declared by a [table mapping](/structured-ingestion) are what make such
+aggregates reliable.
 
-Given initialized `embedder`, `llm`, and `rag` instances:
+**This path is off by default** (`enable_cypher=False`): it costs an extra LLM call per question (up to 3 when a generated query fails validation and is regenerated). Turn it on once your ontology is stable:
 
 ```python
-from graphrag_sdk import ConnectionConfig, FalkorDBConnection, GraphStore, VectorStore
-from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+from graphrag_sdk import ConnectionConfig, GraphRAG
 
-connection = FalkorDBConnection(ConnectionConfig(host="localhost", graph_name="my_graph"))
-
-strategy = MultiPathRetrieval(
-    graph_store=GraphStore(connection),
-    vector_store=VectorStore(connection, embedder=embedder, embedding_dimension=256),
-    embedder=embedder,
+rag = GraphRAG(
+    connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
     llm=llm,
+    embedder=embedder,
+    ontology=ontology,
     enable_cypher=True,  # opt-in, off by default
-    # Required: GraphRAG injects the ontology only into its own default
-    # strategy, never into one you pass as `strategy=`. Without this, the
-    # text-to-Cypher prompt is built against an empty schema.
-    ontology=await rag.get_ontology(),
 )
-result = await rag.completion("How many organizations are mentioned?", strategy=strategy)
+result = await rag.completion("How many organizations are mentioned?")
 ```
+
+`GraphRAG` keeps its retrieval strategy's ontology current, so generated
+Cypher sees every label and typed column as soon as it exists. If you pass
+your own `MultiPathRetrieval` per call (`completion(..., strategy=...)`),
+give it `ontology=await rag.get_ontology()`; see
+[Reliability and Grounding](/reliability-and-grounding#relationship-aware-retrieval).
 
 ### Cosine reranking
 
 Passage candidates gathered from every path are pooled, then reranked by
 cosine similarity against the question using the embeddings already stored on
-each `Chunk` node at ingestion time — no extra embedding API call
-(`rerank_chunks()` in
+each `Chunk` node at ingestion time — no extra embedding API call while at
+least 90% of the candidates have a stored vector; below that, the candidates
+are re-embedded (`rerank_chunks()` in
 [`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)).
-Knowledge-graph facts go through a separate, higher-threshold filter
+Knowledge-graph facts go through a separate similarity-floor filter
 (`filter_facts_by_relevance()`) instead, since short fact strings have higher
-similarity variance than prose passages. Only the top-ranked, above-threshold
-evidence reaches the LLM prompt.
+similarity variance than prose passages. Only the top-ranked passages and the
+facts that pass the filter (plus the top 3 facts, whatever their score) reach
+the LLM prompt.
 
 ## Inspecting the evidence
 
@@ -236,7 +239,7 @@ async def answer_or_abstain(rag, question: str, *, min_items: int = 1, min_score
 ```
 
 Gating on `retrieve()` **before** generation is the point: an unsupported
-question never reaches the generation call. Three details matter in practice:
+question never reaches the generation call. A few details matter in practice:
 
 - **Filter non-evidence sections.** The default `MultiPathRetrieval` strategy
   emits an answer-format `hint` section that carries no document evidence;
@@ -247,9 +250,10 @@ question never reaches the generation call. Three details matter in practice:
   surfaced per section. Attach a `CosineReranker` (or use `LocalRetrieval`)
   to populate `item.score` before setting `min_score`. See
   [Strategies](/strategies).
-- **A count-only gate barely gates.** No retrieval path applies a similarity
+- **A count-only gate barely gates.** No passage path applies a similarity
   floor: chunk vector search takes its top 15 hits and reranking takes the
-  top *k* of those, neither with a threshold. A populated graph therefore
+  top *k* of those, neither with a threshold, and the fact filter keeps its
+  top 3 facts whatever their score. A populated graph therefore
   returns *something* for almost any question, however unrelated, so
   `min_items` alone fires only on an empty graph, a failed ingestion or a
   retrieval error. Scores are what make the gate discriminating.
@@ -294,11 +298,13 @@ and is covered by `graphrag_sdk/tests/test_grounded_abstention.py`.
 ## Schema and ontology as a guardrail
 
 Extraction is constrained by the ontology you define: only entity labels and
-relationship patterns present in the schema are extracted and written to the
-graph (see [Graph Schema](/graph-schema) and [Extraction](/extraction)).
+relationship patterns present in the schema (plus entities the extractor
+labels `Unknown`) are extracted and written to the graph (see [Graph Schema](/graph-schema) and [Extraction](/extraction)).
 Off-schema entities and relationships are pruned before the graph is written,
 so extraction output that doesn't fit is never silently promoted to a stored
-"fact":
+"fact". Without declared relations, the extractor only *prefers* a default
+relation vocabulary and keeps any other label, so declare `relations` when
+you need the guarantee:
 
 ```python
 from graphrag_sdk import Entity, Ontology, Relation
@@ -327,6 +333,12 @@ more noise for the reranker to filter. Fewer junk facts in the graph means
 fewer junk facts in the retrieved context — grounding is only as good as what
 got stored. See [Ontology Discovery](/ontology-discovery) if you would rather
 derive the schema from your corpus than write it by hand.
+
+Facts that already live in tables are best not extracted at all. A
+[table mapping](/structured-ingestion) writes each row deterministically, with
+declared types and no model in the write, and the row joins the prose
+mentions of the same entity on one node — so an answer that needs both
+draws on exact values rather than an LLM's reading of a CSV.
 
 ## Verifying grounding
 

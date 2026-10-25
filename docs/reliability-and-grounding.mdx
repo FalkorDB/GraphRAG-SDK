@@ -28,14 +28,14 @@ leaves to you.
 | Term | What implements it in the SDK |
 | --- | --- |
 | Grounded retrieval | `GraphRAG.completion()` answers only from the assembled `<context>` block, under a system prompt that forbids outside knowledge |
-| Source provenance | `Document` → `PART_OF` → `Chunk` → `MENTIONED_IN` → `__Entity__` chain, plus the `[Source: <path>]` tag on every retrieved passage |
-| Evidence trail | `RagResult.retriever_result.items` → passages → chunk ids → `Document.path` |
-| Relationship-aware retrieval | `MultiPathRetrieval` — RELATES edge vector search, entity discovery, 1-hop and 2-hop expansion, `MENTIONED_IN` chunk traversal |
+| Source provenance | `Document` → `PART_OF` → `Chunk` ← `MENTIONED_IN` ← `__Entity__` chain, plus the `[Source: <path>]` tag on each retrieved passage whose document resolves |
+| Evidence trail | `RagResult.retriever_result.items` → `passages` section → `[Source: <path>]` → `Document.path`; chunk ids only from `LocalRetrieval` |
+| Relationship-aware retrieval | `MultiPathRetrieval` — RELATES edge vector search, entity discovery, 1-hop and 2-hop expansion, `MENTIONED_IN` chunk traversal, and opt-in text-to-Cypher (`GraphRAG(enable_cypher=True)`) |
 | Metadata filtering | Loader-supplied metadata persisted as `Document` / `Chunk` properties, filtered with Cypher or by graph scoping (no `filter=` parameter) |
 | Confidence thresholds | `filter_facts_by_relevance(min_score=0.25, ...)`, `chunk_top_k`, `rel_top_k`, `top_k` on vector search, `CosineReranker(top_k=...)` |
 | Abstention behavior | Prompt-level only (system prompt rule 6); enforce programmatically with `retrieve()` + a score gate — see [Reducing LLM Hallucinations](/reducing-llm-hallucinations#defining-an-abstention-path) |
 | Unsupported claims | `completion(return_context=True)` gives the exact evidence an answer may be checked against |
-| Retrieval validation | `GraphRAG.retrieve()` / `retrieve_sync()` — context without generation |
+| Retrieval validation | `GraphRAG.retrieve()` / `retrieve_sync()` — context without generation; `GraphRAG.query()` to check what the graph holds |
 | Factual accuracy | [GraphRAG-Bench results](/benchmark) — ACC, ROUGE-L, Coverage, Faithfulness |
 
 ---
@@ -97,15 +97,18 @@ Document ──PART_OF──▶ Chunk ──NEXT_CHUNK──▶ Chunk
 
 | Element | Key fields |
 | --- | --- |
-| `Document` | `id` (the `document_id` you passed to `ingest()`, or the normalized source path), `path`, `content_hash`, plus any loader metadata |
-| `Chunk` | `id` (the chunk uid), `text`, `index`, `embedding` |
-| `__Entity__` | `id`, `name`, `description`, `type`, `label`, `embedding` |
+| `Document` | `id` (the `document_id` you passed to `ingest()`, the normalized source path, `text-<hash>` for raw text, or a table's name), `path`, `content_hash`, plus any loader metadata |
+| `Chunk` | `id` (derived from the document id, position and text), `text`, `index`, `embedding`; a table row is a chunk with `kind: "record"` and its cells |
+| `__Entity__` | `id`, `name`, `description`, `aliases` (names it was merged under), `source_chunk_ids`, `embedding` |
 | `RELATES` | `src_name`, `rel_type`, `tgt_name`, `fact`, `description`, `source_chunk_ids`, `embedding` |
 
 Two provenance details are worth calling out:
 
 - **`RELATES.source_chunk_ids`** records which chunks produced each extracted
   relationship, so a graph fact traces back to the passages that justify it.
+  When deduplication merges two entities, the surviving edge keeps the
+  chunks of every edge it absorbed, and an entity's own `source_chunk_ids`
+  is every chunk that mentioned it, across documents.
 - **Retrieved passages are tagged inline.** `MultiPathRetrieval` batch-resolves
   each candidate chunk's `Document.path` through `PART_OF` and prefixes the
   passage with `[Source: <path>]` before it reaches the LLM. The path is stored
@@ -186,20 +189,20 @@ retrieved = await rag.retrieve(
 
 for item in retrieved.items:
     chunk_id = item.metadata.get("chunk_id")
-    if chunk_id is None:
+    if not chunk_id:
         continue
-    evidence = await graph.query_raw(
+    evidence = await rag.query(
         "MATCH (d:Document)-[:PART_OF]->(c:Chunk {id: $chunk_id}) "
         "RETURN d.id AS document_id, d.path AS path, c.index AS chunk_index",
         {"chunk_id": chunk_id},
     )
-    print(evidence.result_set)
+    print(evidence)   # a list of rows, each a list of column values
 ```
 
 And from an entity back to the passages that mention it:
 
 ```python
-mentions = await graph.query_raw(
+mentions = await rag.query(
     "MATCH (e:__Entity__ {name: $name})-[:MENTIONED_IN]->(c:Chunk)"
     "<-[:PART_OF]-(d:Document) "
     "RETURN d.path AS source, c.id AS chunk_id, c.text AS text LIMIT 10",
@@ -220,11 +223,25 @@ close to the question:
 | Path | Mechanism |
 | --- | --- |
 | RELATES vector search | Embedded relationship facts searched directly, returning `src —[type]→ tgt: fact` strings and entry-point entities |
-| Entity discovery | Name `CONTAINS` matching plus fulltext search over entity names and descriptions |
+| Entity discovery | Exact name and name `CONTAINS` matching, plus fulltext search over entity names and descriptions with name matches ranked first |
 | Relationship expansion | 1-hop and 2-hop traversal from discovered entities |
 | `MENTIONED_IN` chunks | Entity → the chunks it was extracted from |
 | 2-hop chunks | Entity → related entity → that neighbour's chunks |
-| Text-to-Cypher | Opt-in ontology-guided graph query, results bypass reranking |
+| Text-to-Cypher | Opt-in ontology-guided graph query; rows reach the model labelled with their column names, bypassing reranking |
+
+Text-to-Cypher is off by default because it costs an extra LLM call per question (up to 3 when a generated query fails validation and is regenerated). Turn it on for the default strategy with a single flag:
+
+```python
+rag = GraphRAG(
+    connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
+    llm=llm,
+    embedder=embedder,
+    ontology=ontology,
+    enable_cypher=True,  # extra LLM call(s) per question
+)
+```
+
+To tune the paths, construct the strategy yourself:
 
 ```python
 from graphrag_sdk import GraphStore, MultiPathRetrieval, VectorStore
@@ -239,9 +256,9 @@ strategy = MultiPathRetrieval(
     max_relationships=20,  # cap on expanded RELATES edges
     rel_top_k=15,          # RELATES edge vector search results
     enable_cypher=True,    # opt-in graph query path
-    # Required: a strategy you construct yourself never receives the ontology.
-    # GraphRAG only injects it into its own default strategy, so text-to-Cypher
-    # would otherwise generate against an empty schema.
+    # Needed only because this strategy is passed per call below. A strategy
+    # given to GraphRAG(retrieval_strategy=...) receives every ontology change
+    # through set_ontology(); one passed as strategy= does not.
     ontology=await rag.get_ontology(),
 )
 
@@ -298,12 +315,14 @@ await rag.ingest("reports/q4.md", loader=TenantLoader())
   <Accordion title="Filter retrieval by that metadata">
 
 ```python
-rows = await graph.query_raw(
+rows = await rag.query(
     "MATCH (d:Document)-[:PART_OF]->(c:Chunk) "
     "WHERE d.tenant = $tenant AND d.classification = 'public' "
     "RETURN c.id AS chunk_id, c.text AS text LIMIT 20",
     {"tenant": "acme"},
 )
+for chunk_id, text in rows:
+    ...
 ```
 
 Feed the resulting passages to your own prompt, or post-filter the output of
@@ -334,13 +353,13 @@ rag = GraphRAG(
 
 Every similarity score returned by the storage layer is a **similarity, not a
 distance — higher means closer.** Chunk, entity and relationship vector searches
-all return `(1 - score)` from the FalkorDB cosine index and order by that value
-descending.
+all return `1 - distance` from the FalkorDB cosine index and order by that value
+descending. Chunk and entity search also break ties by id, so they return the
+same rows on FalkorDB 4.x and 6.0.x; relationship search orders by score only.
 
 <Note>
-  This was corrected recently: earlier releases ordered by raw distance, which
-  ranked the *least* similar results first. If you pinned a threshold against
-  the old behavior, invert it.
+  A threshold is a floor on similarity. If you calibrated one against cosine
+  *distances* (lower is closer), invert it before using it here.
 </Note>
 
 | Cutoff | Where | Default |
@@ -355,9 +374,9 @@ descending.
 | `top_k` | `VectorStore.search_relationships()` | `15` |
 | `top_k` | `CosineReranker` | `15` |
 
-Facts use a higher threshold than passages on purpose: short structured strings
-(`Alice —[WORKS_AT]→ Acme`) have much higher cosine variance than prose
-paragraphs, so a passage-tuned threshold would let noise through. The `min_keep`
+Facts get a similarity floor while passages are only cut by rank, on purpose:
+short structured strings (`Alice —[WORKS_AT]→ Acme`) have much higher cosine
+variance than prose paragraphs, so a passage-tuned cutoff would let noise through. The `min_keep`
 floor guarantees the pipeline never returns an empty fact section purely because
 of the threshold — which is exactly why a threshold alone is not an abstention
 mechanism.
@@ -447,8 +466,8 @@ if result.answer.strip() == "INSUFFICIENT_CONTEXT":
 </Warning>
 
 The retrieval-side threshold is a partial gate on its own: `min_keep=3` in the
-fact filter means at least some facts always survive, so an empty or weak graph
-still yields a non-empty context. The score check above is what turns that into
+fact filter means up to three facts survive whatever their score, so weakly
+related facts still yield a non-empty context. The score check above is what turns that into
 a real refusal.
 
 ---
@@ -527,12 +546,13 @@ A validation checklist that works well before shipping a graph:
 <AccordionGroup>
   <Accordion title="Is the expected document reachable?">
     Check that a `passages` item carries the `[Source: <path>]` tag of the
-    document you expect. If not, the chunk never made it through any of the four
-    chunk paths — inspect chunking and the entity extraction for that document.
+    document you expect. If not, the chunk either never made it through any of the four
+    chunk paths or was cut by reranking (top `chunk_top_k`) — inspect chunking
+    and the entity extraction for that document.
   </Accordion>
   <Accordion title="Are entities being found at all?">
-    An empty `entities` section means keyword extraction and fulltext matching
-    both missed. Verify the document was ingested, and that
+    An empty `entities` section means name matching, fulltext search and the
+    `RELATES` fact search all missed. Verify the document was ingested, and that
     `GraphRAG.finalize()` ran — without it, entity- and edge-level vector search
     returns nothing and cross-document duplicates remain.
   </Accordion>
@@ -543,7 +563,7 @@ A validation checklist that works well before shipping a graph:
     generation.
   </Accordion>
   <Accordion title="Does the graph contain what you think?">
-    Query it directly with `GraphStore.query_raw()` and compare counts against
+    Query it directly with `GraphRAG.query()` and compare counts against
     `GraphRAG.get_statistics()`. See [Graph Schema](/graph-schema) for the node
     and relationship reference.
   </Accordion>

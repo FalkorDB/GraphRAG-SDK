@@ -10,9 +10,9 @@ GraphRAG SDK uses the **Strategy pattern** for every algorithmic concern. Each c
 
 | # | Concern | ABC | Built-in Implementations |
 |---|---------|-----|------------------------|
-| 1 | Loading | `LoaderStrategy` | `TextLoader`, `PdfLoader`, `MarkdownLoader` |
-| 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking`, `StructuralChunking` |
-| 3 | Extraction | `ExtractionStrategy` | `GraphExtraction` |
+| 1 | Loading | `LoaderStrategy`, `RecordLoaderStrategy` (tables) | `TextLoader`, `PdfLoader`, `MarkdownLoader`; `CsvRecordLoader` |
+| 2 | Chunking | `ChunkingStrategy` | `SentenceTokenCapChunking` (default), `FixedSizeChunking`, `ContextualChunking`, `CallableChunking`, `StructuralChunking` |
+| 3 | Extraction | `ExtractionStrategy` | `GraphExtraction`, `CachedChunkExtraction` |
 | 4 | Resolution | `ResolutionStrategy` | `ExactMatchResolution`, `LLMVerifiedResolution` |
 | 5 | Retrieval | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` |
 | 6 | Reranking | `RerankingStrategy` | `CosineReranker` |
@@ -74,8 +74,11 @@ For complex elements like tables, lists, and code blocks, `MarkdownLoader` inten
 If no loader is specified in `ingest()`:
 - `.pdf` files use `PdfLoader`
 - `.md` files use `MarkdownLoader`
--   Everything else uses `TextLoader`
+- `.csv`, `.tsv`, `.psv` and `.tab` files are tables: they are read by a `RecordLoaderStrategy` (below), not a `LoaderStrategy`
+- Everything else uses `TextLoader`
 - If `text=` is passed directly, the loader is skipped
+
+Passing any `loader=` for a table file reads it as prose instead: `ingest("notes.csv", loader=TextLoader())`.
 
 ### Writing Your Own
 
@@ -89,6 +92,36 @@ class HtmlLoader(LoaderStrategy):
 
 await rag.ingest("page.html", loader=HtmlLoader())
 ```
+
+### Tables: RecordLoaderStrategy
+
+A table is read as records, one dict per row, and written through the structured path its `TableMapping` describes. See [Structured Ingestion](/structured-ingestion).
+
+```python
+from graphrag_sdk import RecordLoaderStrategy, RecordBatch
+
+class RecordLoaderStrategy(ABC):
+    @abstractmethod
+    async def load_records(self, source: str, ctx: Context) -> RecordBatch:
+        """Describe the source's records: columns, and a re-openable iterator over rows."""
+        ...
+```
+
+`RecordBatch` carries `open_records` (a callable returning a fresh iterator of row dicts; the source is read twice, once to validate and once to write), `columns`, `document_info`, `record_count` and `metadata`.
+
+**Built-in: CsvRecordLoader** (the default for tables)
+
+```python
+from graphrag_sdk import CsvRecordLoader
+
+loader = CsvRecordLoader(
+    delimiter=None,          # None sniffs comma, semicolon, tab or pipe
+    encoding="utf-8-sig",    # UTF-8 with or without Excel's byte-order mark
+)
+await rag.ingest("exports/employees.psv", record_loader=loader)
+```
+
+A row with more fields than the header is refused with its row number. For another format (JSON lines, Parquet, a database cursor), implement `RecordLoaderStrategy` and pass it as `ingest(..., record_loader=...)`.
 
 ---
 
@@ -108,6 +141,8 @@ class ChunkingStrategy(ABC):
         ...
 ```
 
+The default for `ingest()` is `SentenceTokenCapChunking(max_tokens=384, overlap_sentences=2)`. Tables are never chunked: each row is one record chunk, and passing `chunker=` for a table raises `ValueError`.
+
 ### Built-in: FixedSizeChunking
 
 Fixed-size character windows with configurable overlap.
@@ -122,13 +157,13 @@ chunker = FixedSizeChunking(
 ```
 
 **Tuning guidance:**
-- Default (`1000/100`) works well for general use
-- Benchmark-winning config uses `1500/200` for richer extraction context
+- The class defaults are `1000/100` characters
+- Larger windows (`1500/200`) give each extraction call more context
 - Smaller chunks (500) for fine-grained retrieval, larger (2000) for broader context
 
-### Built-in: SentenceTokenCapChunking
+### Built-in: SentenceTokenCapChunking (default)
 
-Splits at sentence boundaries (never mid-sentence) and enforces a hard token cap per chunk using tiktoken. No LLM or embedder required.
+Splits at sentence boundaries (never mid-sentence) and enforces a hard token cap per chunk using tiktoken. No LLM or embedder required. 384 tokens is the measured best size for relationship extraction, which returns a roughly fixed number of facts per call; it costs more extraction calls than a larger size. Pass `max_tokens=512` to trade some recall for fewer calls.
 
 ```python
 from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import SentenceTokenCapChunking
@@ -218,7 +253,7 @@ class ExtractionStrategy(ABC):
     async def extract(
         self,
         chunks: TextChunks,
-        schema: GraphSchema,
+        ontology: Ontology,
         ctx: Context,
     ) -> GraphData:
         """Extract graph data from text chunks."""
@@ -265,26 +300,47 @@ extractor = GraphExtraction(
 )
 ```
 
-**3. Use `GraphSchema` entities** (schema types override both defaults and `entity_types`):
+**3. Use `Ontology` entities** (ontology types override both defaults and `entity_types`):
 
 ```python
-from graphrag_sdk import GraphRAG, GraphSchema, EntityType
+from graphrag_sdk import Entity, GraphRAG, Ontology
 
-schema = GraphSchema(entities=[
-    EntityType(label="Vehicle", description="Cars, trucks, etc."),
-    EntityType(label="Road", description="Streets, highways, etc."),
-    EntityType(label="Location", description="Cities, countries, etc."),
+ontology = Ontology(entities=[
+    Entity(label="Vehicle", description="Cars, trucks, etc."),
+    Entity(label="Road", description="Streets, highways, etc."),
+    Entity(label="Location", description="Cities, countries, etc."),
 ])
 
-# Schema entity types are automatically used for extraction
-rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
+# Ontology entity types are automatically used for extraction
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)
 await rag.ingest("traffic_report.txt")
 # Extraction uses: ["Vehicle", "Road", "Location"]
 ```
 
-The priority order is: `schema.entities` > `entity_types` parameter > defaults.
+The priority order is: `ontology.entities` > `entity_types` parameter > defaults. A label a table mapping declares is part of the ontology too, so the extractor uses it rather than guessing from the defaults.
 
-**Default entity types:** Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method.
+**Default entity types:** Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method. `Document` and `Chunk` are reserved and refused as entity types.
+
+**Relation vocabulary.** `GraphExtraction` also ships a default relation vocabulary, `DEFAULT_RELATION_TYPES` (31 UPPER_SNAKE_CASE labels), set with the `relation_types=` keyword:
+
+| Group | Labels |
+|-------|--------|
+| Structure and place | `LOCATED_IN`, `PART_OF`, `CONTAINS`, `OCCURRED_IN` |
+| Affiliation | `MEMBER_OF`, `EMPLOYED_AT`, `FOUNDED`, `OWNS`, `SUBSIDIARY_OF` |
+| Creation and production | `CREATED`, `AUTHORED`, `DESIGNED_BY`, `DEVELOPED_BY`, `MANUFACTURED`, `PUBLISHED_IN`, `SUPPLIED_TO` |
+| People | `BORN_IN`, `DIED_IN`, `MARRIED_TO`, `CHILD_OF`, `SIBLING_OF`, `STUDENT_OF`, `COLLEAGUE_OF` |
+| Activity and influence | `PARTICIPATED_IN`, `DIRECTED`, `AWARDED`, `NAMED_AFTER`, `SUCCEEDED_BY`, `INFLUENCED` |
+| Technical | `USES`, `BASED_ON` |
+
+Without a declared ontology, the step-2 prompt lists these as *preferred* relationships and asks the model to fall back to a descriptive UPPER_SNAKE_CASE label when none fits. It is guidance, not a filter: nothing prunes an off-list label. A declared `Ontology.relations` overrides it and is enforced (only the declared relations are allowed, and edges that do not fit a declared pattern are pruned). Blank relation labels are rejected.
+
+```python
+from graphrag_sdk import DEFAULT_RELATION_TYPES, GraphExtraction
+
+extractor = GraphExtraction(llm=llm)                                   # DEFAULT_RELATION_TYPES
+extractor = GraphExtraction(llm=llm, relation_types=["TREATS", "CAUSES", "INHIBITS"])
+extractor = GraphExtraction(llm=llm, relation_types=[])               # open vocabulary
+```
 
 #### Choosing an Entity Extractor
 
@@ -323,45 +379,48 @@ extractor = GraphExtraction(
 |-------|-------------|------------|
 | `GLiNERExtractor` | Local GLiNER model (default, no API calls) | `threshold=None` (per-model default, 0.75 for `urchade/gliner_medium-v2.1`), `model_name=None` (`urchade/gliner_medium-v2.1`), `candidate_threshold` (default 25 % below `threshold`), `window_tokens=None`, `window_overlap=48` |
 | `LLMExtractor` | LLM-based NER via structured prompt | `llm` (required), `threshold=0.75` |
+| `SpacyExtractor` | spaCy NER, fixed label set (`pip install graphrag-sdk[spacy]`) | `model_name=None` (`en_core_web_lg`), `labels=None`, `confidence=None` |
+| `CompositeExtractor` | Runs several extractors in priority order and merges their entities | `extractors`, `suppress_overlaps=True` |
 | Custom subclass | Your own `EntityExtractor` subclass | Implement `extract_entities()` |
 
 Both extractors use `threshold` as the confidence cut-off for a typed entity, but they treat spans below it differently. `LLMExtractor` keeps every span it is given and labels those with confidence below `threshold` as `"Unknown"`. `GLiNERExtractor` only keeps spans down to `candidate_threshold` (by default 25 % under `threshold`) — those in that band are labeled `"Unknown"` and handed to step 2, and anything lower is discarded inside the model and never reaches the pipeline; see [Extraction](/extraction) for details.
 
 **Graph output:**
-- All relationships use `RELATES` edge type. The original type (e.g. `WORKS_AT`) is in `properties["rel_type"]`.
+- All extracted relationships use the `RELATES` edge type. The original type (e.g. `WORKS_AT`) is in `properties["rel_type"]`.
 - Entity IDs are type-qualified: `compute_entity_id("Paris", "Location")` -> `"paris__location"`.
 - Character spans stored as `properties["spans"]` = `{chunk_id: [{start, end}]}` on both entities and relationships.
 - Entity mentions (`MENTIONED_IN` edges) link entities to source chunks.
 
 ### Writing Your Own Entity Extractor
 
-Subclass `EntityExtractor` and implement `extract_entities()`:
+`SpacyExtractor` is built in. For anything else, subclass `EntityExtractor` and implement `extract_entities()`:
 
 ```python
+import re
+
 from graphrag_sdk import EntityExtractor, GraphExtraction
 from graphrag_sdk.core.models import ExtractedEntity
 
-class SpaCyExtractor(EntityExtractor):
-    def __init__(self, model_name="en_core_web_sm"):
-        import spacy
-        self._nlp = spacy.load(model_name)
+class GazetteerExtractor(EntityExtractor):
+    """Tags every occurrence of a known name with its type."""
+
+    def __init__(self, names: dict[str, str]):
+        self._names = names  # name -> entity type
 
     async def extract_entities(self, text, entity_types, source_chunk_id):
-        import asyncio
-        doc = await asyncio.to_thread(self._nlp, text)
-        return [
-            ExtractedEntity(
-                name=ent.text,
-                type=ent.label_,
-                description="",
-                source_chunk_ids=[source_chunk_id],
-                spans={source_chunk_id: [{"start": ent.start_char, "end": ent.end_char}]},
-            )
-            for ent in doc.ents
-        ]
+        found = []
+        for name, label in self._names.items():
+            if label in entity_types and re.search(rf"\b{re.escape(name)}\b", text):
+                found.append(
+                    ExtractedEntity(name=name, type=label, source_chunk_ids=[source_chunk_id])
+                )
+        return found
 
 # Use it
-extractor = GraphExtraction(llm=llm, entity_extractor=SpaCyExtractor())
+extractor = GraphExtraction(
+    llm=llm,
+    entity_extractor=GazetteerExtractor({"Acme Corp": "Organization", "Jane Doe": "Person"}),
+)
 await rag.ingest("doc.txt", extractor=extractor)
 ```
 
@@ -371,7 +430,7 @@ Replace the entire 2-step pipeline by subclassing `ExtractionStrategy`:
 
 ```python
 class MyExtraction(ExtractionStrategy):
-    async def extract(self, chunks, schema, ctx):
+    async def extract(self, chunks, ontology, ctx):
         nodes, rels = [], []
         for chunk in chunks.chunks:
             # Your extraction logic
@@ -381,11 +440,23 @@ class MyExtraction(ExtractionStrategy):
 await rag.ingest("doc.txt", extractor=MyExtraction())
 ```
 
+### Built-in: CachedChunkExtraction
+
+A decorator around another `ExtractionStrategy`, behind `update(..., cache_unchanged_chunks=True)`. Chunks whose text is byte-identical to an existing chunk of the same document are rebuilt from the live graph instead of being sent to the LLM; only new or changed chunks are extracted. It fails open: a chunk the cache cannot rebuild is extracted normally. You rarely construct it yourself:
+
+```python
+from graphrag_sdk import CachedChunkExtraction
+
+extractor = CachedChunkExtraction(inner=GraphExtraction(llm=llm), graph_store=graph_store, document_id="docs/a.md")
+```
+
+See [Incremental Updates](/incremental-updates).
+
 ---
 
 ## 4. ResolutionStrategy
 
-Deduplicates entities that refer to the same real-world thing.
+Deduplicates entities that refer to the same real-world thing **within one document**, during ingest. A resolver only ever sees one document's extraction, so cross-document duplicates (`Airbus` in one file, `Airbus SE` in another) are out of its reach by construction; those are merged by `finalize()` (see [DedupJudge](#7-dedupjudge)). A table ingest takes no resolver: rows are matched on their declared key.
 
 ### ABC
 
@@ -410,12 +481,18 @@ Returns `ResolutionResult` with deduplicated `nodes`, remapped `relationships`, 
 Deduplicates by `(normalized name, label)` only. Fast, no embeddings, no LLM calls. Same-name entities with different labels (Person "Paris" vs Location "Paris") stay separate; the survivor keeps every member's description as a list (`descriptions`) and joined with `" | "` (`description`), and every relationship endpoint is re-pointed to it.
 
 ```python
-from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+from graphrag_sdk import ExactMatchResolution
 
 resolver = ExactMatchResolution(
-    resolve_property="name",  # property to match on (default: "name")
+    resolve_property="name",       # property to match on (default: "name")
+    llm=None,                      # optional: summarize long description lists
+    force_summary_threshold=3,     # descriptions at which an LLM summary is made (needs llm)
+    max_summary_tokens=500,
+    cross_label_merge=False,       # default False: never merge across labels
 )
 ```
+
+`ingest()` uses `ExactMatchResolution(llm=None, cross_label_merge=False)`: zero LLM calls.
 
 **When to use:** Default. Extraction is consistent, or ingest cost matters more than duplicate recall. Ingest is per document, so cross-document duplicates with different surface forms (`Airbus` / `Airbus SE`) are left for `finalize()`, whose judged phase checks each newly ingested entity against the whole graph (see [Storage](/storage)).
 
@@ -425,10 +502,10 @@ Three tiers that catch the near-duplicates exact match misses (e.g. `Acme Corp` 
 
 1. `(normalized name, label)` exact-match merge -- the same first pass `ExactMatchResolution` performs.
 2. Embed the surviving nodes as `"name: description"` and compare pairs in one unified same/cross-label candidate stage:
-   - `similarity >= hard_threshold`: merged immediately, no LLM call
-   - `soft_threshold <= similarity < hard_threshold`: sent to the LLM for a YES/NO verdict, several pairs per call
-   - `similarity < soft_threshold`: skipped
-   A label-family gate keeps pairs that cannot be one thing (Person vs Place) away from the LLM, and a cross-label merge needs a second, A/B-swapped vote to agree.
+   - `similarity >= hard_threshold`: merged immediately, no LLM call (a cross-label pair always goes to the LLM, whatever it scores)
+   - `unified_threshold <= similarity < hard_threshold`: sent to the LLM for a YES/NO verdict, several pairs per call
+   - `similarity < unified_threshold`: skipped
+   A label-family gate keeps pairs that cannot be one thing (Person vs Place) away from the LLM, and a cross-label merge needs a second, A/B-swapped vote to agree. `soft_threshold` is the floor only for the legacy label-bucket stage (`unified_stage=False`).
 3. Merge the confirmed clusters, then remap and deduplicate relationships.
 
 Merged descriptions are kept as a list and joined with `" | "` (concatenated below `force_summary_threshold`, LLM-summarized at or above it); labels absorbed from cross-label merges are kept in `merged_labels` and promoted to real Cypher labels on write.
@@ -440,8 +517,9 @@ resolver = LLMVerifiedResolution(
     llm=llm,                       # LLMInterface for YES/NO verification and summaries (optional)
     embedder=embedder,             # Embedder for pairwise cosine similarity (optional)
     hard_threshold=0.95,           # Merge without asking the LLM (default: 0.95)
-    soft_threshold=0.65,           # Below this, skip the pair entirely (default: 0.65)
-    max_llm_pairs=500,             # Cap on ambiguous pairs per call, highest similarity first (default: 500)
+    unified_threshold=0.65,        # Below this, skip the pair entirely (default: 0.65)
+    soft_threshold=0.65,           # The same floor, for unified_stage=False only (default: 0.65)
+    max_llm_pairs=500,             # Cap on ambiguous pairs sent to the LLM, highest similarity first (default: 500)
     batch_verification=True,       # Several pairs per LLM call (default: True)
     verification_max_pairs_per_call=5,
     force_summary_threshold=3,     # Trigger LLM summary at this many descriptions (default: 3)
@@ -450,9 +528,26 @@ resolver = LLMVerifiedResolution(
 )
 ```
 
-Both providers are optional but must be passed explicitly when you construct the strategy yourself; `GraphRAG.ingest()` wires its own LLM and embedder only into the default instance. With no `embedder` it degrades to exact match, and with no `llm` the ambiguous zone is skipped so only the `hard_threshold` tier merges.
+Both providers are optional and must be passed explicitly: `ingest()` does not hand its own LLM or embedder to a resolver you construct. With no `embedder` it degrades to exact match, and with no `llm` the ambiguous zone is skipped so only the `hard_threshold` tier merges.
 
-**When to use:** Pass it to `ingest(resolver=...)` when one document names the same entity inconsistently; recall on real duplicates is roughly 2.5x that of exact match on the benchmark corpus, at the cost of embedding and LLM calls during ingest. Across documents, `finalize()`'s judge (see [DedupJudge](#7-dedupjudge)) handles duplicates.
+A pair whose names are equal once digits are removed and different with them (`GPT-3` / `GPT-4`, `Q1 2024` / `Q2 2024`, `P-011` / `P-021`) is never merged, and never sent to the LLM.
+
+**When to use:** Pass it to `ingest(resolver=...)` when one document names the same entity inconsistently and exact match misses the variants, at the cost of embedding and LLM calls during ingest. Across documents, `finalize()`'s judge (see [DedupJudge](#7-dedupjudge)) handles duplicates.
+
+### Removed: SemanticResolution and DescriptionMergeResolution
+
+`SemanticResolution` and `DescriptionMergeResolution` have been removed, along with their exports from `graphrag_sdk` and `graphrag_sdk.ingestion.resolution_strategies`. Importing either raises `ImportError`. Both were weaker than what remains: `SemanticResolution` never merged across labels, and `DescriptionMergeResolution` duplicated the same-label half of exact match.
+
+| If you used | Use instead |
+|-------------|-------------|
+| `DescriptionMergeResolution` | `LLMVerifiedResolution` (it runs the same exact-match pass first, then an embedding and LLM tier), or `ExactMatchResolution` if you relied only on name-exact merging |
+| `SemanticResolution` | `LLMVerifiedResolution(llm=llm, embedder=embedder)` at ingest; cross-document semantic duplicates are `finalize()`'s judge |
+
+```python
+from graphrag_sdk import LLMVerifiedResolution
+
+await rag.ingest("doc.txt", resolver=LLMVerifiedResolution(llm=llm, embedder=embedder))
+```
 
 ---
 
@@ -467,12 +562,15 @@ from graphrag_sdk import RetrievalStrategy
 
 class RetrievalStrategy(ABC):
     def __init__(self, graph_store=None, vector_store=None):
-        self.graph_store = graph_store
-        self.vector_store = vector_store
+        self._graph = graph_store
+        self._vector = vector_store
 
     async def search(self, query: str, ctx: Context = None, **kwargs) -> RetrieverResult:
         """Public API: validate -> execute -> format."""
         ...
+
+    def set_ontology(self, ontology) -> None:
+        """Called by GraphRAG whenever its ontology changes. No-op by default."""
 
     @abstractmethod
     async def _execute(self, query: str, ctx: Context, **kwargs) -> RawSearchResult:
@@ -480,16 +578,28 @@ class RetrievalStrategy(ABC):
         ...
 ```
 
+`GraphRAG` calls `set_ontology()` on its configured strategy (the default, or the one passed as `GraphRAG(retrieval_strategy=...)`) on every ontology change: the first load, `set_ontology()`, each evolution method, and a table declaring typed columns. Override it if your strategy reads the ontology.
+
+The examples below build their own storage objects, because `GraphRAG` keeps its own private:
+
+```python
+from graphrag_sdk import ConnectionConfig, FalkorDBConnection, GraphStore, VectorStore
+
+conn = FalkorDBConnection(ConnectionConfig(host="localhost", graph_name="my_graph"))
+graph_store = GraphStore(conn)
+vector_store = VectorStore(conn, embedder=embedder, embedding_dimension=256)
+```
+
 ### Built-in: LocalRetrieval
 
-Simple retrieval: vector search on chunks + 1-hop entity traversal.
+Simple retrieval: vector search on chunks + 1-hop entity traversal. Items carry the chunk's similarity in `score` and its id in `metadata["chunk_id"]`.
 
 ```python
 from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
 
 retriever = LocalRetrieval(
-    graph_store=rag.graph_store,
-    vector_store=rag.vector_store,
+    graph_store=graph_store,
+    vector_store=vector_store,
     embedder=embedder,
     top_k=5,                # chunks to retrieve (default: 5)
     include_entities=True,  # include connected entities (default: True)
@@ -506,33 +616,49 @@ Production-grade retrieval with RELATES edge vector search, 2-path entity discov
 from graphrag_sdk import MultiPathRetrieval
 
 retriever = MultiPathRetrieval(
-    graph_store=rag.graph_store,
-    vector_store=rag.vector_store,
+    graph_store=graph_store,
+    vector_store=vector_store,
     embedder=embedder,
     llm=llm,
     chunk_top_k=15,         # final chunks after reranking (default: 15)
     max_entities=30,        # total entity cap (default: 30)
     max_relationships=20,   # max relationships in context (default: 20)
     rel_top_k=15,           # RELATES edge vector search results (default: 15)
-    keyword_limit=10,       # max keywords from question (default: 10)
+    keyword_limit=10,       # accepted but not read; keyword caps are fixed (default: 10)
+    enable_cypher=False,    # text-to-Cypher path, extra LLM call(s) per question (default: False)
+    ontology=None,          # what generated Cypher is written against; GraphRAG keeps it current
 )
 
 rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, retrieval_strategy=retriever)
 ```
+
+For the default strategy you do not need to construct it: `GraphRAG(..., enable_cypher=True)` turns on text-to-Cypher. See [Retrieval](/retrieval).
 
 **When to use:** Default choice. Best accuracy on benchmark. Handles complex multi-hop questions.
 
 ### Writing Your Own
 
 ```python
-class GlobalRetrieval(RetrievalStrategy):
-    async def _execute(self, query, ctx, **kwargs):
-        # Your custom retrieval logic
-        results = await self.vector_store.search(query_vector, top_k=20)
-        return RawSearchResult(records=results)
+from graphrag_sdk import RetrievalStrategy
+from graphrag_sdk.core.models import RawSearchResult
 
-rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, retrieval_strategy=GlobalRetrieval())
+class ChunkOnlyRetrieval(RetrievalStrategy):
+    def __init__(self, graph_store, vector_store, embedder):
+        super().__init__(graph_store=graph_store, vector_store=vector_store)
+        self._embedder = embedder
+
+    async def _execute(self, query, ctx, **kwargs):
+        query_vector = await self._embedder.aembed_query(query)
+        results = await self._vector.search_chunks(query_vector, top_k=20)
+        return RawSearchResult(records=[r["text"] for r in results])
+
+rag = GraphRAG(
+    connection=conn, llm=llm, embedder=embedder,
+    retrieval_strategy=ChunkOnlyRetrieval(graph_store, vector_store, embedder),
+)
 ```
+
+Vector search scores are similarities: higher means closer.
 
 ---
 
@@ -578,13 +704,16 @@ result = await rag.completion("question", reranker=reranker)
 
 ```python
 class LLMReranker(RerankingStrategy):
+    def __init__(self, llm):
+        self.llm = llm
+
     async def rerank(self, query, result, ctx):
         # Score each item with the LLM and sort
         scored = []
         for item in result.items:
             score = await self.llm.ainvoke(f"Rate relevance 0-10: {query} vs {item.content}")
             scored.append((float(score.content), item))
-        scored.sort(reverse=True)
+        scored.sort(key=lambda pair: pair[0], reverse=True)
         return RetrieverResult(items=[item for _, item in scored[:10]])
 ```
 
@@ -665,4 +794,4 @@ class SpellingJudge(DedupJudge):
 await rag.finalize(judge=SpellingJudge())
 ```
 
-A judge can be a rule set, a local model, a cheaper model with a stronger one behind it — anything that turns sets into verdicts.
+A judge can be a rule set, a local model, a cheaper model with a stronger one behind it — anything that turns sets into verdicts. A rule-based judge like this one is how to keep `finalize()` free of LLM calls.

@@ -1,10 +1,10 @@
 ---
 title: "GraphRAG SDK Pipeline Architecture"
 sidebarTitle: "Architecture"
-description: "How GraphRAG SDK's strategy-based ingestion and retrieval pipelines fit together, with pluggable ABCs for extraction, resolution, chunking, and loading."
+description: "How GraphRAG SDK's strategy-based ingestion and retrieval pipelines fit together, with pluggable ABCs for extraction, resolution, chunking, loading, retrieval and dedup judging."
 ---
 
-GraphRAG SDK v2 follows a **strategy-based pipeline architecture**. Every algorithmic concern is an abstract base class (ABC) with swappable implementations. The system has two main flows: **ingestion** (document to knowledge graph) and **retrieval** (question to answer).
+GraphRAG SDK follows a **strategy-based pipeline architecture**. Every algorithmic concern is an abstract base class (ABC) with swappable implementations. The system has three main flows: **ingestion** (document or table to knowledge graph), **finalization** (cross-document deduplication, embeddings and indexes), and **retrieval** (question to answer).
 
 ## Design Principles
 
@@ -15,7 +15,12 @@ GraphRAG SDK v2 follows a **strategy-based pipeline architecture**. Every algori
 
 ## Ingestion Pipeline
 
-The ingestion pipeline transforms documents into a knowledge graph in 9 steps. Steps 1-7 run sequentially (each depends on the previous), steps 8-9 run in parallel.
+`ingest()` takes one of two paths, chosen by the source:
+
+- **Prose** (text, Markdown, PDF and any other file): the 9-step extraction pipeline below.
+- **Tables** (`.csv`, `.tsv`, `.psv`, `.tab`): the [structured path](#structured-ingestion), with no model in the write.
+
+The prose pipeline transforms documents into a knowledge graph in 9 steps. Steps 1-7 run sequentially (each depends on the previous), steps 8-9 run in parallel.
 
 ```
                     Sequential                              Parallel
@@ -29,15 +34,17 @@ The ingestion pipeline transforms documents into a knowledge graph in 9 steps. S
 
 | Step | Name | What it does | Strategy ABC |
 |------|------|-------------|-------------|
-| 1 | **Load** | Reads raw text from a source (file, URL, raw string) | `LoaderStrategy` |
-| 2 | **Chunk** | Splits text into overlapping windows | `ChunkingStrategy` |
-| 3 | **Lexical Graph** | Creates Document and Chunk nodes with PART_OF and NEXT_CHUNK edges (provenance chain) | Built-in |
-| 4 | **Extract** | LLM extracts entities, relationships, and mentions from each chunk | `ExtractionStrategy` |
-| 5 | **Prune** | Filters extracted data against the schema (removes off-schema entities/relationships) | Built-in |
-| 6 | **Resolve** | Deduplicates entities (exact match or LLM-assisted description merge) | `ResolutionStrategy` |
+| 1 | **Load** | Reads raw text from a source file (`ingest(text=...)` skips the loader). The text is hashed; if the stored Document has the same `content_hash`, the run stops here as a no-op | `LoaderStrategy` |
+| 2 | **Chunk** | Splits text into overlapping chunks (sentence-aware, 384 tokens by default) | `ChunkingStrategy` |
+| 3 | **Lexical Graph** | Creates Document and Chunk nodes with PART_OF and NEXT_CHUNK edges (provenance chain). Chunk ids are derived from the document id, position and text, so re-ingesting a file never duplicates its chunks | Built-in |
+| 4 | **Extract** | NER plus an LLM extract entities, relationships, and mentions from each chunk, followed by a quality filter | `ExtractionStrategy` |
+| 5 | **Prune** | Filters extracted data against the ontology (removes off-ontology entities and off-pattern relationships) | Built-in |
+| 6 | **Resolve** | Deduplicates entities within this document (`ExactMatchResolution` by default) and rewrites mentions to the survivors | `ResolutionStrategy` |
 | 7 | **Write** | Batched MERGE of nodes and relationships into FalkorDB | Built-in |
 | 8 | **Mentions** | Writes MENTIONED_IN edges linking entities to their source chunks | Built-in (parallel) |
 | 9 | **Index Chunks** | Embeds chunk text and stores vector embeddings on Chunk nodes | Built-in (parallel) |
+
+After step 9 the Document's `content_hash` is written, but only when every write completed. If an extraction failed or an edge write came up short, the hash is withheld and `IngestionResult.metadata["incomplete_writes"]` says why, so the next ingest repairs the document instead of skipping it.
 
 ### Data Flow
 
@@ -50,6 +57,32 @@ str (raw text)
           -> FalkorDB (MERGE via GraphStore + vector index via VectorStore)
 ```
 
+### Structured Ingestion
+
+A table is declared on the ontology with a `TableMapping` and read by a `RecordLoaderStrategy` (`CsvRecordLoader` by default). Its path skips chunking, extraction and resolution:
+
+1. **Map** -- find the table's mapping in the ontology by filename (or propose one, with one model call for the whole table, when none is declared).
+2. **Validate** -- check the mapping against the file's header and every cell against its declared type, before anything is written.
+3. **Write** -- one Document named for the table, one record Chunk per row, one entity per row (its id derived from its name, exactly as for a prose mention, or from its key when the row has no name), placeholders for foreign keys, and `RELATES` edges for each `Link`. Every declared property is signed with the table's name (`employees__age`).
+4. **Re-sync** -- a later load of the same table replaces it as a snapshot through the same crash-safe cutover `update()` uses.
+
+Because the id comes from the name, a row and a prose mention of the same thing are one node from the first write, whichever source arrives first. See [Structured Ingestion](/structured-ingestion).
+
+## Finalization
+
+Ingest resolves duplicates only within one document; it never sees two documents at once. Cross-document deduplication happens in `finalize()`, called once after a batch of ingests:
+
+1. Remove legacy NULL-name stubs.
+2. **Deduplicate**, incrementally: only the pending entities (ingested since the last run, or left pending by it) are checked, against the whole graph through the `__Entity__` vector index.
+   - The exact phase groups them by `(canonical name, label)`, so no rule merges across types (Person "Paris" and Location "Paris" remain separate). A group holding a table row merges by rule.
+   - Everything else goes to the **judge**, a pluggable `DedupJudge` (`LLMJudge` by default; every run has one), which partitions small candidate sets of nearest names.
+   - Every merge is decided first, written as a sealed plan, and applied one atomic query per merge, so an interrupted run is finished by the next.
+3. Embed `RELATES` facts.
+4. Ensure every index exists and is built.
+5. Report findings (probable duplicates, property conflicts, proposed table mappings) at WARNING and on `FinalizeResult`.
+
+Dedup bookkeeping lives in SDK system nodes (`__GraphRAGProcessing__`) beside the `__GraphRAGConfig__` node, with no edges; `get_statistics()` does not count them. See [Storage](/storage).
+
 ## Graph Schema
 
 The knowledge graph contains these node types and edge types:
@@ -58,27 +91,26 @@ The knowledge graph contains these node types and edge types:
 
 | Label | Purpose | Has Embedding |
 |-------|---------|--------------|
-| `Document` | Source document metadata | No |
-| `Chunk` | Text chunk (fragment of a document) | Yes |
-| `__Entity__` | Secondary label on all extracted entities | Yes (written by `finalize()`'s dedup) |
-| `Person`, `Organization`, etc. | Primary entity labels — 11 defaults: Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method | Via `__Entity__` |
+| `Document` | Source document or table metadata (`path`, `content_hash`) | No |
+| `Chunk` | Text chunk, or one table row (`kind: "record"`) | Yes |
+| `__Entity__` | Secondary label on every entity, extracted or from a table | Yes (name embedding written by `finalize()`'s dedup) |
+| `Person`, `Organization`, etc. | Primary entity labels: your ontology's, or the 11 defaults (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method) | Via `__Entity__` |
+| `__GraphRAGConfig__`, `__GraphRAGProcessing__` | SDK system nodes: the embedding model and dimension, and dedup bookkeeping | No |
+
+The ontology itself is stored in a separate graph, `<graph_name>__ontology`.
 
 ### Edge Types
 
 | Type | Source -> Target | Purpose |
 |------|-----------------|---------|
 | `PART_OF` | Document -> Chunk | Provenance: which document a chunk came from |
-| `NEXT_CHUNK` | Chunk -> Chunk | Sequential ordering of chunks |
+| `NEXT_CHUNK` | Chunk -> Chunk | Sequential ordering of prose chunks (table records are not chained) |
 | `MENTIONED_IN` | Entity -> Chunk | Which chunks mention an entity |
-| `RELATES` | Entity -> Entity | All extracted relationships (single edge type) |
+| `RELATES` | Entity -> Entity | All extracted relationships and table links (single edge type) |
 
-All LLM-extracted relationships use the single `RELATES` edge type. The original relationship type (e.g. `WORKS_AT`, `LOCATED_IN`) is preserved as the `rel_type` property on the edge. A `fact` property stores a human-readable fact string for embedding.
+All extracted and table relationships use the single `RELATES` edge type. The original relationship type (e.g. `WORKS_AT`, `LOCATED_IN`) is preserved as the `rel_type` property on the edge, and a `fact` property stores a human-readable fact string for embedding. Edge identity includes `rel_type`, so two different facts between the same pair of entities are two edges. The one exception is `backfill_relation_pattern()` (see [Ontology Evolution](/ontology-evolution)): it writes edges typed with the relation label itself (for example `[:WORKS_AT]`), with a `description` but no `fact`, `embedding` or `source_chunk_ids`, so RELATES vector search and relationship expansion do not see them.
 
-`MENTIONED_IN` edges are what let retrieval trace an entity mentioned in an answer back to its source chunk — see [Reducing LLM Hallucinations](/reducing-llm-hallucinations) for how to surface that provenance trail and define an abstention path when it's missing.
-
-### Post-ingestion: Entity Deduplication
-
-Entity deduplication is handled post-ingestion via `deduplicate_entities()` rather than during the pipeline. This allows ingesting multiple documents independently, then deduplicating incrementally: the pending entities (new since the last run — they have no name vector yet — or awaiting a retry) are compared with their nearest names in the graph, found through the vector index. The exact phase groups them by `(canonical name, label)`, so no rule merges across types (Person "Paris" and Location "Paris" remain separate); the other candidates, whatever their spelling, go to the judge — a pluggable `DedupJudge`, `LLMJudge` by default; every run has one.
+`MENTIONED_IN` edges are what let retrieval trace an entity mentioned in an answer back to its source chunk -- see [Reducing LLM Hallucinations](/reducing-llm-hallucinations) for how to surface that provenance trail and define an abstention path when it's missing. Full property reference: [Graph Schema](/graph-schema).
 
 ## Retrieval Flow
 
@@ -93,35 +125,39 @@ Keyword Extraction (LLM)
   v
 Embed Question (single API call)
   |
-  ├── RELATES Edge Vector Search ────────────────────────────┐
-  │   -> fact strings + entity entry points                  │
-  │                                                          │
-  ├── 2-Path Entity Discovery ──────────────────────────────┤
-  │   1. Cypher CONTAINS substring match                     │
-  │   2. Fulltext search on entity index                     │
-  │   + merge entities from RELATES vector search            │
-  │                                                          v
-  │                                              Top entities (scored + deduped)
-  │                                                         |
-  │                                              2-Hop Relationship Expansion
-  │                                              (1-hop + 2-hop from top entities)
-  │                                                         |
-  ├── 4-Path Chunk Retrieval ───────────────────────────────┤
-  │   1. Fulltext search in chunks                           │
-  │   2. Vector search in chunks                             │
-  │   3. MENTIONED_IN traversal (entity -> chunk)            │
-  │   4. 2-hop: entity -> neighbor -> chunk                  │
-  │                                                          v
-  │                                              Candidate chunks (cosine reranked)
-  │                                                         |
-  └──────────────────────────────> Context Assembly
-                                    (hint, entities, relationships, facts, passages)
-                                          |
-                                          v
-                                    LLM Generation (RAG prompt)
-                                          |
-                                          v
-                                       Answer
+  ├── RELATES Edge Vector Search ──────────┐   run concurrently
+  │   -> fact strings + entity entry points │
+  └── Text-to-Cypher (opt-in, enable_cypher=True)
+      -> rows labelled with their column names
+  |
+  v
+Entity Discovery
+  1. Exact name match
+  2. Name CONTAINS match
+  3. Fulltext search on entity index (name matches first)
+  + merge entities from RELATES vector search and Text-to-Cypher
+  -> Top entities (deduped, max_entities)
+  |
+  v
+Relationship Expansion (1-hop + 2-hop from top entities)
+  |
+  v
+4-Path Chunk Retrieval
+  1. Fulltext search in chunks
+  2. Vector search in chunks
+  3. MENTIONED_IN traversal (entity -> chunk)
+  4. 2-hop: entity -> neighbor -> chunk
+  -> Candidate chunks (cosine reranked)
+  |
+  v
+Context Assembly
+  (hint, Cypher results, entities, relationships, facts, passages)
+  |
+  v
+LLM Generation (RAG prompt)
+  |
+  v
+Answer
 ```
 
 ### MultiPathRetrieval Parameters
@@ -132,14 +168,18 @@ Embed Question (single API call)
 | `max_entities` | 30 | Total entity cap across all paths |
 | `max_relationships` | 20 | Max relationships in context |
 | `rel_top_k` | 15 | RELATES edge vector search results |
-| `keyword_limit` | 10 | Max keywords extracted from question |
+| `keyword_limit` | 10 | Accepted but not read; the keyword caps are fixed (8 LLM keywords plus 12 question words) |
+| `enable_cypher` | False | Text-to-Cypher path (an extra LLM call per question, up to 3 when a generated query fails validation) |
+
+`GraphRAG` passes every ontology change to its retrieval strategy (`RetrievalStrategy.set_ontology()`), so generated Cypher sees a new label or a table's typed columns as soon as they exist. See [Retrieval](/retrieval).
 
 ## Storage Layer
 
 ### GraphStore
 
 All graph writes go through `GraphStore`, which provides:
-- **Batched UNWIND upserts** -- 500 nodes/relationships per batch
+- **Batched UNWIND upserts** -- 500 nodes/relationships per batch; writes in one batch that share a key are merged first, as if written one at a time
+- **Range indexes on `id`** -- created for every label the write path touches, so a large ingest is not quadratic
 - **Label hints** -- relationship MATCH queries use label hints (e.g., MENTIONED_IN matches `__Entity__` -> `Chunk`) for faster lookups
 - **Per-item fallback** -- if a batch fails, retries individual items
 - **None-id guard** -- filters out entities with None/empty IDs (bad LLM extraction)
@@ -147,40 +187,44 @@ All graph writes go through `GraphStore`, which provides:
 ### VectorStore
 
 Vector operations go through `VectorStore`:
-- **Index creation** -- `CREATE VECTOR INDEX` for Chunk and Entity embeddings, plus RELATES edge embeddings
-- **Fulltext index** -- for keyword search on chunk text and entity names
+- **Index creation** -- vector indexes on Chunk, `__Entity__` and RELATES edge embeddings, and fulltext indexes on chunk text and entity name and description; `ensure_indices()` waits until they are built
 - **Batched embedding** -- embeds texts in bulk, stores via UNWIND
-- **Search** -- `db.idx.vector.queryNodes` for similarity search
+- **Search** -- similarity scores, higher is closer; chunk and entity searches break ties by id so results do not depend on the engine's row order
+
+### Connection
+
+Every query goes through `FalkorDBConnection`: pooled connections, retries with backoff for transient failures, a circuit breaker, and a server-version check (FalkorDB 4.20 or later) before the first query. See [Configuration](/configuration#1-connectionconfig).
 
 ## Extending the SDK
 
 To add a custom strategy, subclass the relevant ABC:
 
 ```python
-from graphrag_sdk import ChunkingStrategy, TextChunks
+from graphrag_sdk import ChunkingStrategy, TextChunk, TextChunks
 from graphrag_sdk.core.context import Context
 
-class SemanticChunking(ChunkingStrategy):
+class ParagraphChunking(ChunkingStrategy):
     async def chunk(self, text: str, ctx: Context) -> TextChunks:
-        # Your implementation here
-        ...
+        paragraphs = [p for p in text.split("\n\n") if p.strip()]
+        return TextChunks(chunks=[TextChunk(text=p, index=i) for i, p in enumerate(paragraphs)])
 ```
 
 Then pass it to `ingest()`:
 
 ```python
-await rag.ingest("doc.txt", chunker=SemanticChunking())
+await rag.ingest("doc.txt", chunker=ParagraphChunking())
 ```
 
-The same pattern applies to all 6 strategy ABCs: `LoaderStrategy`, `ChunkingStrategy`, `ExtractionStrategy`, `ResolutionStrategy`, `RetrievalStrategy`, `RerankingStrategy`.
+The same pattern applies to every strategy ABC: `LoaderStrategy`, `RecordLoaderStrategy`, `ChunkingStrategy`, `ExtractionStrategy`, `ResolutionStrategy`, `RetrievalStrategy`, `RerankingStrategy` and `DedupJudge`. See [Strategies](/strategies).
 
 ## Deep Dives
 
 Each subsystem has a dedicated document with step-by-step explanations:
 
 - [Ingestion Pipeline](/ingestion) — the 9-step pipeline from document to knowledge graph
+- [Structured Ingestion](/structured-ingestion) — tables declared on the ontology
 - [Extraction](/extraction) — the 2-step hybrid extraction process (NER + LLM)
 - [Graph Schema](/graph-schema) — how the knowledge graph is structured in FalkorDB
-- [Storage](/storage) — GraphStore, VectorStore, and EntityDeduplicator internals
+- [Storage](/storage) — GraphStore, VectorStore, and the deduplicator
 - [Retrieval](/retrieval) — the multi-path retrieval system that answers questions
 - [Reducing LLM Hallucinations](/reducing-llm-hallucinations) — grounding answers in retrieved evidence and defining an abstention path
