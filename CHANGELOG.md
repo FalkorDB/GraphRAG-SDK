@@ -101,11 +101,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   table cannot share a property signature with any other table. While a
   relationship table resolves an endpoint by a key, `drop_table()` of the node
   table that signs it, `drop_attribute()` and `rename_attribute()` of it,
-  redeclaring that table with another key column, and declaring a proposal
-  whose key it uses as a relationship table raise `ValueError` naming the
-  relationship table, before anything is written; a stored mapping whose key is
-  already gone is skipped with a warning when the ontology loads, so the graph
-  still opens.
+  redeclaring that table with another key column (unless the same declaration
+  moves the endpoint to the new key), and declaring a proposal whose key it uses
+  as a relationship table raise `ValueError` naming the relationship table. A
+  declaration is checked as a whole at startup -- property types, endpoint
+  keys, keys a table stops signing, signatures -- before any of it is written,
+  so a failure changes nothing. A stored mapping whose key is already gone is
+  skipped with a warning when the ontology loads, so the graph still opens.
 
 - **A row and a prose mention of the same thing are one node from the first
   write.** An entity's id is derived from its name for a table row exactly as

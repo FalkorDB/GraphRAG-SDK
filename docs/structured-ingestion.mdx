@@ -173,11 +173,36 @@ identifier does not imply a persisted `Document` node.
 
 A relationship table needs its endpoint keys declared. While one resolves an
 endpoint by a property, `drop_table()` of the node table that signs that key,
-`drop_attribute()` and `rename_attribute()` of it raise `ValueError` naming the
-relationship table: `drop_table()` the relationship table first. A stored
-relationship mapping whose key is already gone is skipped with a warning when
-the ontology loads, so the graph still opens; ingesting that file raises
-`MappingError` until the key is declared again, and `drop_table()` removes it.
+`drop_attribute()` and `rename_attribute()` of it, and redeclaring that node
+table with another key column raise `ValueError` naming the relationship table:
+`drop_table()` the relationship table first. To change the key, declare both
+changes together, so the relationship table's endpoint moves with it:
+
+```python
+Ontology(
+    tables=[TableMapping(source="unit.csv", label="Unit", key="code"), ...],
+    relationship_tables=[
+        RelationshipMapping(
+            source="consumed_batch.csv",
+            start=EndpointMapping("Unit", "unit__code", "source"),
+            ...
+        )
+    ],
+)
+```
+
+A declaration is checked as a whole before anything is written: property types,
+endpoint keys, keys a table stops signing, and signatures. If any part fails,
+nothing changes. `rename_relation()` and `drop_relation()` likewise refuse a
+relationship type that a relationship table writes. A stored relationship
+mapping whose key is already gone is skipped with a warning when the ontology
+loads, so the graph still opens; ingesting that file raises `MappingError` until
+the key is declared again, and `drop_table()` removes it.
+
+A renamed export finds its relationship table through `document_id`, as a node
+table's does: `ingest("consumed_2026Q3.csv", document_id="consumed_batch.csv")`
+re-ingests the `consumed_batch.csv` table. Any other `document_id` raises, since
+a relationship table writes edges, not a `Document`.
 
 Validation and endpoint checks precede relationship writes, but the batched
 write is not a database transaction. If `ingest()` raises while writing, or
