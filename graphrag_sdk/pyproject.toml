@@ -58,6 +58,9 @@ litellm = ["litellm>=1.84.0,<2.0"]
 openrouter = ["openai>=1.0,<3.0"]
 fastcoref = ["fastcoref>=2.0"]
 spacy = ["spacy>=3.0"]
+# Sync from databases, file stores and REST APIs (graphrag_sdk.connectors). Add
+# dlt's own extras for a source's driver, e.g. dlt[sql_database] or dlt[gs].
+dlt = ["dlt>=1.31,<2"]
 all = [
     "openai>=1.0,<3.0",
     "anthropic>=0.20,<1.0",

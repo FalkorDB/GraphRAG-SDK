@@ -1886,7 +1886,8 @@ class GraphRAG:
                 :class:`~graphrag_sdk.ingestion.loaders.record_loader.CsvRecordLoader`,
                 which sniffs the delimiter; pass your own
                 :class:`~graphrag_sdk.ingestion.loaders.record_loader.RecordLoaderStrategy`
-                for another format.
+                for another format. Passing one also marks a source with no
+                table suffix as a table, such as a database table named ``users``.
             strict_mapping: Structured sources only. Fail when the table has a
                 column its mapping never reads, instead of ignoring the column.
             loader: Custom loader strategy. File mode only. Passing one to a
@@ -1917,7 +1918,7 @@ class GraphRAG:
         # and no way for the two to disagree. Routed before the prose validation
         # below because the argument rules differ: no chunker and no extractor
         # apply, since no model is called.
-        if isinstance(source, str) and self._is_tabular(source, loader):
+        if isinstance(source, str) and self._is_tabular(source, loader, record_loader):
             if text is not None:
                 raise ValueError(
                     "Cannot pass both 'source' and 'text'. Use 'source' for file "
@@ -2546,12 +2547,21 @@ class GraphRAG:
     # Suffixes the record loader can read. One of these means the source is
     # records, so it is routed to the deterministic write path and its mapping is
     # looked up in the ontology. A file that really is prose living in columns —
-    # support tickets, survey answers — says so by passing a loader.
+    # support tickets, survey answers — says so by passing a loader. A source
+    # with no suffix at all (a database table) says it is records by passing a
+    # record_loader.
     _TABULAR_SUFFIXES = (".csv", ".tsv", ".psv", ".tab")
 
     @classmethod
-    def _is_tabular(cls, source: str, loader: LoaderStrategy | None = None) -> bool:
-        return loader is None and source.lower().endswith(cls._TABULAR_SUFFIXES)
+    def _is_tabular(
+        cls,
+        source: str,
+        loader: LoaderStrategy | None = None,
+        record_loader: RecordLoaderStrategy | None = None,
+    ) -> bool:
+        if loader is not None:
+            return False
+        return record_loader is not None or source.lower().endswith(cls._TABULAR_SUFFIXES)
 
     async def _mapping_for(
         self,
@@ -3315,7 +3325,7 @@ class GraphRAG:
         # either, so a re-sync cannot be handed a declaration that disagrees with
         # the one the source was originally written under.
         mapping: TableMapping | None = None
-        if isinstance(source, str) and self._is_tabular(source, loader):
+        if isinstance(source, str) and self._is_tabular(source, loader, record_loader):
             for name, value in (("chunker", chunker), ("extractor", extractor)):
                 if value is not None:
                     raise ValueError(
@@ -3335,7 +3345,7 @@ class GraphRAG:
         elif record_loader is not None or strict_mapping:
             raise ValueError(
                 "'record_loader' and 'strict_mapping' only apply to a structured "
-                "source (.csv, .tsv, .psv, .tab)."
+                "source (.csv, .tsv, .psv, .tab, or any source read by a record_loader)."
             )
 
         await self._validate_graph_config()

@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Connectors — sync databases, file stores and apps through dlt and LlamaIndex readers
+
+- **`graphrag_sdk.connectors.sync(rag, data)`** keeps the graph in step with
+  external sources without the SDK writing an API client for any of them
+  ([#359](https://github.com/FalkorDB/GraphRAG-SDK/issues/359)). `data` is any
+  dlt source or resource: `sql_database`, `filesystem` (S3, GCS, Azure, SFTP,
+  Google Drive), `rest_api` or your own. A resource that yields row dicts is
+  written as a table through its `TableMapping`, found by the resource's name;
+  one that yields `SourceDocument` items is synced as documents under
+  `<resource name>:<id>`. Installed with `graphrag-sdk[dlt]`.
+- **A re-sync costs only what changed.** New documents are ingested, changed
+  ones go through `update(cache_unchanged_chunks=True)`, unchanged ones are
+  skipped on their content hash with no model calls, and documents the source
+  no longer has are deleted. Pruning is scoped to the source's id prefix,
+  refused for a resource with a dlt incremental cursor (its partial read would
+  delete the rest), and skipped when a source returns nothing at all, which is
+  more often a revoked token than an emptied source. `dry_run=True` reports
+  added, updated, unchanged and deleted documents before any model call.
+- **`llamaindex_documents(reader, name=...)`** wraps any LlamaIndex reader as a
+  dlt resource, for apps dlt has no document source for (Notion, Confluence,
+  SharePoint). **`file_documents(filesystem(...), name=...)`** reads Markdown,
+  text and PDF out of a dlt filesystem listing. Source metadata such as URL and
+  modified time is stored on the `Document` node.
+- **`sync_documents()` and `sync_table()`** take plain iterables, for sources
+  fetched without dlt.
+- **A `record_loader` now marks a source with no table suffix as a table**, so
+  `ingest("employees", record_loader=...)` takes the structured path. Before,
+  only `.csv`, `.tsv`, `.psv` and `.tab` did, which left database tables no way
+  in.
+
 #### Structured ingestion — tables declared on the ontology, one node for a row and its mention
 
 - **`Ontology(tables=[TableMapping(...)])`** declares what a table's columns mean,
