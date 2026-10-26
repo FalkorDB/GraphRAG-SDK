@@ -8,9 +8,9 @@ Keep the graph in step with a database table and a folder of documents:
   - sync(rag, [...])         — writes what changed, removes what is gone
   - sync(..., dry_run=True)  — what a sync would do, before any model call
 
-Run it twice. The second run makes no model calls and reports every document
-unchanged. Edit a note or delete one, run it again, and only that note is
-re-extracted or removed.
+Run it twice. The second sync makes no extraction calls and reports every
+document unchanged (the question at the end still asks the model). Edit a note
+or delete one, run it again, and only that note is re-extracted or removed.
 
 The folder here is local so the example runs as is. The same filesystem
 source reads S3 (s3://bucket/path), Google Cloud Storage (gs://) and Google
@@ -89,6 +89,8 @@ async def main():
         preview = await sync(rag, data, dry_run=True)
         for report in preview.documents.values():
             print("would sync", report.summary())
+        for table, rows in preview.table_rows.items():
+            print(f"would sync {table}: {rows} rows")
 
         result = await sync(rag, data)
         for report in result.documents.values():

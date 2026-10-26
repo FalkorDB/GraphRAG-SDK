@@ -12,8 +12,8 @@ What the SDK adds is the sync: a stable id for every document, skipping what has
 
 ```bash
 pip install "graphrag-sdk[dlt]"
-pip install "dlt[sql_database]"          # a source's driver, per dlt's docs
-pip install llama-index-readers-notion   # only for a LlamaIndex reader
+pip install "dlt[sql_database,filesystem]" psycopg2-binary   # PostgreSQL and S3, as below
+pip install llama-index-readers-notion                       # only for a LlamaIndex reader
 ```
 
 ---
@@ -70,7 +70,7 @@ notion = llamaindex_documents(
 await sync(rag, notion)
 ```
 
-Any object with LlamaIndex's `load_data()` works. The document's `id_` becomes its graph id, so it has to be stable: the Notion reader sets it to the page id and the Google Drive reader to the file id. A reader that leaves it unset gets a random id on every load, which would add every document again on each sync. Pass `id_from=lambda doc: doc.metadata["..."]` for such a reader.
+Any object with LlamaIndex's `load_data()` works. The document's `id_` is the source's own id, and its graph id is `<name>:<id_>` (`notion:<page id>` here, which is what `delete_document()` takes). It has to be stable: the Notion reader sets it to the page id and the Google Drive reader to the file id. A reader that leaves it unset gets a random id on every load, which would add every document again on each sync. Pass `id_from=lambda doc: doc.metadata["..."]` for such a reader.
 
 The reader's metadata (URL, author, modified time) is stored on the `Document` node, so an answer can link back to its source.
 
@@ -102,11 +102,19 @@ Credentials are dlt's: arguments, environment variables or `.dlt/secrets.toml`. 
 | A document the source no longer has | Deleted with `delete_document()` |
 | A table | Written as a snapshot: new and changed rows written, removed rows removed, an unchanged table skipped |
 
-**Pruning assumes a full read.** A sync compares everything the source returned with the source's documents in the graph. Pass `prune=False` when you hand it only part of a source. `sync()` refuses a resource given a dlt incremental cursor with `apply_hints(incremental=...)` while pruning is on, since its partial read would delete everything it skipped.
+**Pruning assumes a full read.** A sync compares everything the source returned with the source's documents in the graph. When you hand `sync_documents()` only part of a source, pass `prune=False`. `sync()` refuses a resource given a dlt incremental cursor with `apply_hints(incremental=...)`: it keeps no dlt state, and a partial read would delete the documents or rows it skipped. A cursor declared as a resource function's default argument is not detected, so don't pass one.
 
-**An empty source deletes nothing.** If a source returns no documents at all, its documents are kept and `prune_skipped` says why. An empty answer is more often a revoked token or a wrong folder than a source whose every document was deleted.
+**Everything is checked before anything is written.** `sync()` reads every resource, checks cursors, item types and table mappings, and only then writes. A bad resource fails the whole call instead of leaving it half applied.
 
-**A source name is a namespace.** `notion:` documents are only ever pruned by a sync named `notion`. Two folders need two names.
+**An empty document source deletes nothing.** If a document source returns nothing, its documents are kept, and its report's `prune_skipped` says why. An empty answer is more often a revoked token or a wrong folder than a source whose every document was deleted. An empty table is different: a resource whose name has a `TableMapping` is written as an empty snapshot, and its rows are removed.
+
+**A source name is a namespace.** `notion:` documents are only ever pruned by a sync named `notion`. Two folders need two names, and a name may not contain `:`.
+
+**Run one sync of a source at a time.** Two concurrent syncs of one source can each prune what the other just wrote.
+
+**Failed writes are reported, not hidden.** A document whose extraction failed for some chunks is listed in `failed` with the reason. Its content hash is not recorded, so the next sync retries it.
+
+**Metadata stays current.** When a document's text is unchanged but its metadata changed (a new URL or author), the metadata is updated without re-extracting.
 
 ---
 
@@ -142,8 +150,8 @@ await sync_table(rag, rows, table="employees")
 
 ## Limits
 
-- **Every run reads the whole source.** Unchanged documents cost no model calls, but they are downloaded again. dlt's incremental cursors are not used, because deletions are found by comparing a full read with the graph.
-- **A whole source is held in memory** while it is synced.
+- **Every run reads the whole source.** Unchanged documents cost no model calls, but they are downloaded again. dlt's incremental cursors are refused, because deletions are found by comparing a full read with the graph.
+- **Every resource in a call is held in memory** until it is written, since all of them are checked first.
 - **No scheduling and no OAuth.** Run a sync from cron or your own job. Sources that need a user to sign in take a token or a service account instead.
 
 See [`examples/12_connectors.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/12_connectors.py) for a runnable version.

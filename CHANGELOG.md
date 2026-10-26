@@ -22,11 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A re-sync costs only what changed.** New documents are ingested, changed
   ones go through `update(cache_unchanged_chunks=True)`, unchanged ones are
   skipped on their content hash with no model calls, and documents the source
-  no longer has are deleted. Pruning is scoped to the source's id prefix,
-  refused for a resource with a dlt incremental cursor (its partial read would
-  delete the rest), and skipped when a source returns nothing at all, which is
-  more often a revoked token than an emptied source. `dry_run=True` reports
-  added, updated, unchanged and deleted documents before any model call.
+  no longer has are deleted. Pruning is scoped to the source's id prefix (a
+  source name may not contain `:`) and skipped when a document source returns
+  nothing at all, which is more often a revoked token than an emptied source.
+  A resource given a dlt incremental cursor with `apply_hints(incremental=...)`
+  is refused, since `sync()` keeps no dlt state and a partial read would delete
+  what it skipped; a cursor declared as a resource function's default argument
+  is not detected. Every resource is read and checked before anything is
+  written. Documents with incomplete writes are reported as failed, and metadata
+  changes on unchanged text are applied without re-extraction. `dry_run=True`
+  reports added, updated, unchanged and deleted documents before any model call.
 - **`llamaindex_documents(reader, name=...)`** wraps any LlamaIndex reader as a
   dlt resource, for apps dlt has no document source for (Notion, Confluence,
   SharePoint). **`file_documents(filesystem(...), name=...)`** reads Markdown,

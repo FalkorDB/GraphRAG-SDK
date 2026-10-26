@@ -1957,7 +1957,11 @@ class GraphRAG:
         # because the structured path takes one source at a time. Refuse it while
         # the caller can still act.
         if isinstance(source, list):
-            tables = [c for c in source if isinstance(c, str) and self._is_tabular(c, loader)]
+            tables = [
+                c
+                for c in source
+                if isinstance(c, str) and self._is_tabular(c, loader, record_loader)
+            ]
             if tables:
                 raise ValueError(
                     f"{', '.join(tables)} look like tables, and each structured source "

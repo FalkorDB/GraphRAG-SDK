@@ -26,6 +26,7 @@ from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.record_loader import RecordBatch, RecordLoaderStrategy
+from graphrag_sdk.ingestion.mapping import record_mapping_for
 from graphrag_sdk.ingestion.structured_pipeline import StructuredIngestionResult
 
 if TYPE_CHECKING:
@@ -35,8 +36,11 @@ logger = logging.getLogger(__name__)
 
 # Properties the SDK keeps on a Document node for its own bookkeeping. Source
 # metadata that used one of these names would overwrite the content hash the
-# no-op check reads, or the kind an update is refused on.
-_RESERVED_PROPERTIES = frozenset({"id", "path", "content_hash", "kind", "table", "ready_to_commit"})
+# no-op check reads, the kind an update is refused on, or the marker crash
+# recovery deletes a document on.
+_RESERVED_PROPERTIES = frozenset(
+    {"id", "path", "content_hash", "kind", "table", "ready_to_commit", "pending_delete"}
+)
 _RESERVED_PREFIXES = ("cleanup_",)
 _PENDING_MARKER = "__pending__"
 
@@ -129,7 +133,9 @@ async def sync_documents(
 
     Pruning assumes ``documents`` is the whole source. Pass ``prune=False`` when
     it is a subset, such as only the pages edited since the last run, or every
-    document the subset left out would be deleted.
+    document the subset left out would be deleted. Run one sync of a source at a
+    time: a second sync pruning against an older read of the graph can delete
+    what the first just wrote.
 
     Does not call :meth:`GraphRAG.finalize`; call it once after syncing.
 
@@ -138,7 +144,8 @@ async def sync_documents(
         documents: Every document the source has now. A plain iterable is read
             in a worker thread, since fetching it is usually network I/O.
         source: A short name for the source, such as ``notion`` or ``drive``.
-            Each document's graph id is ``<source>:<id>``.
+            Each document's graph id is ``<source>:<id>``. It may not contain
+            ``:``, which would let one source's prefix cover another's.
         prune: Delete this source's documents that ``documents`` no longer has.
             Skipped, with the reason in ``prune_skipped``, when the source
             returned nothing at all: an empty answer is more often a revoked
@@ -197,7 +204,15 @@ async def sync_documents(
             logger.warning("sync of %s failed: %s", doc_id, exc)
             report.failed[doc_id] = f"{type(exc).__name__}: {exc}"
             continue
-        if result.no_op:
+        incomplete = (result.metadata or {}).get("incomplete_writes")
+        if incomplete:
+            # The pipeline reports failed chunks and short writes here instead of
+            # raising. No content hash was recorded, so the next sync retries it.
+            report.failed[doc_id] = f"incomplete writes: {incomplete}"
+        elif result.no_op:
+            # update() returns on a matching hash before writing anything, so a
+            # moved page or a new author would otherwise never reach the graph.
+            await _refresh_metadata(rag, doc_id, doc.metadata)
             report.unchanged.append(doc_id)
         elif result.replaced_existing:
             report.updated.append(doc_id)
@@ -243,7 +258,7 @@ async def sync_table(
     that are new or changed are written, and rows that disappeared from the
     source are removed. ``rows`` must therefore be the whole table, not only the
     rows changed since the last run. An unchanged table is a no-op. No model is
-    called.
+    called. An empty ``rows`` removes every row the table had.
 
     The table needs a :class:`~graphrag_sdk.core.tables.TableMapping` in the
     ontology whose ``source`` is the table's name (``users`` or ``users.csv``).
@@ -262,7 +277,10 @@ async def sync_table(
     """
     mapping = await _mapping_named(rag, table)
     records = [row async for row in _aiter(rows)]
-    loader = _RowsLoader(records)
+    # An empty table still has a header. Without one the mapping's key and name
+    # columns read as missing and the snapshot that removes every row is refused.
+    header = [] if records else sorted(record_mapping_for(mapping).columns)
+    loader = _RowsLoader(records, header)
     result = await rag.ingest(mapping.source, record_loader=loader, ctx=ctx)
     assert isinstance(result, StructuredIngestionResult)  # a record_loader routes to tables
     return result
@@ -292,13 +310,21 @@ async def sync(
       written with :func:`sync_table`, matched to a ``TableMapping`` by the
       resource's name.
 
-    Every run reads every resource from the start. dlt's incremental cursors are
-    not used, because removed documents and rows are found by comparing a full
-    read with the graph. A resource given a cursor with
-    ``apply_hints(incremental=...)`` is refused while ``prune`` is on, since its
-    partial read would delete everything it skipped. A cursor declared as the
-    resource function's default argument is not detected, so do not prune such
-    a resource.
+    Every run reads every resource from the start, and every resource is read
+    and checked before anything is written, so a bad resource fails the whole
+    call rather than leaving it half applied.
+
+    dlt's incremental cursors are not supported. ``sync()`` keeps no dlt state,
+    so a cursor would not advance between runs, and a partial read is wrong for
+    both kinds of resource: pruning would delete the documents it skipped, and a
+    table snapshot would remove the rows it skipped. A resource given a cursor
+    with ``apply_hints(incremental=...)`` is refused. A cursor declared as the
+    resource function's default argument is not detected, so do not pass such a
+    resource.
+
+    An empty resource is handled by what it would have been. One whose name has a
+    ``TableMapping`` is an empty table, and its rows are removed. Any other is an
+    empty document source, which deletes nothing (see :func:`sync_documents`).
 
     Requires the ``dlt`` extra: ``pip install graphrag-sdk[dlt]``.
 
@@ -330,41 +356,59 @@ async def sync(
     Returns:
         A :class:`SyncResult`.
     """
-    result = SyncResult()
-    for resource in _resources(data):
-        name = resource.name
-        if prune and _has_cursor(resource):
+    resources = _resources(data)
+    for resource in resources:
+        if _has_cursor(resource):
             raise ValueError(
-                f"Resource '{name}' has an incremental cursor, so it returns only part "
-                "of the source and pruning would delete the rest. Remove the cursor, "
-                "or sync with prune=False."
+                f"Resource '{resource.name}' has an incremental cursor. sync() reads "
+                "every source in full and keeps no dlt state, so a cursor would not "
+                "advance between runs, and its partial read would delete the documents "
+                "or table rows it skipped. Remove the cursor."
             )
+    table_names = {
+        name for name in (r.name for r in resources) if await _find_mapping(rag, name) is not None
+    }
+
+    # Read and classify everything before the first write.
+    documents: dict[str, list[SourceDocument]] = {}
+    tables: dict[str, list[dict[str, Any]]] = {}
+    for resource in resources:
+        name = resource.name
         items = _flatten(await asyncio.to_thread(list, resource))
-        if not items:
-            logger.warning("%s returned nothing; skipped", name)
-            continue
-        if all(isinstance(item, SourceDocument) for item in items):
-            result.documents[name] = await sync_documents(
-                rag,
-                items,
-                source=name,
-                prune=prune,
-                dry_run=dry_run,
-                cache_unchanged_chunks=cache_unchanged_chunks,
-                chunker=chunker,
-                extractor=extractor,
-                ctx=ctx,
-            )
+        if all(isinstance(item, SourceDocument) for item in items) and (
+            items or name not in table_names
+        ):
+            documents[name] = items
         elif all(isinstance(item, dict) for item in items):
-            result.table_rows[name] = len(items)
-            if not dry_run:
-                result.tables[name] = await sync_table(rag, items, table=name, ctx=ctx)
+            if name not in table_names:
+                await _mapping_named(rag, name)  # raises, naming what is declared
+            tables[name] = items
         else:
             kinds = sorted({type(item).__name__ for item in items})
             raise TypeError(
                 f"Resource '{name}' yielded {', '.join(kinds)}. A resource yields "
                 "either SourceDocument items or row dicts, not a mix."
             )
+    for name in documents:
+        _check_source_name(name)
+
+    result = SyncResult()
+    for name, docs in documents.items():
+        result.documents[name] = await sync_documents(
+            rag,
+            docs,
+            source=name,
+            prune=prune,
+            dry_run=dry_run,
+            cache_unchanged_chunks=cache_unchanged_chunks,
+            chunker=chunker,
+            extractor=extractor,
+            ctx=ctx,
+        )
+    for name, rows in tables.items():
+        result.table_rows[name] = len(rows)
+        if not dry_run:
+            result.tables[name] = await sync_table(rag, rows, table=name, ctx=ctx)
     return result
 
 
@@ -393,9 +437,9 @@ class _PrefetchedLoader(LoaderStrategy):
 class _RowsLoader(RecordLoaderStrategy):
     """Hands the structured write path rows that are already in memory."""
 
-    def __init__(self, records: list[dict[str, Any]]) -> None:
+    def __init__(self, records: list[dict[str, Any]], header: list[str]) -> None:
         self._records = records
-        columns: dict[str, None] = {}
+        columns: dict[str, None] = dict.fromkeys(header)
         for record in records:
             columns.update(dict.fromkeys(record))
         self._columns = list(columns)
@@ -454,8 +498,20 @@ def _text_hash(text: str) -> str:
 def _check_source_name(source: str) -> None:
     if not source or not source.strip():
         raise ValueError("'source' must be a non-empty name, such as 'notion'")
+    if ":" in source:
+        # Ids are "<source>:<id>" and pruning lists by prefix, so a source named
+        # "wiki" would own, and prune, every "wiki:team:<id>" document.
+        raise ValueError(f"'source' may not contain ':', got {source!r}")
     if _PENDING_MARKER in source:
         raise ValueError(f"'source' may not contain {_PENDING_MARKER!r}")
+
+
+async def _refresh_metadata(rag: GraphRAG, doc_id: str, metadata: dict[str, Any]) -> None:
+    props = graph_safe_metadata(metadata)
+    if props:
+        await rag.query(
+            "MATCH (d:Document {id: $id}) SET d += $props", {"id": doc_id, "props": props}
+        )
 
 
 async def _existing_documents(rag: GraphRAG, prefix: str) -> dict[str, str | None]:
@@ -468,12 +524,20 @@ async def _existing_documents(rag: GraphRAG, prefix: str) -> dict[str, str | Non
     return {row[0]: row[1] for row in rows}
 
 
-async def _mapping_named(rag: GraphRAG, table: str) -> TableMapping:
+async def _find_mapping(rag: GraphRAG, table: str) -> TableMapping | None:
     ontology = await rag.get_ontology()
     for mapping in ontology.tables:
         base = os.path.basename(os.path.normpath(mapping.source))
         if table in (base, os.path.splitext(base)[0]):
             return mapping
+    return None
+
+
+async def _mapping_named(rag: GraphRAG, table: str) -> TableMapping:
+    mapping = await _find_mapping(rag, table)
+    if mapping is not None:
+        return mapping
+    ontology = await rag.get_ontology()
     declared = ", ".join(m.source for m in ontology.tables) or "none"
     raise ValueError(
         f"No TableMapping in the ontology is for table '{table}' (declared: "

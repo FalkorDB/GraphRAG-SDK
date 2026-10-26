@@ -96,8 +96,10 @@ def file_documents(files: DltResource, *, name: str) -> DltResource:
     """
 
     @dlt.transformer(name=name)
-    def documents(items: list[Any]) -> Iterator[SourceDocument]:
-        for item in items:
+    def documents(items: Any) -> Iterator[SourceDocument]:
+        # dlt's filesystem resource yields pages of files; a custom listing may
+        # yield them one at a time.
+        for item in [items] if isinstance(items, dict) else items:
             text = _file_text(item)
             if text is None:
                 continue
@@ -124,9 +126,13 @@ def _file_text(item: Any) -> str | None:
     if suffix == ".pdf":
         from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
 
-        with tempfile.NamedTemporaryFile(suffix=".pdf") as handle:
+        # Closed before reading: Windows refuses to reopen a file that is still
+        # open, which NamedTemporaryFile's default delete-on-close would need.
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
             handle.write(item.read_bytes())
-            handle.flush()
+        try:
             return PdfLoader()._load_sync(handle.name).text
+        finally:
+            os.unlink(handle.name)
     logger.info("skipped %s: no text reader for %s files", item["file_url"], suffix or "these")
     return None

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -42,9 +43,14 @@ class FakeGraph:
         self.deletes: list[str] = []
         self.ingests: list[tuple[str, list[dict[str, Any]]]] = []
         self.fail_on: set[str] = set()
+        self.incomplete_on: set[str] = set()
+        self.metadata_refreshes: list[tuple[str, dict[str, Any]]] = []
         self.ontology = Ontology(entities=[Entity(label="Person")], tables=tables or [])
 
     async def query(self, cypher: str, params: dict[str, Any]) -> list[list[Any]]:
+        if "SET d += $props" in cypher:
+            self.metadata_refreshes.append((params["id"], params["props"]))
+            return []
         assert "STARTS WITH $prefix" in cypher
         return [[i, h] for i, h in self.documents.items() if i.startswith(params["prefix"])]
 
@@ -58,6 +64,12 @@ class FakeGraph:
         self.metadata[document_id] = loaded.document_info.metadata
         new_hash = _hash(loaded.text)
         old_hash = self.documents.get(document_id)
+        if document_id in self.incomplete_on:
+            # As the pipeline does: written, but no hash recorded.
+            self.documents[document_id] = None
+            return UpdateResult(
+                metadata={"incomplete_writes": ["extraction failed for 1 chunk(s)"]}
+            )
         self.documents[document_id] = new_hash
         return UpdateResult(
             no_op=old_hash == new_hash,
@@ -74,6 +86,7 @@ class FakeGraph:
     async def ingest(self, source: str, *, record_loader: Any, ctx: Any = None):
         from graphrag_sdk.ingestion.structured_pipeline import StructuredIngestionResult
 
+        self.last_loader = record_loader
         batch = await record_loader.load_records(source, Context())
         rows = list(batch)
         assert list(batch) == rows, "records must be re-openable"
@@ -230,10 +243,31 @@ async def test_items_that_are_not_documents_are_refused():
         await sync_documents(FakeGraph(), [{"id": "p1"}], source="notion")
 
 
-@pytest.mark.parametrize("name", ["", "  ", "x__pending__"])
+@pytest.mark.parametrize("name", ["", "  ", "x__pending__", "wiki:team"])
 async def test_a_bad_source_name_is_refused(name):
     with pytest.raises(ValueError):
         await sync_documents(FakeGraph(), [], source=name)
+
+
+async def test_incomplete_writes_are_reported_as_failed_and_not_pruned():
+    graph = FakeGraph({"notion:p1": _hash("old")})
+    graph.incomplete_on = {"notion:p1"}
+
+    report = await sync_documents(graph, [SourceDocument("p1", "new")], source="notion")
+
+    assert "extraction failed" in report.failed["notion:p1"]
+    assert not (report.added or report.updated or report.unchanged)
+    assert "notion:p1" in graph.documents
+
+
+async def test_unchanged_text_still_refreshes_metadata():
+    graph = FakeGraph({"notion:p1": _hash("same")})
+    doc = SourceDocument("p1", "same", {"url": "https://notion.so/moved", "pending_delete": True})
+
+    report = await sync_documents(graph, [doc], source="notion")
+
+    assert report.unchanged == ["notion:p1"]
+    assert graph.metadata_refreshes == [("notion:p1", {"url": "https://notion.so/moved"})]
 
 
 def test_document_id_is_source_and_id():
@@ -242,7 +276,15 @@ def test_document_id_is_source_and_id():
 
 def test_graph_safe_metadata_keeps_scalars_and_lists():
     assert graph_safe_metadata(
-        {"n": 3, "f": float("nan"), "tags": ["a", 1, None, object()], "none": None, "path": "x"}
+        {
+            "n": 3,
+            "f": float("nan"),
+            "tags": ["a", 1, None, object()],
+            "none": None,
+            "path": "x",
+            "pending_delete": True,
+            "cleanup_candidates": ["e1"],
+        }
     ) == {"n": 3, "tags": ["a", 1]}
 
 
@@ -268,9 +310,27 @@ async def test_a_mapping_declared_with_a_file_suffix_matches_the_table_name():
     assert graph.ingests[0][0] == "users.csv"
 
 
+async def test_an_empty_table_is_an_empty_snapshot_with_the_mapping_header():
+    mapping = TableMapping(source="users", label="Person", key="id", name="name")
+    graph = FakeGraph(tables=[mapping])
+
+    await sync_table(graph, [], table="users")
+
+    batch = await graph.last_loader.load_records("users", Context())
+    assert graph.ingests == [("users", [])]
+    assert set(batch.columns) == {"id", "name"}
+
+
 async def test_a_table_without_a_mapping_is_refused():
     with pytest.raises(ValueError, match="No TableMapping"):
         await sync_table(FakeGraph(), [{"id": 1}], table="users")
+
+
+async def test_a_list_with_a_record_loader_is_refused_as_tables():
+    rag = GraphRAG.__new__(GraphRAG)
+
+    with pytest.raises(ValueError, match="look like tables"):
+        await rag.ingest(["users", "orders"], record_loader=CsvRecordLoader())
 
 
 def test_a_record_loader_marks_a_suffixless_source_as_a_table():
@@ -341,16 +401,68 @@ async def test_sync_reads_every_resource_of_a_source(dlt):
     assert set(graph.documents) == {"wiki:w1", "tickets:t1"}
 
 
-async def test_sync_refuses_to_prune_a_resource_with_a_cursor(dlt):
+@pytest.mark.parametrize("prune", [True, False])
+async def test_sync_refuses_a_cursor_before_writing_anything(dlt, prune):
+    graph = FakeGraph(tables=[TableMapping(source="users", label="Person", name="name")])
+
+    @dlt.resource(name="notion")
+    def notion():
+        yield SourceDocument("p1", "a")
+
     @dlt.resource(name="users")
     def users():
-        yield {"id": 1}
+        yield {"name": "Alice"}
 
-    resource = users()
-    resource.apply_hints(incremental=dlt.sources.incremental("id"))
+    table = users()
+    table.apply_hints(incremental=dlt.sources.incremental("name"))
 
+    # Refused with prune off too: a table is a snapshot, so a partial read would
+    # remove the rows the cursor skipped.
     with pytest.raises(ValueError, match="incremental cursor"):
-        await sync(FakeGraph(), resource)
+        await sync(graph, [notion(), table], prune=prune)
+    assert graph.updates == [] and graph.ingests == []
+
+
+async def test_sync_checks_table_mappings_before_writing_anything(dlt):
+    graph = FakeGraph()
+
+    @dlt.resource(name="notion")
+    def notion():
+        yield SourceDocument("p1", "a")
+
+    @dlt.resource(name="users")
+    def users():
+        yield {"name": "Alice"}
+
+    with pytest.raises(ValueError, match="No TableMapping"):
+        await sync(graph, [notion(), users()])
+    assert graph.updates == []
+
+
+async def test_sync_writes_an_empty_mapped_resource_as_an_empty_table(dlt):
+    graph = FakeGraph(tables=[TableMapping(source="users", label="Person", name="name")])
+
+    @dlt.resource(name="users")
+    def users():
+        yield from []
+
+    result = await sync(graph, users())
+
+    assert result.table_rows == {"users": 0}
+    assert graph.ingests == [("users", [])]
+
+
+async def test_sync_reports_an_empty_document_resource_without_pruning(dlt):
+    graph = FakeGraph({"notion:p1": _hash("a")})
+
+    @dlt.resource(name="notion")
+    def notion():
+        yield from []
+
+    result = await sync(graph, notion())
+
+    assert result.documents["notion"].prune_skipped
+    assert graph.deletes == []
 
 
 async def test_sync_refuses_two_resources_with_one_name(dlt):
@@ -413,6 +525,49 @@ async def test_file_documents_reads_text_files_and_skips_the_rest(dlt, tmp_path)
     assert [d.text for d in docs] == ["# A\nAlice works at Acme."]
     assert docs[0].id == docs[0].metadata["source_url"]
     assert docs[0].id.endswith("/a.md")
+
+
+async def test_file_documents_takes_one_file_at_a_time_too(dlt, tmp_path):
+    from graphrag_sdk.connectors import file_documents
+
+    path = tmp_path / "a.md"
+    path.write_text("Alice.")
+
+    class Item(dict):
+        def read_bytes(self):
+            return path.read_bytes()
+
+    @dlt.resource(name="listing")
+    def listing():
+        yield Item(file_url=path.as_uri(), file_name="a.md")
+
+    assert [d.text for d in file_documents(listing(), name="files")] == ["Alice."]
+
+
+def test_a_pdf_is_read_from_a_closed_temporary_file(monkeypatch, tmp_path):
+    from graphrag_sdk.connectors import sources
+    from graphrag_sdk.core.models import DocumentOutput
+    from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
+
+    seen: list[str] = []
+    paths: list[str] = []
+
+    def load(self, path):
+        paths.append(path)
+        with open(path, "rb") as handle:  # reopening is what Windows refuses
+            seen.append(handle.read().decode())
+        return DocumentOutput(text="pdf text")
+
+    monkeypatch.setattr(PdfLoader, "_load_sync", load)
+
+    class Item(dict):
+        def read_bytes(self):
+            return b"%PDF-1.4"
+
+    text = sources._file_text(Item(file_url="file:///a.pdf", file_name="a.pdf"))
+
+    assert text == "pdf text" and seen == ["%PDF-1.4"]
+    assert not Path(paths[0]).exists(), "the temporary file is removed"
 
 
 # ── Real FalkorDB ───────────────────────────────────────────────
@@ -480,3 +635,47 @@ async def test_resync_against_falkordb(real_falkordb_rag_factory, scripted_llm):
     assert url == [["https://notion.so/p1"]]
     keys = await rag.query("MATCH (p:Person) WHERE p.entity_key IS NOT NULL RETURN p.entity_key")
     assert keys == [["1"]]
+
+
+@pytest.mark.integration
+async def test_empty_table_and_metadata_refresh_against_falkordb(
+    real_falkordb_rag_factory, scripted_llm
+):
+    """An emptied table loses its rows; a moved page keeps its text and gets its new URL."""
+    from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+        EntityExtractor,
+    )
+    from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+        GraphExtraction,
+    )
+
+    class _NoLocalNER(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            return []
+
+    llm = scripted_llm([])
+    extractor = GraphExtraction(llm, entity_extractor=_NoLocalNER())
+    rag = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Person")],
+            tables=[TableMapping(source="users", label="Person", key="id", name="name")],
+        ),
+    )
+
+    await sync_table(rag, [{"id": 1, "name": "Alice"}], table="users")
+    emptied = await sync_table(rag, [], table="users")
+
+    assert emptied.replaced_existing
+    keys = await rag.query("MATCH (p:Person) WHERE p.entity_key IS NOT NULL RETURN p.entity_key")
+    assert keys == []
+
+    page = SourceDocument("p1", "Alice works at Acme.", {"url": "https://notion.so/old"})
+    await sync_documents(rag, [page], source="notion", extractor=extractor)
+    page.metadata = {"url": "https://notion.so/new"}
+    report = await sync_documents(rag, [page], source="notion", extractor=extractor)
+
+    assert report.unchanged == ["notion:p1"]
+    url = await rag.query("MATCH (d:Document {id: 'notion:p1'}) RETURN d.url")
+    assert url == [["https://notion.so/new"]]
