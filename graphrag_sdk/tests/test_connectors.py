@@ -544,7 +544,7 @@ async def test_file_documents_takes_one_file_at_a_time_too(dlt, tmp_path):
     assert [d.text for d in file_documents(listing(), name="files")] == ["Alice."]
 
 
-def test_a_pdf_is_read_from_a_closed_temporary_file(monkeypatch, tmp_path):
+def test_a_pdf_is_read_from_a_closed_temporary_file(dlt, monkeypatch, tmp_path):
     from graphrag_sdk.connectors import sources
     from graphrag_sdk.core.models import DocumentOutput
     from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
