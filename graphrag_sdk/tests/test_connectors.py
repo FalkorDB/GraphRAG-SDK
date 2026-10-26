@@ -50,6 +50,7 @@ class FakeGraph:
 
     async def update(self, source: str, *, document_id: str, loader: Any, **kwargs: Any):
         assert kwargs["if_missing"] == "ingest"
+        self.update_kwargs = kwargs
         if document_id in self.fail_on:
             raise RuntimeError("provider down")
         self.updates.append(document_id)
@@ -198,6 +199,18 @@ async def test_metadata_reaches_the_document_without_reserved_or_unstorable_valu
         "url": "https://notion.so/p1",
         "modified": "2026-10-01T00:00:00+00:00",
     }
+
+
+async def test_chunker_and_extractor_reach_update():
+    graph = FakeGraph()
+    chunker, extractor = object(), object()
+
+    await sync_documents(
+        graph, [SourceDocument("p1", "a")], source="notion", chunker=chunker, extractor=extractor
+    )
+
+    assert graph.update_kwargs["chunker"] is chunker
+    assert graph.update_kwargs["extractor"] is extractor
 
 
 async def test_a_plain_generator_is_read():
@@ -407,8 +420,27 @@ async def test_file_documents_reads_text_files_and_skips_the_rest(dlt, tmp_path)
 
 @pytest.mark.integration
 async def test_resync_against_falkordb(real_falkordb_rag_factory, scripted_llm):
+    """Add, skip, update and prune against a real graph.
+
+    Step-1 NER is stubbed, as in test_cached_chunk_extraction: the default GLiNER
+    extractor cannot load its tokenizer on every CI runner, and a chunk whose
+    extraction failed withholds the content hash, so the unchanged re-sync would
+    redo the documents for a reason unrelated to syncing.
+    """
+    from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+        EntityExtractor,
+    )
+    from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+        GraphExtraction,
+    )
+
+    class _NoLocalNER(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            return []
+
     # Strict: one scripted reply per extraction call the test expects.
     llm = scripted_llm([], [], [])
+    extractor = GraphExtraction(llm, entity_extractor=_NoLocalNER())
     rag = real_falkordb_rag_factory(
         llm=llm,
         resolver=None,
@@ -423,20 +455,20 @@ async def test_resync_against_falkordb(real_falkordb_rag_factory, scripted_llm):
     def documents():
         return [SourceDocument(k, v, {"url": f"https://notion.so/{k}"}) for k, v in pages.items()]
 
-    first = await sync_documents(rag, documents(), source="notion")
+    first = await sync_documents(rag, documents(), source="notion", extractor=extractor)
     await sync_table(rag, users, table="users")
     assert first.added == ["notion:p1", "notion:p2"]
     calls_after_first = llm._call_index
 
     # Nothing changed: no model call, nothing rewritten.
-    again = await sync_documents(rag, documents(), source="notion")
+    again = await sync_documents(rag, documents(), source="notion", extractor=extractor)
     assert again.unchanged == ["notion:p1", "notion:p2"]
     assert llm._call_index == calls_after_first
 
     # One page edited, one removed, one table row removed.
     pages = {"p1": "Alice works at Acme in Berlin."}
     users = [{"id": 1, "name": "Alice"}]
-    last = await sync_documents(rag, documents(), source="notion")
+    last = await sync_documents(rag, documents(), source="notion", extractor=extractor)
     table = await sync_table(rag, users, table="users")
 
     assert last.updated == ["notion:p1"] and last.deleted == ["notion:p2"]

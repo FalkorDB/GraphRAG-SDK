@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import DocumentInfo, DocumentOutput
 from graphrag_sdk.core.tables import TableMapping
+from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
+from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.record_loader import RecordBatch, RecordLoaderStrategy
 from graphrag_sdk.ingestion.structured_pipeline import StructuredIngestionResult
@@ -113,6 +115,8 @@ async def sync_documents(
     prune: bool = True,
     dry_run: bool = False,
     cache_unchanged_chunks: bool = True,
+    chunker: ChunkingStrategy | None = None,
+    extractor: ExtractionStrategy | None = None,
     ctx: Context | None = None,
 ) -> SyncReport:
     """Bring the graph's documents for ``source`` in line with ``documents``.
@@ -143,6 +147,8 @@ async def sync_documents(
         dry_run: Report what would happen without writing anything.
         cache_unchanged_chunks: Reuse the extraction of chunks whose text did not
             change when a document is updated.
+        chunker: Chunking strategy for the documents, as for :meth:`GraphRAG.update`.
+        extractor: Extraction strategy for the documents, as for :meth:`GraphRAG.update`.
         ctx: Execution context.
 
     Returns:
@@ -183,6 +189,8 @@ async def sync_documents(
                 loader=_PrefetchedLoader(doc),
                 if_missing="ingest",
                 cache_unchanged_chunks=cache_unchanged_chunks,
+                chunker=chunker,
+                extractor=extractor,
                 ctx=ctx,
             )
         except Exception as exc:
@@ -267,6 +275,8 @@ async def sync(
     prune: bool = True,
     dry_run: bool = False,
     cache_unchanged_chunks: bool = True,
+    chunker: ChunkingStrategy | None = None,
+    extractor: ExtractionStrategy | None = None,
     ctx: Context | None = None,
 ) -> SyncResult:
     """Sync one or more dlt sources or resources into the graph.
@@ -313,6 +323,8 @@ async def sync(
         dry_run: Read everything and report, without writing. Tables report
             their row counts only.
         cache_unchanged_chunks: See :func:`sync_documents`.
+        chunker: See :func:`sync_documents`. Tables are not chunked.
+        extractor: See :func:`sync_documents`. No model extracts from tables.
         ctx: Execution context.
 
     Returns:
@@ -339,6 +351,8 @@ async def sync(
                 prune=prune,
                 dry_run=dry_run,
                 cache_unchanged_chunks=cache_unchanged_chunks,
+                chunker=chunker,
+                extractor=extractor,
                 ctx=ctx,
             )
         elif all(isinstance(item, dict) for item in items):
