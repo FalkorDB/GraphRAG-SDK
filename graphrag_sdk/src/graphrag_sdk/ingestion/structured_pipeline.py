@@ -435,6 +435,9 @@ class _PreparedRelationship:
     end_key: str
     relationship_type: str
     properties: dict[str, Any]
+    # A cell that could not be read (a bad type or value). Raised only if the
+    # row would be written: a row a skip policy drops cannot fail the file.
+    error: str | None = None
 
     @property
     def identity(self) -> tuple[str, str, str]:
@@ -476,8 +479,11 @@ class RelationshipIngestionPipeline:
         # once per row batch in each of the two passes below.
         start_keys: dict[str, None] = {}
         end_keys: dict[str, None] = {}
+        errored: list[_PreparedRelationship] = []
         for prepared in self._prepared(batch, mapping):
             result.rows += 1
+            if prepared.error is not None:
+                errored.append(prepared)
             fingerprint = tuple(
                 (name, repr(value)) for name, value in sorted(prepared.properties.items())
             )
@@ -519,6 +525,11 @@ class RelationshipIngestionPipeline:
         )
         if has_fatal_missing or has_fatal_ambiguous:
             raise RelationshipResolutionError(result)
+        # A bad cell fails the file only on a row that would be written; the
+        # resolution pass read each identity's first row.
+        for prepared in errored:
+            if first_rows.get(prepared.identity, prepared.row) not in result._failed_rows:
+                raise MappingError(prepared.error)
         # The resolution pass reads each identity's first row, and every row of
         # an identity resolves alike, so that row says whether any is written.
         for identity, first_row in conflicts.items():
@@ -579,6 +590,7 @@ class RelationshipIngestionPipeline:
         for index, record in enumerate(batch, start=1):
             start = cell_text(record, mapping.start.column)
             end = cell_text(record, mapping.end.column)
+            relationship_type = ""
             try:
                 relationship_type = mapping.type_for(record)
                 properties = {
@@ -586,7 +598,15 @@ class RelationshipIngestionPipeline:
                     for prop, column in columns.items()
                 }
             except MappingError as exc:
-                raise MappingError(f"{mapping.source}: row {index}: {exc}") from exc
+                yield _PreparedRelationship(
+                    index,
+                    start,
+                    end,
+                    relationship_type,
+                    {},
+                    error=f"{mapping.source}: row {index}: {exc}",
+                )
+                continue
             yield _PreparedRelationship(index, start, end, relationship_type, properties)
 
     @classmethod

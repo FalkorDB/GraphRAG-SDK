@@ -816,7 +816,8 @@ class TestGraphStoreUpsertRelationships:
                     ("b3", None, None),
                     ("b4", "2026-09-21", "day"),
                 )
-            ]
+            ],
+            snapshot_property="relationship_mapping_consumed_batch",
         )
         (write,) = upsert_calls(mock_connection)
         cypher, params = write[0]
@@ -867,6 +868,25 @@ class TestGraphStoreUpsertRelationships:
             "usage_log",
         ]
 
+    async def test_a_node_tables_link_edge_leaves_blank_properties_out(
+        self, graph_store, mock_connection
+    ):
+        """Only a relationship table's write sends blanks as null. A node
+        table's link edges kept leaving them out, so a later blank row in one
+        batch could otherwise clear what an earlier row wrote."""
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="WORKS_IN",
+                    properties={"hr__since": None, "hr__teams": []},
+                )
+            ]
+        )
+        (write,) = upsert_calls(mock_connection)
+        assert write[0][1]["batch"][0]["properties"] == {}
+
     async def test_an_empty_signed_list_clears_the_prior_value(self, graph_store, mock_connection):
         """A LIST cell with no items casts to ``[]``, which ``_clean_properties``
         drops; left out of the write, the edge kept an earlier run's list."""
@@ -878,7 +898,8 @@ class TestGraphStoreUpsertRelationships:
                     type="RELATES",
                     properties={"rel_type": "TAGGED", "tagged__tags": [], "notes": []},
                 )
-            ]
+            ],
+            snapshot_property="relationship_mapping_tagged",
         )
         (write,) = upsert_calls(mock_connection)
         assert write[0][1]["batch"][0]["properties"] == {

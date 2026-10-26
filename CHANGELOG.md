@@ -58,7 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or several, raises `RelationshipResolutionError` with the counts and up to
   100 samples, and nothing is written. Exact duplicate rows collapse; two rows
   for one edge with different properties are refused, unless a skip policy
-  drops them anyway. Writes go in batches of 500, a blank cell (or a `LIST`
+  drops them anyway; a bad value in a row a skip policy drops does not fail
+  the file either. Writes go in batches of 500, a blank cell (or a `LIST`
   cell with no items) clears the edge's value, and `RelationshipIngestionResult`
   reports the counts. Relationship (vector) search does not return these edges
   — every edge of one mapping carries the same template `fact` and no endpoint
@@ -91,7 +92,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same batch exist whatever order a git diff lists them in.
   `deleted=[path]` deletes a `Document` with that id when one exists, and
   otherwise removes the table's edges and keeps its mapping, as it does for a
-  node table. `update()` refuses a relationship table. Declaring a file the SDK
+  node table. `update()` and `ingest(document_id=...)` refuse a relationship
+  table, and `rename_relation()` / `drop_relation()` refuse a type one writes,
+  naming the table. Declaring a file the SDK
   already proposed as a node table as a `RelationshipMapping` replaces the
   proposal; a declared `TableMapping` is never replaced, and a relationship
   table cannot share a property signature with any other table. While a

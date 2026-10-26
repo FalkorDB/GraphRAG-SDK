@@ -361,6 +361,7 @@ class GraphRAG:
         # Lazy-init flag; the first async call that needs the ontology fires
         # ``_ensure_ontology_initialized()`` to load + register the user's ontology.
         self._ontology_initialized = False
+        self._relationship_tables_being_declared: list[RelationshipMapping] = []
         # Working ontology used by retrieval; populated by
         # ``_ensure_ontology_initialized()`` and re-published on every change.
         self._working_ontology: Ontology = self.ontology
@@ -590,10 +591,19 @@ class GraphRAG:
         # built-in list, and the table's rows can then never join what the prose
         # produced. Registered here, so declaring a mapping and ingesting the PDF
         # first is not a different graph from doing it the other way round.
-        for mapping in declared_tables:
-            self._global_ontology = await self._register_structured_ontology_locked(
-                ontology_for(mapping)
-            )
+        # Node tables are registered one at a time, before the relationship
+        # tables. A relationship table declared alongside them may move its
+        # endpoint to the key a node table changes to, so while they register
+        # the key checks count the declared relationship tables, not the
+        # stored ones they replace.
+        self._relationship_tables_being_declared = list(self.ontology.relationship_tables)
+        try:
+            for mapping in declared_tables:
+                self._global_ontology = await self._register_structured_ontology_locked(
+                    ontology_for(mapping)
+                )
+        finally:
+            self._relationship_tables_being_declared = []
         # A stored relationship mapping whose endpoint key has left the ontology
         # cannot be registered. Raising here stopped every later instance on the
         # graph, retrieve() and the drop_table() that would remove it included,
@@ -1030,6 +1040,7 @@ class GraphRAG:
             raise ValueError(f"Unknown relation label: {old!r}")
         if old == new:
             return self._global_ontology
+        self._refuse_changing_a_relationship_tables_type(old, f"rename_relation({old!r})")
         if any(r.label == new for r in self._global_ontology.relations):
             raise ValueError(
                 f"Relation {new!r} already exists; merging relations is not "
@@ -1116,6 +1127,7 @@ class GraphRAG:
         await self._ensure_ontology_initialized()
         if not any(r.label == label for r in self._global_ontology.relations):
             raise ValueError(f"Unknown relation label: {label!r}")
+        self._refuse_changing_a_relationship_tables_type(label, f"drop_relation({label!r})")
         edges_deleted = await self._graph_store.delete_relations_by_type(label)
         await self._ontology_store.drop_relation_label(label)
         logger.info("drop_relation %s: %d data edges deleted", label, edges_deleted)
@@ -1272,6 +1284,27 @@ class GraphRAG:
         self._natural_mappings.pop(os.path.basename(os.path.normpath(source)), None)
         self._mapping_changes.discard(mapping.source)
         return chunks_deleted, entities_deleted, touched, released
+
+    def _refuse_changing_a_relationship_tables_type(self, label: str, action: str) -> None:
+        """Raise if a relationship table writes ``label`` edges.
+
+        Its stored mapping would go on writing the old type: a renamed or
+        dropped relation came back on the next ingest of the table. The
+        table goes first, or is redeclared with the new type.
+        """
+        using = [
+            mapping.source
+            for mapping in self._global_ontology.relationship_tables
+            if label in mapping.relationship_types
+        ]
+        if not using:
+            return
+        first = " and ".join(f"drop_table({source!r})" for source in dict.fromkeys(using))
+        raise ValueError(
+            f"{action}: relationship table(s) {', '.join(map(repr, using))} write {label!r} "
+            f"edges, and their mapping would keep writing that type. {first} first, or "
+            "redeclare the table with the new type."
+        )
 
     def _refuse_removing_an_endpoint_key(
         self,
@@ -2163,6 +2196,12 @@ class GraphRAG:
                 source, document_id=document_id, record_loader=record_loader, ctx=ctx
             )
             if isinstance(mapping, RelationshipMapping):
+                if document_id is not None:
+                    raise ValueError(
+                        "'document_id' does not apply to a relationship table: its rows "
+                        f"write edges, not a Document, and {source} is tracked by its "
+                        "mapping's source. Ingest it without document_id."
+                    )
                 return await self._write_relationship_source(
                     source,
                     mapping,
@@ -2539,18 +2578,20 @@ class GraphRAG:
                         f"{prop.type}."
                     )
 
-    @staticmethod
     def _relationship_tables_after(
-        incoming: Ontology, existing: Ontology
+        self, incoming: Ontology, existing: Ontology
     ) -> list[RelationshipMapping]:
         """The relationship tables a declaration leaves: its own, and every
         stored one it does not redeclare. A stored mapping the declaration
         replaces no longer needs its old keys, so moving a node table's key
-        and the relationship endpoint keyed on it together is allowed."""
-        redeclared = {mapping.signature for mapping in incoming.relationship_tables}
+        and the relationship endpoint keyed on it together is allowed -- also
+        at startup, where the node tables register before the relationship
+        tables declared with them (``_relationship_tables_being_declared``)."""
+        declared = [*incoming.relationship_tables, *self._relationship_tables_being_declared]
+        redeclared = {mapping.signature for mapping in declared}
         return [
             *(m for m in existing.relationship_tables if m.signature not in redeclared),
-            *incoming.relationship_tables,
+            *declared,
         ]
 
     def _refuse_a_redeclaration_that_drops_an_endpoint_key(

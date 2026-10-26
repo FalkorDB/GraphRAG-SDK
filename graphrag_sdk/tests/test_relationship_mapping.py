@@ -953,6 +953,70 @@ async def test_two_nodes_sharing_an_id_are_an_ambiguous_endpoint_on_real_falkord
 
 
 @pytest.mark.integration
+async def test_moving_a_key_and_its_endpoint_together_works_at_startup_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """Startup registers the node tables before the relationship tables, one
+    at a time, so the key check saw the stored relationship table on the old
+    key and refused a declaration that moves both together."""
+    from graphrag_sdk import TableMapping
+
+    rag = await _units_batches_rag(real_falkordb_rag_factory, llm, tmp_path)
+    await rag.ingest(str(write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])))
+    moved = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        connection=rag._conn,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=[
+                TableMapping(source="unit.csv", label="Unit", key="code", name="code"),
+                _unit_and_batch_tables()[1],
+            ],
+            relationship_tables=[
+                consumed_mapping(start=EndpointMapping("Unit", "unit__code", "source"))
+            ],
+        ),
+    )
+
+    ontology = await moved.get_ontology()
+
+    assert [m.start.key for m in ontology.relationship_tables] == ["unit__code"]
+    assert [m.key for m in ontology.tables if m.source == "unit.csv"] == ["code"]
+
+
+@pytest.mark.integration
+async def test_a_relation_type_a_table_writes_cannot_be_renamed_or_dropped_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """The stored mapping kept writing the old type, so the renamed or
+    dropped relation came back on the next ingest of the table."""
+    rag = await _units_batches_rag(real_falkordb_rag_factory, llm, tmp_path)
+    await rag.ingest(str(write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])))
+    refused = r"'consumed_batch\.csv'.*drop_table\('consumed_batch\.csv'\) first"
+    with pytest.raises(ValueError, match=r"rename_relation\('CONSUMED_BATCH'\).*" + refused):
+        await rag.rename_relation("CONSUMED_BATCH", "USED_BATCH")
+    with pytest.raises(ValueError, match=r"drop_relation\('CONSUMED_BATCH'\).*" + refused):
+        await rag.drop_relation("CONSUMED_BATCH")
+    assert await _consumed_edge_count(rag) == 1
+    await rag.drop_table("consumed_batch.csv")
+    await rag.drop_relation("CONSUMED_BATCH")
+
+
+@pytest.mark.integration
+async def test_document_id_is_refused_for_a_relationship_table_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """It was silently ignored: a relationship table writes edges, not a
+    Document, and is tracked by its mapping's source."""
+    rag = await _units_batches_rag(real_falkordb_rag_factory, llm, tmp_path)
+    path = write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])
+    with pytest.raises(ValueError, match="'document_id' does not apply to a relationship table"):
+        await rag.ingest(str(path), document_id="consumed-2026-09")
+    assert await _consumed_edge_count(rag) == 0
+
+
+@pytest.mark.integration
 async def test_cleanup_of_many_edges_from_one_node_on_real_falkordb(
     real_falkordb_rag_factory, llm, tmp_path
 ):
@@ -1566,7 +1630,9 @@ class TestRelationshipIngestion:
         relationship = next(iter(store.relationships.values()))
         assert relationship.properties["consumed_batch__consumed_on"] is None
 
-    async def test_invalid_dynamic_type_fails_before_resolution_or_writes(self, tmp_path):
+    async def test_invalid_dynamic_type_fails_before_any_write(self, tmp_path):
+        """Endpoints are resolved first, to tell whether the row would be
+        written at all; it would, so the bad cell fails the file, unwritten."""
         path = write_csv(tmp_path, ["U-1,B-1,DELETES,2026-09-20"])
         store = RelationshipStore()
         with pytest.raises(MappingError, match="row 1.*expected one of"):
@@ -1579,7 +1645,30 @@ class TestRelationshipIngestion:
                 ),
                 Context(),
             )
-        assert store.resolve_sizes == []
+        assert store.write_calls == 0
+
+    async def test_a_bad_cell_on_a_skipped_row_does_not_fail_the_file(self, tmp_path):
+        """With missing_endpoint='skip', a row whose endpoint is missing is
+        dropped anyway; a bad value in it used to stop the whole file."""
+        path = write_csv(
+            tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20", "U-9,B-2,CONSUMED_BATCH,not-a-date"]
+        )
+        store = RelationshipStore()
+        result = await RelationshipIngestionPipeline(CsvRecordLoader(), store).run(
+            str(path), consumed_mapping(missing_endpoint="skip"), Context()
+        )
+        assert result.relationships_written == 1
+        assert result.rows_skipped == 1
+
+    async def test_a_bad_cell_on_a_row_that_would_be_written_still_fails(self, tmp_path):
+        path = write_csv(
+            tmp_path, ["U-1,B-1,CONSUMED_BATCH,not-a-date", "U-9,B-2,CONSUMED_BATCH,2026-09-21"]
+        )
+        store = RelationshipStore()
+        with pytest.raises(MappingError, match="row 1"):
+            await RelationshipIngestionPipeline(CsvRecordLoader(), store).run(
+                str(path), consumed_mapping(missing_endpoint="skip"), Context()
+            )
         assert store.write_calls == 0
 
     async def test_retry_and_reordered_rows_are_idempotent(self, tmp_path):

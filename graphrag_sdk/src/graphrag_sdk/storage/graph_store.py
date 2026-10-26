@@ -866,13 +866,17 @@ class GraphStore:
                 # left out, the edge kept the value an earlier run wrote. A
                 # REMOVE clause per combination of blank cells split each
                 # batch into up to one query per row.
-                props.update(
-                    (name, None)
-                    for name, value in rel.properties.items()
-                    if "__" in name
-                    and name not in props
-                    and (value is None or isinstance(value, list))
-                )
+                # Relationship-table writes only: a node table's link edges keep
+                # leaving a blank property out, as before, so a later blank row
+                # in one batch cannot clear what an earlier row wrote.
+                if snapshot_property:
+                    props.update(
+                        (name, None)
+                        for name, value in rel.properties.items()
+                        if "__" in name
+                        and name not in props
+                        and (value is None or isinstance(value, list))
+                    )
                 rel_key = self._merge_key_value(props.get("rel_type", "")) if is_relates else ""
                 key = (sid, eid, rel_key)
                 if key in folded:
