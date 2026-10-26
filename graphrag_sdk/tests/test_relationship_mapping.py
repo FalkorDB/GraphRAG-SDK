@@ -1038,6 +1038,53 @@ async def test_a_renamed_export_finds_its_relationship_table_by_document_id_on_r
 
 
 @pytest.mark.integration
+async def test_a_retyped_relationship_property_changes_nothing_at_startup_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """Moving unit.csv's key with a correct endpoint but consumed_on retyped
+    DATE -> INTEGER took unit__unit_id off every Unit, then failed the type
+    check, leaving a mapping that could not register. Every check that writes
+    nothing now runs for the whole declaration first."""
+    from graphrag_sdk import TableMapping
+    from graphrag_sdk.storage.ontology_store import OntologyContradictionError
+
+    rag = await _units_batches_rag(real_falkordb_rag_factory, llm, tmp_path)
+    await rag.ingest(str(write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])))
+    retyped = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        connection=rag._conn,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=[
+                TableMapping(source="unit.csv", label="Unit", key="code", name="code"),
+                _unit_and_batch_tables()[1],
+            ],
+            relationship_tables=[
+                consumed_mapping(
+                    start=EndpointMapping("Unit", "unit__code", "source"),
+                    properties={"consumed_on": Column("consumed_on", "INTEGER")},
+                )
+            ],
+        ),
+    )
+
+    with pytest.raises(OntologyContradictionError, match="consumed_batch__consumed_on"):
+        await retyped.get_ontology()
+
+    held = await rag._graph_store.query_raw(
+        "MATCH (u:Unit) WHERE u.unit__unit_id IS NOT NULL RETURN count(u)"
+    )
+    assert held.result_set == [[2]]
+    stored = await rag._ontology_store.load()
+    assert [m.key for m in stored.tables if m.source == "unit.csv"] == ["unit_id"]
+    assert [m.start.key for m in stored.relationship_tables] == ["unit__unit_id"]
+    restarted = real_falkordb_rag_factory(llm=llm, resolver=None, connection=rag._conn)
+    path = write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])
+    assert (await restarted.ingest(str(path))).relationships_written == 1
+
+
+@pytest.mark.integration
 async def test_a_mistyped_endpoint_key_changes_nothing_at_startup_on_real_falkordb(
     real_falkordb_rag_factory, llm, tmp_path
 ):

@@ -596,30 +596,13 @@ class GraphRAG:
         # endpoint to the key a node table changes to, so while they register
         # the key checks count the declared relationship tables, not the
         # stored ones they replace.
-        # Checked first, against the schema the declaration leaves: a declared
-        # relationship table counts below in place of the stored one, so one
-        # with a mistyped endpoint key (``unit__cod``) let a node table change
-        # its key and take the old key off every node before the typo failed.
         being_declared = list(self.ontology.relationship_tables)
-        if being_declared:
-            after = {
-                entity.label: {prop.name: prop.type for prop in entity.properties}
-                for entity in self._global_ontology.entities
-            }
-            for mapping in declared_tables:
-                for entity in ontology_for(mapping).entities:
-                    after.setdefault(entity.label, {}).update(
-                        {prop.name: prop.type for prop in entity.properties}
-                    )
-            for relationship_mapping in being_declared:
-                problems = self._relationship_endpoint_schema_problems(relationship_mapping, after)
-                if problems:
-                    raise MappingError(
-                        f"relationship mapping for {relationship_mapping.source!r} is invalid:\n  "
-                        + "\n  ".join(problems)
-                    )
         self._relationship_tables_being_declared = being_declared
         try:
+            if self.ontology.tables or being_declared:
+                await self._check_the_declaration_before_writing(
+                    list(self.ontology.tables), being_declared
+                )
             for mapping in declared_tables:
                 self._global_ontology = await self._register_structured_ontology_locked(
                     ontology_for(mapping)
@@ -2606,6 +2589,93 @@ class GraphRAG:
                         f"registered as {declared}; a structured source declares it as "
                         f"{prop.type}."
                     )
+
+    async def _check_the_declaration_before_writing(
+        self, tables: list[TableMapping], relationship_tables: list[RelationshipMapping]
+    ) -> None:
+        """Run every check that writes nothing, for the whole declaration, first.
+
+        Startup registers the declared tables one at a time, node tables before
+        relationship tables, and each registration writes as soon as its own
+        checks pass. A later table's failure then left an earlier one's change
+        made: moving unit.csv to ``key="code"`` took ``unit__unit_id`` off every
+        Unit, and only then did the relationship table fail -- on a mistyped
+        endpoint key, or on retyping ``consumed_on``. So the checks each
+        registration runs (property types, endpoint keys, keys a table stops
+        signing, and the store's signature and key-per-label rules) run here
+        for every declared table against the ontology as the declaration would
+        leave it, before anything is written.
+        """
+        stored = await self._ontology_store.load()
+        view = stored
+        for incoming in [
+            *(ontology_for(mapping) for mapping in tables),
+            *(ontology_for_relationship(mapping) for mapping in relationship_tables),
+        ]:
+            self._refuse_a_contradicting_declaration(incoming, view)
+            self._refuse_a_redeclaration_that_drops_an_endpoint_key(incoming, stored)
+            view = self._ontology_extended_by(view, incoming)
+        properties_after = {
+            entity.label: {prop.name: prop.type for prop in entity.properties}
+            for entity in view.entities
+        }
+        for relationship_mapping in relationship_tables:
+            problems = self._relationship_endpoint_schema_problems(
+                relationship_mapping, properties_after
+            )
+            if problems:
+                raise MappingError(
+                    f"relationship mapping for {relationship_mapping.source!r} is invalid:\n  "
+                    + "\n  ".join(problems)
+                )
+        # A proposal a declaration supersedes is retired, not collided with.
+        superseded = {m.signature for m in [*tables, *relationship_tables]}
+        existing = stored.model_copy(
+            update={
+                "tables": [
+                    m for m in stored.tables if not (m.derived and m.signature in superseded)
+                ]
+            }
+        )
+        declared = stored.model_copy(
+            update={
+                "entities": [],
+                "relations": [],
+                "tables": tables,
+                "relationship_tables": relationship_tables,
+            }
+        )
+        OntologyStore._check_no_signature_collision(existing, declared)
+        OntologyStore._check_one_key_per_label(existing, declared)
+
+    @staticmethod
+    def _ontology_extended_by(view: Ontology, incoming: Ontology) -> Ontology:
+        """``view`` with ``incoming``'s labels and properties added, unvalidated."""
+
+        def merged(current: list[Any], extra: list[Any]) -> list[Any]:
+            by_label = {item.label: item for item in current}
+            for item in extra:
+                prior = by_label.get(item.label)
+                if prior is None:
+                    by_label[item.label] = item
+                    continue
+                names = {prop.name for prop in prior.properties}
+                by_label[item.label] = prior.model_copy(
+                    update={
+                        "properties": [
+                            *prior.properties,
+                            *(prop for prop in item.properties if prop.name not in names),
+                        ]
+                    }
+                )
+            return list(by_label.values())
+
+        return view.model_copy(
+            update={
+                "entities": merged(view.entities, incoming.entities),
+                "relations": merged(view.relations, incoming.relations),
+            }
+        )
 
     def _relationship_tables_after(
         self, incoming: Ontology, existing: Ontology
