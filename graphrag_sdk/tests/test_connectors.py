@@ -439,6 +439,57 @@ async def test_sync_checks_table_mappings_before_writing_anything(dlt):
     assert graph.updates == []
 
 
+async def test_sync_checks_table_columns_before_writing_anything(dlt):
+    graph = FakeGraph(tables=[TableMapping(source="users", label="Person", key="id", name="name")])
+
+    @dlt.resource(name="notion")
+    def notion():
+        yield SourceDocument("p1", "a")
+
+    @dlt.resource(name="users")
+    def users():
+        yield {"name": "Alice"}  # no id column
+
+    with pytest.raises(ValueError, match="does not fit its mapping"):
+        await sync(graph, [notion(), users()], dry_run=True)
+    with pytest.raises(ValueError, match="does not fit its mapping"):
+        await sync(graph, [notion(), users()])
+    assert graph.updates == [] and graph.ingests == []
+
+
+async def test_sync_sees_a_cursor_on_the_listing_a_transformer_reads(dlt, tmp_path):
+    from dlt.sources.filesystem import filesystem
+
+    from graphrag_sdk.connectors import file_documents
+
+    (tmp_path / "a.md").write_text("a")
+    listing = filesystem(bucket_url=tmp_path.as_uri(), file_glob="*")
+    listing.apply_hints(incremental=dlt.sources.incremental("modification_date"))
+
+    with pytest.raises(ValueError, match="incremental cursor"):
+        await sync(FakeGraph(), file_documents(listing, name="files"))
+
+
+async def test_a_failed_metadata_refresh_is_reported_and_the_sync_goes_on():
+    graph = FakeGraph({"notion:p1": _hash("same")})
+
+    async def broken(cypher, params):
+        if "SET d += $props" in cypher:
+            raise RuntimeError("connection reset")
+        return await FakeGraph.query(graph, cypher, params)
+
+    graph.query = broken
+
+    report = await sync_documents(
+        graph,
+        [SourceDocument("p1", "same", {"url": "u"}), SourceDocument("p2", "new")],
+        source="notion",
+    )
+
+    assert "connection reset" in report.failed["notion:p1"]
+    assert report.added == ["notion:p2"]
+
+
 async def test_sync_writes_an_empty_mapped_resource_as_an_empty_table(dlt):
     graph = FakeGraph(tables=[TableMapping(source="users", label="Person", name="name")])
 
@@ -568,6 +619,15 @@ def test_a_pdf_is_read_from_a_closed_temporary_file(dlt, monkeypatch, tmp_path):
 
     assert text == "pdf text" and seen == ["%PDF-1.4"]
     assert not Path(paths[0]).exists(), "the temporary file is removed"
+
+    class Broken(dict):
+        def read_bytes(self):
+            raise OSError("network down")
+
+    monkeypatch.setattr(sources.tempfile, "tempdir", str(tmp_path))
+    with pytest.raises(OSError):
+        sources._file_text(Broken(file_url="s3://b/a.pdf", file_name="a.pdf"))
+    assert list(tmp_path.iterdir()) == [], "a failed fetch leaves no file behind"
 
 
 # ── Real FalkorDB ───────────────────────────────────────────────

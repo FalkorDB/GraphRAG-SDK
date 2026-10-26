@@ -104,7 +104,7 @@ Credentials are dlt's: arguments, environment variables or `.dlt/secrets.toml`. 
 
 **Pruning assumes a full read.** A sync compares everything the source returned with the source's documents in the graph. When you hand `sync_documents()` only part of a source, pass `prune=False`. `sync()` refuses a resource given a dlt incremental cursor with `apply_hints(incremental=...)`: it keeps no dlt state, and a partial read would delete the documents or rows it skipped. A cursor declared as a resource function's default argument is not detected, so don't pass one.
 
-**Everything is checked before anything is written.** `sync()` reads every resource, checks cursors, item types and table mappings, and only then writes. A bad resource fails the whole call instead of leaving it half applied.
+**Most problems are caught before anything is written.** `sync()` reads every resource and checks cursors, item types, table mappings and the columns each mapping reads, and only then writes. A resource that fails those checks fails the whole call. A value that does not parse as its declared type is only found while its table is written, after earlier resources were applied.
 
 **An empty document source deletes nothing.** If a document source returns nothing, its documents are kept, and its report's `prune_skipped` says why. An empty answer is more often a revoked token or a wrong folder than a source whose every document was deleted. An empty table is different: a resource whose name has a `TableMapping` is written as an empty snapshot, and its rows are removed.
 

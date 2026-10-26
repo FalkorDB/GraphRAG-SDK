@@ -126,13 +126,16 @@ def _file_text(item: Any) -> str | None:
     if suffix == ".pdf":
         from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
 
-        # Closed before reading: Windows refuses to reopen a file that is still
-        # open, which NamedTemporaryFile's default delete-on-close would need.
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
-            handle.write(item.read_bytes())
+        # Fetched before the file exists, so a network error leaves nothing
+        # behind. Closed before reading: Windows refuses to reopen a file that
+        # is still open, which NamedTemporaryFile's delete-on-close would need.
+        content: bytes = item.read_bytes()
+        fd, path = tempfile.mkstemp(suffix=".pdf")
         try:
-            return PdfLoader()._load_sync(handle.name).text
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(content)
+            return PdfLoader()._load_sync(path).text
         finally:
-            os.unlink(handle.name)
+            os.unlink(path)
     logger.info("skipped %s: no text reader for %s files", item["file_url"], suffix or "these")
     return None

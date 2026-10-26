@@ -212,7 +212,12 @@ async def sync_documents(
         elif result.no_op:
             # update() returns on a matching hash before writing anything, so a
             # moved page or a new author would otherwise never reach the graph.
-            await _refresh_metadata(rag, doc_id, doc.metadata)
+            try:
+                await _refresh_metadata(rag, doc_id, doc.metadata)
+            except Exception as exc:
+                logger.warning("metadata refresh of %s failed: %s", doc_id, exc)
+                report.failed[doc_id] = f"{type(exc).__name__}: {exc}"
+                continue
             report.unchanged.append(doc_id)
         elif result.replaced_existing:
             report.updated.append(doc_id)
@@ -310,9 +315,11 @@ async def sync(
       written with :func:`sync_table`, matched to a ``TableMapping`` by the
       resource's name.
 
-    Every run reads every resource from the start, and every resource is read
-    and checked before anything is written, so a bad resource fails the whole
-    call rather than leaving it half applied.
+    Every run reads every resource from the start. Cursors, item types, table
+    mappings and the columns each mapping reads are checked for every resource
+    before anything is written, so those problems fail the whole call rather
+    than leaving it half applied. A cell that does not parse as its declared
+    type is only found while its table is written.
 
     dlt's incremental cursors are not supported. ``sync()`` keeps no dlt state,
     so a cursor would not advance between runs, and a partial read is wrong for
@@ -380,8 +387,8 @@ async def sync(
         ):
             documents[name] = items
         elif all(isinstance(item, dict) for item in items):
-            if name not in table_names:
-                await _mapping_named(rag, name)  # raises, naming what is declared
+            mapping = await _mapping_named(rag, name)  # raises, naming what is declared
+            _check_columns(mapping, items, name)
             tables[name] = items
         else:
             kinds = sorted({type(item).__name__ for item in items})
@@ -574,16 +581,49 @@ def _resources(data: Any) -> list[Any]:
     return resources
 
 
+def _check_columns(mapping: TableMapping, rows: list[dict[str, Any]], table: str) -> None:
+    """Refuse a table whose rows lack a column its mapping reads, before any write."""
+    if not rows:
+        return  # sync_table() gives an empty table the mapping's own header
+    header: dict[str, None] = {}
+    for row in rows:
+        header.update(dict.fromkeys(row))
+    problems = record_mapping_for(mapping).validate_against(list(header))
+    if problems:
+        raise ValueError(
+            f"Table '{table}' does not fit its mapping, so nothing was written:\n  "
+            + "\n  ".join(problems)
+        )
+
+
 def _has_cursor(resource: Any) -> bool:
+    """Whether the resource, or any resource it reads from, has a cursor.
+
+    The parents matter: ``file_documents()`` wraps a filesystem listing in a
+    transformer, and a cursor on the listing makes the transformer's read
+    partial too.
+    """
     from dlt.sources import incremental
 
-    # A cursor applied to a plain resource is the resource's ``incremental``
-    # itself. sql_database instead gives every table a wrapper, cursor or not,
-    # whose own ``incremental`` is set only once a cursor is applied.
-    value = getattr(resource, "incremental", None)
+    pipe = getattr(resource, "_pipe", None)
+    if pipe is None:
+        return _is_cursor(getattr(resource, "incremental", None), incremental)
+    while pipe is not None:
+        if any(_is_cursor(step, incremental) for step in pipe.steps):
+            return True
+        pipe = pipe.parent
+    return False
+
+
+def _is_cursor(value: Any, incremental: type) -> bool:
+    # A cursor applied to a plain resource is an ``incremental`` step. sql_database
+    # instead gives every table a wrapper, cursor or not, whose own
+    # ``incremental`` is set only once a cursor is applied.
     if isinstance(value, incremental):
         return True
-    return getattr(value, "incremental", None) is not None
+    return type(value).__name__ == "IncrementalResourceWrapper" and (
+        getattr(value, "incremental", None) is not None
+    )
 
 
 def _flatten(items: list[Any]) -> list[Any]:
