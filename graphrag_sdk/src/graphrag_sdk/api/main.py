@@ -596,7 +596,29 @@ class GraphRAG:
         # endpoint to the key a node table changes to, so while they register
         # the key checks count the declared relationship tables, not the
         # stored ones they replace.
-        self._relationship_tables_being_declared = list(self.ontology.relationship_tables)
+        # Checked first, against the schema the declaration leaves: a declared
+        # relationship table counts below in place of the stored one, so one
+        # with a mistyped endpoint key (``unit__cod``) let a node table change
+        # its key and take the old key off every node before the typo failed.
+        being_declared = list(self.ontology.relationship_tables)
+        if being_declared:
+            after = {
+                entity.label: {prop.name: prop.type for prop in entity.properties}
+                for entity in self._global_ontology.entities
+            }
+            for mapping in declared_tables:
+                for entity in ontology_for(mapping).entities:
+                    after.setdefault(entity.label, {}).update(
+                        {prop.name: prop.type for prop in entity.properties}
+                    )
+            for relationship_mapping in being_declared:
+                problems = self._relationship_endpoint_schema_problems(relationship_mapping, after)
+                if problems:
+                    raise MappingError(
+                        f"relationship mapping for {relationship_mapping.source!r} is invalid:\n  "
+                        + "\n  ".join(problems)
+                    )
+        self._relationship_tables_being_declared = being_declared
         try:
             for mapping in declared_tables:
                 self._global_ontology = await self._register_structured_ontology_locked(
@@ -2196,11 +2218,18 @@ class GraphRAG:
                 source, document_id=document_id, record_loader=record_loader, ctx=ctx
             )
             if isinstance(mapping, RelationshipMapping):
-                if document_id is not None:
+                # document_id is how a renamed export finds its table
+                # (``ingest("consumed_2026Q3.csv", document_id="consumed_batch.csv")``),
+                # so it is accepted when it names this table's source. Any other
+                # id was silently ignored: the rows write edges, not a Document.
+                if document_id is not None and os.path.basename(
+                    os.path.normpath(document_id)
+                ) != os.path.basename(os.path.normpath(mapping.source)):
                     raise ValueError(
-                        "'document_id' does not apply to a relationship table: its rows "
-                        f"write edges, not a Document, and {source} is tracked by its "
-                        "mapping's source. Ingest it without document_id."
+                        f"document_id={document_id!r} does not name the relationship table "
+                        f"{mapping.source!r} that {source} is ingested as: its rows write "
+                        "edges, not a Document. Pass the table's source as document_id, "
+                        "or none."
                     )
                 return await self._write_relationship_source(
                     source,

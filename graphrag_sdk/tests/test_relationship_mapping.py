@@ -1011,9 +1011,70 @@ async def test_document_id_is_refused_for_a_relationship_table_on_real_falkordb(
     Document, and is tracked by its mapping's source."""
     rag = await _units_batches_rag(real_falkordb_rag_factory, llm, tmp_path)
     path = write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])
-    with pytest.raises(ValueError, match="'document_id' does not apply to a relationship table"):
+    with pytest.raises(ValueError, match="does not name the relationship table"):
         await rag.ingest(str(path), document_id="consumed-2026-09")
     assert await _consumed_edge_count(rag) == 0
+
+
+@pytest.mark.integration
+async def test_a_renamed_export_finds_its_relationship_table_by_document_id_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """document_id naming the table's source is how a renamed export finds its
+    table; refusing it made the file a new node table, with an LLM call and
+    Document and Chunk nodes for edge data."""
+    rag = await _units_batches_rag(real_falkordb_rag_factory, llm, tmp_path)
+    before = await _node_counts(rag)
+    renamed = tmp_path / "consumed_2026Q3.csv"
+    renamed.write_text(
+        "source,target,type,consumed_on\nU-1,B-1,CONSUMED_BATCH,2026-09-20\n", encoding="utf-8"
+    )
+
+    result = await rag.ingest(str(renamed), document_id="consumed_batch.csv")
+
+    assert result.relationships_written == 1
+    assert await _consumed_edge_count(rag) == 1
+    assert await _node_counts(rag) == before
+
+
+@pytest.mark.integration
+async def test_a_mistyped_endpoint_key_changes_nothing_at_startup_on_real_falkordb(
+    real_falkordb_rag_factory, llm, tmp_path
+):
+    """Moving unit.csv to key="code" with the relationship endpoint mistyped as
+    unit__cod changed the node table and took unit__unit_id off every Unit
+    before the typo failed. The declared endpoints are checked first."""
+    from graphrag_sdk import TableMapping
+
+    rag = await _units_batches_rag(real_falkordb_rag_factory, llm, tmp_path)
+    await rag.ingest(str(write_csv(tmp_path, ["U-1,B-1,CONSUMED_BATCH,2026-09-20"])))
+    mistyped = real_falkordb_rag_factory(
+        llm=llm,
+        resolver=None,
+        connection=rag._conn,
+        ontology=Ontology(
+            entities=[Entity(label="Unit"), Entity(label="Batch")],
+            tables=[
+                TableMapping(source="unit.csv", label="Unit", key="code", name="code"),
+                _unit_and_batch_tables()[1],
+            ],
+            relationship_tables=[
+                consumed_mapping(start=EndpointMapping("Unit", "unit__cod", "source"))
+            ],
+        ),
+    )
+
+    with pytest.raises(MappingError, match=r"Unit\.unit__cod is not a declared ontology property"):
+        await mistyped.get_ontology()
+
+    held = await rag._graph_store.query_raw(
+        "MATCH (u:Unit) WHERE u.unit__unit_id IS NOT NULL RETURN count(u)"
+    )
+    assert held.result_set == [[2]]
+    stored = await rag._ontology_store.load()
+    assert [m.key for m in stored.tables if m.source == "unit.csv"] == ["unit_id"]
+    assert [m.start.key for m in stored.relationship_tables] == ["unit__unit_id"]
+    assert await _consumed_edge_count(rag) == 1
 
 
 @pytest.mark.integration

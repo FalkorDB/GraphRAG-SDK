@@ -92,9 +92,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same batch exist whatever order a git diff lists them in.
   `deleted=[path]` deletes a `Document` with that id when one exists, and
   otherwise removes the table's edges and keeps its mapping, as it does for a
-  node table. `update()` and `ingest(document_id=...)` refuse a relationship
-  table, and `rename_relation()` / `drop_relation()` refuse a type one writes,
-  naming the table. Declaring a file the SDK
+  node table. `update()` refuses a relationship table, and so does
+  `ingest(document_id=...)` unless the id names the table's source, which is
+  how a renamed export finds its table. `rename_relation()` /
+  `drop_relation()` refuse a type a relationship table writes, naming it. Declaring a file the SDK
   already proposed as a node table as a `RelationshipMapping` replaces the
   proposal; a declared `TableMapping` is never replaced, and a relationship
   table cannot share a property signature with any other table. While a
