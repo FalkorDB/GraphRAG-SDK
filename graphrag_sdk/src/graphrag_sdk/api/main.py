@@ -99,7 +99,6 @@ from graphrag_sdk.ingestion.structured_pipeline import (
     StructuredIngestionResult,
     records_content_hash,
 )
-from graphrag_sdk.retrieval.agentic.loop import AgenticRetrieval
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
@@ -4114,7 +4113,6 @@ class GraphRAG:
         *,
         strategy: RetrievalStrategy | None = None,
         reranker: RerankingStrategy | None = None,
-        history: Sequence[ChatMessage | dict[str, str]] | None = None,
         ctx: Context | None = None,
     ) -> RetrieverResult:
         """Retrieve context from the knowledge graph without generating an answer.
@@ -4126,8 +4124,6 @@ class GraphRAG:
             question: The user's question.
             strategy: Override retrieval strategy (uses default if None).
             reranker: Optional reranking strategy to apply.
-            history: Earlier conversation, passed to strategies that use it
-                (``AgenticRetrieval``); ignored by the others.
             ctx: Execution context.
 
         Returns:
@@ -4156,10 +4152,7 @@ class GraphRAG:
             # left alone).
             strategy.set_ontology(self._global_ontology)
         ctx.ensure_budget("retrieval strategy search")
-        if history and getattr(retrieval, "accepts_history", False) is True:
-            retriever_result = await retrieval.search(question, ctx, history=history)
-        else:
-            retriever_result = await retrieval.search(question, ctx)
+        retriever_result = await retrieval.search(question, ctx)
 
         if reranker is not None:
             ctx.ensure_budget("retrieval reranking")
@@ -4183,14 +4176,6 @@ class GraphRAG:
         validated: list[ChatMessage] = []
         for i, msg in enumerate(history):
             if isinstance(msg, ChatMessage):
-                # Tool-calling turns belong to ainvoke_with_tools conversations;
-                # completion() history is plain system/user/assistant text.
-                if msg.role == "tool" or msg.tool_calls:
-                    raise ValueError(
-                        f"history[{i}]: tool-calling messages are not supported in "
-                        f"completion() history; pass only 'system', 'user' and "
-                        f"'assistant' text messages"
-                    )
                 validated.append(msg)
             elif isinstance(msg, dict):
                 if "role" not in msg or "content" not in msg:
@@ -4288,10 +4273,7 @@ class GraphRAG:
             prompt_template: Template that wraps the current turn's
                 ``{context}`` and ``{question}``.  Applied in both
                 single-turn and multi-turn modes.  If omitted, a built-in
-                default template is used.  Not used with an agentic
-                strategy (``AgenticRetrieval``), which returns its own,
-                citation-checked answer; neither is a system message in
-                ``history`` (set ``system_prompt=`` on the strategy instead).
+                default template is used.
             rewrite_question_with_history: If True and history is
                 provided, rewrite the current question into a standalone
                 form (collapsing pronouns/references) using a cheap LLM
@@ -4315,12 +4297,10 @@ class GraphRAG:
 
         # Validate history up front — reused for rewrite and message assembly.
         validated_history = self._validate_history(history) if history else []
-        agentic = getattr(strategy or self._retrieval_strategy, "accepts_history", False) is True
 
-        # Step 1: Optionally rewrite the question for retrieval. An agentic
-        # strategy reads the history itself, so it gets the question as asked.
+        # Step 1: Optionally rewrite the question for retrieval.
         retrieval_query = question
-        if validated_history and rewrite_question_with_history and not agentic:
+        if validated_history and rewrite_question_with_history:
             ctx.ensure_budget("question rewrite")
             retrieval_query = await self._rewrite_question_with_history(
                 question,
@@ -4336,43 +4316,8 @@ class GraphRAG:
             retrieval_query,
             strategy=strategy,
             reranker=reranker,
-            history=validated_history if agentic else None,
             ctx=ctx,
         )
-
-        # An agentic strategy already answered (with citations checked):
-        # return that answer rather than generating a second one from it.
-        if retriever_result.metadata.get("answer_is_final") is True:
-            if prompt_template is not None or (
-                validated_history and validated_history[0].role == "system"
-            ):
-                logger.warning(
-                    "completion(): prompt_template and a system message in history are not "
-                    "used with an agentic strategy; set system_prompt= on AgenticRetrieval"
-                )
-            md = retriever_result.metadata
-            final = RagResult(
-                answer=str(md.get("answer", "")),
-                retriever_result=retriever_result if return_context else None,
-                metadata={
-                    "model": self.llm.model_name,
-                    "num_context_items": len(retriever_result.items),
-                    "strategy": (strategy or self._retrieval_strategy).__class__.__name__,
-                    "has_history": bool(history),
-                    "retrieval_query": retrieval_query,
-                    "grounded": md.get("grounded"),
-                    "citations": md.get("citations", []),
-                    "agent": {
-                        "mode": md.get("agent_mode"),
-                        "stop_reason": md.get("stop_reason"),
-                        "num_steps": md.get("num_steps"),
-                        "grounding_reason": md.get("grounding_reason"),
-                        "generated_cypher": md.get("generated_cypher", []),
-                    },
-                },
-            )
-            ctx.log(f"Agentic answer ({len(final.answer)} chars)")
-            return final
 
         # Step 3: Build context string. When the default template is in use,
         # neutralize any forged ``</context>`` closing tags inside the
@@ -4986,30 +4931,6 @@ class GraphRAG:
     # add a kwarg to an async method, also add it to the matching wrapper
     # below — the in-line "keep in sync with" notes mark the pairings.
 
-    def agentic_retrieval(self, **options: Any) -> AgenticRetrieval:
-        """Build an :class:`AgenticRetrieval` wired to this instance.
-
-        Uses this instance's LLM, its default retrieval strategy (for the
-        ``search`` tool), its graph store and its current ontology. Pass the
-        result as ``strategy=`` to :meth:`retrieve` or :meth:`completion`, or
-        keep it for repeated use. ``options`` are forwarded to
-        ``AgenticRetrieval`` (e.g. ``max_steps``, ``grounding``, ``registry``).
-
-        Example::
-
-            agent = rag.agentic_retrieval(max_steps=8)
-            result = await rag.completion("Which suppliers ship to Berlin?", strategy=agent)
-            print(result.answer, result.metadata["citations"])
-        """
-        options.setdefault("strategy", self._retrieval_strategy)
-        options.setdefault("graph_store", self._graph_store)
-        if "ontology" not in options:
-            # Read the facade's ontology on every use, not a copy taken now:
-            # this is often called before the stored ontology is loaded, and
-            # ingests can evolve it afterwards.
-            options.setdefault("ontology_getter", lambda: self._global_ontology)
-        return AgenticRetrieval(self.llm, **options)
-
     async def run_skill(
         self,
         skill: str,
@@ -5017,7 +4938,7 @@ class GraphRAG:
         ctx: Context | None = None,
         **params: Any,
     ) -> SkillResult:
-        """Run a high-level reasoning skill against the graph (Phase 3.4).
+        """Run a high-level reasoning skill against the graph.
 
         Args:
             skill: Registered skill name (e.g. ``"entity_comparison"``,
@@ -5029,8 +4950,8 @@ class GraphRAG:
         Returns:
             ``SkillResult`` with the skill's structured findings.
         """
-        from graphrag_sdk.retrieval.agentic.tools import check_arguments
         from graphrag_sdk.skills import build_skill
+        from graphrag_sdk.skills.base import check_arguments
 
         if ctx is None:
             ctx = Context()
@@ -5047,7 +4968,6 @@ class GraphRAG:
         *,
         strategy: RetrievalStrategy | None = None,
         reranker: RerankingStrategy | None = None,
-        history: Sequence[ChatMessage | dict[str, str]] | None = None,
         ctx: Context | None = None,
     ) -> RetrieverResult:
         """Synchronous retrieve convenience method.
@@ -5059,7 +4979,6 @@ class GraphRAG:
                 question,
                 strategy=strategy,
                 reranker=reranker,
-                history=history,
                 ctx=ctx,
             )
         )

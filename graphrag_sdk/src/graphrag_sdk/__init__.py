@@ -24,12 +24,9 @@ from graphrag_sdk.core.exceptions import (
     FalkorDBVersionError,
     GraphRAGError,
     LatencyBudgetExceededError,
-    ToolCallingNotSupportedError,
     ReadOnlyViolation,
 )
 from graphrag_sdk.core.models import (
-    AgentStep,
-    AgentTrace,
     ApplyChangesResult,
     Attribute,
     BatchEntry,
@@ -62,8 +59,6 @@ from graphrag_sdk.core.models import (
     SkillResult,
     TextChunk,
     TextChunks,
-    ToolCall,
-    ToolSpec,
     UpdateResult,
 )
 from graphrag_sdk.core.providers import (
@@ -137,7 +132,6 @@ from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
-from graphrag_sdk.retrieval.agentic import AgenticRetrieval, AgentLimits, ToolRegistry
 from graphrag_sdk.retrieval.graph_walk import (
     DynamicGraphWalk,
     GraphWalkRetrieval,
@@ -180,7 +174,7 @@ from graphrag_sdk.storage.system_store import DedupRunActiveError
 from graphrag_sdk.storage.vector_store import VectorStore
 
 # ── Agent Toolkit ───────────────────────────────────────────────
-from graphrag_sdk.tools import GraphRAGToolkit, ToolSpec
+from graphrag_sdk.tools import GraphRAGToolkit, ToolError, ToolSpec
 
 __all__ = [
     "DEFAULT_RELATION_TYPES",
@@ -190,8 +184,6 @@ __all__ = [
     "GraphRAG",
     # Core
     "ApplyChangesResult",
-    "AgentStep",
-    "AgentTrace",
     "BatchEntry",
     "ChatMessage",
     "ConnectionConfig",
@@ -215,9 +207,6 @@ __all__ = [
     "Ontology",
     "IngestionResult",
     "LatencyBudgetExceededError",
-    "ToolCall",
-    "ToolCallingNotSupportedError",
-    "ToolSpec",
     "LLMBatchItem",
     "LLMInterface",
     "LiteLLM",
@@ -272,7 +261,6 @@ __all__ = [
     "ExactMatchResolution",
     "LLMVerifiedResolution",
     # Retrieval
-    "AgenticRetrieval",
     "CosineReranker",
     "DynamicGraphWalk",
     "GraphWalkRetrieval",
@@ -282,8 +270,6 @@ __all__ = [
     "RETRIEVAL_PATHS",
     "RerankingStrategy",
     "RetrievalStrategy",
-    "ToolRegistry",
-    "AgentLimits",
     "score_path",
     # Skills
     "Skill",
@@ -313,6 +299,7 @@ __all__ = [
     # Agent toolkit
     "GraphRAGToolkit",
     "ReadOnlyViolation",
+    "ToolError",
     "ToolSpec",
 ]
 

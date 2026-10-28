@@ -925,7 +925,7 @@ class GraphStore:
             return await self._conn.query(cypher, params)
         return await self._conn.query(cypher, params, timeout=timeout, read_only=read_only)
 
-    # ── Graph Walk (Phase 3.3) ────────────────────────────────────
+    # ── Graph Walk ───────────────────────────────────────────────
 
     async def weighted_neighbors(
         self,

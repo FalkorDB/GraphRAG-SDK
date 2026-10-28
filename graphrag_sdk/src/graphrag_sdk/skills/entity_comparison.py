@@ -1,4 +1,4 @@
-# GraphRAG SDK — Skills: Entity Comparison (Phase 3.4)
+# GraphRAG SDK — Skills: Entity Comparison
 
 from __future__ import annotations
 

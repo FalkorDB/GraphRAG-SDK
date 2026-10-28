@@ -1,6 +1,8 @@
 # GraphRAG SDK — Tools: tool specifications (single source of truth)
-# Adapters (pydantic-ai, LangGraph, MCP) generate their tool definitions
-# from tool_specs() — descriptions and schemas are never duplicated downstream.
+# Every adapter (MCP, pydantic-ai, LangGraph, a hand-written loop) builds its
+# tool definitions from GraphRAGToolkit.tool_specs(); names, descriptions and
+# input schemas are never duplicated downstream. A tool's name is also the
+# name of the toolkit method that runs it.
 
 from __future__ import annotations
 
@@ -9,186 +11,270 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
-class SearchInput(BaseModel):
-    """Arguments for graph_search."""
-
-    model_config = ConfigDict(extra="forbid")
-    query: str = Field(
-        min_length=1, description="Natural-language query about entities/relationships."
-    )
-    top_k: int = Field(
-        default=8, ge=1, le=25, description="How many entities and chunks to return."
-    )
-    expand_hops: int = Field(
-        default=1, ge=1, le=3, description="Relationship expansion depth from found entities."
-    )
-    include_chunks: bool = Field(
-        default=True, description="Include source text passages (heavier output)."
-    )
+from graphrag_sdk.tools import graph_ops as ops
 
 
-class AnswerInput(BaseModel):
-    """Arguments for graph_answer."""
-
-    model_config = ConfigDict(extra="forbid")
-    question: str = Field(min_length=1, description="The question to answer from the graph.")
-    top_k: int = Field(
-        default=8, ge=1, le=25, description="Retrieval breadth used to build the answer context."
-    )
-
-
-class SchemaInput(BaseModel):
-    """Arguments for graph_schema (none)."""
-
+class _Input(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class CypherReadInput(BaseModel):
-    """Arguments for cypher_read."""
+class StatusInput(_Input):
+    """Arguments for status (none)."""
 
-    model_config = ConfigDict(extra="forbid")
-    query: str = Field(min_length=1, description="Read-only Cypher. Write clauses are rejected.")
-    params: dict[str, Any] | None = Field(
-        default=None, description="Query parameters — always prefer over inlining values."
-    )
+
+class OntologyInput(_Input):
+    """Arguments for get_ontology (none)."""
+
+
+class LookupEntityInput(_Input):
+    """Arguments for lookup_entity."""
+
+    name: str = Field(min_length=1, max_length=500, description="A name or part of one.")
     limit: int = Field(
-        default=100, ge=1, le=1000, description="Row cap injected as LIMIT when the query has none."
+        default=ops.LOOKUP_DEFAULT_LIMIT,
+        ge=1,
+        le=ops.LOOKUP_MAX_LIMIT,
+        description="Most matches to return.",
+    )
+
+
+class TraverseInput(_Input):
+    """Arguments for traverse."""
+
+    start: str = Field(
+        min_length=1, max_length=500, description="Exact entity name or id to start from."
+    )
+    via: list[str] | None = Field(
+        default=None,
+        max_length=ops.TRAVERSE_MAX_VIA,
+        description=(
+            "Optional relation path, e.g. ['WORKS_AT', 'LOCATED_IN']: follow exactly these "
+            "relations in order and return where the path ends. Omit to explore all "
+            "neighbours breadth-first."
+        ),
+    )
+    max_depth: int = Field(
+        default=ops.TRAVERSE_DEFAULT_DEPTH,
+        ge=1,
+        le=ops.TRAVERSE_MAX_DEPTH,
+        description="Most hops to walk (ignored with via).",
+    )
+    max_expansions: int = Field(
+        default=ops.TRAVERSE_DEFAULT_EXPANSIONS,
+        ge=1,
+        le=ops.TRAVERSE_MAX_EXPANSIONS,
+        description="Most edges to read before stopping.",
     )
     timeout_ms: int = Field(
-        default=5000, ge=100, le=60000, description="Server-side query timeout in milliseconds."
+        default=ops.TRAVERSE_DEFAULT_TIMEOUT_MS,
+        ge=ops.TRAVERSE_MIN_TIMEOUT_MS,
+        le=ops.TRAVERSE_MAX_TIMEOUT_MS,
+        description="Time budget for the whole walk.",
     )
 
 
-class EntityInput(BaseModel):
-    """Arguments for graph_entity."""
+class GraphWalkInput(_Input):
+    """Arguments for graph_walk."""
 
-    model_config = ConfigDict(extra="forbid")
-    name: str = Field(min_length=1, description="Entity name (exact or partial).")
-    hops: int = Field(
-        default=1, ge=1, le=3, description="Neighborhood depth to include around the entity."
+    start: str = Field(min_length=1, max_length=500, description="Exact entity name or id.")
+    goal: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Optional second entity: find the strongest path from start to it.",
+    )
+    beam_width: int = Field(default=5, ge=1, le=20, description="Paths kept per round.")
+    max_depth: int = Field(default=3, ge=1, le=5, description="Most hops per path.")
+
+
+class CypherQueryInput(_Input):
+    """Arguments for cypher_query."""
+
+    cypher: str = Field(min_length=1, max_length=5000, description="One read-only Cypher query.")
+    params: dict[str, Any] | None = Field(
+        default=None, description="Query parameters ($name); prefer them to inlined values."
+    )
+    max_rows: int = Field(
+        default=25, ge=1, le=100, description="Most rows to return; every LIMIT is capped to it."
+    )
+    timeout_ms: int = Field(
+        default=5000, ge=100, le=10000, description="Database timeout in milliseconds."
     )
 
 
-class RememberInput(BaseModel):
-    """Arguments for graph_remember."""
+class RetrieveInput(_Input):
+    """Arguments for retrieve."""
 
-    model_config = ConfigDict(extra="forbid")
-    text: str = Field(
-        min_length=1,
-        max_length=200_000,
-        description="Text to extract into the knowledge graph.",
+    question: str = Field(min_length=1, max_length=2000, description="The question to search for.")
+    top_k: int = Field(default=8, ge=1, le=25, description="Entities and passages to return.")
+    expand_hops: int = Field(
+        default=1, ge=1, le=3, description="Relation hops to expand around found entities."
     )
+    include_chunks: bool = Field(default=True, description="Include source text passages.")
+
+
+class RunSkillInput(_Input):
+    """Arguments for run_skill."""
+
+    skill: str = Field(min_length=1, max_length=64, description="Skill name.")
+    params: dict[str, Any] = Field(
+        default_factory=dict, description="The skill's arguments (see the tool description)."
+    )
+
+
+class CheckCitationsInput(_Input):
+    """Arguments for check_citations."""
+
+    answer: str = Field(max_length=50_000, description="Your draft answer with [n] citations.")
+
+
+class IngestInput(_Input):
+    """Arguments for ingest."""
+
+    text: str = Field(min_length=1, max_length=200_000, description="Text to add to the graph.")
     document_id: str | None = Field(
-        default=None, description="Stable document id; auto-generated when omitted."
+        default=None, max_length=500, description="Stable document id; generated when omitted."
     )
 
 
-class FlushInput(BaseModel):
-    """Arguments for graph_flush (none)."""
-
-    model_config = ConfigDict(extra="forbid")
+class FinalizeInput(_Input):
+    """Arguments for finalize (none)."""
 
 
 class ToolSpec(BaseModel):
-    """Machine-readable tool definition consumed by agent-framework adapters."""
+    """A machine-readable tool definition for an agent framework or MCP."""
 
     model_config = ConfigDict(frozen=True)
     name: str
     description: str
     input_schema: dict[str, Any]
-    output_hint: str
+    read_only: bool = True
+    destructive: bool = False
 
 
 @dataclass(frozen=True)
 class ToolDef:
-    """Internal registry row binding a tool name to a toolkit method."""
+    """Registry row: a tool's name (= toolkit method), input model and contract."""
 
     name: str
-    method: str
     input_model: type[BaseModel]
     description: str
-    output_hint: str
-    is_write: bool = False
+    read_only: bool = True
+    destructive: bool = False
     manual_only: bool = False
 
 
-_TOOL_REGISTRY: tuple[ToolDef, ...] = (
+_CITE = " Results carry evidence numbers [n]; cite them in your answer."
+
+TOOL_REGISTRY: tuple[ToolDef, ...] = (
     ToolDef(
-        "graph_search",
-        "search",
-        SearchInput,
-        "Search the knowledge graph for entities, relationships, facts, and source "
-        "passages relevant to a query. Use this when you will compose the reply "
-        "yourself (prefer it over graph_answer for multi-step reasoning), and cite "
-        "sources with the returned document_id/chunk_id values.",
-        "SearchResult{query, entities[], relations[], facts[], chunks[], documents[]}; "
-        "call .to_llm_text() for prompt-ready text.",
+        "status",
+        StatusInput,
+        "What the graph holds: entity, relation, document and chunk counts, and each "
+        "entity label and relation type with how many there are. Call this first.",
     ),
     ToolDef(
-        "graph_answer",
-        "answer",
-        AnswerInput,
-        "Ask the knowledge graph a natural-language question and get a fully generated "
-        "answer with citations. Use for one-shot Q&A when you do not need to inspect "
-        "the raw context yourself.",
-        "AnswerResult{answer, citations[], entities_touched[], cypher_used}; "
-        "call .to_llm_text() for prompt-ready text.",
+        "get_ontology",
+        OntologyInput,
+        "The graph's declared ontology: entity types with their properties and relation "
+        "types with their (source, target) patterns. Use it to write traverse paths and "
+        "Cypher with the right names.",
     ),
     ToolDef(
-        "graph_schema",
-        "schema",
-        SchemaInput,
-        "List the graph's entity labels, relationship types, directional patterns, and "
-        "live counts. Call once before other graph tools to learn what the graph "
-        "contains and plan queries.",
-        "SchemaResult{entities[], relations[], node_count, edge_count}; "
-        "call .to_llm_text() for prompt-ready text.",
+        "lookup_entity",
+        LookupEntityInput,
+        "Find entities by (part of) their name: exact names, ids, labels and short "
+        "descriptions, best match first. Use it to turn a name from the question into "
+        "the exact name or id the other tools need. Not a source to cite.",
     ),
     ToolDef(
-        "graph_entity",
-        "entity",
-        EntityInput,
-        "Look up one entity by name and get its properties, relationships up to `hops` "
-        "away, and source documents. Use when the user asks about a specific named "
-        "person, organization, or thing.",
-        "EntityResult{query, found, entity, neighbors[], nearby[], documents[]}; "
-        "call .to_llm_text() for prompt-ready text.",
+        "traverse",
+        TraverseInput,
+        "Walk the graph from one entity. Without via: every neighbour breadth-first up "
+        "to max_depth, with each edge and its fact. With via: follow that exact relation "
+        "path and return where it ends (e.g. via=['WORKS_AT','LOCATED_IN'] for 'where is "
+        "the company X works at'). Bounded by depth, edge and time budgets; 'stopped' "
+        "says which one ended the walk." + _CITE,
     ),
     ToolDef(
-        "cypher_read",
-        "cypher_read",
-        CypherReadInput,
-        "Run a read-only Cypher query against the knowledge graph. Use ONLY for "
-        "aggregations or precise filters graph_search cannot express (counts, sorting, "
-        "property predicates). Write clauses are rejected; a LIMIT is added if missing.",
-        "CypherResult{columns[], rows[], row_count, truncated}; "
-        "call .to_llm_text() for prompt-ready text.",
+        "graph_walk",
+        GraphWalkInput,
+        "Find the strongest paths out of an entity, ranked by relation weight and "
+        "PageRank importance, or (with goal) the strongest path connecting two entities. "
+        "Use it for 'how is A connected to B' and 'what matters most around A'." + _CITE,
     ),
     ToolDef(
-        "graph_remember",
-        "remember",
-        RememberInput,
-        "Store new text (a fact, note, or document) into the knowledge graph so future "
-        "searches can find it. Use when the user tells you something worth remembering.",
-        "RememberResult{document_id, chunks_indexed, nodes_created, "
-        "relationships_created, finalized}; call .to_llm_text() for prompt-ready text.",
-        is_write=True,
+        "cypher_query",
+        CypherQueryInput,
+        "Run one read-only Cypher query for what the other tools cannot express: "
+        "counts, sums, sorting, property filters. Entities are (:__Entity__:<Label>) "
+        "nodes with name/description; semantic relations are stored as "
+        "[:RELATES {rel_type: '<TYPE>', fact: '...'}]. Writes are rejected, every LIMIT "
+        "is capped to max_rows; if 'truncated' is true, aggregate with count() instead "
+        "of reading rows. Use names from status/get_ontology." + _CITE,
     ),
     ToolDef(
-        "graph_flush",
-        "flush",
-        FlushInput,
-        "Run graph finalization (entity dedup, embeddings, indexes) after one or more "
-        "graph_remember calls. Expensive — O(graph size); call once at the end of a "
-        "write session, never after every write.",
-        "Returns null.",
-        is_write=True,
+        "retrieve",
+        RetrieveInput,
+        "Hybrid search (vector + full-text + graph) for a question: the most relevant "
+        "entities, relations, facts and source passages. Use it for open questions or "
+        "when you do not know which entity to start from. Needs the embedding model "
+        "the graph was built with." + _CITE,
+    ),
+    ToolDef(
+        "run_skill",
+        RunSkillInput,
+        "Run a built-in multi-step analysis over the graph.",
+    ),
+    ToolDef(
+        "check_citations",
+        CheckCitationsInput,
+        "Check your draft answer before you reply: every [n] must be evidence a tool "
+        "returned in this session. Returns the answer with invalid markers removed, "
+        "whether it is grounded, and the cited evidence.",
+    ),
+    ToolDef(
+        "ingest",
+        IngestInput,
+        "Add text (a note, fact or document) to the graph: entities and relations are "
+        "extracted and stored. Call finalize after a batch of ingests.",
+        read_only=False,
+    ),
+    ToolDef(
+        "finalize",
+        FinalizeInput,
+        "Finish a batch of ingests: deduplicate entities, embed them and build indexes. "
+        "Its cost grows with the graph; call it once after a batch, not after every "
+        "ingest.",
+        read_only=False,
+        destructive=True,
         manual_only=True,
     ),
 )
 
-TOOL_NAMES: tuple[str, ...] = tuple(td.name for td in _TOOL_REGISTRY)
+TOOL_NAMES: tuple[str, ...] = tuple(td.name for td in TOOL_REGISTRY)
+
+
+def skill_catalog() -> str:
+    """The registered skills, one line each, for the run_skill description."""
+    from graphrag_sdk.skills import SKILL_REGISTRY
+
+    lines = []
+    for name in sorted(SKILL_REGISTRY):
+        cls = SKILL_REGISTRY[name]
+        props = (cls.parameters or {}).get("properties", {})
+        required = set((cls.parameters or {}).get("required", []))
+        args = ", ".join(f"{p}{'' if p in required else '?'}" for p in props)
+        lines.append(f"- {name}({args}): {cls.description}")
+    return "\n".join(lines)
+
+
+def _description(td: ToolDef) -> str:
+    if td.name == "run_skill":
+        return (
+            f"{td.description} Pass the skill's arguments in params. Skills:\n"
+            f"{skill_catalog()}\nThe result is one piece of evidence [n] to cite."
+        )
+    return td.description
 
 
 def build_tool_specs(
@@ -197,10 +283,10 @@ def build_tool_specs(
     finalize_policy: str,
     include: frozenset[str] | None,
 ) -> list[ToolSpec]:
-    """Build the advertised ToolSpec list for a toolkit configuration."""
+    """The tool definitions a toolkit configuration advertises."""
     specs: list[ToolSpec] = []
-    for td in _TOOL_REGISTRY:
-        if read_only and td.is_write:
+    for td in TOOL_REGISTRY:
+        if read_only and not td.read_only:
             continue
         if td.manual_only and finalize_policy != "manual":
             continue
@@ -209,9 +295,10 @@ def build_tool_specs(
         specs.append(
             ToolSpec(
                 name=td.name,
-                description=td.description,
+                description=_description(td),
                 input_schema=td.input_model.model_json_schema(),
-                output_hint=td.output_hint,
+                read_only=td.read_only,
+                destructive=td.destructive,
             )
         )
     return specs

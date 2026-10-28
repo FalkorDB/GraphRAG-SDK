@@ -1,9 +1,9 @@
-# GraphRAG SDK — Retrieval: Dynamic Graph Walk (Phase 3.3)
+# GraphRAG SDK — Retrieval: Dynamic Graph Walk
 # PageRank-weighted traversal with beam search, bidirectional search,
 # and path scoring. The core algorithms are decoupled from FalkorDB:
 # they operate on an injected async ``neighbor_fn`` and an optional
 # node-weight map, so they can be unit-tested in memory and reused by
-# the agentic retriever (Phase 3.1) as a "traverse" action.
+# the toolkit's ``graph_walk`` tool.
 
 from __future__ import annotations
 

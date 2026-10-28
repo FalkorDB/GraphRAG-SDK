@@ -1,4 +1,4 @@
-# GraphRAG SDK — Skills: Impact Analysis (Phase 3.4)
+# GraphRAG SDK — Skills: Impact Analysis
 
 from __future__ import annotations
 

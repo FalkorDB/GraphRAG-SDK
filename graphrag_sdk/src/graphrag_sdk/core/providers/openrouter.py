@@ -8,24 +8,16 @@ import asyncio
 import logging
 import os
 import time
-from collections.abc import Sequence
 from typing import Any
 
 from graphrag_sdk.core.exceptions import EmbeddingTimeoutError, LLMTimeoutError
-from graphrag_sdk.core.models import ChatMessage, LLMResponse, ToolSpec
+from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import (
     binary_split_retry_async,
     binary_split_retry_sync,
     summarize_exception,
 )
 from graphrag_sdk.core.providers._timeout import validate_timeout, wait_for_provider_call
-from graphrag_sdk.core.providers._tools import (
-    ToolChoice,
-    finish_reason_of,
-    parse_tool_calls,
-    tool_choice_to_openai,
-    validate_tools,
-)
 from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 
 logger = logging.getLogger(__name__)
@@ -227,12 +219,8 @@ class OpenRouterLLM(LLMInterface):
                     timeout_error=LLMTimeoutError,
                     operation=f"OpenRouter messages call to {self.model_name}",
                 )
-                choice = response.choices[0]
-                return LLMResponse(
-                    content=choice.message.content or "",
-                    tool_calls=parse_tool_calls(choice.message),
-                    finish_reason=finish_reason_of(choice),
-                )
+                content = response.choices[0].message.content or ""
+                return LLMResponse(content=content)
             except LLMTimeoutError:
                 raise
             except Exception as exc:
@@ -259,40 +247,6 @@ class OpenRouterLLM(LLMInterface):
                 exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
             )
         raise last_exc  # type: ignore[misc]
-
-    @property
-    def supports_tool_calling(self) -> bool:
-        """Always ``True``: OpenRouter's per-model tool support is not known
-        locally. In ``mode="auto"`` the agent falls back to ReAct when a model
-        rejects its first native tool call; ``mode="native"`` raises."""
-        return True
-
-    async def ainvoke_with_tools(
-        self,
-        messages: list[ChatMessage],
-        tools: Sequence[ToolSpec],
-        *,
-        tool_choice: ToolChoice = "auto",
-        max_retries: int = 3,
-        timeout: float | None = None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        """Native tool calling via the OpenAI-compatible ``tools`` API.
-
-        See :meth:`LLMInterface.ainvoke_with_tools` for the contract.
-        """
-        tool_list = validate_tools(tools)
-        for key in ("tools", "tool_choice"):
-            if key in kwargs:
-                raise TypeError(f"pass {key!r} as an argument, not inside **kwargs")
-        return await self.ainvoke_messages(
-            messages,
-            max_retries=max_retries,
-            timeout=timeout,
-            tools=[t.to_openai() for t in tool_list],
-            tool_choice=tool_choice_to_openai(tool_choice, tool_list),
-            **kwargs,
-        )
 
 
 class OpenRouterEmbedder(Embedder):
