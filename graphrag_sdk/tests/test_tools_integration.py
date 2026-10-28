@@ -382,7 +382,10 @@ async def test_get_ontology_on_a_fresh_graph_writes_nothing(real_falkordb_rag_fa
     from .conftest import MockLLM
 
     rag = real_falkordb_rag_factory(llm=MockLLM(responses=[]), resolver=ExactMatchResolution())
-    onto = await GraphRAGToolkit(rag, read_only=True).call("get_ontology", {})
+    tk = GraphRAGToolkit(rag, read_only=True)
+    onto = await tk.call("get_ontology", {})
     assert onto.entity_types == [] and onto.relation_types == []
+    # cypher_query builds the schema, which reads the ontology too.
+    await tk.call("cypher_query", {"cypher": "MATCH (n) RETURN count(n) AS c"})
     stored = await rag._ontology_store.load()
     assert stored.entities == [] and stored.relations == []
