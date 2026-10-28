@@ -128,23 +128,31 @@ def _short_fact(raw: str) -> tuple[str, tuple[str, str, str] | None]:
 
 
 _PATTERN_HINT_RELATIONS = 6
+_PATTERN_HINT_EXAMPLES = 8
 
 
-def _pattern_hint(mismatches: Mapping[str, Mapping[str, int]], redo: str) -> str:
+def _pattern_hint(pruned: PrunedTypes, redo: str) -> str:
     """Say how many relations an undeclared pattern dropped, and how to keep them."""
+    mismatches = pruned.pattern_mismatches
     dropped = sum(n for pairs in mismatches.values() for n in pairs.values())
     ranked = sorted(mismatches.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))
     add = []
+    examples = []
     for rel, pairs in ranked[:_PATTERN_HINT_RELATIONS]:
-        ends = [pair.split("->", 1) for pair in sorted(pairs, key=lambda p: (-pairs[p], p))]
+        ordered = sorted(pairs, key=lambda p: (-pairs[p], p))
+        ends = [pair.split("->", 1) for pair in ordered]
         add.append({"label": rel, "patterns": [e for e in ends if len(e) == 2]})
+        for pair in ordered:
+            example = pruned.pattern_examples.get(rel, {}).get(pair)
+            if example and len(examples) < _PATTERN_HINT_EXAMPLES:
+                examples.append(f"{rel} {pair}: {example}")
     more = " (and more, see pruned)" if len(ranked) > _PATTERN_HINT_RELATIONS else ""
+    seen = f" Dropped, e.g.: {'; '.join(examples)}." if examples else ""
     return (
         f"{dropped} extracted relation(s) were dropped only because their [source, target] "
-        "pair is not declared. To keep them, call set_ontology("
-        f"relations={json.dumps(add)}){more}, then {redo}, then finalize. Keep only "
-        "the pairs the relation's meaning fits; for the others, declare a better "
-        "relation type instead."
+        f"pair is not declared.{seen} Keep only the pairs whose facts the relation's meaning "
+        "fits; for the others, declare a better relation type. To keep them all: "
+        f"set_ontology(relations={json.dumps(add)}){more}, then {redo}, then finalize."
     )
 
 
@@ -1470,7 +1478,7 @@ class GraphRAGToolkit:
             )
             pruned = out.pruned
             if pruned.pattern_mismatches:
-                hints.append(_pattern_hint(pruned.pattern_mismatches, redo))
+                hints.append(_pattern_hint(pruned, redo))
             if pruned.entities or pruned.relations or pruned.unknown:
                 hints.append(
                     "Extraction found types the ontology does not declare (see pruned)."

@@ -555,6 +555,13 @@ class PrunedTypes(BaseModel):
         default_factory=dict,
         description="Declared relation -> 'Source->Target' pair it is not declared for -> count.",
     )
+    pattern_examples: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        description=(
+            "Declared relation -> 'Source->Target' pair -> one dropped relation "
+            "('source name -> target name: fact'), to judge whether the pair fits."
+        ),
+    )
     dangling: int = Field(default=0, description="Relations whose endpoint was dropped.")
     unknown: int = Field(
         default=0,
@@ -573,6 +580,10 @@ class PrunedTypes(BaseModel):
                 str(rel): {str(pair): int(n) for pair, n in pairs.items()}
                 for rel, pairs in (report.get("pattern_mismatches") or {}).items()
             },
+            pattern_examples={
+                str(rel): {str(pair): str(text) for pair, text in pairs.items()}
+                for rel, pairs in (report.get("pattern_examples") or {}).items()
+            },
             dangling=int(report.get("dangling") or 0),
             unknown=int(report.get("unknown") or 0),
         )
@@ -586,6 +597,10 @@ class PrunedTypes(BaseModel):
             mine = self.pattern_mismatches.setdefault(rel, {})
             for pair, n in pairs.items():
                 mine[pair] = mine.get(pair, 0) + n
+        for rel, examples in other.pattern_examples.items():
+            kept = self.pattern_examples.setdefault(rel, {})
+            for pair, text in examples.items():
+                kept.setdefault(pair, text)
         self.dangling += other.dangling
         self.unknown += other.unknown
 

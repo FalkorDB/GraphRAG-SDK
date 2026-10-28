@@ -19,6 +19,7 @@ from graphrag_sdk.core.models import (
     DocumentOutput,
     EntityMention,
     GraphData,
+    GraphNode,
     GraphRelationship,
     IngestionResult,
     Ontology,
@@ -38,6 +39,8 @@ logger = logging.getLogger(__name__)
 # "pattern mismatch" warning. Enough to spot the inversion; bounded
 # so a misconfigured ontology can't flood logs.
 _PATTERN_MISMATCH_SAMPLE_SIZE = 3
+# Longest fact description kept as a pattern-mismatch example.
+_PATTERN_EXAMPLE_CHARS = 160
 
 
 def content_hash(text: str) -> str:
@@ -52,6 +55,17 @@ def content_hash(text: str) -> str:
 
 #: Alias used inside ``run``, where ``content_hash`` is a local variable.
 document_content_hash = content_hash
+
+
+def _relation_example(src: GraphNode, tgt: GraphNode, rel: GraphRelationship) -> str:
+    """``"Source -> Target: description"`` for one relation, shortened."""
+    text = f"{src.properties.get('name') or src.id} -> {tgt.properties.get('name') or tgt.id}"
+    desc = str(rel.properties.get("description") or "").strip()
+    if desc:
+        text = f"{text}: {desc}"
+    if len(text) > _PATTERN_EXAMPLE_CHARS:
+        text = text[: _PATTERN_EXAMPLE_CHARS - 1] + "…"
+    return text
 
 
 def _has_explicit(info: DocumentInfo, field: str) -> bool:
@@ -571,7 +585,8 @@ class IngestionPipeline(LexicalGraphWriter):
         Also returns what was dropped, so a caller can see which types its
         ontology is missing: ``{}`` when nothing was dropped, otherwise
         ``entities`` (label -> count), ``relations`` (undeclared rel_type ->
-        count), ``pattern_mismatches`` (rel_type -> {"Src->Tgt": count}) and
+        count), ``pattern_mismatches`` (rel_type -> {"Src->Tgt": count}),
+        ``pattern_examples`` (rel_type -> {"Src->Tgt": one dropped fact}) and
         ``dangling`` (relations whose endpoint entity was dropped), each key
         present only when non-empty. ``unknown`` counts kept "Unknown"
         entities: extraction told the ontology's types stores anything else
@@ -611,6 +626,7 @@ class IngestionPipeline(LexicalGraphWriter):
         # type or pruned endpoints). Direction inversion is the most common
         # cause and the hardest to debug without a structured warning.
         pattern_mismatches: dict[str, list[tuple[str, str]]] = {}
+        pattern_examples: dict[str, dict[str, str]] = {}
         for r in graph_data.relationships:
             rel_label = r.properties.get("rel_type", r.type)
 
@@ -632,6 +648,10 @@ class IngestionPipeline(LexicalGraphWriter):
             elif valid_pairs:
                 # Declared rel type, but (src, tgt) doesn't match any pattern.
                 pattern_mismatches.setdefault(rel_label, []).append((src.label, tgt.label))
+                examples = pattern_examples.setdefault(rel_label, {})
+                pair = f"{src.label}->{tgt.label}"
+                if pair not in examples:
+                    examples[pair] = _relation_example(src, tgt, r)
             else:
                 dropped_relations[rel_label] = dropped_relations.get(rel_label, 0) + 1
 
@@ -667,6 +687,7 @@ class IngestionPipeline(LexicalGraphWriter):
                     counts[key] = counts.get(key, 0) + 1
                 mismatch_counts[rel_label] = counts
             report["pattern_mismatches"] = mismatch_counts
+            report["pattern_examples"] = pattern_examples
         if dangling:
             report["dangling"] = dangling
         if unknown:

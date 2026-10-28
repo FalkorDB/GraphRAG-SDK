@@ -292,6 +292,7 @@ class TestDropReport:
             "entities": {"Gene": 2},
             "relations": {"CAUSES": 1},
             "pattern_mismatches": {"TREATS": {"Disease->Drug": 1}},
+            "pattern_examples": {"TREATS": {"Disease->Drug": "x -> d"}},
             "dangling": 1,
         }
 
@@ -705,17 +706,22 @@ class TestIngestFiles:
             "pattern_mismatches": {
                 "MANAGES": {"Person->Company": 2},
                 "TREATS": {"Disease->Drug": 3, "Drug->Symptom": 1},
-            }
+            },
+            "pattern_examples": {"MANAGES": {"Person->Company": "Ann -> Acme: Ann runs Acme"}},
         }
         result = await toolkit(rag, corpus).ingest(files=["notes/*"])
+        assert result.pruned.pattern_examples == {
+            "MANAGES": {"Person->Company": "Ann -> Acme: Ann runs Acme"}
+        }
         hint = result.hint
         assert hint.startswith("6 extracted relation(s) were dropped only because")
+        assert "Dropped, e.g.: MANAGES Person->Company: Ann -> Acme: Ann runs Acme." in hint
         assert (
             'set_ontology(relations=[{"label": "TREATS", "patterns": [["Disease", "Drug"], '
             '["Drug", "Symptom"]]}, {"label": "MANAGES", "patterns": [["Person", "Company"]]}])'
         ) in hint
         assert "ingest(files=['notes/a.md'], reextract=true), then finalize" in hint
-        assert "Keep only the pairs the relation's meaning fits" in hint
+        assert "Keep only the pairs whose facts the relation's meaning fits" in hint
         assert "types the ontology does not declare" not in hint
 
     async def test_failed_and_unchanged_files(self, corpus):
