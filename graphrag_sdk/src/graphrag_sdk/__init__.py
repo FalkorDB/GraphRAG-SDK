@@ -116,6 +116,8 @@ from graphrag_sdk.ingestion.ingestion_planner import (
     IngestionPlan,
     IngestionPlanner,
     LLMIngestionPlanner,
+    PlanRule,
+    RuleBasedIngestionPlanner,
     build_ingestion_strategies,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
@@ -271,6 +273,8 @@ __all__ = [
     "IngestionPlan",
     "IngestionPlanner",
     "LLMIngestionPlanner",
+    "PlanRule",
+    "RuleBasedIngestionPlanner",
     "build_ingestion_strategies",
     # Retrieval
     "CosineReranker",

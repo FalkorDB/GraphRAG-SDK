@@ -11,9 +11,10 @@ import hmac
 import inspect
 import json
 import logging
+import os
 import weakref
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, Literal
 
 from graphrag_sdk.core.exceptions import ReadOnlyViolation
@@ -31,8 +32,8 @@ ASGIApp = Callable[
 #: Sent to the client as the server's instructions: how to use the tools.
 GUIDE = """\
 GraphRAG knowledge-graph tools. You plan, call the tools and write the answer.
-The tools read the graph (only ingest and finalize write) and number every
-piece of evidence they return.
+The question-answering tools only read the graph, and number every piece of
+evidence they return.
 
 To answer a question:
 1. status, once: what the graph holds (entity labels, relation types, counts).
@@ -51,6 +52,48 @@ Call check_citations on your draft and fix what it reports before replying.
 If the evidence does not answer the question, say so. When a call fails,
 read its hint: it names the tool to call or the exact names to use.
 """
+
+#: Added to :data:`GUIDE` when the ingestion tools are served.
+INGEST_GUIDE = """\
+
+To build or extend the graph from documents:
+1. Ask the user whether they have an ontology (the entity and relation types
+   to extract). If they do, declare it with set_ontology and go to step 3.
+2. If not, design one: call sample_docs and follow next_offset until it is
+   null, so you have seen one sample from every file. Choose ONE ontology for
+   the whole corpus (types that recur across files, each with a short
+   description, and relations with their [source, target] patterns), and
+   declare it with set_ontology.
+3. Plan per file type from what sample_docs showed, e.g. structural chunking
+   for Markdown with headings. Call ingest(files=[...], plan=[rules]) in
+   batches of at most 50 files; a glob such as 'reports/*.pdf' is fine.
+4. Call finalize once, after the last batch.
+5. Check each result's pruned: the types extraction found that the ontology
+   does not declare (dropped, or stored as Unknown). If some matter, add them
+   with set_ontology, call ingest(files=[the affected files], reextract=true),
+   then finalize again.
+To add a single text instead, call ingest(text=..., document_id=...).
+"""
+
+#: Added to :data:`GUIDE` when only text ingestion is served.
+TEXT_INGEST_GUIDE = """\
+
+To add documents: optionally declare the ontology with set_ontology first,
+then ingest(text=..., document_id=...) per document, then finalize once.
+Check each result's pruned for types the ontology does not declare
+(dropped, or stored as Unknown).
+"""
+
+
+def guide_for(toolkit: GraphRAGToolkit) -> str:
+    """:data:`GUIDE`, plus the ingestion steps for the tools ``toolkit`` serves."""
+    names = {spec.name for spec in toolkit.tool_specs()}
+    if "sample_docs" in names and "ingest" in names:
+        return GUIDE + INGEST_GUIDE
+    if "ingest" in names:
+        return GUIDE + TEXT_INGEST_GUIDE
+    return GUIDE
+
 
 #: Longest JSON text returned for one tool call.
 MAX_RESULT_CHARS = 40_000
@@ -172,11 +215,15 @@ class GraphRAGMCPServer:
             ``Authorization: Bearer <token>`` on every request. Without
             it the SSE server only accepts unauthenticated local use (binding
             a non-loopback host without a token is refused).
-        read_only: Serve only the read tools (no ``ingest`` / ``finalize``).
+        read_only: Serve only the read tools (no ingestion tools).
         include: Optional subset of tool names to serve.
         finalize_policy: Passed to :class:`GraphRAGToolkit`.
+        files_root: Folder ``sample_docs`` and ``ingest(files=...)`` read
+            from; ``None`` (default) serves text ingestion only.
+        plan_limits: The strategies an agent's ingest plan may use; passed
+            to :class:`GraphRAGToolkit`.
         instructions: Server instructions sent to the client; defaults to
-            :data:`GUIDE`.
+            :func:`guide_for` the served tools.
     """
 
     def __init__(
@@ -188,15 +235,22 @@ class GraphRAGMCPServer:
         read_only: bool = False,
         include: Sequence[str] | None = None,
         finalize_policy: FinalizePolicy = "manual",
+        files_root: str | os.PathLike[str] | None = None,
+        plan_limits: Mapping[str, Any] | None = None,
         instructions: str | None = None,
     ) -> None:
         self._rag = rag
         self._name = name
         self._auth_token = auth_token or None
-        self._instructions = GUIDE if instructions is None else instructions
         self._toolkit = GraphRAGToolkit(
-            rag, read_only=read_only, include=include, finalize_policy=finalize_policy
+            rag,
+            read_only=read_only,
+            include=include,
+            finalize_policy=finalize_policy,
+            files_root=files_root,
+            plan_limits=plan_limits,
         )
+        self._instructions = guide_for(self._toolkit) if instructions is None else instructions
         self._sessions: weakref.WeakKeyDictionary[Any, GraphRAGToolkit] = (
             weakref.WeakKeyDictionary()
         )

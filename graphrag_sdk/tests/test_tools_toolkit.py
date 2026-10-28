@@ -121,8 +121,11 @@ def toolkit(rag: FakeRAG, monkeypatch: pytest.MonkeyPatch) -> GraphRAGToolkit:
 
 class TestSpecsAndDispatch:
     def test_all_tools_advertised(self, toolkit: GraphRAGToolkit):
-        assert [s.name for s in toolkit.tool_specs()] == list(TOOL_NAMES)
-        assert len(TOOL_NAMES) == 11
+        # sample_docs needs a files root, which this toolkit has none of.
+        assert [s.name for s in toolkit.tool_specs()] == [
+            n for n in TOOL_NAMES if n != "sample_docs"
+        ]
+        assert len(TOOL_NAMES) == 13
 
     def test_read_only_drops_writes(self, rag: FakeRAG):
         tk = GraphRAGToolkit(rag, read_only=True)  # type: ignore[arg-type]

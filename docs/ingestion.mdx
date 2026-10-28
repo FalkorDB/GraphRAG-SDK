@@ -162,6 +162,8 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 
 ---
 
+**What was pruned.** `IngestionResult.metadata["pruned"]` says what this step removed, so you can see what the ontology misses: `entities` (undeclared label → count), `relations` (undeclared type → count), `pattern_mismatches` (type → `"Source->Target"` → count), `dangling` (relations whose endpoint was dropped) and `unknown` (entities kept as `Unknown`, which is how extraction stores a type outside the declared ones). Only non-empty keys appear; `{}` means nothing was pruned.
+
 ### Step 6 — Resolve Duplicates
 
 **What it does:** Merges entities that refer to the same real-world thing. When the LLM extracts "Alice" from chunk 1 and "Alice" from chunk 5, this step recognizes they're the same entity and merges them.
@@ -321,6 +323,9 @@ Two planners ship in the SDK:
 |---------|------|----------------|
 | `LLMIngestionPlanner` (default when `auto=True`) | One small LLM call per document | Guided prompt over a document sample |
 | `HeuristicIngestionPlanner` | Zero (no LLM call) | Cheap document features (file extension, headings, lists) |
+| `RuleBasedIngestionPlanner` | Zero (no LLM call) | Your rules: the first `{"match": "*.md", "chunker": ...}` whose glob matches the file path (relative to `root=`, when given) |
+
+`RuleBasedIngestionPlanner` is what the agent tools use for `ingest(files=..., plan=[...])` (see [Agentic retrieval](/agentic-retrieval#building-the-graph-from-a-folder)). It takes the same `chunkers` / `extractors` / `resolvers` / `max_llm_pairs` limits; `CHEAP_PLAN_LIMITS` holds the cheap ones.
 
 **What was chosen.** With `auto=True`, each `IngestionResult` records the decision in `metadata["plan"]`:
 

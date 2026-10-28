@@ -509,3 +509,14 @@ class TestRetypeRemoved:
 
     def test_retype_attribute_does_not_exist(self, graphrag_evolving):
         assert not hasattr(graphrag_evolving, "retype_attribute")
+
+
+class TestSetOntologyRestoresOnFailure:
+    async def test_rejected_ontology_does_not_stick(self, graphrag_evolving):
+        rag = graphrag_evolving
+        previous = rag.ontology
+        rag._ontology_store.register = AsyncMock(side_effect=ValueError("contradiction"))
+        with pytest.raises(ValueError, match="contradiction"):
+            await rag.set_ontology(Ontology(entities=[Entity(label="Gene")]))
+        assert rag.ontology is previous
+        assert rag._ontology_initialized is True

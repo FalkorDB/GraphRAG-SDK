@@ -4,6 +4,6 @@
 
 from __future__ import annotations
 
-from graphrag_sdk.mcp.server import GUIDE, GraphRAGMCPServer, fit_json
+from graphrag_sdk.mcp.server import GUIDE, INGEST_GUIDE, GraphRAGMCPServer, fit_json, guide_for
 
-__all__ = ["GUIDE", "GraphRAGMCPServer", "fit_json"]
+__all__ = ["GUIDE", "INGEST_GUIDE", "GraphRAGMCPServer", "fit_json", "guide_for"]

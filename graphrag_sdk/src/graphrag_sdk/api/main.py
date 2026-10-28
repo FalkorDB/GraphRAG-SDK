@@ -615,10 +615,19 @@ class GraphRAG:
         ontology, but reuses the same connection / strategies. Without this,
         callers would have to reach into ``_ontology_initialized`` to force
         re-registration on an existing instance.
+
+        A rejected ontology (a contradiction, a reserved label) is not kept:
+        the previous one stays in force, so later ingests do not fail on it.
         """
+        previous, was_initialized = self.ontology, self._ontology_initialized
         self.ontology = ontology
         self._ontology_initialized = False
-        await self._ensure_ontology_initialized()
+        try:
+            await self._ensure_ontology_initialized()
+        except BaseException:
+            self.ontology = previous
+            self._ontology_initialized = was_initialized
+            raise
         return self._global_ontology
 
     async def _warn_about_a_parallel_label(self, incoming: Ontology, existing: Ontology) -> None:

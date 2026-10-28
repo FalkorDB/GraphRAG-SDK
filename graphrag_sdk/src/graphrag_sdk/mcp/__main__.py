@@ -7,7 +7,7 @@
 # the server can be launched by an MCP client without code:
 #   FALKOR_HOST / FALKOR_PORT / FALKOR_USERNAME / FALKOR_PASSWORD, GRAPHRAG_GRAPH,
 #   GRAPHRAG_MODEL, GRAPHRAG_EMBED_MODEL, GRAPHRAG_EMBED_DIM, GRAPHRAG_MCP_TOKEN,
-#   GRAPHRAG_MCP_READ_ONLY.
+#   GRAPHRAG_MCP_READ_ONLY, GRAPHRAG_MCP_FILES_ROOT.
 
 from __future__ import annotations
 
@@ -56,7 +56,17 @@ def main() -> None:
         "--read-only",
         action="store_true",
         default=os.getenv("GRAPHRAG_MCP_READ_ONLY", "").lower() in {"1", "true", "yes"},
-        help="Serve only the read tools (no ingest / finalize). Default: $GRAPHRAG_MCP_READ_ONLY.",
+        help="Serve only the read tools (no ingestion tools). Default: $GRAPHRAG_MCP_READ_ONLY.",
+    )
+    parser.add_argument(
+        "--files-root",
+        default=os.getenv("GRAPHRAG_MCP_FILES_ROOT") or None,
+        help=(
+            "Folder the agent may read and ingest files from (sample_docs, "
+            "ingest(files=...)); nothing outside it is read. Default: "
+            "$GRAPHRAG_MCP_FILES_ROOT, else the working directory for stdio and "
+            "none (text ingestion only) for sse."
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -83,8 +93,16 @@ def main() -> None:
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
 
+    files_root = args.files_root
+    if files_root is None and args.transport == "stdio" and not args.read_only:
+        files_root = os.getcwd()
+    if files_root is not None and not os.path.isdir(files_root):
+        raise SystemExit(f"--files-root {files_root!r} is not a directory.")
+
     rag = _build_rag()
-    server = GraphRAGMCPServer(rag, auth_token=args.token, read_only=args.read_only)
+    server = GraphRAGMCPServer(
+        rag, auth_token=args.token, read_only=args.read_only, files_root=files_root
+    )
 
     async def _serve() -> None:
         async with rag:  # type: ignore[attr-defined]

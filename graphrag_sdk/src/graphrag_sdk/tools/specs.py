@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from graphrag_sdk.tools import graph_ops as ops
+from graphrag_sdk.tools.files import MAX_FILES_PER_CALL, SUPPORTED_SUFFIXES
 
 
 class _Input(BaseModel):
@@ -127,13 +129,124 @@ class CheckCitationsInput(_Input):
     answer: str = Field(max_length=50_000, description="Your draft answer with [n] citations.")
 
 
+class SampleDocsInput(_Input):
+    """Arguments for sample_docs."""
+
+    pattern: str = Field(
+        default="**/*",
+        min_length=1,
+        max_length=500,
+        description="Glob relative to the files root, e.g. 'reports/*.pdf'; '*' crosses folders.",
+    )
+    offset: int = Field(default=0, ge=0, description="Files to skip (from next_offset).")
+    limit: int = Field(default=20, ge=1, le=100, description="Files to sample in this call.")
+    max_chars: int = Field(
+        default=1000, ge=100, le=4000, description="Characters sampled from each file."
+    )
+
+
+Label = Annotated[str, Field(min_length=1, max_length=100)]
+Description = Annotated[str, Field(max_length=1000)]
+
+
+class OntologyEntityInput(_Input):
+    """An entity type to declare."""
+
+    label: Label = Field(description="Type name, e.g. 'Drug'.")
+    description: Description | None = Field(
+        default=None, description="What counts as this type; guides extraction."
+    )
+
+
+class OntologyRelationInput(_Input):
+    """A relation type to declare."""
+
+    label: Label = Field(description="Relation name, e.g. 'TREATS'.")
+    description: Description | None = Field(default=None, description="What the relation means.")
+    patterns: list[Annotated[list[Label], Field(min_length=2, max_length=2)]] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Allowed [source, target] entity types, e.g. [['Drug', 'Disease']].",
+    )
+
+
+class SetOntologyInput(_Input):
+    """Arguments for set_ontology."""
+
+    entities: list[OntologyEntityInput] = Field(
+        default_factory=list,
+        max_length=200,
+        description="Entity types to add, or to give a new description.",
+    )
+    relations: list[OntologyRelationInput] = Field(
+        default_factory=list,
+        max_length=200,
+        description="Relation types to add, or new [source, target] patterns for one.",
+    )
+
+
+#: Option names for plan rules; they match ingestion_planner.CHUNKERS etc.
+ChunkerName = Literal["sentence", "fixed", "structural", "contextual"]
+ExtractorName = Literal["gliner", "llm"]
+ResolverName = Literal["exact", "llm_verified"]
+
+
+class PlanRuleInput(_Input):
+    """One plan rule: files matching ``match`` use these strategies."""
+
+    match: str = Field(
+        default="*", min_length=1, max_length=500, description="Glob, e.g. '*.md' or 'notes/*'."
+    )
+    chunker: ChunkerName | None = None
+    extractor: ExtractorName | None = None
+    resolver: ResolverName | None = None
+    chunker_params: dict[str, float] | None = Field(
+        default=None, description="e.g. {'chunk_size': 1500} for fixed."
+    )
+    extractor_params: dict[str, float] | None = None
+    resolver_params: dict[str, float] | None = None
+    reason: str | None = Field(default=None, max_length=300)
+
+
 class IngestInput(_Input):
     """Arguments for ingest."""
 
-    text: str = Field(min_length=1, max_length=200_000, description="Text to add to the graph.")
-    document_id: str | None = Field(
-        default=None, max_length=500, description="Stable document id; generated when omitted."
+    text: str | None = Field(
+        default=None, min_length=1, max_length=200_000, description="Text to add to the graph."
     )
+    document_id: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Stable id for text; generated when omitted.",
+    )
+    files: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description=(
+            "Paths or globs relative to the files root, instead of text; at most "
+            f"{MAX_FILES_PER_CALL} files per call."
+        ),
+    )
+    plan: list[PlanRuleInput] | None = Field(
+        default=None,
+        max_length=50,
+        description="Rules for files, first match wins; files no rule matches use the defaults.",
+    )
+    reextract: bool = Field(
+        default=False,
+        description="Re-extract files whose content is unchanged (after extending the ontology).",
+    )
+
+    @model_validator(mode="after")
+    def _one_source(self) -> IngestInput:
+        if (self.text is None) == (self.files is None):
+            raise ValueError("pass exactly one of text or files")
+        if self.text is not None and (self.plan is not None or self.reextract):
+            raise ValueError("plan and reextract apply to files only")
+        if self.files is not None and self.document_id is not None:
+            raise ValueError("document_id applies to text only; a file's id is its path")
+        return self
 
 
 class FinalizeInput(_Input):
@@ -161,6 +274,11 @@ class ToolDef:
     read_only: bool = True
     destructive: bool = False
     manual_only: bool = False
+    #: Part of ingestion: hidden and refused on a read-only toolkit even if
+    #: it writes nothing (sample_docs reads local files).
+    ingest_only: bool = False
+    #: Needs a files root (GraphRAGToolkit(files_root=...)).
+    needs_files: bool = False
 
 
 _CITE = " Results carry evidence numbers [n]; cite them in your answer."
@@ -233,11 +351,38 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "whether it is grounded, and the cited evidence.",
     ),
     ToolDef(
+        "sample_docs",
+        SampleDocsInput,
+        "Before ingesting files: list the documents under the files root (paged with "
+        "offset / next_offset) with one sample from the middle of each, to see what the "
+        "corpus is about and design an ontology from it. Reads files; writes nothing.",
+        ingest_only=True,
+        needs_files=True,
+    ),
+    ToolDef(
+        "set_ontology",
+        SetOntologyInput,
+        "Declare entity and relation types before ingesting: extraction keeps only "
+        "declared types. Adds to the current ontology (existing types keep theirs; a "
+        "description given here replaces the old one; new [source, target] patterns are "
+        "added to an existing relation). Labels: letters, digits, spaces, '_' or '-'. "
+        "Returns the full ontology.",
+        read_only=False,
+        ingest_only=True,
+    ),
+    ToolDef(
         "ingest",
         IngestInput,
-        "Add text (a note, fact or document) to the graph: entities and relations are "
-        "extracted and stored. Call finalize after a batch of ingests.",
+        "Add documents to the graph: entities and relations are extracted and stored. "
+        "Pass text (a note or document), or files: paths or globs under the files root "
+        f"({', '.join(SUPPORTED_SUFFIXES)}), at most {MAX_FILES_PER_CALL} per call, with "
+        "an optional plan, one rule per kind of file, e.g. [{match: '*.md', chunker: "
+        "'structural'}, {match: '*.pdf', chunker: 'fixed', chunker_params: {chunk_size: "
+        "1500}}]. Unchanged files are skipped; reextract=true runs them again. The "
+        "result gives each file's plan and the types dropped because the ontology lacks "
+        "them. Call finalize once after the whole batch.",
         read_only=False,
+        ingest_only=True,
     ),
     ToolDef(
         "finalize",
@@ -248,6 +393,7 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         read_only=False,
         destructive=True,
         manual_only=True,
+        ingest_only=True,
     ),
 )
 
@@ -268,13 +414,53 @@ def skill_catalog() -> str:
     return "\n".join(lines)
 
 
-def _description(td: ToolDef) -> str:
+def _plan_options(plan_limits: Mapping[str, Any] | None) -> str:
+    from graphrag_sdk.ingestion.ingestion_planner import (
+        CHEAP_PLAN_LIMITS,
+        CHUNKERS,
+        EXTRACTORS,
+        RESOLVERS,
+    )
+
+    limits = CHEAP_PLAN_LIMITS if plan_limits is None else plan_limits
+    parts = [
+        f"{slot} in ({', '.join(limits.get(key) or default)})"
+        for slot, key, default in (
+            ("chunker", "chunkers", CHUNKERS),
+            ("extractor", "extractors", EXTRACTORS),
+            ("resolver", "resolvers", RESOLVERS),
+        )
+    ]
+    return f" Allowed plan options: {'; '.join(parts)}; others fall back to these."
+
+
+def _description(td: ToolDef, plan_limits: Mapping[str, Any] | None = None) -> str:
     if td.name == "run_skill":
         return (
             f"{td.description} Pass the skill's arguments in params. Skills:\n"
             f"{skill_catalog()}\nThe result is one piece of evidence [n] to cite."
         )
+    if td.name == "ingest":
+        return td.description + _plan_options(plan_limits)
     return td.description
+
+
+def tool_enabled(
+    td: ToolDef,
+    *,
+    read_only: bool,
+    finalize_policy: str,
+    include: frozenset[str] | None,
+    files: bool = False,
+) -> bool:
+    """Whether a toolkit configuration serves tool ``td``."""
+    if read_only and (not td.read_only or td.ingest_only):
+        return False
+    if td.manual_only and finalize_policy != "manual":
+        return False
+    if td.needs_files and not files:
+        return False
+    return include is None or td.name in include
 
 
 def build_tool_specs(
@@ -282,23 +468,28 @@ def build_tool_specs(
     read_only: bool,
     finalize_policy: str,
     include: frozenset[str] | None,
+    files: bool = False,
+    plan_limits: Mapping[str, Any] | None = None,
 ) -> list[ToolSpec]:
-    """The tool definitions a toolkit configuration advertises."""
-    specs: list[ToolSpec] = []
-    for td in TOOL_REGISTRY:
-        if read_only and not td.read_only:
-            continue
-        if td.manual_only and finalize_policy != "manual":
-            continue
-        if include is not None and td.name not in include:
-            continue
-        specs.append(
-            ToolSpec(
-                name=td.name,
-                description=_description(td),
-                input_schema=td.input_model.model_json_schema(),
-                read_only=td.read_only,
-                destructive=td.destructive,
-            )
+    """The tool definitions a toolkit configuration advertises.
+
+    ``files`` says whether the toolkit has a files root (``sample_docs``
+    needs one); ``plan_limits`` names the plan options ``ingest`` allows.
+    """
+    return [
+        ToolSpec(
+            name=td.name,
+            description=_description(td, plan_limits),
+            input_schema=td.input_model.model_json_schema(),
+            read_only=td.read_only,
+            destructive=td.destructive,
         )
-    return specs
+        for td in TOOL_REGISTRY
+        if tool_enabled(
+            td,
+            read_only=read_only,
+            finalize_policy=finalize_policy,
+            include=include,
+            files=files,
+        )
+    ]

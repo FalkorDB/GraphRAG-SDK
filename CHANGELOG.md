@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Agentic ingestion: an agent builds the graph from a folder (#275)
+
+- **`GraphRAGToolkit(rag, files_root=...)` lets an agent ingest files.**
+  `sample_docs` returns one sample from the middle of each file, paged, so the
+  agent can design one ontology for the whole corpus; `set_ontology` declares
+  or extends it (adds only); `ingest(files=[...], plan=[rules])` ingests up to
+  50 files per call, each with the chunker, extractor and resolver of the
+  first rule matching its path. Paths stay inside the root.
+- **Agent plans stay cheap.** Plan choices are limited by `plan_limits`
+  (default `CHEAP_PLAN_LIMITS`: sentence, fixed or structural chunking, GLiNER
+  extraction, exact resolution); anything else is replaced and the plan's
+  `reason` says so.
+- **Each ingest says what the ontology misses.** `IngestionResult.metadata
+  ["pruned"]` and the tool's `pruned` count dropped entity and relation types,
+  undeclared relation patterns, dangling relations and entities stored as
+  `Unknown`. `ingest(files=..., reextract=true)` extracts those files again
+  after the ontology is extended.
+- **`RuleBasedIngestionPlanner`** maps glob rules to strategies with no LLM
+  call, for `rag.ingest(paths, planner=...)` too.
+- **`graphrag-mcp --files-root`** (or `GRAPHRAG_MCP_FILES_ROOT`) serves the
+  file tools; a writable stdio server defaults to its working directory. The
+  server's guide tells the agent to ask the user for their ontology first.
+
 #### Graph tools for your own agent, and an MCP server (#274)
 
 - **`GraphRAGToolkit` gives an agent you already run read-only tools on the
@@ -475,6 +498,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves more concurrent questions.
 
 ### Fixed
+- **A rejected `GraphRAG.set_ontology()` no longer sticks.** When the new
+  ontology was refused (a contradiction with the stored one, a reserved
+  label), it stayed on the instance and every later ingest failed on it. The
+  previous ontology is now restored before the error is raised.
 - **A write batch holding the same entity or relationship twice lost a write.**
   In one `UNWIND ... MERGE` call FalkorDB 4.x kept the first row's values and
   6.0.x the last, and on both only one row's `source_chunk_ids` survived, so an

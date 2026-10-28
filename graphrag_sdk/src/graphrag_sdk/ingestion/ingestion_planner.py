@@ -15,12 +15,15 @@
 from __future__ import annotations
 
 import dataclasses
+import fnmatch
 import json
 import logging
 import math
+import os
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from graphrag_sdk.core.context import Context
@@ -697,6 +700,183 @@ class LLMIngestionPlanner:
             )
             reason = f"default: the planner call failed ({type(exc).__name__})"
         return self._restrict(dataclasses.replace(default_plan(), reason=reason))
+
+
+#: The cheap options: no strategy that adds LLM calls beyond the one
+#: extraction call per chunk. The default ceiling for plans an outside agent
+#: writes (``GraphRAGToolkit(plan_limits=...)``).
+CHEAP_PLAN_LIMITS: Mapping[str, Any] = {
+    "chunkers": ("sentence", "fixed", "structural"),
+    "extractors": ("gliner",),
+    "resolvers": ("exact",),
+    "max_llm_pairs": 0,
+}
+
+_RULE_KEYS = frozenset(
+    {
+        "match",
+        "chunker",
+        "extractor",
+        "resolver",
+        "reason",
+        "chunker_params",
+        "extractor_params",
+        "resolver_params",
+    }
+)
+
+
+def match_path(pattern: str, path: str) -> bool:
+    """Whether glob ``pattern`` matches file ``path`` (case-insensitive).
+
+    ``*`` crosses folders, so ``*.md`` matches ``notes/a.md``; a pattern
+    without ``/`` is also tried against the file name, and a leading
+    ``**/`` also matches at the top level (``**/*.md`` matches ``a.md``).
+    """
+    pattern = pattern.strip().lower()
+    path = path.replace("\\", "/").lower()
+    if not pattern:
+        return False
+    candidates = [pattern]
+    if pattern.startswith("**/"):
+        candidates.append(pattern[3:])
+    name = path.rsplit("/", 1)[-1]
+    for pat in candidates:
+        if fnmatch.fnmatchcase(path, pat) or fnmatch.fnmatchcase(path, "*/" + pat):
+            return True
+        if "/" not in pat and fnmatch.fnmatchcase(name, pat):
+            return True
+    return False
+
+
+@dataclass(frozen=True)
+class PlanRule:
+    """One rule of a :class:`RuleBasedIngestionPlanner`: files that ``match``
+    are ingested with ``plan``."""
+
+    match: str
+    plan: IngestionPlan
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> PlanRule:
+        """Build a rule from ``{"match": "*.md", "chunker": "structural", ...}``.
+
+        Keys: ``match`` (glob, default ``"*"``), ``chunker``, ``extractor``,
+        ``resolver`` (omitted or ``None``: the default), ``reason`` and
+        ``chunker_params`` / ``extractor_params`` / ``resolver_params``.
+        Unknown keys and unknown strategy names raise ``ValueError``.
+        """
+        unknown = sorted(set(raw) - _RULE_KEYS)
+        if unknown:
+            raise ValueError(f"unknown plan rule key(s) {unknown}; use {sorted(_RULE_KEYS)}")
+        match = raw.get("match") or "*"
+        if not isinstance(match, str):
+            raise ValueError("a plan rule's match must be a glob string")
+        plan = IngestionPlan(
+            chunker=raw.get("chunker") or DEFAULT_CHUNKER,
+            extractor=raw.get("extractor") or DEFAULT_EXTRACTOR,
+            resolver=raw.get("resolver") or DEFAULT_RESOLVER,
+            reason=str(raw.get("reason") or ""),
+            chunker_params=dict(raw.get("chunker_params") or {}),
+            extractor_params=dict(raw.get("extractor_params") or {}),
+            resolver_params=dict(raw.get("resolver_params") or {}),
+        )
+        return cls(match=match, plan=plan)
+
+
+class RuleBasedIngestionPlanner:
+    """Zero-cost planner: the first rule whose glob matches the file wins.
+
+    Write one rule per kind of file instead of planning every file, e.g.::
+
+        RuleBasedIngestionPlanner([
+            {"match": "*.md", "chunker": "structural"},
+            {"match": "*.pdf", "chunker": "fixed", "chunker_params": {"chunk_size": 1500}},
+        ])
+
+    A file no rule matches gets ``default`` (the SDK defaults). In text mode
+    the rules are matched against the document id. With ``root``, a file
+    under it is matched by its path relative to ``root``, so a folder above
+    the root never matches a rule. Every plan is kept inside the allow-lists,
+    as with :class:`LLMIngestionPlanner`; pass ``**CHEAP_PLAN_LIMITS`` to
+    keep out the strategies that add LLM calls.
+
+    Args:
+        rules: :class:`PlanRule` objects or dicts for :meth:`PlanRule.from_dict`.
+        default: Plan for files no rule matches (default: the SDK defaults).
+        root: Folder that file paths are matched relative to.
+        chunkers / extractors / resolvers / max_llm_pairs / tune_params:
+            The cost ceiling; see :class:`LLMIngestionPlanner`. ``None``
+            for ``max_llm_pairs`` leaves the resolver's own budget.
+    """
+
+    def __init__(
+        self,
+        rules: Sequence[PlanRule | Mapping[str, Any]] = (),
+        *,
+        default: IngestionPlan | None = None,
+        chunkers: Sequence[str] = CHUNKERS,
+        extractors: Sequence[str] = EXTRACTORS,
+        resolvers: Sequence[str] = RESOLVERS,
+        max_llm_pairs: int | None = None,
+        tune_params: bool = True,
+        root: str | os.PathLike[str] | None = None,
+    ) -> None:
+        self.root = Path(root).resolve() if root is not None else None
+        self.rules: tuple[PlanRule, ...] = tuple(
+            r if isinstance(r, PlanRule) else PlanRule.from_dict(r) for r in rules
+        )
+        self.default = default or default_plan()
+        self.chunkers = _check_allowed("chunker", tuple(chunkers), CHUNKERS)
+        self.extractors = _check_allowed("extractor", tuple(extractors), EXTRACTORS)
+        self.resolvers = _check_allowed("resolver", tuple(resolvers), RESOLVERS)
+        self.max_llm_pairs = None if max_llm_pairs is None else _check_max_llm_pairs(max_llm_pairs)
+        if self.max_llm_pairs == 0 and set(self.resolvers) == {"llm_verified"}:
+            raise ValueError("max_llm_pairs=0 disallows llm_verified, the only resolver allowed")
+        self.tune_params = bool(tune_params)
+
+    def _relative(self, source: str | None) -> str:
+        if not source or self.root is None:
+            return source or ""
+        try:
+            return Path(source).resolve().relative_to(self.root).as_posix()
+        except (OSError, ValueError):
+            return source
+
+    def rule_for(self, source: str | None) -> PlanRule | None:
+        """The first rule matching ``source``, if any."""
+        path = self._relative(source)
+        for rule in self.rules:
+            if match_path(rule.match, path):
+                return rule
+        return None
+
+    async def plan(
+        self,
+        text: str | None,
+        *,
+        source: str | None = None,
+        ctx: Context | None = None,
+    ) -> IngestionPlan:
+        rule = self.rule_for(source)
+        if rule is None:
+            plan = dataclasses.replace(self.default, reason="default: no rule matched")
+        else:
+            plan = dataclasses.replace(rule.plan, reason=rule.plan.reason or f"rule {rule.match!r}")
+        plan = restrict_plan(
+            plan,
+            chunkers=self.chunkers,
+            extractors=self.extractors,
+            resolvers=self.resolvers,
+            max_llm_pairs=self.max_llm_pairs,
+            tune_params=self.tune_params,
+        )
+        if ctx is not None:
+            ctx.log(
+                f"RuleBasedIngestionPlanner: chunker={plan.chunker} "
+                f"extractor={plan.extractor} resolver={plan.resolver} ({plan.reason})"
+            )
+        return plan
 
 
 def build_chunker(

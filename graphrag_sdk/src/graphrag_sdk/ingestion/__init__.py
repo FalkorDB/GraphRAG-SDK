@@ -12,6 +12,8 @@ from graphrag_sdk.ingestion.ingestion_planner import (
     IngestionPlan,
     IngestionPlanner,
     LLMIngestionPlanner,
+    PlanRule,
+    RuleBasedIngestionPlanner,
     build_ingestion_strategies,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
@@ -28,6 +30,8 @@ __all__ = [
     "IngestionPipeline",
     "IngestionPlanner",
     "LLMIngestionPlanner",
+    "PlanRule",
+    "RuleBasedIngestionPlanner",
     "LoaderStrategy",
     "ResolutionStrategy",
     "build_ingestion_strategies",
