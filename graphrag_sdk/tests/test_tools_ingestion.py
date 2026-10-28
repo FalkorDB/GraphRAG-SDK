@@ -715,6 +715,7 @@ class TestIngestFiles:
             '["Drug", "Symptom"]]}, {"label": "MANAGES", "patterns": [["Person", "Company"]]}])'
         ) in hint
         assert "ingest(files=['notes/a.md'], reextract=true), then finalize" in hint
+        assert "Keep only the pairs the relation's meaning fits" in hint
         assert "types the ontology does not declare" not in hint
 
     async def test_failed_and_unchanged_files(self, corpus):

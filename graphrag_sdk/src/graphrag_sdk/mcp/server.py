@@ -69,17 +69,22 @@ To build or extend the graph from documents:
    null, so you have seen one sample from every file. Choose ONE ontology for
    the whole corpus (types that recur across files, each with a short
    description, and relations with their [source, target] patterns), and
-   declare it with set_ontology. Give each relation every [source, target]
-   pair it can join; a relation between undeclared types is dropped.
+   declare it with set_ontology. Declare a specific relation type for each
+   kind of link the samples show (owns, causes, supplies, depends on, ...):
+   with only a few broad types, extraction files facts under the wrong one.
+   Give each relation every [source, target] pair it can join; a relation
+   between undeclared types is dropped.
 3. Plan per file type from what sample_docs showed, e.g. structural chunking
    for Markdown with headings. Call ingest(files=[...], plan=[rules]) in
    batches of at most 50 files; a glob such as 'reports/*.pdf' is fine.
 4. Call finalize once, after the last batch.
 5. Read each result's pruned and hint. Relations dropped for an undeclared
-   [source, target] pair are usually real facts: add the pairs that make
-   sense with set_ontology, call ingest(files=[the affected files],
-   reextract=true), then finalize again. Do the same for undeclared types
-   that matter (dropped, or stored as Unknown).
+   [source, target] pair are often real facts. Add a pair only when the
+   relation's meaning fits it (SUPPLIES Company->Product, not
+   Company->Event); otherwise declare a better relation type for those
+   facts. Then call ingest(files=[the affected files], reextract=true) and
+   finalize again. Do the same for undeclared types that matter (dropped, or
+   stored as Unknown).
 To add a single text instead, call ingest(text=..., document_id=...).
 """
 

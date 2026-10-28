@@ -139,8 +139,10 @@ def _pattern_hint(mismatches: Mapping[str, Mapping[str, int]], redo: str) -> str
     more = " (and more, see pruned)" if len(ranked) > _PATTERN_HINT_RELATIONS else ""
     return (
         f"{dropped} extracted relation(s) were dropped only because their [source, target] "
-        "pair is not declared. Unless a pair is wrong, keep them: call set_ontology("
-        f"relations={json.dumps(add)}){more}, then {redo}, then finalize."
+        "pair is not declared. To keep them, call set_ontology("
+        f"relations={json.dumps(add)}){more}, then {redo}, then finalize. Keep only "
+        "the pairs the relation's meaning fits; for the others, declare a better "
+        "relation type instead."
     )
 
 
