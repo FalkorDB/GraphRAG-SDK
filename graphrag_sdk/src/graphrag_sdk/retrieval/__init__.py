@@ -1,7 +1,6 @@
 # GraphRAG SDK — Retrieval
 # Intelligent search: strategies, routing, reranking.
 
-from graphrag_sdk.retrieval.agentic import AgenticRetrieval
 from graphrag_sdk.retrieval.graph_walk import (
     DynamicGraphWalk,
     GraphWalkRetrieval,
@@ -18,7 +17,6 @@ from graphrag_sdk.retrieval.strategies.path_router import (
 )
 
 __all__ = [
-    "AgenticRetrieval",
     "CosineReranker",
     "DynamicGraphWalk",
     "GraphWalkRetrieval",

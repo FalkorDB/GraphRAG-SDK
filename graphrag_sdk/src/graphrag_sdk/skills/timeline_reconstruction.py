@@ -1,4 +1,4 @@
-# GraphRAG SDK — Skills: Timeline Reconstruction (Phase 3.4)
+# GraphRAG SDK — Skills: Timeline Reconstruction
 
 from __future__ import annotations
 

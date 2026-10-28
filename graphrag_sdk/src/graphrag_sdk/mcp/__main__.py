@@ -1,4 +1,4 @@
-# GraphRAG SDK — MCP server CLI (Phase 3.2)
+# GraphRAG SDK — MCP server CLI
 # Usage:
 #   python -m graphrag_sdk.mcp --transport stdio
 #   GRAPHRAG_MCP_TOKEN=... python -m graphrag_sdk.mcp --transport sse --host 0.0.0.0
@@ -6,7 +6,8 @@
 # Connection and model are read from environment variables / CLI flags so
 # the server can be launched by an MCP client without code:
 #   FALKOR_HOST / FALKOR_PORT / FALKOR_USERNAME / FALKOR_PASSWORD, GRAPHRAG_GRAPH,
-#   GRAPHRAG_MODEL, GRAPHRAG_EMBED_MODEL, GRAPHRAG_EMBED_DIM, GRAPHRAG_MCP_TOKEN.
+#   GRAPHRAG_MODEL, GRAPHRAG_EMBED_MODEL, GRAPHRAG_EMBED_DIM, GRAPHRAG_MCP_TOKEN,
+#   GRAPHRAG_MCP_READ_ONLY.
 
 from __future__ import annotations
 
@@ -52,6 +53,12 @@ def main() -> None:
         help="SSE bearer token (default: $GRAPHRAG_MCP_TOKEN). Required off localhost.",
     )
     parser.add_argument(
+        "--read-only",
+        action="store_true",
+        default=os.getenv("GRAPHRAG_MCP_READ_ONLY", "").lower() in {"1", "true", "yes"},
+        help="Serve only the read tools (no ingest / finalize). Default: $GRAPHRAG_MCP_READ_ONLY.",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         help="Logging level (DEBUG, INFO, WARNING, ...).",
@@ -77,7 +84,7 @@ def main() -> None:
             raise SystemExit(str(exc)) from exc
 
     rag = _build_rag()
-    server = GraphRAGMCPServer(rag, auth_token=args.token)
+    server = GraphRAGMCPServer(rag, auth_token=args.token, read_only=args.read_only)
 
     async def _serve() -> None:
         async with rag:  # type: ignore[attr-defined]

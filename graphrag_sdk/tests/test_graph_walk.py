@@ -171,3 +171,60 @@ class TestWeightedNeighborsQuery:
         # Equal-weight parallel edges always yield the same label.
         assert "ORDER BY w DESC, coalesce(r.rel_type, type(r))" in cypher
         assert out == [("acme", 2.0, "WORKS_AT")]
+
+
+# ── Concurrent neighbour lookups ─────────────────────────────────
+
+
+async def test_beam_round_fetches_neighbours_concurrently():
+    import asyncio
+
+    active = 0
+    peak = 0
+
+    async def neighbours(node: str):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        if node == "s":
+            return [(f"n{i}", 1.0, "R") for i in range(4)]
+        return [(f"{node}x", 1.0, "R")] if len(node) < 4 else []
+
+    paths = await DynamicGraphWalk(neighbours, beam_width=4, max_depth=2).beam_search("s")
+    assert peak == 4
+    assert sorted(p.nodes[-1] for p in paths) == ["n0x", "n1x", "n2x", "n3x"]
+
+
+async def test_walk_limits_concurrent_lookups():
+    import asyncio
+
+    active = 0
+    peak = 0
+
+    async def neighbours(node: str):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.005)
+        active -= 1
+        return [(f"{node}.{i}", 1.0, "R") for i in range(40)] if node == "s" else []
+
+    walk = DynamicGraphWalk(neighbours, beam_width=40, max_depth=2, max_concurrency=5)
+    await walk.beam_search("s")
+    assert peak == 5
+
+
+@pytest.mark.parametrize("value", [0, -3])
+async def test_max_concurrency_is_at_least_one(value):
+    seen: list[str] = []
+
+    async def neighbours(node: str):
+        seen.append(node)
+        return [("t", 1.0, "R")] if node == "s" else []
+
+    walk = DynamicGraphWalk(neighbours, max_depth=2, max_concurrency=value)
+    assert walk._max_concurrency == 1
+    await walk.beam_search("s")
+    assert seen == ["s", "t"]

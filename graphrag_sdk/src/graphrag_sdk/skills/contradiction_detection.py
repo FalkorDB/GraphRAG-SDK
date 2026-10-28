@@ -1,4 +1,4 @@
-# GraphRAG SDK — Skills: Contradiction Detection (Phase 3.4)
+# GraphRAG SDK — Skills: Contradiction Detection
 
 from __future__ import annotations
 
@@ -16,8 +16,9 @@ class ContradictionDetectionSkill(Skill):
     """Detect conflicting facts about an entity in the knowledge graph.
 
     Gathers the relationships and descriptions attached to an entity and
-    asks the LLM to flag mutually inconsistent statements. Without an LLM
-    it returns the collected facts for external inspection.
+    asks the LLM to flag mutually inconsistent statements. The examined
+    facts are always returned in ``data["facts"]``, so a caller without an
+    LLM (e.g. an MCP client's own agent) can judge them itself.
     """
 
     name = "contradiction_detection"
@@ -72,7 +73,9 @@ class ContradictionDetectionSkill(Skill):
         data = {
             "entity": entity,
             "facts_examined": len(facts),
+            "facts": facts,
             "contradictions": contradictions,
+            "checked_by_llm": self._llm is not None and bool(facts),
         }
         return SkillResult(skill=self.name, summary=summary, data=data, sources=[entity])
 

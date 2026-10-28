@@ -1,7 +1,8 @@
-# GraphRAG SDK — Skills: Base (Phase 3.4)
+# GraphRAG SDK — Skills: Base
 # A Skill is a composable, high-level reasoning unit built on top of the
-# storage + provider primitives. Skills are surfaced three ways: called
-# directly (GraphRAG.run_skill), as agentic-retrieval tools, and as MCP tools.
+# storage + provider primitives. Skills are surfaced two ways: called
+# directly (GraphRAG.run_skill) and through the toolkit's run_skill tool
+# (Python agents and MCP clients).
 
 from __future__ import annotations
 
@@ -31,6 +32,46 @@ def skill_parameters(
     return schema
 
 
+_JSON_TYPES: dict[str, tuple[type, ...]] = {
+    "string": (str,),
+    "integer": (int,),
+    "number": (int, float),
+    "boolean": (bool,),
+    "array": (list,),
+    "object": (dict,),
+}
+
+
+def check_arguments(schema: dict[str, Any], args: dict[str, Any]) -> list[str]:
+    """Check ``args`` against the top level of a JSON Schema object.
+
+    Covers what a caller gets wrong in practice: missing required arguments,
+    unknown arguments (when ``additionalProperties`` is false) and the JSON
+    type of each declared argument. Nested schemas are not walked.
+    """
+    problems: list[str] = []
+    properties: dict[str, Any] = schema.get("properties", {}) or {}
+    for name in schema.get("required", []) or []:
+        if args.get(name) in (None, ""):
+            problems.append(f"'{name}' is required")
+    if schema.get("additionalProperties") is False:
+        unknown = sorted(set(args) - set(properties))
+        if unknown:
+            problems.append(
+                f"unknown argument(s) {', '.join(repr(u) for u in unknown)}; "
+                f"accepted: {', '.join(sorted(properties)) or 'none'}"
+            )
+    for name, value in args.items():
+        expected = (properties.get(name) or {}).get("type")
+        if value is None or not isinstance(expected, str) or expected not in _JSON_TYPES:
+            continue
+        python_types = _JSON_TYPES[expected]
+        is_bool = isinstance(value, bool)
+        if not isinstance(value, python_types) or (is_bool and expected != "boolean"):
+            problems.append(f"'{name}' must be {expected}, got {type(value).__name__}")
+    return problems
+
+
 #: Schema snippet for a parameter naming one entity.
 ENTITY_PARAM = {"type": "string", "description": "Entity name or id."}
 
@@ -39,9 +80,9 @@ class Skill(ABC):
     """Abstract base class for high-level graph reasoning skills.
 
     Subclasses set ``name``, ``description`` and ``parameters`` (a JSON
-    Schema object) and implement :meth:`run`. ``parameters`` is what the
-    agent and MCP clients see, and :meth:`GraphRAG.run_skill` checks
-    arguments against it.
+    Schema object) and implement :meth:`run`. ``parameters`` is what
+    agents and MCP clients see, and :meth:`GraphRAG.run_skill` and the
+    toolkit's ``run_skill`` check arguments against it.
 
     Args:
         graph_store: Graph data access object (provides ``query_raw``,
@@ -51,7 +92,7 @@ class Skill(ABC):
             generated summary.
     """
 
-    #: Stable identifier used by registries, the agent, and MCP.
+    #: Stable identifier used by the registry, the toolkit and MCP.
     name: str = "skill"
     #: Human-readable description used in tool schemas.
     description: str = ""

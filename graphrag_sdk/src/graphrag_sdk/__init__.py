@@ -21,13 +21,12 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import (
     DocumentNotFoundError,
+    FalkorDBVersionError,
     GraphRAGError,
     LatencyBudgetExceededError,
-    ToolCallingNotSupportedError,
+    ReadOnlyViolation,
 )
 from graphrag_sdk.core.models import (
-    AgentStep,
-    AgentTrace,
     ApplyChangesResult,
     Attribute,
     BatchEntry,
@@ -43,6 +42,11 @@ from graphrag_sdk.core.models import (
     GraphNode,
     GraphRelationship,
     IngestionResult,
+    JudgeAttribute,
+    JudgeEntity,
+    JudgeGroup,
+    JudgeSet,
+    JudgeType,
     Ontology,
     RagResult,
     Relation,
@@ -51,11 +55,10 @@ from graphrag_sdk.core.models import (
     RetrieverResultItem,
     ScoredPath,
     SearchType,
+    SetVerdict,
     SkillResult,
     TextChunk,
     TextChunks,
-    ToolCall,
-    ToolSpec,
     UpdateResult,
 )
 from graphrag_sdk.core.providers import (
@@ -136,7 +139,6 @@ from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
-from graphrag_sdk.retrieval.agentic import AgenticRetrieval, AgentLimits, ToolRegistry
 from graphrag_sdk.retrieval.graph_walk import (
     DynamicGraphWalk,
     GraphWalkRetrieval,
@@ -167,13 +169,19 @@ from graphrag_sdk.skills import (
 )
 
 # ── Storage ─────────────────────────────────────────────────────
+from graphrag_sdk.storage.dedup_judges.base import DedupJudge
+from graphrag_sdk.storage.dedup_judges.llm_judge import LLMJudge
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.ontology_store import (
     OntologyContradictionError,
     OntologyModificationNotAllowedError,
     OntologyStore,
 )
+from graphrag_sdk.storage.system_store import DedupRunActiveError
 from graphrag_sdk.storage.vector_store import VectorStore
+
+# ── Agent Toolkit ───────────────────────────────────────────────
+from graphrag_sdk.tools import GraphRAGToolkit, ToolError, ToolSpec
 
 __all__ = [
     "DEFAULT_RELATION_TYPES",
@@ -183,8 +191,6 @@ __all__ = [
     "GraphRAG",
     # Core
     "ApplyChangesResult",
-    "AgentStep",
-    "AgentTrace",
     "BatchEntry",
     "ChatMessage",
     "ConnectionConfig",
@@ -193,6 +199,7 @@ __all__ = [
     "DeleteDocumentResult",
     "DocumentInfo",
     "DocumentNotFoundError",
+    "FalkorDBVersionError",
     "Attribute",
     "DocumentOutput",
     "DocumentRecord",
@@ -207,9 +214,6 @@ __all__ = [
     "Ontology",
     "IngestionResult",
     "LatencyBudgetExceededError",
-    "ToolCall",
-    "ToolCallingNotSupportedError",
-    "ToolSpec",
     "LLMBatchItem",
     "LLMInterface",
     "LiteLLM",
@@ -218,6 +222,12 @@ __all__ = [
     "OpenRouterLLM",
     "RagResult",
     "Relation",
+    "JudgeAttribute",
+    "JudgeEntity",
+    "JudgeGroup",
+    "JudgeSet",
+    "JudgeType",
+    "SetVerdict",
     "ResolutionResult",
     "RetrieverResult",
     "RetrieverResultItem",
@@ -263,7 +273,6 @@ __all__ = [
     "LLMIngestionPlanner",
     "build_ingestion_strategies",
     # Retrieval
-    "AgenticRetrieval",
     "CosineReranker",
     "DynamicGraphWalk",
     "GraphWalkRetrieval",
@@ -273,8 +282,6 @@ __all__ = [
     "RETRIEVAL_PATHS",
     "RerankingStrategy",
     "RetrievalStrategy",
-    "ToolRegistry",
-    "AgentLimits",
     "score_path",
     # Skills
     "Skill",
@@ -286,6 +293,9 @@ __all__ = [
     "ImpactAnalysisSkill",
     "TimelineReconstructionSkill",
     # Storage
+    "DedupJudge",
+    "DedupRunActiveError",
+    "LLMJudge",
     "GraphStore",
     "OntologyContradictionError",
     "OntologyModificationNotAllowedError",
@@ -298,6 +308,11 @@ __all__ = [
     "RecordBatch",
     "RecordLoaderStrategy",
     "Link",
+    # Agent toolkit
+    "GraphRAGToolkit",
+    "ReadOnlyViolation",
+    "ToolError",
+    "ToolSpec",
 ]
 
 

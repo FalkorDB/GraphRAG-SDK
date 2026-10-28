@@ -1,5 +1,5 @@
-# GraphRAG SDK — Agentic Retrieval: read-only Cypher guard
-# Schema-aware validation for model-generated Cypher, plus the helpers that
+# GraphRAG SDK — Tools: read-only Cypher guard
+# Schema-aware validation for agent-written Cypher, plus the helpers that
 # bound what a query may return. The database also runs these queries in
 # read-only mode (GRAPH.RO_QUERY); this layer adds the checks the database
 # cannot make: labels and properties that exist, typed RELATES edges, no
@@ -16,8 +16,13 @@ from graphrag_sdk.core.models import RESERVED_NODE_LABELS, Ontology
 
 logger = logging.getLogger(__name__)
 
+#: Write clauses and procedure calls. A keyword used as a name — after a
+#: ``.`` (``n.delete``), inside backticks, as a ``$parameter`` or as a map
+#: key (``{set: 1}``) — is not a clause; the database also runs these
+#: queries read-only (``GRAPH.RO_QUERY``).
 _WRITE_RE = re.compile(
-    r"\b(create|merge|delete|detach|set|remove|drop|foreach|call|load\s+csv)\b",
+    r"(?<![.\w`$])\b(create|merge|delete|detach|set|remove|drop|foreach|call|load\s+csv)\b"
+    r"(?![\w`]|\s*:)",
     re.IGNORECASE,
 )
 _READ_START = ("MATCH", "OPTIONAL MATCH", "UNWIND", "WITH", "RETURN")
@@ -216,7 +221,12 @@ def _dynamic_subscripts(blank: str) -> list[str]:
     return found
 
 
-def validate_read_query(cypher: str, schema: GraphSchema | None = None) -> list[str]:
+def validate_read_query(
+    cypher: str,
+    schema: GraphSchema | None = None,
+    *,
+    require_rel_type: bool = True,
+) -> list[str]:
     """Return the reasons ``cypher`` may not run; an empty list means it may.
 
     The query is tokenized first (strings, backtick identifiers, ``//`` and
@@ -227,6 +237,10 @@ def validate_read_query(cypher: str, schema: GraphSchema | None = None) -> list[
     labels anywhere in the text; and (with a ``schema``) that every label,
     relationship type and property exists and every ``RELATES`` edge
     constrains its ``rel_type`` to a declared relation.
+
+    ``require_rel_type=False`` drops the last rule (a ``RELATES`` edge may
+    stay untyped, e.g. ``RETURN r.rel_type, count(*)``); a ``rel_type`` that
+    is given must still be a declared relation.
     """
     errors: list[str] = []
     scanned = _scan(cypher.strip())
@@ -287,16 +301,30 @@ def validate_read_query(cypher: str, schema: GraphSchema | None = None) -> list[
                 errors.append(f"unknown property '{prop}'")
     if schema.semantic_relations:
         declared = set(schema.semantic_relations)
+        # ``[r:RELATES {rel_type: 'X'}]`` constrains the edge as well as a WHERE does.
+        in_map: dict[str, list[str]] = {}
+        for variable, props in re.findall(
+            r"\[\s*([A-Za-z_]\w*)?\s*:\s*`?RELATES`?\s*\{([^}]*)\}", code
+        ):
+            for rel in re.findall(r"\brel_type\s*:\s*['\"]([^'\"]*)['\"]", props):
+                in_map.setdefault(variable, []).append(rel)
+                if rel not in declared:
+                    errors.append(f"unknown relation '{rel}' in rel_type")
         for variable in re.findall(r"\[\s*([A-Za-z_]\w*)?\s*:\s*`?RELATES`?", scan):
+            if variable in in_map:
+                continue
             if not variable:
-                errors.append("every RELATES edge must bind a variable and constrain its rel_type")
+                if require_rel_type:
+                    errors.append(
+                        "every RELATES edge must bind a variable and constrain its rel_type"
+                    )
                 continue
             values = re.findall(
                 rf"\b{re.escape(variable)}\s*\.\s*rel_type\s*(?:=|IN)\s*(\[[^\]]*\]|'[^']*'|\"[^\"]*\")",
                 code,
                 re.IGNORECASE,
             )
-            if not values:
+            if not values and require_rel_type:
                 errors.append(
                     f"RELATES edge '{variable}' must constrain {variable}.rel_type to one of: "
                     f"{', '.join(sorted(declared))}"
@@ -362,3 +390,15 @@ def enforce_row_cap(cypher: str, cap: int) -> str:
 def mask_internal_labels(text: str) -> str:
     """Replace SDK-internal ``__Label__`` names in output with ``[internal]``."""
     return _INTERNAL_LABEL_RE.sub("[internal]", text)
+
+
+def is_read_only_cypher(cypher: str) -> bool:
+    """Whether ``cypher`` has no write clause or procedure call.
+
+    Uses the same tokenizer as :func:`validate_read_query`, so a write
+    keyword inside a string (``n.name = 'call center'``) is not flagged and
+    one hidden after a comment is. An unterminated string, identifier or
+    comment is rejected.
+    """
+    scanned = _scan(cypher)
+    return not scanned.error and _WRITE_RE.search(scanned.blank) is None

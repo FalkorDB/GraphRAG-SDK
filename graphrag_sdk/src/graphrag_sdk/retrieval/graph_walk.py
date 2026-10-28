@@ -1,9 +1,9 @@
-# GraphRAG SDK — Retrieval: Dynamic Graph Walk (Phase 3.3)
+# GraphRAG SDK — Retrieval: Dynamic Graph Walk
 # PageRank-weighted traversal with beam search, bidirectional search,
 # and path scoring. The core algorithms are decoupled from FalkorDB:
 # they operate on an injected async ``neighbor_fn`` and an optional
 # node-weight map, so they can be unit-tested in memory and reused by
-# the agentic retriever (Phase 3.1) as a "traverse" action.
+# the toolkit's ``graph_walk`` tool.
 
 from __future__ import annotations
 
@@ -25,6 +25,23 @@ logger = logging.getLogger(__name__)
 
 # An async function: node_id -> list of (neighbor_id, edge_weight, edge_label).
 NeighborFn = Callable[[str], Awaitable[list[tuple[str, float, str]]]]
+
+#: Neighbour lookups a walk runs at once. Below the connection pool's default
+#: size (16), so a wide beam waits for a free connection instead of failing.
+DEFAULT_MAX_CONCURRENT_LOOKUPS = 8
+
+
+async def gather_limited(
+    calls: list[Callable[[], Awaitable[Any]]], limit: int = DEFAULT_MAX_CONCURRENT_LOOKUPS
+) -> list[Any]:
+    """Run ``calls`` concurrently, at most ``limit`` at a time, results in order."""
+    semaphore = asyncio.Semaphore(max(1, limit))
+
+    async def run(call: Callable[[], Awaitable[Any]]) -> Any:
+        async with semaphore:
+            return await call()
+
+    return list(await asyncio.gather(*(run(c) for c in calls)))
 
 
 def score_path(
@@ -58,6 +75,7 @@ class DynamicGraphWalk:
         beam_width: Max number of partial paths kept per expansion round.
         max_depth: Max traversal depth (hops).
         length_penalty: Per-hop penalty applied during path scoring.
+        max_concurrency: Neighbour lookups run at once within a round.
     """
 
     def __init__(
@@ -68,6 +86,7 @@ class DynamicGraphWalk:
         beam_width: int = 5,
         max_depth: int = 4,
         length_penalty: float = 0.1,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENT_LOOKUPS,
     ) -> None:
         if beam_width < 1:
             raise ValueError("beam_width must be >= 1")
@@ -78,6 +97,7 @@ class DynamicGraphWalk:
         self._beam_width = beam_width
         self._max_depth = max_depth
         self._length_penalty = length_penalty
+        self._max_concurrency = max(1, int(max_concurrency))
 
     async def beam_search(
         self,
@@ -106,11 +126,13 @@ class DynamicGraphWalk:
             candidates: list[tuple[list[str], list[str], list[float]]] = []
             dead_ends: list[tuple[list[str], list[str], list[float]]] = []
             # One round's neighbour lookups run concurrently (they are
-            # independent reads); results are consumed in beam order, so the
-            # outcome is the same as fetching them one by one.
+            # independent reads), at most ``max_concurrency`` at a time;
+            # results are consumed in beam order, so the outcome is the same
+            # as fetching them one by one.
             to_expand = [entry for entry in beam if goal is None or entry[0][-1] != goal]
-            fetched = await asyncio.gather(
-                *(self._neighbor_fn(nodes[-1]) for nodes, _, _ in to_expand)
+            fetched = await gather_limited(
+                [(lambda tail=nodes[-1]: self._neighbor_fn(tail)) for nodes, _, _ in to_expand],
+                self._max_concurrency,
             )
             neighbours = {id(entry): nbrs for entry, nbrs in zip(to_expand, fetched)}
             for entry in beam:

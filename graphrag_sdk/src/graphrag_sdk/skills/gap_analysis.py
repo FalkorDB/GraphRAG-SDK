@@ -1,4 +1,4 @@
-# GraphRAG SDK — Skills: Gap Analysis (Phase 3.4)
+# GraphRAG SDK — Skills: Gap Analysis
 
 from __future__ import annotations
 

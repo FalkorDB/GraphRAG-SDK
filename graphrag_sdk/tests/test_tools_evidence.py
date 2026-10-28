@@ -1,0 +1,190 @@
+"""Tests for graphrag_sdk.tools.evidence: the evidence ledger and citation checks."""
+
+from __future__ import annotations
+
+import pytest
+
+from graphrag_sdk.tools.evidence import (
+    DEFAULT_LEDGER_CAPACITY,
+    Evidence,
+    EvidenceLedger,
+    GroundedAnswer,
+    ground_answer,
+)
+
+
+def ledger(n: int, capacity: int = DEFAULT_LEDGER_CAPACITY) -> EvidenceLedger:
+    out = EvidenceLedger(capacity=capacity)
+    for i in range(n):
+        out.add(tool="retrieve", kind="fact", content=f"fact {i + 1}")
+    return out
+
+
+# ── EvidenceLedger ───────────────────────────────────────────────
+
+
+class TestLedger:
+    def test_numbers_run_from_one_across_tools(self):
+        led = EvidenceLedger()
+        a = led.add(tool="retrieve", kind="passage", content="A", source="hr.pdf")
+        b = led.add(tool="cypher_query", kind="row", content="B", metadata={"row": 0})
+        assert (a.n, b.n) == (1, 2)
+        assert led.get(1) is a and led.get(2).tool == "cypher_query"
+        assert led.get(3) is None
+        assert [e.n for e in led.items] == [1, 2]
+        assert len(led) == 2
+        assert 1 in led and 3 not in led and "1" not in led
+
+    def test_metadata_is_copied(self):
+        meta = {"k": 1}
+        ev = EvidenceLedger().add(tool="t", kind="k", content="c", metadata=meta)
+        meta["k"] = 2
+        assert ev.metadata == {"k": 1}
+
+    def test_oldest_items_are_evicted_and_numbers_stay_stable(self):
+        led = ledger(5, capacity=3)
+        assert len(led) == 3
+        assert [e.n for e in led.items] == [3, 4, 5]
+        assert 1 not in led and led.get(1) is None
+        assert led.get(5).content == "fact 5"
+        assert led.add(tool="t", kind="k", content="next").n == 6
+        assert [e.n for e in led.items] == [4, 5, 6]
+
+    def test_citing_an_evicted_number_is_invalid(self):
+        led = ledger(5, capacity=3)
+        g = ground_answer("Old [1] and new [5].", led)
+        assert g.grounded and g.cited == [5] and g.invalid == [1]
+        assert g.answer == "Old and new [5]."
+
+    @pytest.mark.parametrize("capacity", [0, -1])
+    def test_capacity_must_be_positive(self, capacity):
+        with pytest.raises(ValueError):
+            EvidenceLedger(capacity=capacity)
+
+    def test_default_capacity(self):
+        assert DEFAULT_LEDGER_CAPACITY == 2000
+        led = ledger(DEFAULT_LEDGER_CAPACITY + 1)
+        assert len(led) == DEFAULT_LEDGER_CAPACITY and 1 not in led
+
+    def test_evidence_to_dict_omits_empty_fields(self):
+        assert Evidence(n=1, tool="t", kind="k", content="c").to_dict() == {
+            "n": 1,
+            "tool": "t",
+            "kind": "k",
+            "content": "c",
+        }
+        full = Evidence(n=2, tool="t", kind="k", content="c", source="s", metadata={"a": 1})
+        assert full.to_dict()["source"] == "s" and full.to_dict()["metadata"] == {"a": 1}
+
+
+# ── ground_answer ────────────────────────────────────────────────
+
+
+class TestGroundAnswer:
+    def test_valid_citations(self):
+        led = ledger(2)
+        g = ground_answer("Alice works at Acme [1] in Berlin [2].", led)
+        assert isinstance(g, GroundedAnswer)
+        assert g.grounded and g.reason == "cited"
+        assert g.cited == [1, 2] and g.invalid == []
+        assert g.answer == "Alice works at Acme [1] in Berlin [2]."
+        assert [e.content for e in g.citations(led)] == ["fact 1", "fact 2"]
+
+    def test_cited_is_in_first_use_order_without_repeats(self):
+        g = ground_answer("B [2]. A [1]. B again [2, 1].", ledger(2))
+        assert g.cited == [2, 1]
+
+    def test_invalid_markers_are_removed(self):
+        g = ground_answer("Acme [1, 9] is big [7].", ledger(2))
+        assert g.grounded and g.reason == "cited"
+        assert g.answer == "Acme [1] is big."
+        assert g.invalid == [9, 7]
+
+    def test_only_invented_citations_is_ungrounded(self):
+        # The toolkit reports the verdict; the cleaned text is returned as is
+        # (the caller's agent decides what to reply).
+        g = ground_answer("Acme is big [7].", ledger(2))
+        assert not g.grounded and g.reason == "invalid_citations"
+        assert g.answer == "Acme is big."
+        assert g.cited == [] and g.invalid == [7]
+
+    def test_uncited_answer_is_ungrounded(self):
+        g = ground_answer("Acme is big.", ledger(2))
+        assert not g.grounded and g.reason == "no_citations"
+        assert g.answer == "Acme is big."
+
+    def test_no_evidence_means_no_citation_can_match(self):
+        g = ground_answer("Acme was founded in 1999 [1].", EvidenceLedger())
+        assert not g.grounded and g.reason == "invalid_citations"
+        assert g.answer == "Acme was founded in 1999."
+
+    def test_conversation_is_not_special_cased(self):
+        # The SDK no longer answers; there is no "conversation" exemption.
+        g = ground_answer("Hello! How can I help?", EvidenceLedger())
+        assert not g.grounded and g.reason == "no_citations"
+        assert g.answer == "Hello! How can I help?"
+
+    @pytest.mark.parametrize("answer", ["", "   ", None])
+    def test_empty_answer_is_ungrounded(self, answer):
+        g = ground_answer(answer, ledger(1))
+        assert not g.grounded and g.reason == "empty" and g.answer == ""
+        assert g.cited == [] and g.invalid == []
+
+    def test_years_and_code_indexes_are_not_citations(self):
+        g = ground_answer("In [2024] use items[0] and f(x)[1] [1].", ledger(1))
+        assert g.answer == "In [2024] use items[0] and f(x)[1] [1]."
+        assert g.cited == [1] and g.invalid == []
+        g = ground_answer("Use items[0] as the key.", EvidenceLedger())
+        assert g.answer == "Use items[0] as the key." and g.reason == "no_citations"
+
+    def test_glued_and_chained_markers_are_citations(self):
+        g = ground_answer("Acme ships to the Berlin plant[1].", ledger(1))
+        assert g.grounded and g.cited == [1]
+        g = ground_answer("Acme ships to Berlin [1][9].", ledger(1))
+        assert g.answer == "Acme ships to Berlin [1]." and g.invalid == [9]
+
+    @pytest.mark.parametrize(
+        "answer", ["Acme was founded in 1998[2].", "Acme's (CEO)[2] is Jane.", "Berlin [1][2]."]
+    )
+    def test_marker_after_digit_or_paren_counts(self, answer):
+        g = ground_answer(answer, ledger(2))
+        assert g.grounded and 2 in g.cited
+
+    def test_semicolon_separated_markers(self):
+        g = ground_answer("Both [1; 2].", ledger(2))
+        assert g.cited == [1, 2] and g.answer == "Both [1, 2]."
+
+    def test_markers_inside_code_are_untouched(self):
+        g = ground_answer("Use `arr[9]` here [1].\n```\nx = y[7]\n```", ledger(1))
+        assert g.answer == "Use `arr[9]` here [1].\n```\nx = y[7]\n```"
+        assert g.invalid == []
+
+    def test_tilde_fenced_code_is_untouched(self):
+        g = ground_answer("Example [1]:\n~~~\nx = y[9]\n~~~", ledger(1))
+        assert g.answer == "Example [1]:\n~~~\nx = y[9]\n~~~" and g.invalid == []
+
+    def test_unclosed_fence_runs_to_the_end(self):
+        g = ground_answer("See [1].\n```\nx = y[9]", ledger(1))
+        assert g.answer == "See [1].\n```\nx = y[9]" and g.invalid == []
+
+    def test_cleanup_keeps_formatting_where_nothing_was_removed(self):
+        answer = "Steps:\n- top [1]\n    - nested  item\n```\n    code\n```"
+        assert ground_answer(answer, ledger(1)).answer == answer
+
+    @pytest.mark.parametrize(
+        ("answer", "shown"),
+        [
+            ("Acme [1] is big [9].", "Acme [1] is big."),
+            ("word [9] [1].", "word [1]."),
+            ("a [9] b [1].", "a b [1]."),
+            ("plant[9] next [1].", "plant next [1]."),
+            ("x [9]\nnext [1].", "x\nnext [1]."),
+            ("Berlin [1][9].", "Berlin [1]."),
+        ],
+    )
+    def test_cleanup_around_removed_markers(self, answer, shown):
+        assert ground_answer(answer, ledger(1)).answer == shown
+
+    def test_citations_skip_numbers_missing_from_the_ledger(self):
+        g = GroundedAnswer("x", True, "cited", cited=[1, 9])
+        assert [e.n for e in g.citations(ledger(1))] == [1]

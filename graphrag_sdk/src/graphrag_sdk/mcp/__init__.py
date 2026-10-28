@@ -1,11 +1,9 @@
-# GraphRAG SDK — MCP (Phase 3.2)
-# Model Context Protocol server exposing GraphRAG as 8 tools over
-# stdio / SSE transports. Requires the optional `mcp` extra for the live
-# server; the tool definitions themselves have no extra dependency.
+# GraphRAG SDK — MCP
+# Serves the GraphRAGToolkit tools to MCP clients over stdio / SSE.
+# Requires the optional `mcp` extra for the live server.
 
 from __future__ import annotations
 
-from graphrag_sdk.mcp.server import GraphRAGMCPServer
-from graphrag_sdk.mcp.tools import GraphRAGToolset, MCPTool
+from graphrag_sdk.mcp.server import GUIDE, GraphRAGMCPServer, fit_json
 
-__all__ = ["GraphRAGMCPServer", "GraphRAGToolset", "MCPTool"]
+__all__ = ["GUIDE", "GraphRAGMCPServer", "fit_json"]

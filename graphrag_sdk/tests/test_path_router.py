@@ -249,3 +249,31 @@ class TestHeuristicRelationshipStems:
 
     async def test_unrelated_question_does_not(self):
         assert "expansion" not in await HeuristicPathRouter().plan("what colour is the sky")
+
+
+# ── Entity detection ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("question", "entity"),
+    [
+        ("Who founded IBM?", True),
+        ("Microsoft acquired which companies?", True),
+        ("who makes the iPhone", True),
+        ('find "acme corp" details', True),
+        ("tell me about 'big co'", True),
+        ("Tell me about Alice", True),
+        ("Amazon's revenue", True),
+        ("Amazon’s revenue", True),
+        ("OpenAI products", True),
+        ("who founded GitHub", True),
+        ("what's the revenue of acme", False),
+        ("What colour is the sky?", False),
+        ("How many people work there?", False),
+        ("WHAT is weather?", False),
+        ("HOW many people?", False),
+    ],
+)
+async def test_router_entity_detection(question, entity):
+    plan = await HeuristicPathRouter().plan(question)
+    assert ({"entity_cypher", "entity_fulltext"} <= plan) is entity

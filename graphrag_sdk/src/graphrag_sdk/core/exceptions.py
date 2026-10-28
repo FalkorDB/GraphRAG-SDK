@@ -31,14 +31,6 @@ class LLMTimeoutError(LLMError):
     pass
 
 
-class ToolCallingNotSupportedError(LLMError, NotImplementedError):
-    """Raised when an LLM provider has no native tool-calling support.
-
-    Check ``LLMInterface.supports_tool_calling`` before calling
-    ``ainvoke_with_tools`` to avoid it.
-    """
-
-
 class EmbeddingError(GraphRAGError):
     """Raised when an embedding provider call fails."""
 
@@ -103,16 +95,31 @@ class DatabaseError(GraphRAGError):
 
 
 class DatabaseUnavailableError(DatabaseError):
-    """Raised when FalkorDB cannot be reached at all.
+    """Raised when FalkorDB could not run the query now.
 
+    The server is unreachable, the circuit breaker is open, or a temporary
+    condition (connection loss or socket timeout, full query queue,
+    ``BUSY``/``LOADING``/``NOREPLICAS``/``MISCONF``, cluster redirect or
+    failover, read-only replica, out of memory) outlasted every retry.
     Distinct from a plain :class:`DatabaseError`, which means the server
-    answered and *rejected* the query. Callers that fall back to a slower
-    path on cache/read failures need that distinction: a rejected query
-    leaves the rest of the pipeline perfectly usable, while an unreachable
-    server will fail the write phase no matter how much work is done first.
+    answered and *rejected* the query, or answered that it ran past its
+    timeout. Callers that fall back to a slower path on cache/read failures
+    need that distinction: a rejected query leaves the rest of the pipeline
+    perfectly usable, while an unreachable server will fail the write phase
+    no matter how much work is done first.
 
     Subclasses ``DatabaseError``, so existing ``except DatabaseError``
     handlers keep working unchanged.
+    """
+
+    pass
+
+
+class FalkorDBVersionError(DatabaseError):
+    """Raised when the FalkorDB server is older than the SDK supports.
+
+    Checked once per connection, before its first query, so nothing is
+    written to a server the SDK would misuse. Subclasses ``DatabaseError``.
     """
 
     pass
@@ -146,6 +153,26 @@ class SchemaValidationError(GraphRAGError):
     """Raised when graph schema validation fails."""
 
     pass
+
+
+# ── Read-Only Surface Errors ─────────────────────────────────────
+
+
+class ReadOnlyViolation(GraphRAGError):
+    """Raised when a write is attempted through a read-only surface.
+
+    Used by :mod:`graphrag_sdk.tools` both for guarded ``cypher_read``
+    queries containing write clauses and for ``remember``/``flush``
+    calls on a toolkit constructed with ``read_only=True``.
+
+    Attributes:
+        offending_token: The specific rejected token (e.g. ``"MERGE"``,
+            ``"CALL apoc.load.json"``), or None for non-query violations.
+    """
+
+    def __init__(self, message: str, *, offending_token: str | None = None) -> None:
+        super().__init__(message)
+        self.offending_token = offending_token
 
 
 # ── Configuration Errors ─────────────────────────────────────────

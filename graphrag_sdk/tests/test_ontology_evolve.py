@@ -31,6 +31,7 @@ def store_factory():
         fake = _FakeGraph()
         conn = MagicMock()
         conn._ensure_client = MagicMock()
+        conn._check_server_version = AsyncMock()  # a supported server
         conn._driver = SimpleNamespace(select_graph=MagicMock(return_value=fake))
         return OntologyStore(conn, "kg"), fake
 
@@ -182,8 +183,8 @@ class TestAddRelationPatternNode:
         (copy_cypher, _) = next(
             c for c in fake.calls if "MERGE (new)-[:HAS_PROPERTY]->(p2:Property" in c[0]
         )
-        carried = "p2.structured = (coalesce(p2.structured, false) OR coalesce(p.structured, false)"
-        assert carried in copy_cypher
+        assert "any(x IN props WHERE coalesce(x.structured, false)) AS structured" in copy_cypher
+        assert "p2.structured = (coalesce(p2.structured, false) OR structured)" in copy_cypher
 
 
 class TestRenameLabel:
