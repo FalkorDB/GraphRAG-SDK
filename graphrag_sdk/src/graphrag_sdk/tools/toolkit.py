@@ -125,6 +125,25 @@ def _short_fact(raw: str) -> tuple[str, tuple[str, str, str] | None]:
     return text, (src.lower(), rel_type, tgt.lower())
 
 
+_PATTERN_HINT_RELATIONS = 6
+
+
+def _pattern_hint(mismatches: Mapping[str, Mapping[str, int]], redo: str) -> str:
+    """Say how many relations an undeclared pattern dropped, and how to keep them."""
+    dropped = sum(n for pairs in mismatches.values() for n in pairs.values())
+    ranked = sorted(mismatches.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))
+    add = []
+    for rel, pairs in ranked[:_PATTERN_HINT_RELATIONS]:
+        ends = [pair.split("->", 1) for pair in sorted(pairs, key=lambda p: (-pairs[p], p))]
+        add.append({"label": rel, "patterns": [e for e in ends if len(e) == 2]})
+    more = " (and more, see pruned)" if len(ranked) > _PATTERN_HINT_RELATIONS else ""
+    return (
+        f"{dropped} extracted relation(s) were dropped only because their [source, target] "
+        "pair is not declared. Unless a pair is wrong, keep them: call set_ontology("
+        f"relations={json.dumps(add)}){more}, then {redo}, then finalize."
+    )
+
+
 def _names_hint(names: Sequence[str]) -> str:
     shown = list(names)[:_HINT_NAMES]
     more = f" (+{len(names) - len(shown)} more)" if len(names) > len(shown) else ""
@@ -1410,10 +1429,14 @@ class GraphRAGToolkit:
                 if out.pruned.unknown
                 else ""
             )
-            hints.append(
-                "Extraction found types the ontology does not declare (see pruned)."
-                f"{look} If they matter, add them with set_ontology, then {redo}."
-            )
+            pruned = out.pruned
+            if pruned.pattern_mismatches:
+                hints.append(_pattern_hint(pruned.pattern_mismatches, redo))
+            if pruned.entities or pruned.relations or pruned.unknown:
+                hints.append(
+                    "Extraction found types the ontology does not declare (see pruned)."
+                    f"{look} If they matter, add them with set_ontology, then {redo}."
+                )
         if out.documents and all(d.status == "unchanged" for d in out.documents):
             hints.append("Every file was unchanged; pass reextract=true to extract them again.")
         if out.status == "unchanged":

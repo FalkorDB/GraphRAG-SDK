@@ -699,6 +699,24 @@ class TestIngestFiles:
         assert "MATCH (n:Unknown)" in result.hint
         assert "ingest(files=['notes/b.md'], reextract=true)" in result.hint
 
+    async def test_dropped_patterns_say_how_to_keep_them(self, corpus):
+        rag = FakeRAG()
+        rag.pruned["a.md"] = {
+            "pattern_mismatches": {
+                "MANAGES": {"Person->Company": 2},
+                "TREATS": {"Disease->Drug": 3, "Drug->Symptom": 1},
+            }
+        }
+        result = await toolkit(rag, corpus).ingest(files=["notes/*"])
+        hint = result.hint
+        assert hint.startswith("6 extracted relation(s) were dropped only because")
+        assert (
+            'set_ontology(relations=[{"label": "TREATS", "patterns": [["Disease", "Drug"], '
+            '["Drug", "Symptom"]]}, {"label": "MANAGES", "patterns": [["Person", "Company"]]}])'
+        ) in hint
+        assert "ingest(files=['notes/a.md'], reextract=true), then finalize" in hint
+        assert "types the ontology does not declare" not in hint
+
     async def test_failed_and_unchanged_files(self, corpus):
         rag = FakeRAG()
         rag.fail.add("b.md")
