@@ -119,10 +119,29 @@ async def test_mapping_preview_reads_without_initializing_schema(supplied):
 
     preview = await graph.get_ontology(initialize=False)
 
-    assert preview.tables == [declared if supplied else stored]
+    assert preview.tables == ([stored, declared] if supplied else [stored])
     graph._ensure_ontology_initialized.assert_not_called()
     graph._ontology_store.register.assert_not_called()
     assert not graph._ontology_initialized
+
+
+@pytest.mark.parametrize("proposed_source", ["people", "./data/people.csv"])
+async def test_mapping_preview_replaces_matching_proposals(proposed_source):
+    stored = TableMapping(source="people.csv", label="Person", key="id", name="name", derived=True)
+    declared = TableMapping(source=proposed_source, label="Person", key="id", name="name")
+    graph = object.__new__(GraphRAG)
+    graph.ontology = Ontology(entities=[Entity(label="Person")], tables=[declared])
+    graph._ontology_initialized = False
+    graph._ontology_store = AsyncMock()
+    graph._ontology_store.load.return_value = Ontology(
+        entities=[Entity(label="Person")], tables=[stored]
+    )
+
+    preview = await graph.get_ontology(initialize=False)
+
+    assert preview.tables == [declared]
+    graph._ontology_store.register.assert_not_called()
+    graph._ontology_store.drop_table_mapping.assert_not_called()
 
 
 async def test_first_sync_adds_every_document_under_the_source_prefix():
@@ -659,6 +678,38 @@ async def test_same_source_syncs_are_serialized():
     assert graph.documents == {"wiki:b": _hash("B")}
 
 
+def test_source_locks_release_closed_event_loops():
+    import gc
+    import weakref
+
+    from graphrag_sdk.connectors.sync import _SOURCE_LOCKS
+
+    class YieldingGraph(FakeGraph):
+        async def query(self, cypher, params):
+            await asyncio.sleep(0)
+            return await super().query(cypher, params)
+
+    graph = YieldingGraph()
+
+    async def overlapping():
+        await asyncio.gather(
+            sync_documents(graph, [SourceDocument("a", "A")], source="wiki"),
+            sync_documents(graph, [SourceDocument("b", "B")], source="wiki"),
+        )
+
+    for _ in range(3):
+        loop = asyncio.new_event_loop()
+        reference = weakref.ref(loop)
+        try:
+            loop.run_until_complete(overlapping())
+        finally:
+            loop.close()
+        assert graph not in _SOURCE_LOCKS
+        del loop
+        gc.collect()
+        assert reference() is None
+
+
 async def test_file_documents_reads_text_files_and_skips_the_rest(dlt, tmp_path):
     from dlt.sources.filesystem import filesystem
 
@@ -897,3 +948,37 @@ async def test_mapping_preflight_preserves_live_properties(
     assert not rag._ontology_initialized
     assert (await rag._ontology_store.load()).tables == stored.tables
     assert await rag.query("MATCH (p:Person) RETURN p.users__city") == [["Rome"]]
+
+
+@pytest.mark.integration
+async def test_empty_persisted_table_remains_available_with_other_supplied_mappings(
+    real_falkordb_rag_factory, scripted_llm, dlt
+):
+    rag = real_falkordb_rag_factory(
+        llm=scripted_llm(),
+        resolver=None,
+        ontology=Ontology(
+            entities=[Entity(label="Person")],
+            tables=[TableMapping(source="users", label="Person", key="id", name="name")],
+        ),
+    )
+    await sync_table(rag, [{"id": 1, "name": "Alice"}], table="users")
+    rag.ontology = Ontology(
+        entities=[Entity(label="Person")],
+        tables=[TableMapping(source="employees", label="Person", key="id", name="name")],
+    )
+    rag._ontology_initialized = False
+
+    @dlt.resource(name="users")
+    def users():
+        yield from []
+
+    preview = await sync(rag, users(), dry_run=True)
+    assert preview.table_rows == {"users": 0}
+    assert not preview.documents
+    assert not rag._ontology_initialized
+    assert await rag.query("MATCH (p:Person) RETURN count(p)") == [[1]]
+
+    result = await sync(rag, users())
+    assert result.tables["users"].replaced_existing
+    assert await rag.query("MATCH (p:Person) RETURN count(p)") == [[0]]

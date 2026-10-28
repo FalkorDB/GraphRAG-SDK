@@ -45,8 +45,16 @@ _RESERVED_PROPERTIES = frozenset(
 )
 _RESERVED_PREFIXES = ("cleanup_",)
 _PENDING_MARKER = "__pending__"
+
+
+@dataclass
+class _SourceLock:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+
+
 _SOURCE_LOCKS: WeakKeyDictionary[
-    GraphRAG, WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]]
+    GraphRAG, WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, _SourceLock]]
 ] = WeakKeyDictionary()
 
 
@@ -170,18 +178,29 @@ async def sync_documents(
     loop = asyncio.get_running_loop()
     loops = _SOURCE_LOCKS.setdefault(rag, WeakKeyDictionary())
     locks = loops.setdefault(loop, {})
-    async with locks.setdefault(source, asyncio.Lock()):
-        return await _sync_documents(
-            rag,
-            documents,
-            source=source,
-            prune=prune,
-            dry_run=dry_run,
-            cache_unchanged_chunks=cache_unchanged_chunks,
-            chunker=chunker,
-            extractor=extractor,
-            ctx=ctx,
-        )
+    entry = locks.setdefault(source, _SourceLock())
+    entry.users += 1
+    try:
+        async with entry.lock:
+            return await _sync_documents(
+                rag,
+                documents,
+                source=source,
+                prune=prune,
+                dry_run=dry_run,
+                cache_unchanged_chunks=cache_unchanged_chunks,
+                chunker=chunker,
+                extractor=extractor,
+                ctx=ctx,
+            )
+    finally:
+        entry.users -= 1
+        if not entry.users:
+            del locks[source]
+            if not locks:
+                del loops[loop]
+            if not loops:
+                del _SOURCE_LOCKS[rag]
 
 
 async def _sync_documents(

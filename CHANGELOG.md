@@ -38,8 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   text and PDF out of a dlt filesystem listing. Source metadata such as URL and
   modified time is stored on the `Document` node.
 - **Connector safety:** mapping previews use `get_ontology(initialize=False)`
-  without schema registration or data reconciliation. Reader adapters require
-  an explicit stable-ID callback, unsafe metadata keys are dropped, and document
+  without schema registration or data reconciliation. The LlamaIndex adapter
+  requires an explicit stable-ID callback; file adapters use the file URL.
+  Unsafe metadata keys are dropped, and document
   syncs on one SDK instance and event loop serialize by source. Cross-instance
   and multi-process synchronization remains the caller's responsibility.
 - **`sync_documents()` and `sync_table()`** take plain iterables, for sources

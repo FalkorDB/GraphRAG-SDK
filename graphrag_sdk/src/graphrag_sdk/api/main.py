@@ -583,7 +583,19 @@ class GraphRAG:
         if not initialize:
             loaded = await self._ontology_store.load()
             if not self._ontology_initialized and self.ontology.tables:
-                return loaded.model_copy(update={"tables": list(self.ontology.tables)})
+                tables = {mapping.source: mapping for mapping in loaded.tables}
+                for mapping in self.ontology.tables:
+                    tables = {
+                        source: prior
+                        for source, prior in tables.items()
+                        if not (
+                            prior.derived
+                            and not mapping.derived
+                            and prior.signature == mapping.signature
+                        )
+                    }
+                    tables[mapping.source] = mapping
+                return loaded.model_copy(update={"tables": list(tables.values())})
             return loaded
         await self._ensure_ontology_initialized()
         # Always reflect the latest persisted state in case another writer
