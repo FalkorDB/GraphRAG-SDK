@@ -1041,7 +1041,7 @@ class GraphRAGToolkit:
         root = self._require_root("sample_docs")
         inp = SampleDocsInput(pattern=pattern, offset=offset, limit=limit, max_chars=max_chars)
         try:
-            rels = fs.list_files(root, inp.pattern)
+            rels = await asyncio.to_thread(fs.list_files, root, inp.pattern)
         except ValueError as exc:
             raise ToolError(str(exc), hint="Use a glob relative to the files root.") from None
         types: dict[str, int] = {}
@@ -1241,9 +1241,22 @@ class GraphRAGToolkit:
         )
         ctx = ctx or self._new_ctx()
         if inp.text is not None:
-            result = await self._rag.ingest(text=inp.text, document_id=inp.document_id, ctx=ctx)
+            if inp.reextract:
+                result = await self._rag.update(
+                    text=inp.text,
+                    document_id=inp.document_id,
+                    force=True,
+                    if_missing="ingest",
+                    ctx=ctx,
+                )
+                status = "reextracted" if result.replaced_existing else "ingested"
+            else:
+                result = await self._rag.ingest(text=inp.text, document_id=inp.document_id, ctx=ctx)
+                unchanged = (result.metadata or {}).get("skipped_unchanged")
+                status = "unchanged" if unchanged else "ingested"
             out = IngestResult(
                 document_id=result.document_info.uid,
+                status=status,
                 chunks_indexed=result.chunks_indexed,
                 nodes_created=result.nodes_created,
                 relationships_created=result.relationships_created,
@@ -1272,7 +1285,7 @@ class GraphRAGToolkit:
 
         root = self._require_root("ingest(files=...)")
         try:
-            rels = fs.resolve_files(root, entries)
+            rels = await asyncio.to_thread(fs.resolve_files, root, entries)
             planner = RuleBasedIngestionPlanner(
                 [PlanRule.from_dict(r.model_dump(exclude_none=True)) for r in rules],
                 root=root,
@@ -1337,7 +1350,8 @@ class GraphRAGToolkit:
                     "resolver_params": dict(p.resolver_params),
                     "reason": p.reason,
                 }
-                return _ingested(rel, res, "reextracted", plan_info)
+                status = "reextracted" if res.replaced_existing else "ingested"
+                return _ingested(rel, res, status, plan_info)
 
             docs = list(await asyncio.gather(*(redo(r, p) for r, p in zip(rels, paths))))
 
@@ -1366,7 +1380,7 @@ class GraphRAGToolkit:
                 f"ingest(files={affected[:10]}{' ...' if len(affected) > 10 else ''}, "
                 "reextract=true)"
                 if affected
-                else "ingest the text again"
+                else f"ingest(text=..., document_id={out.document_id!r}, reextract=true)"
             )
             look = (
                 " To see the Unknown entities: cypher_query MATCH (n:Unknown) "
@@ -1380,6 +1394,11 @@ class GraphRAGToolkit:
             )
         if out.documents and all(d.status == "unchanged" for d in out.documents):
             hints.append("Every file was unchanged; pass reextract=true to extract them again.")
+        if out.status == "unchanged":
+            hints.append(
+                "This text is already stored; to extract it again, pass "
+                f"document_id={out.document_id!r} and reextract=true."
+            )
         if self._finalize_policy == "manual" and not out.finalized:
             hints.append("Call finalize once after this batch of ingests.")
         return " ".join(hints) or None

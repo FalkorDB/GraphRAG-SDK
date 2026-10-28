@@ -25,12 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ["pruned"]` and the tool's `pruned` count dropped entity and relation types,
   undeclared relation patterns, dangling relations and entities stored as
   `Unknown`. `ingest(files=..., reextract=true)` extracts those files again
-  after the ontology is extended.
+  after the ontology is extended (`ingest(text=..., document_id=...,
+  reextract=true)` for text).
 - **`RuleBasedIngestionPlanner`** maps glob rules to strategies with no LLM
   call, for `rag.ingest(paths, planner=...)` too.
 - **`graphrag-mcp --files-root`** (or `GRAPHRAG_MCP_FILES_ROOT`) serves the
-  file tools; a writable stdio server defaults to its working directory. The
-  server's guide tells the agent to ask the user for their ontology first.
+  file tools; without it no files are read. The filesystem root and the home
+  folder are refused. The server's guide tells the agent to ask the user for
+  their ontology first.
 
 #### Graph tools for your own agent, and an MCP server (#274)
 

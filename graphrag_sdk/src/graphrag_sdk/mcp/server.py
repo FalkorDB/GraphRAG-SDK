@@ -83,7 +83,8 @@ TEXT_INGEST_GUIDE = """\
 To add documents: optionally declare the ontology with set_ontology first,
 then ingest(text=..., document_id=...) per document, then finalize once.
 Check each result's pruned for types the ontology does not declare
-(dropped, or stored as Unknown).
+(dropped, or stored as Unknown); after adding them with set_ontology,
+ingest the same text and document_id with reextract=true.
 """
 
 

@@ -84,12 +84,12 @@ result = await toolkit.ingest(
     plan=[{"match": "*.md", "chunker": "structural"}, {"match": "*", "chunker": "fixed"}],
 )
 for doc in result.documents:
-    print(doc.path, doc.status, doc.plan["chunker"])   # ingested / unchanged / failed
+    print(doc.path, doc.status, (doc.plan or {}).get("chunker"))  # ingested / unchanged / failed
 print(result.pruned)                                   # what the ontology misses
 await toolkit.finalize()
 ```
 
-Unchanged files are skipped (`status: "unchanged"`); pass `reextract=true` to extract them again. The planner behind `plan` is `RuleBasedIngestionPlanner`, also usable directly with `rag.ingest(paths, planner=...)` (see [Ingestion](/ingestion#agentic-strategy-selection-auto%3Dtrue)).
+Unchanged files are skipped (`status: "unchanged"`); pass `reextract=true` to extract them again. Text works the same way: an unchanged text comes back with `status: "unchanged"`, and `ingest(text=..., document_id=..., reextract=true)` extracts it again. A file name with `*`, `?` or `[` in it is read as that file when it exists. Listing a folder stops after 100,000 entries; narrow the pattern (`reports/**/*.pdf` walks only `reports`) for bigger trees. The filesystem root and the home folder are refused as `files_root`. The planner behind `plan` is `RuleBasedIngestionPlanner`, also usable directly with `rag.ingest(paths, planner=...)` (see [Ingestion](/ingestion#agentic-strategy-selection-auto%3Dtrue)).
 
 ## Evidence and citations
 
@@ -141,7 +141,7 @@ Claude Code / Cursor config:
 }
 ```
 
-Configuration comes from `FALKOR_HOST`, `FALKOR_PORT`, `FALKOR_USERNAME`, `FALKOR_PASSWORD`, `GRAPHRAG_GRAPH`, `GRAPHRAG_MODEL`, `GRAPHRAG_EMBED_MODEL`, `GRAPHRAG_EMBED_DIM`, `GRAPHRAG_MCP_READ_ONLY` and `GRAPHRAG_MCP_FILES_ROOT`. Without `--read-only`, a stdio server reads files under its working directory unless `--files-root` names another folder; an SSE server reads files only when given `--files-root`. The LLM and embedder serve `retrieve`, skills and `ingest`; the other read tools need neither.
+Configuration comes from `FALKOR_HOST`, `FALKOR_PORT`, `FALKOR_USERNAME`, `FALKOR_PASSWORD`, `GRAPHRAG_GRAPH`, `GRAPHRAG_MODEL`, `GRAPHRAG_EMBED_MODEL`, `GRAPHRAG_EMBED_DIM`, `GRAPHRAG_MCP_READ_ONLY` and `GRAPHRAG_MCP_FILES_ROOT`. A server reads files only when given `--files-root` (or `GRAPHRAG_MCP_FILES_ROOT`); without it, `ingest` takes text only. The LLM and embedder serve `retrieve`, skills and `ingest`; the other read tools need neither.
 
 The server serves the same tools, with MCP annotations (`readOnlyHint`, `destructiveHint`), and sends the client a short guide as its instructions: call `status` first, resolve names with `lookup_entity`, walk with `traverse` / `graph_walk`, use `cypher_query` last for aggregates, cite `[n]`, and run `check_citations` before replying. When it serves the write tools, the guide adds the ingestion steps above, starting with asking the user for their ontology. Results over 40,000 characters are shortened (longest lists first) and marked `truncated`.
 

@@ -16,14 +16,25 @@ from graphrag_sdk.tools.errors import ToolError
 SUPPORTED_SUFFIXES: tuple[str, ...] = (".txt", ".md", ".markdown", ".rst", ".pdf")
 #: Most files one ingest call accepts.
 MAX_FILES_PER_CALL = 50
+#: Most folder entries one listing walks; a bigger tree needs a narrower pattern.
+MAX_WALK_ENTRIES = 100_000
 _GLOB_CHARS = frozenset("*?[")
 
 
 def resolve_root(root: str | os.PathLike[str]) -> Path:
-    """``root`` as an absolute, symlink-free directory path."""
+    """``root`` as an absolute, symlink-free directory path.
+
+    The filesystem root and the home folder are refused: an agent could then
+    read every document of the machine or the user.
+    """
     path = Path(root).expanduser().resolve()
     if not path.is_dir():
         raise ValueError(f"files_root {str(root)!r} is not a directory")
+    if path == Path(path.anchor) or path == Path.home().resolve():
+        raise ValueError(
+            f"files_root {str(root)!r} is the filesystem root or the home folder; "
+            "choose the folder that holds the documents"
+        )
     return path
 
 
@@ -55,15 +66,40 @@ def _supported(name: str) -> bool:
     return name.lower().endswith(SUPPORTED_SUFFIXES)
 
 
-def list_files(root: Path, pattern: str = "**/*") -> list[str]:
+def _walk_start(root: Path, pattern: str) -> Path:
+    """The deepest folder named literally at the start of ``pattern``."""
+    start = root
+    for part in PurePosixPath(pattern).parts[:-1]:
+        if _GLOB_CHARS & set(part) or part.startswith("."):
+            break
+        nxt = start / part
+        if not nxt.is_dir() or nxt.is_symlink():
+            break
+        start = nxt
+    return start
+
+
+def list_files(
+    root: Path, pattern: str = "**/*", *, max_entries: int = MAX_WALK_ENTRIES
+) -> list[str]:
     """Supported files under ``root`` matching ``pattern``, as sorted relative paths.
 
     Hidden files and folders are skipped, folder symlinks are not followed
-    and a file symlink pointing outside the root is left out.
+    and a file symlink pointing outside the root is left out. The walk
+    starts at the folder the pattern names (``reports/**/*.pdf`` walks only
+    ``reports``) and stops with a ToolError after ``max_entries`` entries.
+    Blocking: call it from a worker thread in async code.
     """
     pattern = _check_relative(pattern)
     found: list[str] = []
-    for folder, dirs, names in os.walk(root, followlinks=False):
+    seen = 0
+    for folder, dirs, names in os.walk(_walk_start(root, pattern), followlinks=False):
+        seen += len(dirs) + len(names)
+        if seen > max_entries:
+            raise ToolError(
+                f"The files root holds more than {max_entries} entries under {pattern!r}.",
+                hint="Narrow the pattern to a folder, e.g. 'reports/**/*.pdf'.",
+            )
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         base = Path(folder)
         for name in names:
@@ -87,7 +123,9 @@ def resolve_files(
     seen: set[str] = set()
     for entry in entries:
         text = _check_relative(entry)
-        if _GLOB_CHARS & set(text):
+        # A file whose name has '[' or '*' in it is that file, not a glob.
+        literal = (root / text).is_file() and _inside(root, root / text)
+        if _GLOB_CHARS & set(text) and not literal:
             matches = list_files(root, text)
             if not matches:
                 raise ToolError(

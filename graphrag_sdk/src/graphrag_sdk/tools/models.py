@@ -644,6 +644,9 @@ class IngestResult(ToolResult):
     """
 
     document_id: str | None = None
+    status: Literal["ingested", "unchanged", "reextracted"] | None = Field(
+        default=None, description="For text: whether it was extracted, or already stored as is."
+    )
     chunks_indexed: int = 0
     nodes_created: int = 0
     relationships_created: int = 0
@@ -659,7 +662,13 @@ class IngestResult(ToolResult):
             f"{self.relationships_created} relations"
         )
         if self.document_id is not None:
-            lines = [f"Stored document '{_clean(self.document_id)}' ({totals})."]
+            doc = _clean(self.document_id)
+            if self.status == "unchanged":
+                lines = [f"Document '{doc}' is already stored unchanged; nothing was extracted."]
+            elif self.status == "reextracted":
+                lines = [f"Re-extracted document '{doc}' ({totals})."]
+            else:
+                lines = [f"Stored document '{doc}' ({totals})."]
         else:
             counts: dict[str, int] = {}
             for doc in self.documents:

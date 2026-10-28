@@ -1,6 +1,6 @@
 # GraphRAG SDK — MCP server CLI
 # Usage:
-#   python -m graphrag_sdk.mcp --transport stdio
+#   python -m graphrag_sdk.mcp --transport stdio --files-root ./docs
 #   GRAPHRAG_MCP_TOKEN=... python -m graphrag_sdk.mcp --transport sse --host 0.0.0.0
 #
 # Connection and model are read from environment variables / CLI flags so
@@ -64,8 +64,8 @@ def main() -> None:
         help=(
             "Folder the agent may read and ingest files from (sample_docs, "
             "ingest(files=...)); nothing outside it is read. Default: "
-            "$GRAPHRAG_MCP_FILES_ROOT, else the working directory for stdio and "
-            "none (text ingestion only) for sse."
+            "$GRAPHRAG_MCP_FILES_ROOT, else none (text ingestion only). The "
+            "filesystem root and the home folder are refused."
         ),
     )
     parser.add_argument(
@@ -94,10 +94,13 @@ def main() -> None:
             raise SystemExit(str(exc)) from exc
 
     files_root = args.files_root
-    if files_root is None and args.transport == "stdio" and not args.read_only:
-        files_root = os.getcwd()
-    if files_root is not None and not os.path.isdir(files_root):
-        raise SystemExit(f"--files-root {files_root!r} is not a directory.")
+    if files_root is not None:
+        from graphrag_sdk.tools.files import resolve_root
+
+        try:
+            resolve_root(files_root)
+        except ValueError as exc:
+            raise SystemExit(f"--files-root: {exc}.") from exc
 
     rag = _build_rag()
     server = GraphRAGMCPServer(

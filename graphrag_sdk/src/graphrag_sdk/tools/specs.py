@@ -235,15 +235,20 @@ class IngestInput(_Input):
     )
     reextract: bool = Field(
         default=False,
-        description="Re-extract files whose content is unchanged (after extending the ontology).",
+        description=(
+            "Re-extract content that is unchanged (after extending the ontology); "
+            "for text, pass the document_id it was stored under."
+        ),
     )
 
     @model_validator(mode="after")
     def _one_source(self) -> IngestInput:
         if (self.text is None) == (self.files is None):
             raise ValueError("pass exactly one of text or files")
-        if self.text is not None and (self.plan is not None or self.reextract):
-            raise ValueError("plan and reextract apply to files only")
+        if self.text is not None and self.plan is not None:
+            raise ValueError("plan applies to files only")
+        if self.text is not None and self.reextract and self.document_id is None:
+            raise ValueError("reextract on text needs the document_id it was stored under")
         if self.files is not None and self.document_id is not None:
             raise ValueError("document_id applies to text only; a file's id is its path")
         return self

@@ -23,6 +23,7 @@ from graphrag_sdk.core.models import (
     IngestionResult,
     Ontology,
     Relation,
+    UpdateResult,
 )
 from graphrag_sdk.ingestion import ingestion_planner as planner_mod
 from graphrag_sdk.ingestion.ingestion_planner import (
@@ -64,6 +65,28 @@ def corpus(tmp_path):
 
 
 class TestFiles:
+    def test_root_and_home_are_refused(self, monkeypatch, tmp_path):
+        with pytest.raises(ValueError, match="filesystem root or the home folder"):
+            fs.resolve_root("/")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        with pytest.raises(ValueError, match="filesystem root or the home folder"):
+            fs.resolve_root("~")
+        (tmp_path / "docs").mkdir()
+        assert fs.resolve_root(tmp_path / "docs") == (tmp_path / "docs").resolve()
+
+    def test_listing_is_capped(self, corpus):
+        root = fs.resolve_root(corpus)
+        with pytest.raises(ToolError, match="more than 3 entries"):
+            fs.list_files(root, max_entries=3)
+        # A pattern naming a folder walks only that folder.
+        assert fs.list_files(root, "notes/*.md", max_entries=3) == ["notes/a.md", "notes/b.md"]
+
+    def test_literal_names_with_glob_characters(self, corpus):
+        root = fs.resolve_root(corpus)
+        (corpus / "notes" / "draft [v2].md").write_text("Draft.")
+        assert fs.resolve_files(root, ["notes/draft [v2].md"]) == ["notes/draft [v2].md"]
+
     def test_resolve_root(self, corpus, tmp_path):
         assert fs.resolve_root(corpus) == corpus.resolve()
         with pytest.raises(ValueError, match="not a directory"):
@@ -331,6 +354,7 @@ class FakeRAG:
         self.pruned: dict[str, dict] = {}  # file name -> drop report
         self.fail: set[str] = set()
         self.unchanged: set[str] = set()
+        self.new: set[str] = set()  # update() finds no stored document
         self.reject_ontology: str | None = None
 
     # ontology
@@ -411,11 +435,31 @@ class FakeRAG:
             )
         return out
 
-    async def update(self, source, *, force, if_missing, chunker, extractor, resolver, ctx):
-        self.calls.append(("update", (source, force, if_missing)))
-        if os.path.basename(source) in self.fail:
+    async def update(
+        self,
+        source=None,
+        *,
+        text=None,
+        document_id=None,
+        force,
+        if_missing,
+        chunker=None,
+        extractor=None,
+        resolver=None,
+        ctx,
+    ):
+        key = source if source is not None else document_id
+        self.calls.append(("update", (key, force, if_missing)))
+        if os.path.basename(key) in self.fail:
             raise RuntimeError("update failed")
-        return self._result(source, None)
+        base = self._result(key, None)
+        if text is not None:
+            base.metadata["pruned"] = self.pruned.get("text", {})
+        return UpdateResult(
+            **base.model_dump(exclude={"metadata"}),
+            metadata=base.metadata,
+            replaced_existing=os.path.basename(key) not in self.new,
+        )
 
     async def finalize(self) -> FinalizeResult:
         self.finalized += 1
@@ -671,6 +715,35 @@ class TestIngestFiles:
         result = await toolkit(rag, corpus).ingest(files=["notes/*"], reextract=True)
         assert [d.status for d in result.documents] == ["failed", "reextracted"]
 
+    async def test_reextract_of_a_new_file_is_an_ingest(self, corpus, fake_strategies):
+        rag = FakeRAG()
+        rag.new.add("b.md")
+        result = await toolkit(rag, corpus).ingest(files=["notes/*"], reextract=True)
+        assert [d.status for d in result.documents] == ["reextracted", "ingested"]
+
+    async def test_unchanged_text_says_so(self):
+        rag = FakeRAG()
+        rag.unchanged.add("d1")
+        result = await toolkit(rag).ingest("Aspirin treats headache.", document_id="d1")
+        assert result.status == "unchanged"
+        assert "reextract=true" in result.hint and "'d1'" in result.hint
+        assert "already stored unchanged" in result.to_llm_text()
+
+    async def test_text_reextract_updates_in_place(self):
+        rag = FakeRAG()
+        rag.pruned["text"] = {"entities": {"Gene": 1}}
+        tk = toolkit(rag)
+        result = await tk.call(
+            "ingest", {"text": "Aspirin treats headache.", "document_id": "d1", "reextract": True}
+        )
+        assert rag.calls == [("update", ("d1", True, "ingest"))]
+        assert result.status == "reextracted" and result.document_id == "d1"
+        assert "ingest(text=..., document_id='d1', reextract=true)" in result.hint
+        with pytest.raises(ToolError, match="document_id"):
+            await tk.call("ingest", {"text": "Aspirin.", "reextract": True})
+        with pytest.raises(ToolError, match="plan applies to files only"):
+            await tk.call("ingest", {"text": "Aspirin.", "plan": [{"chunker": "fixed"}]})
+
     async def test_on_write_policy_finalizes_once_per_call(self, corpus):
         rag = FakeRAG()
         result = await toolkit(rag, corpus, finalize_policy="on_write").ingest(files=["**/*"])
@@ -701,6 +774,33 @@ class TestGuide:
         assert INGEST_GUIDE.index("set_ontology") < INGEST_GUIDE.index("sample_docs")
         for step in ("next_offset", "ONE ontology", "at most 50", "finalize once", "reextract"):
             assert step in INGEST_GUIDE
+
+    def test_cli_reads_files_only_from_an_explicit_root(self, monkeypatch, corpus):
+        pytest.importorskip("mcp")
+        import sys
+
+        import graphrag_sdk.mcp.server as server_mod
+        from graphrag_sdk.mcp import __main__ as cli
+
+        seen: list[Any] = []
+
+        class Server:
+            def __init__(self, rag, **kw):
+                seen.append(kw["files_root"])
+
+        monkeypatch.setattr(server_mod, "GraphRAGMCPServer", Server)
+        monkeypatch.setattr(cli, "_build_rag", lambda: None)
+        monkeypatch.setattr(cli.asyncio, "run", lambda coro: coro.close())
+        monkeypatch.delenv("GRAPHRAG_MCP_FILES_ROOT", raising=False)
+        monkeypatch.chdir(corpus)
+        monkeypatch.setattr(sys, "argv", ["graphrag-mcp"])
+        cli.main()
+        monkeypatch.setattr(sys, "argv", ["graphrag-mcp", "--files-root", str(corpus)])
+        cli.main()
+        assert seen == [None, str(corpus)]
+        monkeypatch.setattr(sys, "argv", ["graphrag-mcp", "--files-root", "/"])
+        with pytest.raises(SystemExit, match="filesystem root"):
+            cli.main()
 
     def test_server_passes_files_root_and_picks_the_guide(self, corpus):
         pytest.importorskip("mcp")
