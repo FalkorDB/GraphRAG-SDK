@@ -1,4 +1,4 @@
-"""Tests for retrieval/graph_walk.py — DynamicGraphWalk (Phase 3.3)."""
+"""Tests for retrieval/graph_walk.py — DynamicGraphWalk."""
 
 from __future__ import annotations
 

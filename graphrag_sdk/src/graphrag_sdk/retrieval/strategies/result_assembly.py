@@ -178,7 +178,7 @@ def assemble_raw_result(
     question the rows answer is what makes it usable.
 
     The ``max_*`` caps bound how much of each section reaches the LLM;
-    callers (e.g. the agentic flow) may raise them per query.
+    callers may raise them per query.
     """
     records: list[dict[str, Any]] = []
 
