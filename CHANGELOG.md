@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Graph tools for your own agent, and an MCP server (#274)
+
+- **`GraphRAGToolkit` gives an agent you already run read-only tools on the
+  graph**: `status`, `get_ontology`, `lookup_entity`, `traverse`, `graph_walk`,
+  `cypher_query`, `retrieve`, `run_skill` and `check_citations`, plus `ingest`
+  and `finalize` for agents allowed to write: wrap a `GraphRAG` in
+  `GraphRAGToolkit(rag)`.
+  The SDK runs no agent loop: your agent plans, calls the tools and writes
+  the answer. Every tool validates its input with a strict schema, runs
+  bounded (row, depth, expansion and time limits), and returns a typed result
+  whose `to_llm_text()` stays under a fixed size.
+- **Every piece of evidence is numbered.** Entities, edges, rows, passages and
+  skill findings carry an `[n]` from a per-session ledger
+  (`toolkit.new_session()`), and `check_citations(answer)` reports which `[n]`
+  in a draft answer are real and whether the answer cites anything at all.
+- **`cypher_query` only reads.** A guard parses the query and allows a single
+  `MATCH`/`OPTIONAL MATCH`/`UNWIND`/`WITH`/`RETURN` statement with no writes and
+  no procedure calls, injects a row limit and a timeout, and rejects labels,
+  relation types and properties the graph does not have, with a hint listing
+  the ones it does.
+- **Five built-in skills** run through `run_skill`: `impact_analysis`,
+  `entity_comparison`, `contradiction_detection`, `gap_analysis` and
+  `timeline_reconstruction`.
+- **`graphrag-mcp` serves the same tools over MCP** (`pip install
+  "graphrag-sdk[mcp]"`) to Claude Code, Cursor and any other MCP client, on
+  stdio or SSE with a bearer token. `--read-only` (or
+  `GRAPHRAG_MCP_READ_ONLY=1`) hides the write tools. The server sends a usage
+  guide as its instructions, keeps one evidence ledger per client connection,
+  and works with `mcp` 1.x and 2.x.
+- New example `graphrag_sdk/examples/12_agent_toolkit.py` and docs page
+  *Agentic Retrieval*.
+
 #### Structured ingestion — tables declared on the ontology, one node for a row and its mention
 
 - **`Ontology(tables=[TableMapping(...)])`** declares what a table's columns mean,

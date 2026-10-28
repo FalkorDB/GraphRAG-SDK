@@ -1,10 +1,12 @@
 """
 GraphRAG SDK -- Agent Toolkit
 =============================
-The framework-neutral agent surface: wrap a GraphRAG in GraphRAGToolkit,
-store a few facts, then exercise every tool an agent would call --
-graph_schema, graph_search, graph_entity, graph_answer, cypher_read --
-and print the machine-readable tool_specs() adapters consume.
+The graph tools your own agent calls: wrap a GraphRAG in GraphRAGToolkit,
+ingest a few facts, then run each read tool an agent would use -- status,
+lookup_entity, traverse, graph_walk, cypher_query, retrieve, run_skill --
+cite the evidence numbers they return, and check the citations.
+
+The same tools are served to MCP clients by ``graphrag-mcp``.
 
 Prerequisites:
     docker run -p 6379:6379 falkordb/falkordb
@@ -19,7 +21,7 @@ import json
 import os
 
 from graphrag_sdk import ConnectionConfig, GraphRAG, LiteLLM, LiteLLMEmbedder
-from graphrag_sdk.tools import GraphRAGToolkit, ReadOnlyViolation
+from graphrag_sdk.tools import GraphRAGToolkit, ToolError
 
 if not os.getenv("OPENAI_API_KEY"):
     raise SystemExit("Set OPENAI_API_KEY before running this example.")
@@ -41,44 +43,54 @@ async def main():
         embedder=embedder,
         embedding_dimension=256,
     )
-    toolkit = GraphRAGToolkit(rag, finalize_policy="manual")
+    toolkit = GraphRAGToolkit(rag)
 
     try:
-        # 1. Write path: remember facts, then flush once (finalize is O(graph size))
+        # 1. Write path: ingest facts, then finalize once (its cost grows with the graph)
         for i, fact in enumerate(FACTS):
-            stored = await toolkit.remember(fact, document_id=f"fact-{i}")
-            print(stored.to_llm_text(), "\n")
-        await toolkit.flush()
+            await toolkit.ingest(fact, document_id=f"fact-{i}")
+        await toolkit.finalize()
 
-        # 2. graph_schema -- what does the graph contain?
-        schema = await toolkit.schema()
-        print("=== graph_schema ===\n" + schema.to_llm_text(max_chars=800), "\n")
+        # 2. Read tools, one session (one evidence numbering) per conversation
+        session = toolkit.new_session()
+        status = await session.status()
+        print("=== status ===\n" + status.to_llm_text(max_chars=800), "\n")
 
-        # 3. graph_search -- typed retrieval, no generation (the default agent mode)
-        search = await toolkit.search("Who works at Acme Corp?", top_k=5)
-        print("=== graph_search ===\n" + search.to_llm_text(max_chars=1200), "\n")
+        names = await session.lookup_entity("Alice")
+        alice = names.matches[0].name
+        print(f"=== lookup_entity -> {alice} ===\n")
 
-        # 4. graph_entity -- one entity's card
-        entity = await toolkit.entity("Alice Johnson", hops=2)
-        print("=== graph_entity ===\n" + entity.to_llm_text(max_chars=800), "\n")
+        walk = await session.traverse(alice, max_depth=2)
+        print("=== traverse ===\n" + walk.to_llm_text(max_chars=1200), "\n")
 
-        # 5. graph_answer -- full RAG with citations
-        answer = await toolkit.answer("Who is the CTO of Acme Corp?")
-        print("=== graph_answer ===\n" + answer.to_llm_text(max_chars=800), "\n")
+        paths = await session.graph_walk(alice, goal="Berlin")
+        print("=== graph_walk ===\n" + paths.to_llm_text(max_chars=800), "\n")
 
-        # 6. cypher_read -- guarded read-only escape hatch
-        rows = await toolkit.cypher_read(
-            "MATCH (e:__Entity__) RETURN e.name ORDER BY e.name LIMIT 5"
+        rows = await session.cypher_query(
+            "MATCH ()-[r:RELATES]->() RETURN r.rel_type AS relation, count(*) AS edges "
+            "ORDER BY edges DESC"
         )
-        print("=== cypher_read ===\n" + rows.to_llm_text(max_chars=600), "\n")
+        print("=== cypher_query ===\n" + rows.to_llm_text(max_chars=600), "\n")
 
-        # ... and the guard rejecting a write attempt:
+        found = await session.retrieve("Who is the CTO of Acme Corp?", top_k=5)
+        print("=== retrieve ===\n" + found.to_llm_text(max_chars=1200), "\n")
+
+        impact = await session.run_skill("impact_analysis", {"entity": "Acme Corp"})
+        print("=== run_skill ===\n" + impact.to_llm_text(max_chars=800), "\n")
+
+        # 3. The guard rejects writes, and errors carry a hint for the agent
         try:
-            await toolkit.cypher_read("CREATE (n:Hack) RETURN n")
-        except ReadOnlyViolation as exc:
-            print(f"Guard blocked write: {exc} (token={exc.offending_token})\n")
+            await session.cypher_query("CREATE (n:Hack) RETURN n")
+        except ToolError as exc:
+            print(f"Guard: {exc}\n")
 
-        # 7. tool_specs() -- what adapters (pydantic-ai, MCP, ...) consume
+        # 4. Your agent drafts an answer citing [n]; check it before replying
+        edge = walk.edges[0]
+        draft = f"{edge.source} {edge.type} {edge.target} [{edge.n}]. Also [999]."
+        check = await session.check_citations(draft)
+        print(f"grounded={check.grounded} cited={check.cited} invalid={check.invalid}\n")
+
+        # 5. tool_specs() -- what agent frameworks and the MCP server consume
         spec = toolkit.tool_specs()[0]
         print("=== tool_specs()[0] ===")
         print(json.dumps(spec.model_dump(), indent=2)[:600], "...")
