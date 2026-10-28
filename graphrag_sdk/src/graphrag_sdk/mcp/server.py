@@ -37,21 +37,25 @@ The tools read the graph (only ingest and finalize write) and number every
 piece of evidence they return.
 
 To answer a question:
-1. status, once: what the graph holds (entity labels, relation types, counts).
+1. retrieve first, with the user's question word for word (do not shorten
+   it to keywords) and top_k 8 or more: hybrid search returning entities,
+   relations and the source passages that usually hold the answer.
 2. lookup_entity: turn names in the question into exact entity names and ids.
 3. traverse (all neighbours, or one relation path with via) or graph_walk
    (strongest paths; how A connects to B) to follow relations from them.
-4. retrieve: hybrid search when you do not know where to start, or to read
-   source passages.
+4. status or get_ontology: what the graph holds (entity labels, relation
+   types, counts), for questions about the graph itself.
 5. run_skill: built-in analyses (compare entities, impact, contradictions,
    gaps, timeline).
 6. cypher_query last, for counts, sums, sorting and property filters. When a
    result says truncated: true, do not count its rows; aggregate in Cypher.
 
-Cite evidence as [n] after each claim, using only numbers the tools returned.
-Call check_citations on your draft and fix what it reports before replying.
-If the evidence does not answer the question, say so. When a call fails,
-read its hint: it names the tool to call or the exact names to use.
+Answer what was asked, briefly, and leave out evidence that does not answer
+it. Cite evidence as [n] after each claim, using only numbers the tools
+returned. Always call check_citations on the final draft and fix what it
+reports before replying. If the evidence does not answer the question, say
+so. When a call fails, read its hint: it names the tool to call or the exact
+names to use.
 """
 
 #: Longest JSON text returned for one tool call.

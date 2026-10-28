@@ -104,7 +104,9 @@ class CypherQueryInput(_Input):
 class RetrieveInput(_Input):
     """Arguments for retrieve."""
 
-    question: str = Field(min_length=1, max_length=2000, description="The question to search for.")
+    question: str = Field(
+        min_length=1, max_length=2000, description="The user's question, word for word."
+    )
     top_k: int = Field(default=8, ge=1, le=25, description="Entities and passages to return.")
     expand_hops: int = Field(
         default=1, ge=1, le=3, description="Relation hops to expand around found entities."
@@ -217,8 +219,9 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         RetrieveInput,
         "Hybrid search (vector + full-text + graph) for a question: the most relevant "
         "entities, relations, facts and source passages. Use it for open questions or "
-        "when you do not know which entity to start from. Needs the embedding model "
-        "the graph was built with." + _CITE,
+        "when you do not know which entity to start from. Pass the user's question word "
+        "for word; keywords find less. Needs the embedding model the graph was built "
+        "with." + _CITE,
     ),
     ToolDef(
         "run_skill",
