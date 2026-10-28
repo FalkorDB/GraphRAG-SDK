@@ -309,7 +309,7 @@ class GraphRAGToolkit:
             return cached[2]
         ontology: Ontology | None = None
         try:
-            ontology = await self._rag.get_ontology()
+            ontology = await self._declared_ontology()
         except Exception:
             ontology = None
         schema = await introspect_schema(self._store, ontology)
