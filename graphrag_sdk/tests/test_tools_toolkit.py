@@ -1,300 +1,524 @@
-"""GraphRAGToolkit unit tests (stubbed GraphRAG — no server, no LLM)."""
+"""Unit tests for GraphRAGToolkit: dispatch, gates, sessions, evidence and
+tool behaviour over a fake GraphRAG. The same tools run against a real
+FalkorDB in test_tools_integration.py."""
 
 from __future__ import annotations
 
-import inspect
-import subprocess
-import sys
-from unittest.mock import AsyncMock, MagicMock
+import asyncio
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from graphrag_sdk.core.connection import ConnectionConfig
-from graphrag_sdk.core.exceptions import ConfigError, ReadOnlyViolation
+from graphrag_sdk.core.exceptions import ConfigError, DatabaseError, ReadOnlyViolation
 from graphrag_sdk.core.models import (
     DocumentInfo,
     FinalizeResult,
     IngestionResult,
-    RagResult,
     RetrieverResult,
+    ScoredPath,
 )
-from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
-from graphrag_sdk.tools import GraphRAGToolkit, RememberResult
-from graphrag_sdk.tools.specs import _TOOL_REGISTRY
+from graphrag_sdk.tools import TOOL_NAMES, GraphRAGToolkit, ToolError
+from graphrag_sdk.tools import graph_ops as ops
+from graphrag_sdk.tools.cypher_guard import GraphSchema
 
 
-def make_stub_rag() -> MagicMock:
-    rag = MagicMock()
-    rag.ingest = AsyncMock(
-        return_value=IngestionResult(
-            document_info=DocumentInfo(uid="doc-1"),
-            nodes_created=2,
-            relationships_created=1,
+class FakeResult:
+    def __init__(self, rows: list[list[Any]], header: list[str] | None = None):
+        self.result_set = rows
+        self.header = [[1, h] for h in (header or [])]
+
+
+class FakeStore:
+    def __init__(self, *, rows=None, header=None, error: Exception | None = None):
+        self.rows = rows or []
+        self.header = header or []
+        self.error = error
+        self.queries: list[tuple[str, dict]] = []
+        self.neighbors: dict[str, list[tuple[str, float, str]]] = {}
+
+    async def query_raw(self, cypher: str, params: dict | None = None, **kwargs: Any):
+        self.queries.append((cypher, params or {}))
+        if self.error is not None:
+            raise self.error
+        return FakeResult(self.rows, self.header)
+
+    async def pagerank(self, **kwargs: Any):
+        return {}
+
+    async def weighted_neighbors(self, node_id: str, *, limit: int = 50):
+        return self.neighbors.get(node_id, [])
+
+
+class FakeRAG:
+    def __init__(self, store: FakeStore | None = None):
+        self._graph_store = store or FakeStore()
+        self._conn = SimpleNamespace(topology_version=1)
+        self._vector_store = None
+        self._global_ontology = None
+        self.embedder = None
+        self.llm = None
+        self.ingested: list[dict] = []
+        self.finalized = 0
+        self.closed = False
+        self.retrieve_result = RetrieverResult(items=[], metadata={})
+
+    async def get_ontology(self):
+        raise RuntimeError("no ontology in this fake")
+
+    async def ingest(self, **kwargs: Any) -> IngestionResult:
+        self.ingested.append(kwargs)
+        return IngestionResult(
+            document_info=DocumentInfo(uid=kwargs.get("document_id") or "doc-1"),
+            nodes_created=3,
+            relationships_created=2,
             chunks_indexed=1,
         )
-    )
-    rag.finalize = AsyncMock(return_value=FinalizeResult())
-    rag.close = AsyncMock()
-    return rag
+
+    async def finalize(self) -> FinalizeResult:
+        self.finalized += 1
+        return FinalizeResult(entities_deduplicated=1, entities_embedded=2)
+
+    async def retrieve(self, question: str, **kwargs: Any) -> RetrieverResult:
+        return self.retrieve_result
+
+    async def close(self) -> None:
+        self.closed = True
 
 
-def test_ctor_validates_policy_and_include():
-    rag = make_stub_rag()
-    with pytest.raises(ValueError, match="finalize_policy"):
-        GraphRAGToolkit(rag, finalize_policy="sometimes")  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="graph_serch"):
-        GraphRAGToolkit(rag, include=["graph_serch"])
+SCHEMA = GraphSchema(
+    labels=["Person", "Company", "Chunk", "Document"],
+    relationship_types=["RELATES", "MENTIONED_IN", "PART_OF"],
+    property_keys=["id", "name", "description", "rel_type", "fact", "text"],
+    semantic_relations=["WORKS_AT", "FOUNDED"],
+)
 
 
-async def test_remember_manual_policy_defers_finalize():
-    rag = make_stub_rag()
-    tk = GraphRAGToolkit(rag, finalize_policy="manual")
-    result = await tk.remember("Alice works at Acme.", document_id="doc-1")
-    assert isinstance(result, RememberResult)
-    assert result.document_id == "doc-1" and result.finalized is False
-    rag.finalize.assert_not_awaited()
-    rag.ingest.assert_awaited_once()
-    assert rag.ingest.await_args.kwargs["text"] == "Alice works at Acme."
-    await tk.flush()
-    rag.finalize.assert_awaited_once()
+@pytest.fixture
+def store() -> FakeStore:
+    return FakeStore()
 
 
-async def test_remember_on_write_policy_finalizes():
-    rag = make_stub_rag()
-    tk = GraphRAGToolkit(rag, finalize_policy="on_write")
-    result = await tk.remember("x")
-    assert result.finalized is True
-    rag.finalize.assert_awaited_once()
-    await tk.flush()  # documented no-op
-    rag.finalize.assert_awaited_once()
+@pytest.fixture
+def rag(store: FakeStore) -> FakeRAG:
+    return FakeRAG(store)
 
 
-async def test_never_policy_flush_raises():
-    tk = GraphRAGToolkit(make_stub_rag(), finalize_policy="never")
-    with pytest.raises(ConfigError):
-        await tk.flush()
+@pytest.fixture
+def toolkit(rag: FakeRAG, monkeypatch: pytest.MonkeyPatch) -> GraphRAGToolkit:
+    tk = GraphRAGToolkit(rag)  # type: ignore[arg-type]
+
+    async def schema() -> GraphSchema:
+        return SCHEMA
+
+    monkeypatch.setattr(tk, "_schema", schema)
+    return tk
 
 
-async def test_read_only_blocks_writes():
-    rag = make_stub_rag()
-    tk = GraphRAGToolkit(rag, read_only=True)
-    with pytest.raises(ReadOnlyViolation):
-        await tk.remember("x")
-    with pytest.raises(ReadOnlyViolation):
-        await tk.flush()
-    with pytest.raises(ReadOnlyViolation):
-        await tk.call("graph_remember", {"text": "x"})
-    rag.ingest.assert_not_awaited()
-    assert "graph_remember" not in [s.name for s in tk.tool_specs()]
+# ── Construction, specs, dispatch ──────────────────────────────────
 
 
-async def test_call_dispatch_and_validation():
-    rag = make_stub_rag()
-    tk = GraphRAGToolkit(rag)
-    result = await tk.call("graph_remember", {"text": "hi", "document_id": "d"})
-    assert isinstance(result, RememberResult)
-    with pytest.raises(ValueError, match="Unknown tool"):
-        await tk.call("nope", {})
-    with pytest.raises(Exception):  # pydantic ValidationError on extra arg
-        await tk.call("graph_remember", {"text": "hi", "bogus": 1})
+class TestSpecsAndDispatch:
+    def test_all_tools_advertised(self, toolkit: GraphRAGToolkit):
+        assert [s.name for s in toolkit.tool_specs()] == list(TOOL_NAMES)
+        assert len(TOOL_NAMES) == 11
+
+    def test_read_only_drops_writes(self, rag: FakeRAG):
+        tk = GraphRAGToolkit(rag, read_only=True)  # type: ignore[arg-type]
+        names = [s.name for s in tk.tool_specs()]
+        assert "ingest" not in names and "finalize" not in names
+        assert "cypher_query" in names
+
+    def test_finalize_only_advertised_when_manual(self, rag: FakeRAG):
+        for policy in ("on_write", "never"):
+            tk = GraphRAGToolkit(rag, finalize_policy=policy)  # type: ignore[arg-type]
+            assert "finalize" not in [s.name for s in tk.tool_specs()]
+
+    def test_include_and_validation(self, rag: FakeRAG):
+        tk = GraphRAGToolkit(rag, include=["status", "lookup_entity"])  # type: ignore[arg-type]
+        assert [s.name for s in tk.tool_specs()] == ["status", "lookup_entity"]
+        with pytest.raises(ValueError, match="Unknown tool names"):
+            GraphRAGToolkit(rag, include=["status", "graph_search"])  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="finalize_policy"):
+            GraphRAGToolkit(rag, finalize_policy="always")  # type: ignore[arg-type]
+
+    async def test_call_unknown_tool(self, toolkit: GraphRAGToolkit):
+        with pytest.raises(ToolError, match="Unknown tool 'graph_search'") as exc:
+            await toolkit.call("graph_search", {})
+        assert "lookup_entity" in (exc.value.hint or "")
+        assert "Hint:" in str(exc.value)
+
+    async def test_call_disabled_tool(self, rag: FakeRAG):
+        tk = GraphRAGToolkit(rag, include=["status"])  # type: ignore[arg-type]
+        with pytest.raises(ToolError, match="not enabled"):
+            await tk.call("lookup_entity", {"name": "x"})
+
+    async def test_call_write_on_read_only(self, rag: FakeRAG):
+        tk = GraphRAGToolkit(rag, read_only=True)  # type: ignore[arg-type]
+        with pytest.raises(ReadOnlyViolation):
+            await tk.call("ingest", {"text": "hello"})
+        with pytest.raises(ReadOnlyViolation):
+            await tk.ingest("hello")
+        assert rag.ingested == []
+
+    async def test_call_rejects_bad_arguments(self, toolkit: GraphRAGToolkit):
+        with pytest.raises(ToolError, match="bogus: Extra inputs are not permitted"):
+            await toolkit.call("lookup_entity", {"name": "x", "bogus": 1})
+        with pytest.raises(ToolError, match="name"):
+            await toolkit.call("lookup_entity", {})
+        with pytest.raises(ToolError, match="max_rows"):
+            await toolkit.call("cypher_query", {"cypher": "MATCH (n) RETURN n", "max_rows": 101})
+
+    async def test_call_dispatches(self, toolkit: GraphRAGToolkit, monkeypatch):
+        async def find(store, name, *, limit):
+            return [{"id": "e1", "name": name, "label": "Person", "description": ""}]
+
+        monkeypatch.setattr(ops, "find_entities", find)
+        result = await toolkit.call("lookup_entity", {"name": "Alice"})
+        assert result.matches[0].id == "e1"
 
 
-async def test_call_flush_unavailable_under_non_manual_policy():
-    tk = GraphRAGToolkit(make_stub_rag(), finalize_policy="on_write")
-    with pytest.raises(ValueError, match="unavailable"):
-        await tk.call("graph_flush", {})
+# ── Sessions and lifecycle ─────────────────────────────────────────
 
 
-async def test_include_gates_call_and_specs():
-    tk = GraphRAGToolkit(make_stub_rag(), include=["graph_schema"])
-    assert [s.name for s in tk.tool_specs()] == ["graph_schema"]
-    with pytest.raises(ValueError, match="not enabled"):
-        await tk.call("graph_remember", {"text": "x"})
+class TestSessions:
+    async def test_new_session_has_its_own_ledger(self, toolkit: GraphRAGToolkit):
+        toolkit.ledger.add(tool="t", kind="k", content="x")
+        other = toolkit.new_session()
+        assert len(toolkit.ledger.items) == 1
+        assert other.ledger.items == []
+        other.ledger.add(tool="t", kind="k", content="y")
+        assert toolkit.ledger.get(1).content == "x"
+        assert other.ledger.get(1).content == "y"
 
+    async def test_new_session_shares_schema_cache(self, rag: FakeRAG):
+        tk = GraphRAGToolkit(rag)  # type: ignore[arg-type]
+        assert tk.new_session()._shared is tk._shared
 
-def test_signature_matches_input_model():
-    for td in _TOOL_REGISTRY:
-        method = getattr(GraphRAGToolkit, td.method)
-        params = {
-            n: p
-            for n, p in inspect.signature(method).parameters.items()
-            if n not in {"self", "ctx"}
-        }
-        fields = td.input_model.model_fields
-        assert set(params) == set(fields), td.name
-        for pname, param in params.items():
-            field = fields[pname]
-            expected = inspect.Parameter.empty if field.is_required() else field.default
-            assert param.default == expected, f"{td.name}.{pname} default drift"
+    async def test_aclose_only_when_owned(self, rag: FakeRAG):
+        await GraphRAGToolkit(rag).aclose()  # type: ignore[arg-type]
+        assert not rag.closed
+        owner = GraphRAGToolkit(rag, owns_rag=True)  # type: ignore[arg-type]
+        await owner.new_session().aclose()
+        assert not rag.closed
+        async with owner:
+            pass
+        assert rag.closed
 
-
-def test_for_tenant_derives_graph_name_lazily():
-    base = ConnectionConfig(graph_name="app")
-    tk = GraphRAGToolkit.for_tenant(base, "acme", llm=MagicMock(), embedder=MagicMock())
-    assert tk.rag._conn.config.graph_name == "app__acme"
-    assert base.graph_name == "app"  # base untouched
-    with pytest.raises(ValueError, match="tenant_id"):
-        GraphRAGToolkit.for_tenant(base, "bad tenant!", llm=MagicMock(), embedder=MagicMock())
-
-
-async def test_aclose_closes_owned_rag_only():
-    rag = make_stub_rag()
-    tk = GraphRAGToolkit(rag)
-    await tk.aclose()
-    rag.close.assert_not_awaited()
-    owned = GraphRAGToolkit(rag, owns_rag=True)
-    async with owned:
-        pass
-    rag.close.assert_awaited_once()
-
-
-def test_module_imports_cleanly():
-    proc = subprocess.run(
-        [sys.executable, "-c", "import graphrag_sdk.tools"], capture_output=True, text=True
-    )
-    assert proc.returncode == 0, proc.stderr
-
-
-# ── search() / answer() over provenance metadata ─────────────────
-
-
-_PROVENANCE = {
-    "entities": [
-        {"id": "e1", "name": "Alice", "description": "Engineer"},
-        {"id": "e2", "name": "Ghost", "description": ""},
-        {"id": "e3", "name": "Extra", "description": ""},
-    ],
-    "chunks": [
-        {"id": "c1", "text": "Alice works at Acme.", "document_path": "docs/a.md"},
-        {"id": "c2", "text": "Bob leads data.", "document_path": "docs/b.md"},
-        {"id": "c3", "text": "HQ is in Berlin.", "document_path": "docs/c.md"},
-    ],
-    "facts": [f"fact {i}" for i in range(6)],
-    "relationships": ["Alice —[WORKS_AT]→ Acme Corp"],
-}
-
-
-def _rows(rows):
-    result = MagicMock()
-    result.result_set = rows
-    return result
-
-
-def make_search_rag() -> MagicMock:
-    rag = make_stub_rag()
-    rag.retrieve = AsyncMock(
-        return_value=RetrieverResult(items=[], metadata={"provenance": _PROVENANCE})
-    )
-    rag.completion = AsyncMock(
-        return_value=RagResult(
-            answer="Alice and Bob work at Acme.",
-            retriever_result=RetrieverResult(items=[], metadata={"provenance": _PROVENANCE}),
-            metadata={},
+    def test_for_tenant_names_the_graph(self):
+        tk = GraphRAGToolkit.for_tenant(
+            ConnectionConfig(graph_name="kb"),
+            "acme_1",
+            llm=SimpleNamespace(),  # type: ignore[arg-type]
+            embedder=SimpleNamespace(),  # type: ignore[arg-type]
+            read_only=True,
         )
-    )
+        assert tk.rag._conn.config.graph_name == "kb__acme_1"
+        assert tk._owns_rag and tk._read_only and tk._tenant_id == "acme_1"
 
-    async def route(cypher, params=None):
-        if "UNWIND $ids AS eid MATCH (e:__Entity__" in cypher:  # enrichment
-            return _rows(
-                [["e1", "Alice", "Engineer", ["Person", "__Entity__"], {"seniority": "senior"}]]
+    @pytest.mark.parametrize("bad", ["", "a b", "x" * 65, "../g", "a:b"])
+    def test_for_tenant_rejects_bad_ids(self, bad: str):
+        with pytest.raises(ValueError, match="tenant_id"):
+            GraphRAGToolkit.for_tenant(
+                ConnectionConfig(),
+                bad,
+                llm=SimpleNamespace(),  # type: ignore[arg-type]
+                embedder=SimpleNamespace(),  # type: ignore[arg-type]
             )
-        if "r.src_name" in cypher:  # triples expansion
-            return _rows([["Alice", "WORKS_AT", "Acme Corp", "employment", "e9"]])
-        if "PART_OF" in cypher:  # chunk -> document ids
-            return _rows([["c1", "doc-a", "docs/a.md"]])
-        return _rows([])
-
-    rag._graph_store.query_raw = AsyncMock(side_effect=route)
-    return rag
 
 
-async def test_search_tunes_strategy_and_maps_provenance():
-    rag = make_search_rag()
-    tk = GraphRAGToolkit(rag)
-    sr = await tk.search("Who works at Acme?", top_k=2)
-
-    strategy = rag.retrieve.await_args.kwargs["strategy"]
-    assert isinstance(strategy, MultiPathRetrieval)
-    assert strategy._chunk_top_k == 2 and strategy._rel_top_k == 2
-    assert strategy._max_entities == 10  # max(2*top_k, 10)
-
-    # entities: provenance order, capped to top_k, enrichment fallback for e2
-    assert [e.name for e in sr.entities] == ["Alice", "Ghost"]
-    assert sr.entities[0].label == "Person"
-    assert sr.entities[0].properties == {"seniority": "senior"}
-    assert sr.entities[1].label == "" and sr.entities[1].description is None
-
-    assert [c.chunk_id for c in sr.chunks] == ["c1", "c2"]
-    assert sr.chunks[0].document_id == "doc-a"
-    assert sr.chunks[1].document_id == "" and sr.chunks[1].document_path == "docs/b.md"
-    assert [d.document_id for d in sr.documents] == ["doc-a"]
-
-    assert len(sr.facts) == 4  # 2 * top_k
-    assert any(r.type == "WORKS_AT" for r in sr.relations)
+# ── cypher_query ───────────────────────────────────────────────────
 
 
-async def test_search_include_chunks_false_skips_chunk_queries():
-    rag = make_search_rag()
-    tk = GraphRAGToolkit(rag)
-    sr = await tk.search("q", top_k=2, include_chunks=False)
-    assert sr.chunks == [] and sr.documents == []
-    part_of_calls = [
-        c.args[0] for c in rag._graph_store.query_raw.await_args_list if "PART_OF" in c.args[0]
-    ]
-    assert part_of_calls == []
-
-
-async def test_search_expand_hops_controls_frontier_queries():
-    rag = make_search_rag()
-    tk = GraphRAGToolkit(rag)
-    await tk.search("q", top_k=2, expand_hops=2)
-    rel_calls = [
-        c.args[0] for c in rag._graph_store.query_raw.await_args_list if "r.src_name" in c.args[0]
-    ]
-    assert len(rel_calls) == 2
-
-
-async def test_answer_builds_citations_and_entities_touched():
-    rag = make_search_rag()
-    long_text = "X" * 250
-    provenance = {
-        "entities": [
-            {"id": "e1", "name": "Alice"},
-            {"id": "e2", "name": "alice"},  # case-insensitive duplicate
-            {"id": "e3", "name": "Bob"},
+class TestCypherQuery:
+    @pytest.mark.parametrize(
+        "cypher",
+        [
+            "CREATE (n:Person {name: 'x'}) RETURN n",
+            "MATCH (n) DETACH DELETE n",
+            "MATCH (n) SET n.name = 'x' RETURN n",
+            "CALL db.labels()",
+            "MATCH (n) RETURN n; MATCH (m) DELETE m",
+            "MATCH (n) // comment\nMERGE (m) RETURN m",
         ],
-        "chunks": [{"id": "c1", "text": long_text, "document_path": "docs/a.md"}],
-        "facts": [],
-        "relationships": [],
-    }
-    rag.completion = AsyncMock(
-        return_value=RagResult(
-            answer="Alice works at Acme.",
-            retriever_result=RetrieverResult(items=[], metadata={"provenance": provenance}),
-            metadata={},
+    )
+    async def test_writes_rejected_before_the_database(self, rag: FakeRAG, cypher: str):
+        tk = GraphRAGToolkit(rag)  # type: ignore[arg-type]
+        with pytest.raises(ToolError, match="rejected"):
+            await tk.cypher_query(cypher)
+        assert rag._graph_store.queries == []
+
+    async def test_unknown_names_rejected_with_schema_hint(self, toolkit, store):
+        with pytest.raises(ToolError, match="Employee") as exc:
+            await toolkit.cypher_query("MATCH (n:Employee) RETURN n.name")
+        hint = exc.value.hint or ""
+        assert "Person" in hint and "WORKS_AT" in hint
+        assert "Chunk" not in hint.split("Relations")[0]
+        assert store.queries == []
+
+    async def test_rows_are_evidence_and_limit_is_capped(self, toolkit, store):
+        store.rows = [["Alice", 3], ["Bob", 1]]
+        store.header = ["name", "n"]
+        result = await toolkit.cypher_query(
+            "MATCH (p:Person) RETURN p.name AS name, 1 AS n LIMIT 500", max_rows=5
         )
-    )
-    tk = GraphRAGToolkit(rag)
-    ar = await tk.answer("Who is Alice?", top_k=3)
+        assert result.columns == ["name", "n"]
+        assert [r.values for r in result.rows] == [["Alice", 3], ["Bob", 1]]
+        assert [r.n for r in result.rows] == [1, 2]
+        assert not result.truncated and result.row_count == 2
+        cypher, _ = store.queries[-1]
+        assert "LIMIT 6" in cypher and "500" not in cypher
+        assert toolkit.ledger.get(1).tool == "cypher_query"
+        assert '"name": "Alice"' in toolkit.ledger.get(1).content
 
-    assert rag.completion.await_args.kwargs["return_context"] is True
-    strategy = rag.completion.await_args.kwargs["strategy"]
-    assert isinstance(strategy, MultiPathRetrieval) and strategy._chunk_top_k == 3
+    async def test_truncated_when_more_rows_than_max(self, toolkit, store):
+        store.rows = [[i] for i in range(4)]
+        store.header = ["i"]
+        result = await toolkit.cypher_query("MATCH (p:Person) RETURN p.name", max_rows=3)
+        assert result.truncated and result.row_count == 3
+        assert "do not count" in (result.hint or "")
 
-    assert ar.answer == "Alice works at Acme."
-    assert len(ar.citations) == 1
-    citation = ar.citations[0]
-    assert citation.chunk_id == "c1" and citation.document_id == "doc-a"
-    assert len(citation.snippet) == 200 and citation.snippet.endswith("…")
-    assert ar.entities_touched == ["Alice", "Bob"]
-    assert ar.cypher_used is None
+    async def test_untyped_relates_is_allowed(self, toolkit, store):
+        await toolkit.cypher_query("MATCH (a:Person)-[r:RELATES]->(b) RETURN r.rel_type, count(*)")
+        assert store.queries
+
+    async def test_unknown_rel_type_is_rejected(self, toolkit):
+        with pytest.raises(ToolError, match="EMPLOYED_BY"):
+            await toolkit.cypher_query(
+                "MATCH (a)-[r:RELATES {rel_type: 'EMPLOYED_BY'}]->(b) RETURN b.name"
+            )
+
+    async def test_database_errors_become_tool_errors(self, toolkit, store):
+        store.error = DatabaseError("Type mismatch: expected Integer")
+        with pytest.raises(ToolError, match="Type mismatch") as exc:
+            await toolkit.cypher_query("MATCH (p:Person) RETURN p.name")
+        assert "Entity labels" in (exc.value.hint or "")
+
+    async def test_timeouts_become_tool_errors(self, toolkit, store):
+        store.error = asyncio.TimeoutError()
+        with pytest.raises(ToolError, match="timed out") as exc:
+            await toolkit.cypher_query("MATCH (p:Person) RETURN p.name", timeout_ms=100)
+        assert "aggregate" in (exc.value.hint or "")
+
+    async def test_vectors_never_returned(self, toolkit, store):
+        store.rows = [[{"name": "Alice", "embedding": [0.1] * 128}, [0.2] * 128]]
+        store.header = ["p", "v"]
+        result = await toolkit.cypher_query("MATCH (p:Person) RETURN p.name AS p, 1 AS v")
+        text = str(result.rows[0].values)
+        assert "0.1" not in text and "0.2" not in text
+
+    async def test_empty_hint(self, toolkit):
+        result = await toolkit.cypher_query("MATCH (p:Person) RETURN p.name")
+        assert result.rows == [] and "lookup_entity" in (result.hint or "")
 
 
-async def test_answer_degrades_without_provenance():
-    rag = make_search_rag()
-    rag.completion = AsyncMock(
-        return_value=RagResult(answer="ok", retriever_result=None, metadata={})
-    )
-    tk = GraphRAGToolkit(rag)
-    ar = await tk.answer("q")
-    assert ar.answer == "ok" and ar.citations == [] and ar.entities_touched == []
+# ── Other read tools ───────────────────────────────────────────────
+
+
+class TestReadTools:
+    async def test_status_hints_empty_graph(self, toolkit, monkeypatch):
+        async def counts(store):
+            return {"entities": 0, "relations": 0, "documents": 0, "chunks": 0}
+
+        async def schema_counts(store):
+            return {}, {}
+
+        monkeypatch.setattr(ops, "graph_counts", counts)
+        monkeypatch.setattr(ops, "schema_counts", schema_counts)
+        result = await toolkit.status()
+        assert result.entities == 0 and "empty" in (result.hint or "")
+
+    async def test_lookup_entity_is_not_evidence(self, toolkit, monkeypatch):
+        async def find(store, name, *, limit):
+            return []
+
+        monkeypatch.setattr(ops, "find_entities", find)
+        result = await toolkit.lookup_entity("Nobody")
+        assert result.matches == [] and "retrieve" in (result.hint or "")
+        assert toolkit.ledger.items == []
+
+    async def test_lookup_failure_is_a_tool_error(self, toolkit, monkeypatch):
+        async def find(store, name, *, limit):
+            return None
+
+        monkeypatch.setattr(ops, "find_entities", find)
+        with pytest.raises(ToolError, match="lookup failed"):
+            await toolkit.lookup_entity("x")
+
+    async def test_traverse_edges_are_evidence(self, toolkit, monkeypatch):
+        async def resolve(store, ref, deadline):
+            return "a", "Alice"
+
+        async def expand(store, sid, sname, depth, exp, remaining):
+            nodes = [{"id": "c", "name": "Acme", "depth": 1, "relation": "WORKS_AT"}]
+            edges = [
+                {
+                    "source": "Alice",
+                    "source_id": "a",
+                    "relation": "WORKS_AT",
+                    "target": "Acme",
+                    "target_id": "c",
+                    "fact": "Alice joined Acme in 2020",
+                }
+            ]
+            return nodes, edges, "expansion_budget"
+
+        monkeypatch.setattr(ops, "resolve_start", resolve)
+        monkeypatch.setattr(ops, "expand", expand)
+        result = await toolkit.traverse("alice")
+        assert result.start == "Alice" and result.edges[0].n == 1
+        assert result.truncated and "max_expansions" in (result.hint or "")
+        expected = "Alice -[WORKS_AT]-> Acme: Alice joined Acme in 2020"
+        assert toolkit.ledger.get(1).content == expected
+
+    async def test_traverse_via_resolves_case_and_rejects_unknown(self, toolkit, monkeypatch):
+        seen = {}
+
+        async def resolve(store, ref, deadline):
+            return "a", "Alice"
+
+        async def typed_path(store, sid, path, ms):
+            seen["path"] = path
+            return [{"id": "c", "name": "Acme", "depth": 1, "relation": "WORKS_AT"}], "complete"
+
+        monkeypatch.setattr(ops, "resolve_start", resolve)
+        monkeypatch.setattr(ops, "typed_path", typed_path)
+        result = await toolkit.traverse("Alice", via=["works_at"])
+        assert seen["path"] == ["WORKS_AT"] and result.nodes[0].n == 1
+        with pytest.raises(ToolError, match="Unknown relation") as exc:
+            await toolkit.traverse("Alice", via=["EMPLOYS"])
+        assert "WORKS_AT" in (exc.value.hint or "")
+
+    async def test_traverse_unknown_start_is_a_tool_error(self, toolkit, monkeypatch):
+        async def resolve(store, ref, deadline):
+            raise ToolError("No entity is called 'Zed'.", hint="Use lookup_entity.")
+
+        monkeypatch.setattr(ops, "resolve_start", resolve)
+        with pytest.raises(ToolError, match="Zed"):
+            await toolkit.call("traverse", {"start": "Zed"})
+
+    async def test_graph_walk_paths_are_evidence(self, toolkit, monkeypatch):
+        async def resolve(store, ref, deadline):
+            return ref.lower(), ref
+
+        async def names(store, ids):
+            return {"alice": "Alice", "acme": "Acme"}
+
+        async def beam(self, start, goal=None, ctx=None):
+            return [ScoredPath(nodes=["alice", "acme"], edges=["WORKS_AT"], score=0.75)]
+
+        monkeypatch.setattr(ops, "resolve_start", resolve)
+        monkeypatch.setattr(ops, "entity_names", names)
+        monkeypatch.setattr("graphrag_sdk.tools.toolkit.DynamicGraphWalk.beam_search", beam)
+        result = await toolkit.graph_walk("Alice")
+        assert result.paths[0].nodes == ["Alice", "Acme"] and result.paths[0].n == 1
+        assert toolkit.ledger.get(1).content == "Alice -[WORKS_AT]-> Acme"
+
+    async def test_retrieve_numbers_every_item(self, toolkit, rag, monkeypatch):
+        rag.retrieve_result = RetrieverResult(
+            items=[],
+            metadata={
+                "provenance": {
+                    "entities": [{"id": "a", "name": "Alice", "description": "an engineer"}],
+                    "facts": ["Alice works at Acme", " "],
+                    "chunks": [{"id": "c1", "text": "Alice works at Acme.", "document_path": "p"}],
+                }
+            },
+        )
+
+        async def enrich(store, ids):
+            return {
+                "a": {
+                    "id": "a",
+                    "name": "Alice",
+                    "label": "Person",
+                    "description": "an engineer",
+                    "properties": {},
+                }
+            }
+
+        async def triples(store, ids, *, hops, cap):
+            return [{"source": "Alice", "type": "WORKS_AT", "target": "Acme", "fact": ""}]
+
+        async def docs(store, ids):
+            return {"c1": ("d1", "/docs/a.txt")}
+
+        monkeypatch.setattr(ops, "enrich_entities", enrich)
+        monkeypatch.setattr(ops, "expand_triples", triples)
+        monkeypatch.setattr(ops, "chunk_documents", docs)
+        result = await toolkit.retrieve("Where does Alice work?")
+        assert [result.entities[0].n, result.relations[0].n, result.facts[0].n] == [1, 2, 3]
+        assert len(result.facts) == 1
+        assert result.chunks[0].n == 4 and result.chunks[0].document_path == "/docs/a.txt"
+        assert result.documents[0].document_id == "d1"
+        assert toolkit.ledger.get(4).source == "/docs/a.txt"
+
+    async def test_retrieve_nothing_found_hint(self, toolkit, monkeypatch):
+        async def none(*a, **k):
+            return {}
+
+        async def no_triples(*a, **k):
+            return []
+
+        monkeypatch.setattr(ops, "enrich_entities", none)
+        monkeypatch.setattr(ops, "expand_triples", no_triples)
+        monkeypatch.setattr(ops, "chunk_documents", none)
+        result = await toolkit.retrieve("anything")
+        assert "lookup_entity" in (result.hint or "")
+
+
+# ── check_citations ────────────────────────────────────────────────
+
+
+class TestCheckCitations:
+    async def test_cited_invalid_and_missing(self, toolkit: GraphRAGToolkit):
+        toolkit.ledger.add(tool="traverse", kind="relation", content="Alice -[WORKS_AT]-> Acme")
+        ok = await toolkit.check_citations("Alice works at Acme [1].")
+        assert ok.grounded and ok.reason == "cited" and ok.cited == [1]
+        assert ok.sources[0].tool == "traverse" and ok.hint is None
+
+        mixed = await toolkit.check_citations("Alice works at Acme [1][7].")
+        assert mixed.grounded and mixed.invalid == [7] and "[7]" not in mixed.answer
+        assert "removed" in (mixed.hint or "")
+
+        bad = await toolkit.check_citations("Alice works at Acme [9].")
+        assert not bad.grounded and bad.reason == "invalid_citations"
+
+        none = await toolkit.check_citations("Alice works at Acme.")
+        assert not none.grounded and none.reason == "no_citations" and "[n]" in (none.hint or "")
+
+    async def test_sessions_do_not_share_numbers(self, toolkit: GraphRAGToolkit):
+        toolkit.ledger.add(tool="t", kind="k", content="x")
+        other = toolkit.new_session()
+        result = await other.check_citations("x [1]")
+        assert not result.grounded and result.invalid == [1]
+
+
+# ── Write tools ────────────────────────────────────────────────────
+
+
+class TestWriteTools:
+    async def test_ingest_manual_hints_finalize(self, toolkit, rag):
+        result = await toolkit.call("ingest", {"text": "Alice works at Acme.", "document_id": "d"})
+        assert result.document_id == "d" and result.nodes_created == 3
+        assert not result.finalized and "finalize" in (result.hint or "")
+        assert rag.finalized == 0 and rag.ingested[0]["text"] == "Alice works at Acme."
+
+    async def test_ingest_on_write_finalizes(self, rag):
+        tk = GraphRAGToolkit(rag, finalize_policy="on_write")  # type: ignore[arg-type]
+        result = await tk.ingest("x")
+        assert result.finalized and rag.finalized == 1
+        assert (await tk.finalize()).finalized and rag.finalized == 1
+
+    async def test_finalize_reports_counts(self, toolkit, rag):
+        report = await toolkit.call("finalize", {})
+        assert report.finalized and report.entities_deduplicated == 1
+        assert report.entities_embedded == 2 and rag.finalized == 1
+
+    async def test_finalize_never_policy(self, rag):
+        tk = GraphRAGToolkit(rag, finalize_policy="never")  # type: ignore[arg-type]
+        with pytest.raises(ConfigError):
+            await tk.finalize()
+        with pytest.raises(ToolError, match="not enabled"):
+            await tk.call("finalize", {})

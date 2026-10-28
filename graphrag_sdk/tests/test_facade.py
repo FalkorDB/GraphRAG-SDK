@@ -2756,3 +2756,75 @@ class TestDefaultResolver:
         mine = ExactMatchResolution()
         await graphrag.ingest(text="Airbus builds aircraft.", resolver=mine)
         assert captured["resolver"] is mine
+
+
+# ── Retrieval edges: history, per-call ontology, skill arguments ─
+
+
+class TestRetrievalEdges:
+    @pytest.fixture
+    def rag(self, mock_conn):
+        return GraphRAG(
+            connection=mock_conn,
+            llm=MockLLM(responses=["Generated."]),
+            embedder=MockEmbedder(dimension=8),
+            embedding_dimension=8,
+        )
+
+    def test_retrieve_sync_forwards_every_argument(self, rag):
+        import inspect
+
+        seen: dict = {}
+
+        async def fake_retrieve(question, **kwargs):
+            seen.update(question=question, **kwargs)
+            return RetrieverResult(items=[])
+
+        rag.retrieve = fake_retrieve  # type: ignore[method-assign]
+        strategy, reranker, ctx = object(), object(), Context()
+        rag.retrieve_sync("q", strategy=strategy, reranker=reranker, ctx=ctx)
+        assert seen == {"question": "q", "strategy": strategy, "reranker": reranker, "ctx": ctx}
+        # The sync wrapper takes exactly what retrieve() takes (no history:
+        # retrieval strategies never see the conversation).
+        assert inspect.signature(GraphRAG.retrieve_sync).parameters.keys() == (
+            inspect.signature(GraphRAG.retrieve).parameters.keys()
+        )
+        with pytest.raises(TypeError):
+            rag.retrieve_sync("q", history=[{"role": "user", "content": "hi"}])
+
+    async def test_strategies_get_no_history(self, rag):
+        strategy = MagicMock(spec=RetrievalStrategy)
+        strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="ctx")])
+        )
+        with pytest.raises(TypeError):
+            await rag.retrieve("q", strategy=strategy, history=[{"role": "user", "content": "x"}])
+        result = await rag.completion(
+            "q", strategy=strategy, history=[{"role": "user", "content": "x"}]
+        )
+        assert result.answer == "Generated."  # regular completion still generates
+        strategy.search.assert_awaited_once()
+        assert "history" not in strategy.search.await_args.kwargs
+        assert strategy.search.await_args.args[0] == "q"
+
+    async def test_caller_ontology_is_kept(self, rag):
+        from graphrag_sdk.core.models import Ontology
+
+        strategy = MagicMock()
+        strategy._ontology = Ontology()
+        strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
+        await rag.retrieve("q", strategy=strategy)
+        strategy.set_ontology.assert_not_called()
+
+    async def test_per_call_strategy_without_ontology_gets_the_facades(self, rag):
+        strategy = MagicMock()
+        strategy._ontology = None
+        strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
+        await rag.retrieve("q", strategy=strategy)
+        strategy.set_ontology.assert_called_once_with(rag._global_ontology)
+
+    async def test_run_skill_checks_arguments(self, rag):
+        with pytest.raises(ValueError, match="unknown argument"):
+            await rag.run_skill("gap_analysis", colour="red")
+        result = await rag.run_skill("gap_analysis")
+        assert result.skill == "gap_analysis"

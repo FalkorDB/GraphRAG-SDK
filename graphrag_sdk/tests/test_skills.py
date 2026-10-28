@@ -1,4 +1,4 @@
-"""Tests for the skills library (Phase 3.4)."""
+"""Tests for the skills library."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import pytest
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import LLMResponse, SkillResult
-from graphrag_sdk.retrieval.agentic import ToolContext, ToolRegistry, make_skill_tool
 from graphrag_sdk.skills import (
     SKILL_REGISTRY,
     ContradictionDetectionSkill,
@@ -22,6 +21,7 @@ from graphrag_sdk.skills import (
     skill_parameters,
 )
 from graphrag_sdk.skills.timeline_reconstruction import _extract_date, _is_date_key
+from graphrag_sdk.tools import GraphRAGToolkit, ToolError
 
 
 class FakeResult:
@@ -366,21 +366,82 @@ class TestTimelineReconstruction:
         assert params["lower"] == list("abcdefghijklmnopqrstuvwxyz")
 
 
+class _SkillRAG:
+    """The parts of GraphRAG the toolkit's run_skill touches."""
+
+    def __init__(self, store: FakeGraphStore):
+        self._graph_store = store
+        self.llm = None
+
+
 class TestSkillAsTool:
     async def test_findings_and_refusals(self, ctx: Context):
         store = FakeGraphStore(entities=PEOPLE, neighbors={"root": [("near", 1.0, "R")]})
-        registry = ToolRegistry()
-        registry.register(make_skill_tool(ImpactAnalysisSkill(store)))
-        spec = registry.specs()[0]
-        assert spec.parameters["required"] == ["entity"]
+        toolkit = GraphRAGToolkit(_SkillRAG(store))  # type: ignore[arg-type]
 
-        ok = await registry.run("impact_analysis", {"entity": "Root"}, ToolContext(ctx=ctx))
-        assert ok.status == "ok" and 'Findings (impact_analysis): {"entity": "root"' in ok.content
+        ok = await toolkit.run_skill("impact_analysis", {"entity": "Root"}, ctx=ctx)
+        assert ok.skill == "impact_analysis" and ok.n == 1
+        assert ok.data["entity"] == "root"
+        assert toolkit.ledger.get(1).tool == "run_skill"
 
-        missing = await registry.run("impact_analysis", {"entity": "Nobody"}, ToolContext(ctx=ctx))
-        assert missing.status == "refused" and "no entity is called 'Nobody'" in missing.content
+        with pytest.raises(ToolError, match="no entity is called 'Nobody'") as missing:
+            await toolkit.run_skill("impact_analysis", {"entity": "Nobody"}, ctx=ctx)
+        assert "lookup_entity" in (missing.value.hint or "")
 
-        extra = await registry.run(
-            "impact_analysis", {"entity": "Root", "colour": "red"}, ToolContext(ctx=ctx)
-        )
-        assert extra.status == "refused" and "unknown argument" in extra.content
+        with pytest.raises(ToolError, match="colour") as extra:
+            await toolkit.run_skill("impact_analysis", {"entity": "Root", "colour": "red"}, ctx=ctx)
+        assert "entity" in (extra.value.hint or "")
+
+        with pytest.raises(ToolError, match="Unknown skill"):
+            await toolkit.run_skill("no_such_skill", {}, ctx=ctx)
+
+
+# ── Impact analysis: wide hubs and minimal graph stores ─────────
+
+
+class _NoSummary:
+    async def __call__(self, ctx, prompt):
+        return ""
+
+
+def _impact_skill(store) -> ImpactAnalysisSkill:
+    skill = ImpactAnalysisSkill(store)
+
+    async def resolve(ref, param="entity"):
+        return ref
+
+    skill._resolve_entity = resolve  # type: ignore[method-assign]
+    skill._summarize = _NoSummary()  # type: ignore[method-assign]
+    return skill
+
+
+class TestImpactNeighbourLimits:
+    async def test_reports_more_than_fifty_direct_neighbours(self):
+        from graphrag_sdk.skills.impact_analysis import MAX_DIRECT_NEIGHBOURS
+
+        limits: list[int | None] = []
+
+        class Store:
+            async def weighted_neighbors(self, node_id, *, limit=50):
+                limits.append(limit)
+                hub = [(f"n{i:03d}", 1.0, "R") for i in range(120)]
+                return hub[:limit] if node_id == "root" else []
+
+            async def pagerank(self, **kwargs):
+                return {}
+
+        result = await _impact_skill(Store()).run(Context(), entity="root", max_depth=1)
+        assert result.data["num_impacted"] == 120
+        assert limits == [MAX_DIRECT_NEIGHBOURS] and MAX_DIRECT_NEIGHBOURS >= 120
+
+    async def test_works_with_a_store_without_a_limit_argument(self):
+        class Store:
+            async def weighted_neighbors(self, node_id):
+                return [("a", 1.0, "R")] if node_id == "root" else []
+
+            async def pagerank(self, **kwargs):
+                return {}
+
+        result = await _impact_skill(Store()).run(Context(), entity="root", max_depth=2)
+        assert result.data["num_impacted"] == 1
+        assert [(i["entity"], i["distance"]) for i in result.data["impacted"]] == [("a", 1)]

@@ -1,0 +1,299 @@
+"""Tests for the MCP server: tool listing, per-session evidence, JSON
+results, errors with hints, and a protocol round trip through an in-process
+MCP client (mcp 1.x or 2.x)."""
+
+from __future__ import annotations
+
+import json
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from graphrag_sdk.mcp import GUIDE, GraphRAGMCPServer, fit_json
+from graphrag_sdk.mcp.server import bearer_token_guard, check_sse_binding
+from graphrag_sdk.tools import TOOL_NAMES
+
+pytest.importorskip("mcp")
+
+
+class FakeStore:
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    async def query_raw(self, cypher: str, params: dict | None = None, **kwargs: Any):
+        self.queries.append(cypher)
+        raise AssertionError("no database call expected")
+
+
+class FakeRAG:
+    def __init__(self) -> None:
+        self._graph_store = FakeStore()
+        self._conn = SimpleNamespace(topology_version=0)
+        self.llm = None
+
+    async def ingest(self, **kwargs: Any) -> Any:
+        raise RuntimeError("boom")
+
+
+@pytest.fixture
+def server() -> GraphRAGMCPServer:
+    return GraphRAGMCPServer(FakeRAG())
+
+
+@asynccontextmanager
+async def connect(server: GraphRAGMCPServer):
+    """An MCP client session connected in-process to ``server``."""
+    lowlevel = server._build_server()
+    try:
+        from mcp import Client  # mcp 2.x
+
+        async with Client(lowlevel) as client:
+            yield client, client.instructions
+    except ImportError:  # mcp 1.x
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        async with create_connected_server_and_client_session(lowlevel) as session:
+            yield session, None
+
+
+def _text(result: Any) -> str:
+    return result.content[0].text
+
+
+class TestToolList:
+    def test_names_and_annotations(self, server: GraphRAGMCPServer):
+        tools = {t["name"]: t for t in server.tool_dicts()}
+        assert list(tools) == list(TOOL_NAMES)
+        assert tools["cypher_query"]["annotations"]["readOnlyHint"] is True
+        assert tools["ingest"]["annotations"]["readOnlyHint"] is False
+        assert tools["finalize"]["annotations"]["destructiveHint"] is True
+        for tool in tools.values():
+            assert tool["inputSchema"]["type"] == "object"
+            assert tool["inputSchema"].get("additionalProperties") is False
+
+    def test_read_only_and_include(self):
+        names = [t["name"] for t in GraphRAGMCPServer(FakeRAG(), read_only=True).tool_dicts()]
+        assert "ingest" not in names and "finalize" not in names
+        only = GraphRAGMCPServer(FakeRAG(), include=["status", "cypher_query"])
+        assert [t["name"] for t in only.tool_dicts()] == ["status", "cypher_query"]
+
+    def test_guide_is_the_default_instructions(self, server: GraphRAGMCPServer):
+        assert server.instructions == GUIDE
+        for word in ("lookup_entity", "cypher_query", "truncated", "check_citations", "[n]"):
+            assert word in GUIDE
+        assert GraphRAGMCPServer(FakeRAG(), instructions="x").instructions == "x"
+
+
+class TestCallTool:
+    async def test_tool_errors_carry_hints(self, server: GraphRAGMCPServer):
+        text, is_error = await server.call_tool("graph_search", {})
+        assert is_error and "Unknown tool" in text and "Hint:" in text
+        text, is_error = await server.call_tool("lookup_entity", {"name": "x", "extra": 1})
+        assert is_error and "Extra inputs are not permitted" in text
+        text, is_error = await server.call_tool("cypher_query", {"cypher": "MATCH (n) DELETE n"})
+        assert is_error and "rejected" in text and "Hint:" in text
+
+    async def test_unexpected_errors_are_reported(self, server: GraphRAGMCPServer):
+        text, is_error = await server.call_tool("ingest", {"text": "x"})
+        assert is_error and text == "Error running ingest: RuntimeError: boom"
+
+    async def test_read_only_write_is_an_error(self):
+        server = GraphRAGMCPServer(FakeRAG(), read_only=True)
+        text, is_error = await server.call_tool("ingest", {"text": "x"})
+        assert is_error and "read-only" in text
+
+    async def test_results_are_json(self, server: GraphRAGMCPServer):
+        text, is_error = await server.call_tool("check_citations", {"answer": "No sources."})
+        data = json.loads(text)
+        assert not is_error and data["reason"] == "no_citations" and "hint" in data
+
+    async def test_sessions_have_separate_ledgers(self, server: GraphRAGMCPServer):
+        class Session:
+            pass
+
+        a, b = Session(), Session()
+        server._session_toolkit(a).ledger.add(tool="t", kind="k", content="fact")
+        text, _ = await server.call_tool("check_citations", {"answer": "fact [1]"}, a)
+        assert json.loads(text)["grounded"] is True
+        text, _ = await server.call_tool("check_citations", {"answer": "fact [1]"}, b)
+        assert json.loads(text)["grounded"] is False
+        assert server._session_toolkit(a) is server._session_toolkit(a)
+        assert server._session_toolkit(None) is server.toolkit
+
+    def test_mcp2_sessions_key_on_their_connection(self, server: GraphRAGMCPServer):
+        class Connection:
+            def __init__(self, protocol_version, session_id=None):
+                self.protocol_version = protocol_version
+                self.session_id = session_id
+
+        class Session:  # mcp 2.x: a new ServerSession per request
+            def __init__(self, connection):
+                self._connection = connection
+
+        loop = Connection("2025-06-18")
+        assert server._session_toolkit(Session(loop)) is server._session_toolkit(Session(loop))
+        assert server._session_toolkit(Session(loop)) is not server.toolkit
+
+        http_a = server._session_toolkit(Session(Connection("2025-06-18", "sid-1")))
+        assert http_a is server._session_toolkit(Session(Connection("2025-06-18", "sid-1")))
+        assert http_a is not server._session_toolkit(Session(Connection("2025-06-18", "sid-2")))
+
+    def test_stateless_requests_share_the_server_ledger(self, server, monkeypatch):
+        from graphrag_sdk.mcp import server as server_module
+
+        monkeypatch.setattr(server_module, "_stateless_versions", lambda: frozenset({"next"}))
+
+        class Connection:
+            protocol_version = "next"
+            session_id = None
+
+        class Session:
+            def __init__(self):
+                self._connection = Connection()
+
+        assert server._session_toolkit(Session()) is server.toolkit
+
+
+class TestFitJson:
+    def test_small_results_unchanged(self):
+        data = {"rows": [1, 2, 3], "hint": None}
+        assert json.loads(fit_json(data)) == data
+
+    def test_longest_list_is_halved_until_it_fits(self):
+        data = {"rows": [{"text": "x" * 100} for _ in range(400)], "columns": ["a"]}
+        out = json.loads(fit_json(data, max_chars=5000))
+        assert out["truncated"] is True and "narrow" in out["hint"]
+        assert 0 < len(out["rows"]) < 400 and out["columns"] == ["a"]
+        assert len(data["rows"]) == 400  # input untouched
+
+    def test_existing_hint_is_kept(self):
+        data = {"rows": ["y" * 100] * 200, "hint": "More rows matched."}
+        out = json.loads(fit_json(data, max_chars=2000))
+        assert out["hint"].startswith("More rows matched.")
+
+    def test_long_strings_are_shortened(self):
+        out = fit_json({"text": "z" * 100_000}, max_chars=5000)
+        assert len(out) < 7000 and json.loads(out)["truncated"] is True
+
+
+class TestProtocol:
+    async def test_round_trip(self, server: GraphRAGMCPServer, monkeypatch):
+        used: list[Any] = []
+        pick = server._session_toolkit
+
+        def spy(session: Any) -> Any:
+            used.append(pick(session))
+            return used[-1]
+
+        monkeypatch.setattr(server, "_session_toolkit", spy)
+        async with connect(server) as (client, instructions):
+            listed = await client.list_tools()
+            assert [t.name for t in listed.tools] == list(TOOL_NAMES)
+            if instructions is not None:
+                assert instructions == GUIDE
+
+            rejected = await client.call_tool("cypher_query", {"cypher": "CREATE (n) RETURN n"})
+            assert rejected.is_error if hasattr(rejected, "is_error") else rejected.isError
+            assert "rejected" in _text(rejected)
+
+            checked = await client.call_tool("check_citations", {"answer": "x [3]"})
+            assert json.loads(_text(checked))["invalid"] == [3]
+
+            failed = await client.call_tool("ingest", {"text": "x"})
+            assert "RuntimeError: boom" in _text(failed)
+
+        # One client keeps one evidence ledger across its calls.
+        assert len(used) == 3 and len({id(t) for t in used}) == 1
+        assert used[0].ledger.items == []
+        assert server._rag._graph_store.queries == []
+
+
+class TestAuth:
+    async def run_app(self, app, headers):
+        sent: list[dict] = []
+
+        async def send(message):
+            sent.append(message)
+
+        async def receive():
+            return {"type": "http.request"}
+
+        await app({"type": "http", "headers": headers}, receive, send)
+        return sent
+
+    async def test_bearer_guard(self):
+        reached = []
+
+        async def app(scope, receive, send):
+            reached.append(scope)
+
+        guarded = bearer_token_guard(app, "s3cret")
+        denied = await self.run_app(guarded, [(b"authorization", b"Bearer wrong")])
+        assert denied[0]["status"] == 401 and not reached
+        assert (await self.run_app(guarded, []))[0]["status"] == 401
+        await self.run_app(guarded, [(b"authorization", b"Bearer s3cret")])
+        assert len(reached) == 1
+
+    async def test_guard_passes_non_http_scopes(self):
+        reached = []
+
+        async def app(scope, receive, send):
+            reached.append(scope["type"])
+
+        await bearer_token_guard(app, "t")({"type": "lifespan"}, None, None)
+        assert reached == ["lifespan"]
+
+    def test_guard_needs_a_token(self):
+        with pytest.raises(ValueError):
+            bearer_token_guard(lambda *a: None, "")  # type: ignore[arg-type]
+
+    def test_sse_binding_rules(self):
+        check_sse_binding("127.0.0.1", None)
+        check_sse_binding("0.0.0.0", "token")
+        with pytest.raises(ValueError, match="without an auth token"):
+            check_sse_binding("0.0.0.0", None)
+
+
+class TestCLI:
+    def test_build_rag_uses_the_right_constructor_arguments(self, monkeypatch):
+        import graphrag_sdk.api.main as api_main
+        import graphrag_sdk.core.providers as providers
+        from graphrag_sdk.mcp import __main__ as cli
+
+        seen: dict[str, Any] = {}
+        monkeypatch.setenv("GRAPHRAG_MODEL", "openai/gpt-4o")
+        monkeypatch.setenv("GRAPHRAG_EMBED_DIM", "3072")
+        monkeypatch.setattr(api_main, "GraphRAG", lambda **kw: seen.update(kw) or "RAG")
+        rag = cli._build_rag()
+        assert rag == "RAG"
+        assert isinstance(seen["llm"], providers.LiteLLM)
+        assert seen["llm"].model_name == "openai/gpt-4o"
+        assert seen["embedder"].model_name == "text-embedding-3-small"
+        assert seen["embedding_dimension"] == 3072
+
+
+class TestSSESecurity:
+    def test_loopback_server_gets_dns_rebinding_protection(self):
+        pytest.importorskip("mcp.server.transport_security")
+        from graphrag_sdk.mcp.server import sse_security_kwargs
+
+        local = sse_security_kwargs("127.0.0.1", 8080)["security_settings"]
+        assert local.enable_dns_rebinding_protection is True
+        assert local.allowed_hosts == ["127.0.0.1:8080", "localhost:8080"]
+        assert "http://localhost:8080" in local.allowed_origins
+        assert "https://127.0.0.1:8080" in local.allowed_origins
+
+    def test_ipv6_loopback_is_bracketed(self):
+        pytest.importorskip("mcp.server.transport_security")
+        from graphrag_sdk.mcp.server import sse_security_kwargs
+
+        hosts = sse_security_kwargs("::1", 1)["security_settings"].allowed_hosts
+        assert hosts[1] == "[::1]:1"
+
+    def test_non_loopback_relies_on_the_bearer_token(self):
+        from graphrag_sdk.mcp.server import sse_security_kwargs
+
+        # Off loopback the bearer token protects the server; clients use any name.
+        assert sse_security_kwargs("0.0.0.0", 8080) == {}

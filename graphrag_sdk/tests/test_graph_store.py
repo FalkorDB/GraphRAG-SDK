@@ -1513,3 +1513,104 @@ class TestGraphStoreIdIndex:
         idx = self.index_calls(mock_connection)
         assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 2
         assert any("DETACH DELETE" in c[0][0] for c in mock_connection.query.call_args_list)
+
+
+# ── query_raw: read-only and timeout passthrough ─────────────────
+
+
+class TestQueryRawPassthrough:
+    async def test_plain_query_keeps_the_two_argument_call(self):
+        conn = MagicMock()
+        conn.query = AsyncMock(return_value="r")
+        store = GraphStore(conn)
+        assert await store.query_raw("MATCH (n) RETURN n") == "r"
+        conn.query.assert_awaited_with("MATCH (n) RETURN n", None)
+
+    async def test_read_only_and_timeout_are_forwarded(self):
+        conn = MagicMock()
+        conn.query = AsyncMock(return_value="r")
+        store = GraphStore(conn)
+        await store.query_raw("MATCH (n) RETURN n", {"a": 1}, read_only=True, timeout=50)
+        conn.query.assert_awaited_with("MATCH (n) RETURN n", {"a": 1}, timeout=50, read_only=True)
+        await store.query_raw("MATCH (n) RETURN n", read_only=True)
+        conn.query.assert_awaited_with("MATCH (n) RETURN n", None, timeout=None, read_only=True)
+        await store.query_raw("MATCH (n) RETURN n", timeout=20)
+        conn.query.assert_awaited_with("MATCH (n) RETURN n", None, timeout=20, read_only=False)
+
+
+# ── PageRank caching ─────────────────────────────────────────────
+
+
+class TestPageRankCache:
+    @staticmethod
+    def counting_conn(conn=None, results=None):
+        conn = conn if conn is not None else MagicMock()
+        state = {"calls": 0}
+
+        async def query(cypher, params=None, **kwargs):
+            state["calls"] += 1
+            if results:
+                r = results.pop(0)
+                if isinstance(r, Exception):
+                    raise r
+                return r
+            return MagicMock(result_set=[["a", 0.5]])
+
+        conn.query = query
+        return conn, state
+
+    async def test_pagerank_is_cached_briefly(self):
+        conn, state = self.counting_conn()
+        store = GraphStore(conn)
+        assert await store.pagerank() == {"a": 0.5}
+        first = await store.pagerank()
+        first["a"] = 99.0  # callers get a copy
+        assert await store.pagerank() == {"a": 0.5}
+        assert state["calls"] == 1
+        await store.pagerank(max_age_seconds=0)
+        assert state["calls"] == 2
+
+    async def test_cache_is_per_label_and_relationship(self):
+        conn, state = self.counting_conn()
+        store = GraphStore(conn)
+        await store.pagerank()
+        await store.pagerank(relationship_type="RELATES")
+        await store.pagerank(relationship_type="RELATES")
+        assert state["calls"] == 2
+
+    async def test_old_results_expire(self, monkeypatch):
+        import graphrag_sdk.storage.graph_store as gs
+
+        now = [1000.0]
+        monkeypatch.setattr(gs.time, "monotonic", lambda: now[0])
+        conn, state = self.counting_conn()
+        store = GraphStore(conn)
+        await store.pagerank(max_age_seconds=10)
+        now[0] += 9
+        await store.pagerank(max_age_seconds=10)
+        assert state["calls"] == 1
+        now[0] += 2
+        await store.pagerank(max_age_seconds=10)
+        assert state["calls"] == 2
+
+    async def test_pagerank_failure_is_not_cached(self):
+        conn, _ = self.counting_conn(
+            results=[Exception("procedure missing"), MagicMock(result_set=[["a", 1.0]])]
+        )
+        store = GraphStore(conn)
+        assert await store.pagerank() == {}
+        assert await store.pagerank() == {"a": 1.0}
+
+    async def test_pagerank_cache_is_dropped_when_the_graph_changes_shape(self):
+        from graphrag_sdk.core.connection import FalkorDBConnection
+
+        real = FalkorDBConnection.__new__(FalkorDBConnection)
+        real.topology_version = 0
+        conn, state = self.counting_conn(real)
+        store = GraphStore(conn)
+        await store.pagerank()
+        await store.pagerank()
+        assert state["calls"] == 1
+        conn.topology_version += 1  # a write created or deleted nodes/edges
+        await store.pagerank()
+        assert state["calls"] == 2
