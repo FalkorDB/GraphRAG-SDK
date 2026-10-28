@@ -146,6 +146,13 @@ class OntologyStore:
         graph = self._ensure_graph()
         return await graph.query(cypher, params=params)
 
+    async def _read(self, cypher: str) -> Any:
+        # A read-only query: GRAPH.QUERY on a missing key creates an empty
+        # graph, so a plain load() would leave a "<graph>__ontology" key behind.
+        await self._conn._check_server_version()
+        graph = self._ensure_graph()
+        return await graph.ro_query(cypher)
+
     # ── Load ─────────────────────────────────────────────────────
 
     async def load(self) -> Ontology:
@@ -156,7 +163,7 @@ class OntologyStore:
         instance doesn't emit warnings.
         """
         try:
-            ent_result = await self._query(
+            ent_result = await self._read(
                 # Every read below is ordered, so the result does not depend
                 # on the order the engine lists rows in (FalkorDB 4.x and
                 # 6.0.x differ). Node id gives a stable order but not creation
@@ -166,23 +173,23 @@ class OntologyStore:
                 "MATCH (e:Entity) RETURN e.label AS label, e.description AS description "
                 "ORDER BY id(e)"
             )
-            ent_prop_result = await self._query(
+            ent_prop_result = await self._read(
                 "MATCH (e:Entity)-[:HAS_PROPERTY]->(p:Property) "
                 "RETURN e.label AS owner, p.label AS name, p.type AS type, "
                 "p.description AS description, p.structured AS structured "
                 "ORDER BY id(e), id(p)"
             )
-            patterned_rel_result = await self._query(
+            patterned_rel_result = await self._read(
                 "MATCH (r:Relation)-[:SOURCE]->(s:Entity), (r)-[:TARGET]->(t:Entity) "
                 "RETURN r.label AS rel_label, r.description AS description, "
                 f"s.label AS src, t.label AS tgt ORDER BY {_RELATION_AGE}"
             )
-            open_rel_result = await self._query(
+            open_rel_result = await self._read(
                 "MATCH (r:Relation) WHERE NOT (r)-[:SOURCE]->() "
                 "RETURN r.label AS rel_label, r.description AS description "
                 f"ORDER BY {_RELATION_AGE}"
             )
-            rel_prop_result = await self._query(
+            rel_prop_result = await self._read(
                 "MATCH (r:Relation)-[:HAS_PROPERTY]->(p:Property) "
                 "RETURN r.label AS owner, p.label AS name, p.type AS type, "
                 "p.description AS description, p.structured AS structured "
@@ -191,6 +198,8 @@ class OntologyStore:
         except FalkorDBVersionError:
             raise
         except Exception as exc:
+            if "empty key" in str(exc):  # never written: nothing declared yet
+                return Ontology()
             logger.debug("Ontology load failed (returning empty ontology): %s", exc)
             return Ontology()
 
@@ -207,22 +216,22 @@ class OntologyStore:
         # this separate handler exists to protect down with it.
         link_column_rows: list[Any] = []
         try:
-            table_result = await self._query(
+            table_result = await self._read(
                 "MATCH (t:TableMapping) RETURN t.source AS source, t.label AS label, "
                 "t.key AS key, t.name AS name, t.standalone AS standalone, t.derived AS derived, "
                 "t.description AS description ORDER BY id(t)"
             )
-            column_result = await self._query(
+            column_result = await self._read(
                 "MATCH (t:TableMapping)-[:MAPS_COLUMN]->(c:MappedColumn) "
                 "RETURN t.source AS source, c.property AS property, c.column AS column, "
                 "c.type AS type, c.description AS description ORDER BY id(t), id(c)"
             )
-            link_result = await self._query(
+            link_result = await self._read(
                 "MATCH (t:TableMapping)-[:MAPS_LINK]->(l:MappedLink) "
                 "RETURN t.source AS source, l.type AS type, l.to AS to, l.by AS by, "
                 "l.name AS name, l.description AS description ORDER BY id(t), id(l)"
             )
-            link_column_result = await self._query(
+            link_column_result = await self._read(
                 "MATCH (t:TableMapping)-[:MAPS_LINK_COLUMN]->(c:MappedLinkColumn) "
                 "RETURN t.source AS source, c.link_type AS link_type, c.link_by AS link_by, "
                 "c.property AS property, c.column AS column, c.type AS type, "

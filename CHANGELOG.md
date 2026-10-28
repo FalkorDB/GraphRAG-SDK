@@ -502,6 +502,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ontology was refused (a contradiction with the stored one, a reserved
   label), it stayed on the instance and every later ingest failed on it. The
   previous ontology is now restored before the error is raised.
+- **Reading the ontology no longer creates its graph.** `OntologyStore.load()`
+  read with `GRAPH.QUERY`, which on a graph nothing was declared on yet left an
+  empty `<graph>__ontology` key behind. It now reads with `GRAPH.RO_QUERY` and
+  treats a missing key as an empty ontology.
 - **A write batch holding the same entity or relationship twice lost a write.**
   In one `UNWIND ... MERGE` call FalkorDB 4.x kept the first row's values and
   6.0.x the last, and on both only one row's `source_chunk_ids` survived, so an

@@ -14,7 +14,9 @@ import logging
 import os
 import weakref
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Literal
 
 from graphrag_sdk.core.exceptions import ReadOnlyViolation
@@ -255,6 +257,25 @@ class GraphRAGMCPServer:
             weakref.WeakKeyDictionary()
         )
         self._sessions_by_id: OrderedDict[str, GraphRAGToolkit] = OrderedDict()
+        self._connection_toolkit: ContextVar[GraphRAGToolkit | None] = ContextVar(
+            "graphrag_mcp_connection_toolkit", default=None
+        )
+
+    @contextmanager
+    def connection_scope(self) -> Iterator[GraphRAGToolkit]:
+        """Give the requests of one transport connection their own ledger.
+
+        Requests handled inside the block (the server copies the context into
+        each request task) use one fresh toolkit session, whatever the MCP
+        version says about sessions. The SSE transport wraps each client
+        stream in this, so stateless clients never share evidence.
+        """
+        toolkit = self._toolkit.new_session()
+        token = self._connection_toolkit.set(toolkit)
+        try:
+            yield toolkit
+        finally:
+            self._connection_toolkit.reset(token)
 
     @property
     def toolkit(self) -> GraphRAGToolkit:
@@ -272,9 +293,13 @@ class GraphRAGMCPServer:
         ``ServerSession``; mcp 2.x builds one per request around a
         connection object, so key on that, or on its HTTP session id. The
         stateless 2026-07-28 protocol gives each request a fresh connection
-        and no id; those clients share the server's ledger (one stdio
+        and no id: over SSE the connection scope still keeps one ledger per
+        client stream; over stdio they share the server's ledger (one stdio
         process serves one client).
         """
+        scoped = self._connection_toolkit.get()
+        if scoped is not None:
+            return scoped
         if session is None:
             return self._toolkit
         key = getattr(session, "_connection", None) or session
@@ -416,11 +441,12 @@ class GraphRAGMCPServer:
         sse = SseServerTransport("/messages/", **sse_security_kwargs(host, port))
 
         async def handle_sse(request: Any) -> None:
-            async with sse.connect_sse(request.scope, request.receive, request._send) as (
-                read,
-                write,
-            ):
-                await server.run(read, write, init_options)
+            with self.connection_scope():
+                async with sse.connect_sse(request.scope, request.receive, request._send) as (
+                    read,
+                    write,
+                ):
+                    await server.run(read, write, init_options)
 
         app: Any = Starlette(
             routes=[

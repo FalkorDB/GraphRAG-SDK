@@ -793,7 +793,7 @@ class GraphRAGToolkit:
             hint=hint,
         )
 
-    def _make_strategy(self, top_k: int) -> MultiPathRetrieval:
+    def _make_strategy(self, top_k: int, ontology: Ontology | None = None) -> MultiPathRetrieval:
         """A MultiPathRetrieval sized to ``top_k`` (its constructor only assigns)."""
         return MultiPathRetrieval(
             graph_store=self._rag._graph_store,
@@ -803,8 +803,24 @@ class GraphRAGToolkit:
             chunk_top_k=top_k,
             rel_top_k=top_k,
             max_entities=max(2 * top_k, 10),
-            ontology=self._rag._global_ontology,
+            ontology=ontology or self._rag._global_ontology,
         )
+
+    async def _search(self, question: str, top_k: int, ctx: Context) -> Any:
+        """Run MultiPath retrieval without writing to the graph.
+
+        ``GraphRAG.retrieve`` first initialises the ontology, which on a graph
+        nothing was declared on yet registers the default entity types: a
+        write, from a read tool. Until the GraphRAG has done that itself, run
+        the strategy directly on the declared ontology instead.
+        """
+        if getattr(self._rag, "_ontology_initialized", True):
+            return await self._rag.retrieve(question, strategy=self._make_strategy(top_k), ctx=ctx)
+        declared = await self._declared_ontology()
+        ontology = declared if (declared.entities or declared.relations) else None
+        await self._rag._validate_graph_config(ctx=ctx)
+        ctx.ensure_budget("retrieval strategy search")
+        return await self._make_strategy(top_k, ontology).search(question, ctx)
 
     async def retrieve(
         self,
@@ -826,9 +842,7 @@ class GraphRAGToolkit:
         )
         ctx = ctx or self._new_ctx()
         store = self._store
-        rr = await self._rag.retrieve(
-            inp.question, strategy=self._make_strategy(inp.top_k), ctx=ctx
-        )
+        rr = await self._search(inp.question, inp.top_k, ctx)
         prov: dict[str, Any] = rr.metadata.get("provenance") or {}
         seeds = [e for e in (prov.get("entities") or []) if e.get("id")][: inp.top_k]
         seed_ids = [e["id"] for e in seeds]

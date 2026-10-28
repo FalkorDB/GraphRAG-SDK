@@ -234,7 +234,8 @@ async def test_cypher_query_rejections(toolkit: GraphRAGToolkit, cypher: str, me
 
 
 async def test_cypher_query_runtime_errors(toolkit: GraphRAGToolkit):
-    with pytest.raises(ToolError, match="timed out"):
+    # FalkorDB's own TIMEOUT answer (not only the client-side wait) is a timeout.
+    with pytest.raises(ToolError, match="The query timed out after"):
         await toolkit.call(
             "cypher_query",
             {
@@ -538,3 +539,27 @@ async def test_agent_ingestion_respects_the_root(real_falkordb_rag_factory, tmp_
         await GraphRAGToolkit(rag, files_root=root, read_only=True).call(
             "ingest", {"files": ["*.md"]}
         )
+
+
+async def test_read_tools_on_a_fresh_graph_create_no_keys(real_falkordb_rag_factory):
+    from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+
+    from .conftest import MockLLM
+
+    rag = real_falkordb_rag_factory(llm=MockLLM(responses=[]), resolver=ExactMatchResolution())
+    tk = GraphRAGToolkit(rag, read_only=True)
+    await tk.call("get_ontology", {})
+    await tk.call("retrieve", {"question": "Who founded Acme?"})
+    store = rag._ontology_store
+    store._ensure_graph()
+    graphs = await store._conn._driver.list_graphs()
+    assert store.graph_name not in graphs
+    # Retrieval ran without registering the default types.
+    assert rag._ontology_initialized is False
+
+
+async def test_a_server_timeout_is_a_timeout(toolkit: GraphRAGToolkit):
+    # A generous client-side wait, so only FalkorDB's own timeout can fire.
+    slow = "UNWIND range(1, 100000000) AS x WITH x WHERE x % 7 = 3 RETURN count(x)"
+    with pytest.raises(TimeoutError):
+        await ops.bounded_query(toolkit._store, slow, None, 50)
