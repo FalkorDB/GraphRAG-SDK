@@ -152,18 +152,6 @@ def _require_mcp() -> Any:
         ) from exc
 
 
-def _require_mcp() -> Any:
-    try:
-        import mcp  # noqa: F401
-        import mcp.server  # noqa: F401
-
-        return mcp
-    except ImportError as exc:  # pragma: no cover - exercised only without extra
-        raise ImportError(
-            "The MCP server requires the `mcp` package. Install with: pip install graphrag-sdk[mcp]"
-        ) from exc
-
-
 def _is_mcp_v2(server_cls: type) -> bool:
     """mcp 2.x takes handlers as constructor arguments; 1.x uses decorators."""
     return "on_call_tool" in inspect.signature(server_cls.__init__).parameters
