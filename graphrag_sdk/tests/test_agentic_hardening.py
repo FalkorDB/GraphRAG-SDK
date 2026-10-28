@@ -130,6 +130,7 @@ class TestReadOnlyFailFast:
         graph.query = AsyncMock(side_effect=side_effect)
         conn._graph = graph
         conn._ensure_client = lambda: None  # type: ignore[method-assign]
+        conn._version_checked = True
         breaker = MagicMock()
         breaker.allow_request = AsyncMock(return_value=True)
         breaker.record_success = AsyncMock()
@@ -184,13 +185,16 @@ class TestReadOnlyFailFast:
             await conn.query("MATCH (n) RETURN n", read_only=True)
         assert graph.ro_query.await_count == 3
 
-    async def test_regular_queries_keep_their_retry_behaviour(self):
+    async def test_regular_queries_also_fail_once_on_a_server_rejection(self):
+        # Since v1.5.0 every query the server rejects fails on the first
+        # attempt (a retry re-sends the same bytes), read-only or not.
         from redis.exceptions import ResponseError
 
         conn, graph, breaker = self.conn(ResponseError("Variable `m` not defined"))
         with pytest.raises(DatabaseError):
             await conn.query("MATCH (n) RETURN m")
-        assert graph.query.await_count == 3
+        assert graph.query.await_count == 1
+        breaker.record_failure.assert_not_awaited()
 
 
 # ── M2: grounding ────────────────────────────────────────────────

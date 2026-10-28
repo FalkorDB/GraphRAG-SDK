@@ -620,6 +620,7 @@ async def test_queries_that_change_the_graph_shape_bump_the_version():
     graph = MagicMock()
     conn._graph = graph
     conn._ensure_client = lambda: None  # type: ignore[method-assign]
+    conn._version_checked = True
     conn.config = SimpleNamespace(query_timeout_ms=1000, retry_count=1, retry_delay=0)
 
     graph.query = AsyncMock(return_value=result(nodes_created=2))

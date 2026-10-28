@@ -8,6 +8,9 @@ import pytest
 
 from graphrag_sdk.core.providers import Embedder
 
+from .conftest import falkordb_test_server
+from .dedup_sim import SameSpellingJudge
+
 
 class TestTopLevelImports:
     """Verify all public API exports are importable."""
@@ -581,10 +584,7 @@ class TestIncrementalUpdateInvariants:
         # ── Fresh GraphRAG against the same graph_name (process restart).
         rag2 = GraphRAG(
             connection=ConnectionConfig(
-                host=os.getenv("FALKOR_HOST", "localhost"),
-                port=int(os.getenv("FALKOR_PORT", "6379")),
-                username=os.getenv("FALKOR_USERNAME") or None,
-                password=os.getenv("FALKOR_PASSWORD") or None,
+                **falkordb_test_server(),
                 graph_name=graph_name,
             ),
             llm=llm,
@@ -698,10 +698,7 @@ class TestIncrementalUpdateInvariants:
 
         rag2 = GraphRAG(
             connection=ConnectionConfig(
-                host=os.getenv("FALKOR_HOST", "localhost"),
-                port=int(os.getenv("FALKOR_PORT", "6379")),
-                username=os.getenv("FALKOR_USERNAME") or None,
-                password=os.getenv("FALKOR_PASSWORD") or None,
+                **falkordb_test_server(),
                 graph_name=graph_name,
             ),
             llm=llm,
@@ -773,10 +770,7 @@ class TestIncrementalUpdateInvariants:
 
         rag2 = GraphRAG(
             connection=ConnectionConfig(
-                host=os.getenv("FALKOR_HOST", "localhost"),
-                port=int(os.getenv("FALKOR_PORT", "6379")),
-                username=os.getenv("FALKOR_USERNAME") or None,
-                password=os.getenv("FALKOR_PASSWORD") or None,
+                **falkordb_test_server(),
                 graph_name=graph_name,
             ),
             llm=llm,
@@ -936,7 +930,9 @@ class TestIncrementalUpdateInvariants:
         )
 
         dedup = EntityDeduplicator(rag._graph_store, embedder)
-        merged = await dedup.deduplicate(fuzzy=False)
+        # Hand-written without a name vector, so pending like any entity
+        # ingest writes: nothing has to mark them.
+        merged = await dedup.deduplicate(judge=SameSpellingJudge())
         assert merged >= 1, "test setup: dedup should have merged alice-1/alice-2"
 
         # Survivor edge should carry BOTH chunk ids — the union.
@@ -1068,7 +1064,7 @@ class TestIncrementalUpdateInvariants:
             {},
         )
         await conn.query("CREATE (:Chunk {id: 'chunk-1', text: 'Alice at Acme'})", {})
-        # The duplicate holds both edge kinds, so all three remap queries run.
+        # The duplicate holds both edge kinds, so the merge query moves both.
         await conn.query(
             "MATCH (d:__Entity__ {id: 'alice-2'}), (o:__Entity__ {id: 'acme'}) "
             "CREATE (d)-[:RELATES {rel_type: 'WORKS_AT', source_chunk_ids: ['chunk-1']}]->(o)",
@@ -1081,7 +1077,9 @@ class TestIncrementalUpdateInvariants:
         )
 
         dedup = EntityDeduplicator(rag._graph_store, embedder)
-        merged = await dedup.deduplicate(fuzzy=False)
+        # Hand-written without a name vector, so pending like any entity
+        # ingest writes: nothing has to mark them.
+        merged = await dedup.deduplicate(judge=SameSpellingJudge())
         assert merged >= 1, "test setup: dedup should have merged alice-1/alice-2"
 
         # Which Alice survives is the ranking's call (the better-connected one);
@@ -1160,7 +1158,9 @@ class TestIncrementalUpdateInvariants:
         )
 
         dedup = EntityDeduplicator(rag._graph_store, embedder)
-        merged = await dedup.deduplicate(fuzzy=False)
+        # Hand-written without a name vector, so pending like any entity
+        # ingest writes: nothing has to mark them.
+        merged = await dedup.deduplicate(judge=SameSpellingJudge())
         assert merged >= 1, "test setup: dedup should have merged alice-1/alice-2"
 
         result = await conn.query(
@@ -1221,7 +1221,9 @@ class TestIncrementalUpdateInvariants:
         )
 
         dedup = EntityDeduplicator(rag._graph_store, embedder)
-        merged = await dedup.deduplicate(fuzzy=False)
+        # Hand-written without a name vector, so pending like any entity
+        # ingest writes: nothing has to mark them.
+        merged = await dedup.deduplicate(judge=SameSpellingJudge())
         assert merged >= 1, (
             "an untyped RELATES edge must not abort the remap — the duplicate "
             "was left un-merged, which is how a null-keyed MERGE fails."

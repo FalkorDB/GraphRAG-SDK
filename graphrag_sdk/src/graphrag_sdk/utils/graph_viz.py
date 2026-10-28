@@ -95,9 +95,12 @@ class GraphVisualizer:
         """
         if label:
             safe_label = sanitize_cypher_label(label)
-            query = f"MATCH (n:`{safe_label}`) RETURN n LIMIT $limit"
+            query = f"MATCH (n:`{safe_label}`) RETURN n ORDER BY n.id, id(n) LIMIT $limit"
         else:
-            query = "MATCH (n) RETURN n LIMIT $limit"
+            # Unordered, the sample was the newest nodes on FalkorDB 4.x and the
+            # oldest on 6.0.x. Internal ids alone do not settle it: 4.x numbers
+            # the nodes of one UNWIND ... MERGE batch in reverse.
+            query = "MATCH (n) RETURN n ORDER BY n.id, id(n) LIMIT $limit"
 
         try:
             result = await self._conn.query(query, {"limit": limit})

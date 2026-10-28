@@ -21,6 +21,7 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import (
     DocumentNotFoundError,
+    FalkorDBVersionError,
     GraphRAGError,
     LatencyBudgetExceededError,
     ToolCallingNotSupportedError,
@@ -43,6 +44,11 @@ from graphrag_sdk.core.models import (
     GraphNode,
     GraphRelationship,
     IngestionResult,
+    JudgeAttribute,
+    JudgeEntity,
+    JudgeGroup,
+    JudgeSet,
+    JudgeType,
     Ontology,
     RagResult,
     Relation,
@@ -51,6 +57,7 @@ from graphrag_sdk.core.models import (
     RetrieverResultItem,
     ScoredPath,
     SearchType,
+    SetVerdict,
     SkillResult,
     TextChunk,
     TextChunks,
@@ -160,12 +167,15 @@ from graphrag_sdk.skills import (
 )
 
 # ── Storage ─────────────────────────────────────────────────────
+from graphrag_sdk.storage.dedup_judges.base import DedupJudge
+from graphrag_sdk.storage.dedup_judges.llm_judge import LLMJudge
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.ontology_store import (
     OntologyContradictionError,
     OntologyModificationNotAllowedError,
     OntologyStore,
 )
+from graphrag_sdk.storage.system_store import DedupRunActiveError
 from graphrag_sdk.storage.vector_store import VectorStore
 
 __all__ = [
@@ -186,6 +196,7 @@ __all__ = [
     "DeleteDocumentResult",
     "DocumentInfo",
     "DocumentNotFoundError",
+    "FalkorDBVersionError",
     "Attribute",
     "DocumentOutput",
     "DocumentRecord",
@@ -211,6 +222,12 @@ __all__ = [
     "OpenRouterLLM",
     "RagResult",
     "Relation",
+    "JudgeAttribute",
+    "JudgeEntity",
+    "JudgeGroup",
+    "JudgeSet",
+    "JudgeType",
+    "SetVerdict",
     "ResolutionResult",
     "RetrieverResult",
     "RetrieverResultItem",
@@ -274,6 +291,9 @@ __all__ = [
     "ImpactAnalysisSkill",
     "TimelineReconstructionSkill",
     # Storage
+    "DedupJudge",
+    "DedupRunActiveError",
+    "LLMJudge",
     "GraphStore",
     "OntologyContradictionError",
     "OntologyModificationNotAllowedError",

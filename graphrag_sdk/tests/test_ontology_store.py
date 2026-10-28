@@ -24,7 +24,7 @@ TARGET edges.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -109,6 +109,7 @@ def store_factory(fake_graph):
     def _make(data_graph_name: str = "kg") -> OntologyStore:
         conn = MagicMock()
         conn._ensure_client = MagicMock()
+        conn._check_server_version = AsyncMock()  # a supported server
         conn._driver = SimpleNamespace(select_graph=MagicMock(return_value=fake_graph))
         return OntologyStore(conn, data_graph_name)
 
@@ -246,7 +247,7 @@ class TestRegisterRelationShape:
         open_merges = [
             c
             for c in fake_graph.calls
-            if c[0].startswith("MERGE (r:Relation {label: $rel_label}) SET")
+            if c[0].startswith("MERGE (r:Relation {label: $rel_label}) ")
         ]
         assert len(open_merges) == 1
         # Open-mode property attaches to a Relation that lacks SOURCE.

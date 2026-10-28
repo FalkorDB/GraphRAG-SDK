@@ -592,6 +592,7 @@ class TestReadOnlyPlumbing:
         graph.ro_query = AsyncMock(return_value="ro")
         conn._graph = graph
         conn._ensure_client = lambda: None  # type: ignore[method-assign]
+        conn._version_checked = True
         breaker = MagicMock()
         breaker.allow_request = AsyncMock(return_value=True)
         breaker.record_success = AsyncMock()

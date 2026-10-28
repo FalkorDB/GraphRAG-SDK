@@ -6,7 +6,7 @@ Shows how to inspect retrieved context alongside the answer.
 
 Prerequisites:
     pip install graphrag-sdk[litellm,pdf]
-    docker run -p 6379:6379 falkordb/falkordb
+    docker run -p 6379:6379 falkordb/falkordb:v4.22.2
 
 Usage:
     python 02_pdf_with_schema.py path/to/document.pdf

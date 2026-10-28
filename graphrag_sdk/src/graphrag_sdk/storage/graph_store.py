@@ -23,8 +23,20 @@ from graphrag_sdk.core.models import (
     GraphNode,
     GraphRelationship,
 )
-from graphrag_sdk.storage.deduplicator import _REMAP_QUERIES, properties_to_carry
-from graphrag_sdk.storage.judge_dedup import LEGACY_DESC_KEYS
+from graphrag_sdk.storage.deduplicator import properties_to_carry
+from graphrag_sdk.storage.merge_query import (
+    copy_on_server,
+    fold_query,
+    handled,
+    read_for_merge,
+    snapshot_params,
+)
+from graphrag_sdk.storage.system_store import (
+    CONFIG_LABEL,
+    PROCESSING_LABEL,
+    deleted_record_clause,
+    is_system_label,
+)
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 
@@ -50,11 +62,16 @@ class ReferenceNode(NamedTuple):
 
 logger = logging.getLogger(__name__)
 
+#: Reads of a re-keyed row's two nodes before its fold gives up: a fold writes
+#: nothing when either node changed since the read (a property, a new edge
+#: type, a node gone), and is read again.
+_FOLD_READS = 3
+
 # An entity's ``source_chunk_ids`` is every chunk that mentioned it, across
 # documents. ``SET n += props`` alone replaces the list with the incoming
 # write's, so the second document to mention an entity erased the first's
-# provenance — the same fault the RELATES edge path and the deduplicator's
-# remap already guard against, with the same union. Bound after the MERGE as
+# provenance — the same fault the RELATES edge path and the merge queries
+# (``merge_query``) already guard against, with the same union. Bound after the MERGE as
 # ``old`` (what the node has) and ``contrib`` (what this write brings).
 # A write carrying no list — a table row, a re-embed — leaves the node's list
 # alone rather than giving it ``[]``. ``strip_stale_provenance`` is the
@@ -212,18 +229,28 @@ class GraphStore:
                 promotable.extend(cleaned_group)
                 # Relationship writes MATCH endpoints as ``__Entity__ {id}``.
                 await self._ensure_label_id_index("__Entity__")
+            # One row per id: see _fold_properties. Each row keeps how many
+            # input nodes it stands for, so the returned count is unchanged.
+            folded: dict[str, tuple[GraphNode, dict[str, Any], int, set[Any] | None]] = {}
+            for n, cid in cleaned_group:
+                props = self._clean_properties(n.properties)
+                if cid in folded:
+                    first, acc, weight, seen = folded[cid]
+                    props, seen = self._fold_properties(
+                        acc, props, union_provenance=is_entity, seen=seen
+                    )
+                    folded[cid] = (first, props, weight + 1, seen)
+                else:
+                    folded[cid] = (n, props, 1, None)
+            rows = [(n, cid, props, weight) for cid, (n, props, weight, _) in folded.items()]
             # Process in batches
-            for start in range(0, len(cleaned_group), self._BATCH_SIZE):
-                batch = cleaned_group[start : start + self._BATCH_SIZE]
-                batch_data = [
-                    {
-                        "id": cid,
-                        "properties": self._clean_properties(n.properties),
-                    }
-                    for n, cid in batch
-                ]
+            for start in range(0, len(rows), self._BATCH_SIZE):
+                batch = rows[start : start + self._BATCH_SIZE]
+                batch_data = [{"id": cid, "properties": props} for _, cid, props, _ in batch]
                 query = f"UNWIND $batch AS item MERGE (n:`{safe_label}` {{id: item.id}}) "
                 if is_entity:
+                    # Nothing marks a new entity for dedup: it has no name
+                    # vector, and that is what the next finalize() looks for.
                     query += (
                         "WITH n, item, "
                         "     coalesce(n.source_chunk_ids, []) AS old, "
@@ -236,7 +263,7 @@ class GraphStore:
                     query += "SET n += item.properties"
                 try:
                     await self._conn.query(query, {"batch": batch_data})
-                    count += len(batch)
+                    count += sum(weight for *_, weight in batch)
                 except Exception as exc:
                     logger.warning(
                         f"Batch upsert failed for {safe_label} ({len(batch)} nodes), "
@@ -244,7 +271,7 @@ class GraphStore:
                     )
                     # Per-item fallback, mirroring the batch query so a transient
                     # batch failure cannot regress to overwriting provenance.
-                    for node, cid in batch:
+                    for node, cid, props, weight in batch:
                         safe_node_label = sanitize_cypher_label(node.label)
                         q = f"MERGE (n:`{safe_node_label}` {{id: $id}}) "
                         if is_entity:
@@ -258,13 +285,10 @@ class GraphStore:
                             )
                         else:
                             q += "SET n += $properties"
-                        params = {
-                            "id": cid,
-                            "properties": self._clean_properties(node.properties),
-                        }
+                        params = {"id": cid, "properties": props}
                         try:
                             await self._conn.query(q, params)
-                            count += 1
+                            count += weight
                         except Exception as inner_exc:
                             logger.warning(
                                 f"Failed to upsert node {cid} "
@@ -489,7 +513,8 @@ class GraphStore:
                 if new_id in movers:
                     aside = f"{old_id}__swapping"
                     await self.query_raw(
-                        "MATCH (n:__Entity__ {id: $old}) SET n.id = $aside",
+                        "MATCH (n:__Entity__ {id: $old}) SET n.id = $aside "
+                        + deleted_record_clause("[$old]"),
                         {"old": old_id, "aside": aside},
                     )
                     deferred.append((aside, new_id))
@@ -515,50 +540,58 @@ class GraphStore:
         """Rename the node at ``old_id`` to ``new_id``, or fold it into what is there.
 
         Returns ``(renamed, merged)`` -- one of them 1.
+
+        Raises:
+            DatabaseError: the two nodes changed between every read and its
+                fold (``_FOLD_READS`` tries), or a query failed.
         """
-        exists = await self.query_raw(
-            "MATCH (n:__Entity__ {id: $id}) RETURN count(n)", {"id": new_id}
-        )
-        if not (exists.result_set and exists.result_set[0][0]):
-            # The embedding is of the old name; left on the node, vector search
-            # kept finding the row under a name it no longer has. finalize()
-            # embeds every node without one.
-            await self.query_raw(
-                "MATCH (n:__Entity__ {id: $old}) SET n.id = $new REMOVE n.embedding",
-                {"old": old_id, "new": new_id},
+        for _ in range(_FOLD_READS):
+            read = await read_for_merge(self, new_id, old_id)
+            if read is None:
+                # The embedding is of the old name; left on the node, vector
+                # search kept finding the row under a name it no longer has.
+                # Without it the node is pending dedup again — the new name is
+                # new to dedup too — and the next finalize() embeds and checks
+                # it. The old id leaves a deleted record, so a merge planned on
+                # it is not applied to the node.
+                await self.query_raw(
+                    "MATCH (n:__Entity__ {id: $old}) SET n.id = $new REMOVE n.embedding "
+                    + deleted_record_clause("[$old]"),
+                    {"old": old_id, "new": new_id},
+                )
+                return 1, 0
+            # Something already sits at new_id — a prose mention of the same
+            # name, typically. Fold the old node into it in one query, which
+            # also makes the result pending dedup again: it now carries the
+            # row's identity, which no dedup run has seen with it. The query
+            # unions provenance itself, from the values at write time, and
+            # writes nothing if anything this read saw has changed since.
+            carry = properties_to_carry(read.keep, read.dup, never=self._NEVER_CARRY_ON_RECONCILE)
+            sets = copy_on_server(carry)
+            if carry:
+                sets.append("s += $carry")
+            result = await self.query_raw(
+                fold_query(read.kinds, sets),
+                {
+                    "old": old_id,
+                    "new": new_id,
+                    "handled": handled(read.kinds),
+                    **snapshot_params(read, carry),
+                },
             )
-            return 1, 0
-        # Something already sits at new_id — a prose mention of the same name,
-        # typically. Fold the old node into it.
-        for query in _REMAP_QUERIES:
-            await self.query_raw(query, {"dup_id": old_id, "survivor_id": new_id})
-        await self._carry_then_delete(old_id, new_id)
-        return 0, 1
+            if result.result_set and result.result_set[0][0] is True:
+                return 0, 1
+        raise DatabaseError(
+            f"Could not fold entity {old_id!r} into {new_id!r}: one of them kept changing "
+            "between its read and the fold"
+        )
 
     # The row about to be written sets ``is_stub`` itself; a placeholder's
     # ``True`` must not land on the node first and then have to be undone.
-    _NEVER_CARRY_ON_RECONCILE = frozenset({"id", "embedding", "is_stub", *LEGACY_DESC_KEYS})
-
-    async def _carry_then_delete(self, old_id: str, new_id: str) -> None:
-        """Copy what only the old node knew onto the new one, then delete the old.
-
-        Same policy as a dedup merge (:func:`properties_to_carry`), except that
-        the stub bookkeeping stays behind.
-        """
-        res = await self.query_raw(
-            "MATCH (k:__Entity__ {id: $new}), (d:__Entity__ {id: $old}) "
-            "RETURN properties(k), properties(d)",
-            {"new": new_id, "old": old_id},
-        )
-        if res.result_set:
-            keep, dup = res.result_set[0][0] or {}, res.result_set[0][1] or {}
-            carry = properties_to_carry(keep, dup, never=self._NEVER_CARRY_ON_RECONCILE)
-            if carry:
-                await self.query_raw(
-                    "MATCH (k:__Entity__ {id: $new}) SET k += $carry",
-                    {"new": new_id, "carry": carry},
-                )
-        await self.query_raw("MATCH (d:__Entity__ {id: $old}) DETACH DELETE d", {"old": old_id})
+    _NEVER_CARRY_ON_RECONCILE = frozenset({"id", "embedding", "is_stub"})
+    #: Nodes a label-wide delete removes per query. Each query writes the
+    #: deleted records of its own nodes, so no query holds the whole label.
+    _DELETE_BATCH = 10_000
 
     async def upsert_reference_nodes(self, references: Sequence[ReferenceNode]) -> int:
         """Write foreign-key reference nodes: the key always, the name never.
@@ -694,15 +727,35 @@ class GraphStore:
             hint_src, hint_tgt = self._REL_LABEL_HINTS.get(rel_type, ("__Entity__", "__Entity__"))
             await self._ensure_label_id_index(hint_src)
             await self._ensure_label_id_index(hint_tgt)
-            for start in range(0, len(cleaned_group), self._BATCH_SIZE):
-                batch = cleaned_group[start : start + self._BATCH_SIZE]
+            # One row per MERGE key — the pair, plus ``rel_type`` for RELATES —
+            # see _fold_properties. Each row keeps how many input relationships
+            # it stands for, so the returned count is unchanged.
+            is_relates = rel_type == "RELATES"
+            folded: dict[
+                tuple[str, str, Any],
+                tuple[GraphRelationship, dict[str, Any], int, set[Any] | None],
+            ] = {}
+            for rel, sid, eid in cleaned_group:
+                props = self._clean_properties(rel.properties)
+                rel_key = self._merge_key_value(props.get("rel_type", "")) if is_relates else ""
+                key = (sid, eid, rel_key)
+                if key in folded:
+                    first, acc, weight, seen = folded[key]
+                    props, seen = self._fold_properties(
+                        acc, props, union_provenance=is_relates, seen=seen
+                    )
+                    folded[key] = (first, props, weight + 1, seen)
+                else:
+                    folded[key] = (rel, props, 1, None)
+            rows = [
+                (rel, sid, eid, props, weight)
+                for (sid, eid, _), (rel, props, weight, _) in folded.items()
+            ]
+            for start in range(0, len(rows), self._BATCH_SIZE):
+                batch = rows[start : start + self._BATCH_SIZE]
                 batch_data = [
-                    {
-                        "start_id": sid,
-                        "end_id": eid,
-                        "properties": self._clean_properties(r.properties),
-                    }
-                    for r, sid, eid in batch
+                    {"start_id": sid, "end_id": eid, "properties": props}
+                    for _, sid, eid, props, _ in batch
                 ]
                 src_label, tgt_label = self._REL_LABEL_HINTS.get(
                     rel_type, ("__Entity__", "__Entity__")
@@ -716,7 +769,7 @@ class GraphStore:
                 # breaking ``delete_stale_relationships`` (a later delete
                 # of the new doc would drop the edge even though earlier
                 # docs still support it). Special-case RELATES to UNION
-                # the lists — same idiom as the deduplicator remap path.
+                # the lists — same idiom as the merge queries' RELATES block.
                 if rel_type == "RELATES":
                     # The MERGE is keyed on ``rel_type`` as well as the pair.
                     # Without it, one edge exists per (start, end) and a second
@@ -748,7 +801,7 @@ class GraphStore:
                     )
                 try:
                     await self._conn.query(query, {"batch": batch_data})
-                    count += len(batch)
+                    count += sum(weight for *_, weight in batch)
                 except Exception as exc:
                     logger.warning(
                         f"Batch upsert failed for [{safe_rel_type}] "
@@ -756,7 +809,7 @@ class GraphStore:
                         f"falling back to individual: {exc}"
                     )
                     # Per-item fallback
-                    for rel, sid, eid in batch:
+                    for rel, sid, eid, props, weight in batch:
                         fb_src, fb_tgt = self._REL_LABEL_HINTS.get(
                             rel.type, ("__Entity__", "__Entity__")
                         )
@@ -786,14 +839,10 @@ class GraphStore:
                                 f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
                                 f"SET r += $properties"
                             )
-                        params = {
-                            "start_id": sid,
-                            "end_id": eid,
-                            "properties": self._clean_properties(rel.properties),
-                        }
+                        params = {"start_id": sid, "end_id": eid, "properties": props}
                         try:
                             await self._conn.query(q, params)
-                            count += 1
+                            count += weight
                         except Exception as inner_exc:
                             logger.warning(
                                 f"Failed to upsert relationship "
@@ -817,16 +866,24 @@ class GraphStore:
 
         Args:
             chunk_id: ID of the chunk node.
-            max_hops: Maximum traversal depth (default: 1).
+            max_hops: Maximum traversal depth (default: 1). With 1, the 50
+                entities kept are those with the lowest ids; beyond one hop,
+                which 50 are kept follows the engine's row order.
 
         Returns:
             List of entity dicts with id, label, properties.
         """
         max_hops = max(1, min(max_hops, 5))
+        # Without an order, which 50 survive the LIMIT is the engine's row
+        # order — newest-first on FalkorDB 4.x, oldest-first on 6.0.x. Only one
+        # hop is ordered: an order needs every path before the LIMIT, and paths
+        # multiply with each hop — 3 hops over 40k nodes went from 0.2 s to
+        # 16.6 s on 4.x and timed out.
+        order = "ORDER BY id " if max_hops == 1 else ""
         query = (
             f"MATCH (c {{id: $chunk_id}})-[*1..{max_hops}]-(e:__Entity__) "
             f"RETURN DISTINCT e.id AS id, labels(e) AS labels, properties(e) AS props "
-            f"LIMIT 50"
+            f"{order}LIMIT 50"
         )
         try:
             result = await self._conn.query(query, {"chunk_id": chunk_id})
@@ -977,14 +1034,21 @@ class GraphStore:
         """
         stats: dict[str, Any] = {}
 
-        r = await self._conn.query("MATCH (n) RETURN count(n)")
-        stats["node_count"] = r.result_set[0][0] if r.result_set else 0
+        # The SDK's own system nodes (config, dedup records) are not data.
+        r = await self._conn.query(
+            "MATCH (n) RETURN count(n) AS n UNION ALL "
+            f"MATCH (n:{CONFIG_LABEL}) RETURN -count(n) AS n UNION ALL "
+            f"MATCH (n:{PROCESSING_LABEL}) RETURN -count(n) AS n"
+        )
+        stats["node_count"] = sum(row[0] for row in r.result_set or [])
 
         r = await self._conn.query("MATCH ()-[r]->() RETURN count(r)")
         stats["edge_count"] = r.result_set[0][0] if r.result_set else 0
 
         r = await self._conn.query("CALL db.labels()")
-        stats["entity_types"] = [row[0] for row in r.result_set] if r.result_set else []
+        stats["entity_types"] = [
+            row[0] for row in r.result_set or [] if not is_system_label(row[0])
+        ]
 
         r = await self._conn.query("CALL db.relationshipTypes()")
         stats["relationship_types"] = [row[0] for row in r.result_set] if r.result_set else []
@@ -1713,7 +1777,9 @@ class GraphStore:
                 "UNWIND $ids AS eid "
                 "MATCH (e:__Entity__ {id: eid}) "
                 "WHERE NOT (e)-[:MENTIONED_IN]->(:Chunk) "
-                "DETACH DELETE e RETURN count(e) AS n",
+                "WITH collect(e) AS orphans, collect(DISTINCT e.id) AS gone "
+                + deleted_record_clause("gone")
+                + "FOREACH (e IN orphans | DETACH DELETE e) RETURN size(orphans) AS n",
                 {"ids": batch},
             )
             deleted += r.result_set[0][0] if r.result_set else 0
@@ -2052,8 +2118,17 @@ class GraphStore:
         count = count_r.result_set[0][0] if count_r.result_set else 0
         if count == 0:
             return 0
-        await self._conn.query(f"MATCH (n:`{safe_label}`) DETACH DELETE n")
-        return count
+        while True:
+            r = await self._conn.query(
+                f"MATCH (n:`{safe_label}`) WITH n LIMIT $batch "
+                "WITH collect(n) AS nodes, "
+                "collect(DISTINCT CASE WHEN n:__Entity__ THEN n.id END) AS gone "
+                + deleted_record_clause("gone")
+                + "FOREACH (n IN nodes | DETACH DELETE n) RETURN size(nodes)",
+                {"batch": self._DELETE_BATCH},
+            )
+            if not r.result_set or r.result_set[0][0] < self._DELETE_BATCH:
+                return count
 
     async def rename_relation_type(self, old: str, new: str) -> int:
         """Recreate every ``[:old]`` edge as ``[:new]``, preserving
@@ -2251,10 +2326,14 @@ class GraphStore:
             f"MATCH (t:`{safe_tgt}`)-[:MENTIONED_IN]->(c) "
             "WHERE s <> t "
             "AND NOT $op IN coalesce(c.extracted_ops, []) "
+            # Order before collecting: the cap keeps the first pairs, and
+            # collect() order is otherwise the engine's row order, so a capped
+            # chunk showed the LLM different pairs on FalkorDB 4.x and 6.0.x.
+            "WITH c, s, t ORDER BY s.id, t.id "
             "WITH c, collect(DISTINCT {src_id: s.id, src_name: s.name, "
             "tgt_id: t.id, tgt_name: t.name}) AS pairs "
-            f"RETURN c.id AS chunk_id, c.text AS chunk_text, pairs[0..{cap}] AS pairs"
-            f"{limit_clause}",
+            f"RETURN c.id AS chunk_id, c.text AS chunk_text, pairs[0..{cap}] AS pairs "
+            f"ORDER BY chunk_id{limit_clause}",
             {"op": op_id},
         )
         return [
@@ -2297,6 +2376,69 @@ class GraphStore:
     def _clean_identifier(cls, value: Any) -> str:
         """Normalise IDs used in Cypher params."""
         return cls._sanitize_string(str(value))
+
+    @staticmethod
+    def _merge_key_value(value: Any) -> Any:
+        """A MERGE key value, compared the way FalkorDB compares it.
+
+        Numbers are equal by value (``5`` and ``5.0`` are one key, as are
+        ``0`` and ``-0.0``), a boolean is never equal to a number, and a string
+        is never equal to either. Python's ``==`` and ``hash`` already treat
+        numbers that way, so tagging the kind keeps ``True`` apart from ``1``
+        and ``"5"`` apart from ``5`` without splitting ``5`` from ``5.0``.
+        """
+        if isinstance(value, bool):
+            return ("bool", value)
+        if isinstance(value, int | float):
+            return ("number", value)
+        if isinstance(value, str):
+            return ("string", value)
+        return ("other", json.dumps(value, sort_keys=True, default=str))
+
+    @staticmethod
+    def _fold_properties(
+        acc: dict[str, Any],
+        props: dict[str, Any],
+        *,
+        union_provenance: bool,
+        seen: set[Any] | None = None,
+    ) -> tuple[dict[str, Any], set[Any] | None]:
+        """Apply a later write of the same key on top of an earlier one.
+
+        Mirrors what the MERGE ... SET statements do row by row: later
+        properties win, and where the statement unions ``source_chunk_ids``
+        an empty contribution keeps the existing list.
+
+        Writes sharing a key are folded before the batch is sent because the
+        engines disagree when one ``UNWIND ... MERGE`` batch holds the same key
+        twice: the C engine (4.x) keeps the first row's values, the Rust
+        engine (6.0.x) the last; and on both, each row reads
+        ``source_chunk_ids`` before any row's SET, so the union kept one row's
+        chunks and dropped the others'.
+
+        ``seen`` holds the ids already in ``acc``'s ``source_chunk_ids`` list;
+        pass back the set the previous fold of the same key returned. Copying
+        and scanning the list on every repeat made a key written n times cost
+        O(n²): 28 s for one edge repeated on 100,000 rows of a table. The list
+        is extended in place; it is the fresh copy ``_clean_properties`` made.
+        """
+        merged = {**acc, **props}
+        old = acc.get("source_chunk_ids")
+        contrib = props.get("source_chunk_ids")
+        if union_provenance and isinstance(old, list):
+            if not contrib:
+                merged["source_chunk_ids"] = old
+                return merged, seen
+            if isinstance(contrib, list):
+                if seen is None:
+                    seen = set(old)
+                for chunk_id in contrib:
+                    if chunk_id not in seen:
+                        seen.add(chunk_id)
+                        old.append(chunk_id)
+                merged["source_chunk_ids"] = old
+                return merged, seen
+        return merged, None
 
     @classmethod
     def _clean_properties(cls, props: dict[str, Any]) -> dict[str, Any]:
