@@ -12,7 +12,7 @@ Use the tools when questions need more than one lookup: counts and rankings, "wh
 
 | Tool | What it does |
 |---|---|
-| `status` | Entity, relation, document and chunk counts, and every entity label and relation type with its count. Call it first. |
+| `status` | Entity, relation, document and chunk counts, and every entity label and relation type with its count. |
 | `get_ontology` | Declared entity types with their properties, relation types with their (source, target) patterns. |
 | `lookup_entity` | Turn (part of) a name into exact entity names and ids, exact match first. |
 | `traverse` | Walk from one entity: every neighbour breadth-first up to `max_depth`, or one exact relation path with `via` (e.g. `["WORKS_AT", "HEADQUARTERED_IN"]`). Bounded by depth, edge and time budgets; `stopped` says which ended the walk. Edges are followed both ways. |
@@ -143,7 +143,7 @@ Claude Code / Cursor config:
 
 Configuration comes from `FALKOR_HOST`, `FALKOR_PORT`, `FALKOR_USERNAME`, `FALKOR_PASSWORD`, `GRAPHRAG_GRAPH`, `GRAPHRAG_MODEL`, `GRAPHRAG_EMBED_MODEL`, `GRAPHRAG_EMBED_DIM`, `GRAPHRAG_MCP_READ_ONLY` and `GRAPHRAG_MCP_FILES_ROOT`. A server reads files only when given `--files-root` (or `GRAPHRAG_MCP_FILES_ROOT`); without it, `ingest` takes text only. The LLM and embedder serve `retrieve`, skills and `ingest`; the other read tools need neither.
 
-The server serves the same tools, with MCP annotations (`readOnlyHint`, `destructiveHint`), and sends the client a short guide as its instructions: call `status` first, resolve names with `lookup_entity`, walk with `traverse` / `graph_walk`, use `cypher_query` last for aggregates, cite `[n]`, and run `check_citations` before replying. When it serves the write tools, the guide adds the ingestion steps above, starting with asking the user for their ontology. Results over 40,000 characters are shortened (longest lists first) and marked `truncated`.
+The server serves the same tools, with MCP annotations (`readOnlyHint`, `destructiveHint`), and sends the client a short guide as its instructions: call `retrieve` first with the user's question word for word, resolve names with `lookup_entity`, walk with `traverse` / `graph_walk`, use `status` for questions about the graph itself and `cypher_query` last for aggregates, answer briefly, cite `[n]`, and always run `check_citations` before replying. When it serves the write tools, the guide adds the ingestion steps above, starting with asking the user for their ontology. Results over 40,000 characters are shortened (longest lists first) and marked `truncated`.
 
 Each client connection gets its own evidence numbering. Over SSE that holds for every client stream, including clients on the stateless MCP protocol (2026-07-28). Over stdio one process serves one client, so there is one numbering.
 
