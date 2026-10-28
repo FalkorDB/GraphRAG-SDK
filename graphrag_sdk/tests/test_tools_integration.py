@@ -374,3 +374,15 @@ async def test_for_tenant_isolated_graphs(embedder):
                 await tk.rag._graph_store.delete_all()
             finally:
                 await tk.aclose()
+
+
+async def test_get_ontology_on_a_fresh_graph_writes_nothing(real_falkordb_rag_factory):
+    from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+
+    from .conftest import MockLLM
+
+    rag = real_falkordb_rag_factory(llm=MockLLM(responses=[]), resolver=ExactMatchResolution())
+    onto = await GraphRAGToolkit(rag, read_only=True).call("get_ontology", {})
+    assert onto.entity_types == [] and onto.relation_types == []
+    stored = await rag._ontology_store.load()
+    assert stored.entities == [] and stored.relations == []

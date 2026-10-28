@@ -353,9 +353,25 @@ class GraphRAGToolkit:
             hint=hint,
         )
 
+    async def _declared_ontology(self) -> Ontology:
+        """The persisted ontology, read without registering anything.
+
+        ``GraphRAG.get_ontology()`` registers the default entity types into
+        an empty ontology graph; a read tool must not write, and those types
+        would then be part of every ontology declared afterwards. Before
+        anything is persisted this is the ontology the GraphRAG was built with.
+        """
+        store = getattr(self._rag, "_ontology_store", None)
+        if store is None:
+            return await self._rag.get_ontology()
+        loaded = await store.load()
+        if loaded.entities or loaded.relations:
+            return loaded
+        return getattr(self._rag, "ontology", None) or Ontology()
+
     async def get_ontology(self) -> OntologyResult:
         """The declared ontology with live counts (undeclared stored types too)."""
-        ontology = await self._rag.get_ontology()
+        ontology = await self._declared_ontology()
         label_counts, rel_counts = await ops.schema_counts(self._store)
         declared_e = {e.label: e for e in ontology.entities}
         declared_r = {r.label: r for r in ontology.relations}

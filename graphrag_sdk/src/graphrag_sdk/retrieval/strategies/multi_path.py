@@ -180,7 +180,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         rel_top_k: int = 15,  # Matched to chunk_top_k for balanced fact/passage coverage
         keyword_limit: int = 10,  # Fulltext search keyword budget from query decomposition
         enable_cypher: bool = False,  # Text-to-Cypher path (experimental, off by default)
-        router: Any | None = None,  # Optional path router (agentic path selection)
+        router: Any | None = None,  # Optional path router (per-query path selection)
         ontology: Ontology | None = None,  # forwarded to Cypher generation when enable_cypher
         schema: Ontology | None = None,  # DEPRECATED: use ``ontology=`` instead
     ) -> None:
@@ -232,7 +232,8 @@ class MultiPathRetrieval(RetrievalStrategy):
         **kwargs: Any,
     ) -> RawSearchResult:
         # 0. Resolve per-call overrides. Defaults preserve normal-flow
-        # behavior; the agentic flow may pass kwargs to widen selection.
+        # behavior; a caller (e.g. the retrieve tool) may pass kwargs to
+        # widen selection.
         def _pos_int(key: str, default: int) -> int:
             val = kwargs.get(key, default)
             try:
