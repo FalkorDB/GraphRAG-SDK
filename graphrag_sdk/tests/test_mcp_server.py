@@ -4,6 +4,7 @@ MCP client (mcp 1.x or 2.x)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -153,6 +154,35 @@ class TestCallTool:
             def __init__(self):
                 self._connection = Connection()
 
+        assert server._session_toolkit(Session()) is server.toolkit
+
+    async def test_each_connection_scope_has_its_own_ledger(self, server, monkeypatch):
+        """SSE wraps each client stream in a scope, so stateless clients never share."""
+        from graphrag_sdk.mcp import server as server_module
+
+        monkeypatch.setattr(server_module, "_stateless_versions", lambda: frozenset({"next"}))
+
+        class Connection:
+            protocol_version = "next"
+            session_id = None
+
+        class Session:
+            def __init__(self):
+                self._connection = Connection()
+
+        async def handler() -> Any:
+            return server._session_toolkit(Session())
+
+        async def request() -> Any:
+            # The server runs each request in a task; tasks copy the context.
+            return await asyncio.create_task(handler())
+
+        with server.connection_scope() as first:
+            assert await request() is first
+            assert await request() is first
+        with server.connection_scope() as second:
+            assert await request() is second
+        assert first is not second and server.toolkit not in (first, second)
         assert server._session_toolkit(Session()) is server.toolkit
 
 

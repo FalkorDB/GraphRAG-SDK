@@ -113,7 +113,7 @@ Configuration comes from `FALKOR_HOST`, `FALKOR_PORT`, `FALKOR_USERNAME`, `FALKO
 
 The server serves the same tools, with MCP annotations (`readOnlyHint`, `destructiveHint`), and sends the client a short guide as its instructions: call `status` first, resolve names with `lookup_entity`, walk with `traverse` / `graph_walk`, use `cypher_query` last for aggregates, cite `[n]`, and run `check_citations` before replying. Results over 40,000 characters are shortened (longest lists first) and marked `truncated`.
 
-Each client connection gets its own evidence numbering. With the stateless MCP protocol (2026-07-28), which has no connection identity, clients of one server share it — fine for stdio, where one process serves one client.
+Each client connection gets its own evidence numbering. Over SSE that holds for every client stream, including clients on the stateless MCP protocol (2026-07-28). Over stdio one process serves one client, so there is one numbering.
 
 Serving SSE on a non-loopback host without a token is refused. A loopback SSE server only accepts requests whose `Host` / `Origin` name it (DNS-rebinding protection).
 

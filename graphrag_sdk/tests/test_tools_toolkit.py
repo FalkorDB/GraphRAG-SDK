@@ -87,6 +87,10 @@ class FakeRAG:
         self.closed = True
 
 
+async def _const(value: Any) -> Any:
+    return value
+
+
 SCHEMA = GraphSchema(
     labels=["Person", "Company", "Chunk", "Document"],
     relationship_types=["RELATES", "MENTIONED_IN", "PART_OF"],
@@ -466,6 +470,44 @@ class TestReadTools:
         monkeypatch.setattr(ops, "chunk_documents", none)
         result = await toolkit.retrieve("anything")
         assert "lookup_entity" in (result.hint or "")
+
+    async def test_retrieve_on_an_uninitialised_rag_writes_no_ontology(
+        self, toolkit, rag, monkeypatch
+    ):
+        """GraphRAG.retrieve would register the default types first; the tool must not."""
+        from graphrag_sdk.core.models import EntityType, Ontology
+
+        declared = Ontology(entities=[EntityType(label="Person")])
+        rag._ontology_initialized = False
+        rag.ontology = None
+        rag._ontology_store = SimpleNamespace(load=lambda: _const(declared))
+        validated: list[bool] = []
+
+        async def validate(*, ctx=None):
+            validated.append(True)
+
+        async def facade_retrieve(*a, **k):
+            raise AssertionError("GraphRAG.retrieve initialises (writes) the ontology")
+
+        rag._validate_graph_config = validate
+        rag.retrieve = facade_retrieve
+        seen: dict[str, Any] = {}
+
+        class Strategy:
+            def __init__(self, ontology):
+                seen["ontology"] = ontology
+
+            async def search(self, question, ctx):
+                seen["question"] = question
+                return RetrieverResult(items=[], metadata={})
+
+        monkeypatch.setattr(toolkit, "_make_strategy", lambda top_k, onto=None: Strategy(onto))
+        for name in ("enrich_entities", "chunk_documents"):
+            monkeypatch.setattr(ops, name, lambda *a, **k: _const({}))
+        monkeypatch.setattr(ops, "expand_triples", lambda *a, **k: _const([]))
+        await toolkit.retrieve("Who is Alice?")
+        assert validated == [True]
+        assert seen == {"ontology": declared, "question": "Who is Alice?"}
 
 
 # ── check_citations ────────────────────────────────────────────────

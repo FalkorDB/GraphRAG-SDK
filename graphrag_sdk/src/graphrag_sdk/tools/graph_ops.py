@@ -67,6 +67,12 @@ def _is_missing_graph(exc: Exception) -> bool:
     return "empty key" in str(exc)
 
 
+def _is_server_timeout(exc: BaseException) -> bool:
+    # FalkorDB's own TIMEOUT answers "Query timed out"; the connection wraps
+    # it in a DatabaseError, which the TIMEOUTS handlers would not catch.
+    return "timed out" in str(exc).lower()
+
+
 async def bounded_query(
     store: Any,
     cypher: str,
@@ -79,9 +85,13 @@ async def bounded_query(
             store.query_raw(cypher, params or {}, read_only=True, timeout=timeout_ms),
             timeout=timeout_ms / 1000 + 0.1,
         )
+    except TIMEOUTS:
+        raise
     except Exception as exc:
         if _is_missing_graph(exc):
             return _NoGraph()
+        if _is_server_timeout(exc):
+            raise TimeoutError(str(exc)) from exc
         raise
 
 
