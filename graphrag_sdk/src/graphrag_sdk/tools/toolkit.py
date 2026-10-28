@@ -106,6 +106,25 @@ SAMPLE_BUDGET_CHARS = 30_000
 _FILE_CONCURRENCY = 3
 
 
+_FACT_RE = re.compile(r"^(.+?) —\[([^\]]+)\]→ (.+?)(?:: (.*))?$", re.S)
+
+
+def _short_fact(raw: str) -> tuple[str, tuple[str, str, str] | None]:
+    """A retrieval fact line without the repeated triple, and its triple key.
+
+    Retrieval writes ``A —[T]→ B: (A, T, B): description``; the bracketed
+    triple only repeats ``A —[T]→ B``. Lines in other shapes pass through.
+    """
+    raw = raw.strip()
+    m = _FACT_RE.match(raw)
+    if not m:
+        return raw, None
+    src, rel_type, tgt, rest = m.group(1), m.group(2), m.group(3), m.group(4) or ""
+    body = ops.fact_body(rest, rel_type)
+    text = f"{src} —[{rel_type}]→ {tgt}" + (f": {body}" if body else "")
+    return text, (src.lower(), rel_type, tgt.lower())
+
+
 def _names_hint(names: Sequence[str]) -> str:
     shown = list(names)[:_HINT_NAMES]
     more = f" (+{len(names) - len(shown)} more)" if len(names) > len(shown) else ""
@@ -867,12 +886,14 @@ class GraphRAGToolkit:
             )
 
         relations = []
+        shown: set[tuple[str, str, str]] = set()
         for t in await ops.expand_triples(
             store, seed_ids, hops=inp.expand_hops, cap=min(4 * inp.top_k, 40)
         ):
             text = f"{t['source']} -[{t['type']}]-> {t['target']}"
             if t["fact"]:
                 text += f": {t['fact']}"
+            shown.add((t["source"].lower(), t["type"], t["target"].lower()))
             relations.append(
                 RelationTriple(
                     n=self._evidence("retrieve", "relation", text),
@@ -883,11 +904,12 @@ class GraphRAGToolkit:
                 )
             )
 
-        facts = [
-            Fact(n=self._evidence("retrieve", "fact", str(f)), text=str(f))
-            for f in (prov.get("facts") or [])[: 2 * inp.top_k]
-            if str(f).strip()
-        ]
+        facts = []
+        for raw in (prov.get("facts") or [])[: 2 * inp.top_k]:
+            text, key = _short_fact(str(raw))
+            if not text or (key and key in shown):
+                continue
+            facts.append(Fact(n=self._evidence("retrieve", "fact", text), text=text))
 
         chunks: list[ChunkRef] = []
         documents: list[DocumentRef] = []
@@ -909,7 +931,7 @@ class GraphRAGToolkit:
                         ),
                         chunk_id=c["id"],
                         document_id=doc_id,
-                        document_path=doc_path,
+                        document_path=doc_path if doc_path != doc_id else None,
                         text=text,
                     )
                 )

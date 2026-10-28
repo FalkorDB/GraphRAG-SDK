@@ -461,6 +461,44 @@ class TestReadTools:
         assert result.documents[0].document_id == "d1"
         assert toolkit.ledger.get(4).source == "/docs/a.txt"
 
+    async def test_retrieve_trims_repeated_text(self, toolkit, rag, monkeypatch):
+        rag.retrieve_result = RetrieverResult(
+            items=[],
+            metadata={
+                "provenance": {
+                    "entities": [{"id": "a", "name": "Alice"}],
+                    "facts": [
+                        "Alice —[WORKS_AT]→ Acme: (Alice, WORKS_AT, Acme): since 2020",
+                        "Acme —[BASED_IN]→ Paris: (Acme, BASED_IN, Paris): head office",
+                        "Acme —[OWNS]→ Lab: (Acme, OWNS, Lab)",
+                    ],
+                    "chunks": [{"id": "c1", "text": "Alice works at Acme."}],
+                }
+            },
+        )
+
+        async def enrich(store, ids):
+            return {}
+
+        async def triples(store, ids, *, hops, cap):
+            return [{"source": "alice", "type": "WORKS_AT", "target": "ACME", "fact": "since 2020"}]
+
+        async def docs(store, ids):
+            return {"c1": ("/docs/a.txt", "/docs/a.txt")}
+
+        monkeypatch.setattr(ops, "enrich_entities", enrich)
+        monkeypatch.setattr(ops, "expand_triples", triples)
+        monkeypatch.setattr(ops, "chunk_documents", docs)
+        result = await toolkit.retrieve("Where does Alice work?")
+        assert [f.text for f in result.facts] == [
+            "Acme —[BASED_IN]→ Paris: head office",
+            "Acme —[OWNS]→ Lab",
+        ]
+        dumped = result.chunks[0].model_dump(exclude_none=True)
+        assert dumped["document_id"] == "/docs/a.txt" and "document_path" not in dumped
+        assert toolkit.ledger.get(result.chunks[0].n).source == "/docs/a.txt"
+        assert "[/docs/a.txt]" in result.to_llm_text()
+
     async def test_retrieve_nothing_found_hint(self, toolkit, monkeypatch):
         async def none(*a, **k):
             return {}

@@ -146,6 +146,14 @@ class TestToJsonable:
     def test_embedding_keys_are_dropped_from_maps(self):
         assert ops.to_jsonable({"name": "A", "name_embedding": [1]}) == {"name": "A"}
         assert ops.to_jsonable({"name": "A", "source_chunk_ids": ["c"]}) == {"name": "A"}
+        assert ops.to_jsonable({"name": "A", "spans": '{"c1": []}'}) == {"name": "A"}
+
+    def test_fact_body_drops_the_repeated_triple(self):
+        assert ops.fact_body("(A, WORKS_AT, B): A works at B.", "WORKS_AT") == "A works at B."
+        assert ops.fact_body("(A, WORKS_AT, B)", "WORKS_AT") == ""
+        assert ops.fact_body("A works at B.", "WORKS_AT") == "A works at B."
+        assert ops.fact_body("(see note) A works at B.", "WORKS_AT") == "(see note) A works at B."
+        assert ops.fact_body("(A, WORKS_AT, B) (draft)", "WORKS_AT") == "(A, WORKS_AT, B) (draft)"
 
     def test_internal_config_node_is_never_rendered(self):
         node = SimpleNamespace(labels=["__GraphRAGConfig__"], properties={"sdk_version": "1"})

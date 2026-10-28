@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 TIMEOUTS = (TimeoutError, asyncio.TimeoutError)
 
 #: Properties never returned to a caller: vectors and bulky bookkeeping.
-_BULKY_PROPS = frozenset({"source_chunk_ids"})
+_BULKY_PROPS = frozenset({"source_chunk_ids", "spans"})
 #: Keys of the SDK's ``__GraphRAGConfig__`` node (never shown).
 _CONFIG_KEYS = frozenset({"sdk_version", "embedding_dimension"})
 #: A list of at least this many numbers is treated as a vector and omitted.
@@ -238,6 +238,26 @@ async def enrich_entities(store: Any, entity_ids: list[str]) -> dict[str, dict[s
     return cards
 
 
+def fact_body(fact: str, rel_type: str) -> str:
+    """``fact`` without the ``(source, TYPE, target): `` prefix extraction adds.
+
+    The caller already shows source, type and target, so the prefix only
+    repeats them. A fact that is nothing but the triple becomes ``""``.
+    """
+    fact = str(fact or "").strip()
+    if not fact.startswith("(") or not rel_type:
+        return fact
+    at = fact.find(f", {rel_type}, ")
+    if at < 0:
+        return fact
+    end = fact.find("): ", at)
+    if end >= 0:
+        return fact[end + 3 :].strip()
+    if fact.endswith(")") and fact.find(")", at) == len(fact) - 1:
+        return ""
+    return fact
+
+
 async def expand_triples(
     store: Any,
     seed_ids: list[str],
@@ -282,7 +302,7 @@ async def expand_triples(
                         "source": str(src),
                         "type": str(rel_type),
                         "target": str(tgt),
-                        "fact": str(fact or ""),
+                        "fact": fact_body(str(fact or ""), str(rel_type)),
                     }
                 )
             if other and other not in visited:
@@ -494,7 +514,7 @@ async def expand(
             expansions += 1
             sid, sname, tid, tname, relation = row[0], row[1], row[2], row[3], row[4]
             outgoing = bool(row[5]) if len(row) > 5 else True
-            fact = str(row[6] or "") if len(row) > 6 else ""
+            fact = fact_body(str(row[6] or ""), str(relation)) if len(row) > 6 else ""
             if tid is None:
                 continue
             src, tgt = ((sid, sname), (tid, tname)) if outgoing else ((tid, tname), (sid, sname))
