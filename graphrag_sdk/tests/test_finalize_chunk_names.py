@@ -101,6 +101,29 @@ class TestFinalizeNamesChunks:
         assert result.chunks_named == 0
         assert [name for _, _, name in await _chunks(rag)] == ["mine"]
 
+    async def test_a_document_update_is_still_replacing_is_not_named(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        for document_id in ("note.txt", "draft.txt"):
+            await rag.ingest(
+                text="Maya Ellison presented the roadmap.",
+                document_id=document_id,
+                resolver=resolver,
+            )
+        # update() writes the new version under this kind of id until it swaps it in.
+        await rag._graph_store.query_raw(
+            "MATCH (d:Document {id: 'draft.txt'}) SET d.id = 'draft.txt__pending__ab12cd34'"
+        )
+
+        result = await rag.finalize()
+
+        assert result.chunks_named == 1
+        assert await _chunks(rag) == [
+            ("draft.txt__pending__ab12cd34", 0, None),
+            ("note.txt", 0, "note.txt · chunk 0"),
+        ]
+
     async def test_name_chunks_false_leaves_chunks_as_written(
         self, real_falkordb_rag_factory, llm, resolver, ontology, tmp_path
     ):

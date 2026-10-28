@@ -246,7 +246,7 @@ Run all post-ingestion steps after all documents and tables are ingested. Bundle
 2. `deduplicate_entities(judge=..., dedup_all=...)` -- incremental and crash-safe: the pending entities (added since the last dedup run, or left pending by it) get canonical-name and acronym dedup, then one judge pass over their nearest names. Dedup writes every entity's name embedding, listing the entity first; `entities_embedded` counts them
 3. `embed_relationships()` -- fact text embeddings on RELATES edges
 4. `ensure_indices()` -- all indexes
-5. Name the chunks -- a `Chunk` with no `name` gets `"<document id> · chunk <index>"`, so it is readable in a graph browser. A chunk that already has a name is left alone, so a second call names nothing; a document `update()` is still replacing is skipped
+5. Name the chunks -- a `Chunk` with no `name` gets `"<document id> · chunk <index>"`, so it is readable in a graph browser. A chunk that already has a name is left alone, so a repeat call names only the chunks that are still unnamed; a document `update()` is still replacing is skipped
 6. A consistency report over the whole graph
 
 | Parameter | Type | Default | Description |
