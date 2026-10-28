@@ -743,6 +743,25 @@ class TestIngestFiles:
         assert doc.status == "reextracted" and doc.plan["chunker"] == "structural"
         assert fake_strategies[0][1] == ["Drug"]  # extraction told the ontology's types
 
+    async def test_reextract_keeps_the_last_plan(self, corpus, fake_strategies):
+        rag = FakeRAG()
+        tk = toolkit(rag, corpus)
+        await tk.ingest(files=["notes/*"], plan=[{"match": "a.md", "chunker": "structural"}])
+        result = await tk.new_session().ingest(files=["notes/*"], reextract=True)
+        plans = {d.path: d.plan for d in result.documents}
+        assert plans["notes/a.md"]["chunker"] == "structural"
+        assert plans["notes/a.md"]["reason"] == "the plan of this file's last ingest"
+        assert plans["notes/b.md"]["chunker"] != "structural"
+        built = [p.chunker for p, _ in fake_strategies]
+        assert built == ["structural", plans["notes/b.md"]["chunker"]]
+
+        given = await tk.ingest(
+            files=["notes/a.md"], plan=[{"match": "*", "chunker": "sentence"}], reextract=True
+        )
+        assert given.documents[0].plan["chunker"] == "sentence"  # a passed plan wins
+        again = await tk.ingest(files=["notes/a.md"], reextract=True)
+        assert again.documents[0].plan["chunker"] == "sentence"
+
     async def test_reextract_failure_is_per_file(self, corpus, fake_strategies):
         rag = FakeRAG()
         rag.fail.add("a.md")

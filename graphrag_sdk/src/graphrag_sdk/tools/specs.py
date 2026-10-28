@@ -239,7 +239,8 @@ class IngestInput(_Input):
         default=False,
         description=(
             "Re-extract content that is unchanged (after extending the ontology); "
-            "for text, pass the document_id it was stored under."
+            "for text, pass the document_id it was stored under. Without a plan, a "
+            "file keeps the plan of its last ingest."
         ),
     )
 
@@ -386,7 +387,8 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         f"({', '.join(SUPPORTED_SUFFIXES)}), at most {MAX_FILES_PER_CALL} per call, with "
         "an optional plan, one rule per kind of file, e.g. [{match: '*.md', chunker: "
         "'structural'}, {match: '*.pdf', chunker: 'fixed', chunker_params: {chunk_size: "
-        "1500}}]. Unchanged files are skipped; reextract=true runs them again. The "
+        "1500}}]. Unchanged files are skipped; reextract=true runs them again (with "
+        "their last plan unless you pass one). The "
         "result gives each file's plan and the types dropped because the ontology lacks "
         "them. Call finalize once after the whole batch.",
         read_only=False,

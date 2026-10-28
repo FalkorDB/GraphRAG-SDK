@@ -506,8 +506,11 @@ async def test_agent_ingests_a_folder(real_falkordb_rag_factory, tmp_path):
             "relations": [{"label": "INHIBITS", "patterns": [["Drug", "Gene"]]}],
         },
     )
-    redo = await tk.call("ingest", {"files": ["notes/aspirin.md"], "plan": plan, "reextract": True})
+    # Without a plan, the file keeps the plan of its last ingest.
+    redo = await tk.call("ingest", {"files": ["notes/aspirin.md"], "reextract": True})
     assert [d.status for d in redo.documents] == ["reextracted"]
+    assert redo.documents[0].plan["chunker"] == "structural"
+    assert redo.documents[0].plan["extractor"] == "llm"
     assert redo.pruned is None
 
     # 6. Finalize once, then the graph holds every declared type.

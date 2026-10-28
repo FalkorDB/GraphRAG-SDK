@@ -104,6 +104,8 @@ _HINT_NAMES = 30
 SAMPLE_BUDGET_CHARS = 30_000
 #: Files loaded or ingested at once by sample_docs / ingest(files=...).
 _FILE_CONCURRENCY = 3
+# Files whose last plan is remembered for reextract (oldest forgotten first).
+_PLAN_MEMORY = 10_000
 
 
 _FACT_RE = re.compile(r"^(.+?) —\[([^\]]+)\]→ (.+?)(?:: (.*))?$", re.S)
@@ -1269,7 +1271,9 @@ class GraphRAGToolkit:
         matches; the first matching rule wins, and the allowed options are
         those of ``plan_limits``. A file whose content is unchanged is
         skipped unless ``reextract`` is set, which re-extracts it in place
-        (after the ontology has grown, for instance).
+        (after the ontology has grown, for instance); without a ``plan``, a
+        file re-extracted this way keeps the plan of its last ingest by
+        this toolkit.
 
         Under ``finalize_policy="on_write"`` this also finalizes, whose cost
         grows with the graph; prefer "manual" and one :meth:`finalize` per batch.
@@ -1313,6 +1317,33 @@ class GraphRAGToolkit:
         out.hint = self._ingest_hint(out)
         return out
 
+    def _remember_plan(self, path: str, plan: Mapping[str, Any]) -> None:
+        plans: dict[str, dict[str, Any]] = self._shared.setdefault("file_plans", {})
+        plans.pop(path, None)
+        plans[path] = dict(plan)
+        while len(plans) > _PLAN_MEMORY:
+            del plans[next(iter(plans))]
+
+    def _last_plan(self, path: str) -> Any:
+        """The plan ``path`` was last ingested with by this toolkit, or ``None``."""
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+
+        used = self._shared.get("file_plans", {}).get(path)
+        if not used:
+            return None
+        try:
+            return IngestionPlan(
+                chunker=used["chunker"],
+                extractor=used["extractor"],
+                resolver=used["resolver"],
+                chunker_params=dict(used.get("chunker_params") or {}),
+                extractor_params=dict(used.get("extractor_params") or {}),
+                resolver_params=dict(used.get("resolver_params") or {}),
+                reason="the plan of this file's last ingest",
+            )
+        except (KeyError, ValueError):
+            return None
+
     async def _ingest_files(
         self,
         entries: list[str],
@@ -1349,12 +1380,15 @@ class GraphRAGToolkit:
                     )
                     continue
                 meta = res.metadata or {}
+                used = (meta.get("plan") or {}).get("plan")
+                if used:
+                    self._remember_plan(str(root / rel), used)
                 docs.append(
                     _ingested(
                         rel,
                         res,
                         "unchanged" if meta.get("skipped_unchanged") else "ingested",
-                        (meta.get("plan") or {}).get("plan"),
+                        used,
                     )
                 )
         else:
@@ -1364,7 +1398,9 @@ class GraphRAGToolkit:
             async def redo(rel: str, path: str) -> IngestedDocument:
                 async with gate:
                     try:
-                        p = await planner.plan(None, source=path, ctx=ctx)
+                        p = None if rules else self._last_plan(path)
+                        if p is None:
+                            p = await planner.plan(None, source=path, ctx=ctx)
                         chunker, extractor, resolver = build_ingestion_strategies(
                             p,
                             llm=self._rag.llm,
@@ -1393,6 +1429,7 @@ class GraphRAGToolkit:
                     "resolver_params": dict(p.resolver_params),
                     "reason": p.reason,
                 }
+                self._remember_plan(path, plan_info)
                 status = "reextracted" if res.replaced_existing else "ingested"
                 return _ingested(rel, res, status, plan_info)
 
