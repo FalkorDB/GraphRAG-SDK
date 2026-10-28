@@ -152,7 +152,8 @@ class ChunkRef(BaseModel):
     n: int | None = None
     chunk_id: str
     document_id: str = ""
-    document_path: str = ""
+    #: Omitted when it equals ``document_id``.
+    document_path: str | None = None
     text: str
 
 
