@@ -18,6 +18,22 @@ pip install llama-index-readers-notion                       # only for a LlamaI
 
 ---
 
+## Initial source targets
+
+The initial targets from [issue #359](https://github.com/FalkorDB/GraphRAG-SDK/issues/359) are **PostgreSQL, S3 and Notion**. No source is enabled automatically: callers supply credentials and select tables, folders or pages.
+
+| Source | Configuration | Validation in this change |
+| --- | --- | --- |
+| PostgreSQL | `sql_database(credentials=...).with_resources("table")`, plus a `TableMapping` | Database routing is exercised locally with SQLite; a live PostgreSQL connection has not been tested |
+| S3 | `file_documents(filesystem(bucket_url="s3://bucket/path", file_glob="**/*.md"), name="handbook")` | File reading is tested with local filesystem resources; live S3 access has not been tested |
+| Notion | Install `llama-index-readers-notion`, supply a token and page IDs, and pass an explicit stable-ID callback | Reader adaptation is tested with a fake reader; live Notion access has not been tested |
+
+The generic adapters also accept Google Drive, GCS, Azure, SFTP, REST resources and other LlamaIndex readers with the appropriate dependencies and configuration. These are framework capabilities, not separately validated cloud integrations. Google Drive is the alternative file-store target suggested by the issue. Adding a reader does not automatically add a UI form or OAuth flow.
+
+Every run reads a complete snapshot. This version does not use a dlt destination, persist dlt pipeline cursors or provide incremental fetching. Unchanged document content avoids model calls, but it is downloaded again.
+
+---
+
 ## Sync a database and a folder
 
 ```python
@@ -65,14 +81,15 @@ from graphrag_sdk.connectors import llamaindex_documents, sync
 notion = llamaindex_documents(
     NotionPageReader(integration_token=token),
     name="notion",
+    id_from=lambda doc: doc.id_,
     page_ids=["<page id>", "<page id>"],
 )
 await sync(rag, notion)
 ```
 
-Any object with LlamaIndex's `load_data()` works. The document's `id_` is the source's own id, and its graph id is `<name>:<id_>` (`notion:<page id>` here, which is what `delete_document()` takes). It has to be stable: the Notion reader sets it to the page id and the Google Drive reader to the file id. A reader that leaves it unset gets a random id on every load, which would add every document again on each sync. Pass `id_from=lambda doc: doc.metadata["..."]` for such a reader.
+Any object with LlamaIndex's `load_data()` works. The required `id_from` callback must return a non-empty, stable source ID, and the graph ID is `<name>:<source id>` (`notion:<page id>` here, which is what `delete_document()` takes). Use `doc.id_` only for readers that set it to a stable source ID, such as Notion's page ID. Readers may generate random IDs by default; for those, use `id_from=lambda doc: doc.metadata["..."]` to select the original source ID instead.
 
-The reader's metadata (URL, author, modified time) is stored on the `Document` node, so an answer can link back to its source.
+The reader's metadata (URL, author, modified time) is stored on the `Document` node, so an answer can link back to its source. Metadata keys must be ASCII identifiers (`source_url`, for example); keys containing spaces or punctuation, reserved bookkeeping names and unsupported values are dropped.
 
 ---
 
@@ -110,7 +127,7 @@ Credentials are dlt's: arguments, environment variables or `.dlt/secrets.toml`. 
 
 **A source name is a namespace.** `notion:` documents are only ever pruned by a sync named `notion`. Two folders need two names, and a name may not contain `:`.
 
-**Run one sync of a source at a time.** Two concurrent syncs of one source can each prune what the other just wrote.
+**Run one sync of a source at a time.** Document syncs on the same `GraphRAG` instance and event loop are serialized per source. Across SDK instances, event loops or server processes, the job runner must serialize them: conflicting syncs can prune valid documents from each other's snapshots. Table syncs must also be serialized by the caller.
 
 **Failed writes are reported, not hidden.** A document whose extraction failed for some chunks is listed in `failed` with the reason. Its content hash is not recorded, so the next sync retries it.
 
@@ -128,6 +145,8 @@ print(preview.table_rows)     # {'employees': 1204}
 ```
 
 Documents cost model calls; tables do not. A dry run reads every source and compares content hashes without writing, so `added` plus `updated` is how many documents a real run will extract.
+
+Mapping discovery uses `get_ontology(initialize=False)`, which reads persisted mappings and previews supplied table mappings without registering schema or reconciling existing data. The real write initializes the ontology as usual.
 
 ---
 

@@ -14,10 +14,12 @@ import hashlib
 import logging
 import math
 import os
+import re
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
+from weakref import WeakKeyDictionary
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import DocumentInfo, DocumentOutput
@@ -43,6 +45,9 @@ _RESERVED_PROPERTIES = frozenset(
 )
 _RESERVED_PREFIXES = ("cleanup_",)
 _PENDING_MARKER = "__pending__"
+_SOURCE_LOCKS: WeakKeyDictionary[
+    GraphRAG, WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]]
+] = WeakKeyDictionary()
 
 
 @dataclass
@@ -133,9 +138,9 @@ async def sync_documents(
 
     Pruning assumes ``documents`` is the whole source. Pass ``prune=False`` when
     it is a subset, such as only the pages edited since the last run, or every
-    document the subset left out would be deleted. Run one sync of a source at a
-    time: a second sync pruning against an older read of the graph can delete
-    what the first just wrote.
+    document the subset left out would be deleted. Calls on the same GraphRAG
+    instance and event loop are serialized per source. Across instances or
+    processes, the caller must serialize jobs to prevent conflicting pruning.
 
     Does not call :meth:`GraphRAG.finalize`; call it once after syncing.
 
@@ -162,6 +167,35 @@ async def sync_documents(
         A :class:`SyncReport`.
     """
     _check_source_name(source)
+    loop = asyncio.get_running_loop()
+    loops = _SOURCE_LOCKS.setdefault(rag, WeakKeyDictionary())
+    locks = loops.setdefault(loop, {})
+    async with locks.setdefault(source, asyncio.Lock()):
+        return await _sync_documents(
+            rag,
+            documents,
+            source=source,
+            prune=prune,
+            dry_run=dry_run,
+            cache_unchanged_chunks=cache_unchanged_chunks,
+            chunker=chunker,
+            extractor=extractor,
+            ctx=ctx,
+        )
+
+
+async def _sync_documents(
+    rag: GraphRAG,
+    documents: Iterable[SourceDocument] | AsyncIterable[SourceDocument],
+    *,
+    source: str,
+    prune: bool,
+    dry_run: bool,
+    cache_unchanged_chunks: bool,
+    chunker: ChunkingStrategy | None,
+    extractor: ExtractionStrategy | None,
+    ctx: Context | None,
+) -> SyncReport:
     existing = await _existing_documents(rag, f"{source}:")
     report = SyncReport(source=source, dry_run=dry_run)
     seen: set[str] = set()
@@ -343,7 +377,8 @@ async def sync(
         from graphrag_sdk.connectors import llamaindex_documents, sync
 
         notion = llamaindex_documents(
-            NotionPageReader(integration_token=token), name="notion", page_ids=ids
+            NotionPageReader(integration_token=token),
+            name="notion", id_from=lambda doc: doc.id_, page_ids=ids
         )
         result = await sync(rag, [notion, sql_database(credentials=pg_url)])
         await rag.finalize()
@@ -465,12 +500,17 @@ def graph_safe_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
     Strings, finite numbers and booleans are kept, dates become ISO strings, and
     lists keep their scalar items. Anything else is dropped, as are names the SDK
-    uses for its own bookkeeping on the Document node.
+    uses for its own bookkeeping on the Document node. Keys must be bare ASCII
+    identifiers, since the client's parameter serializer does not quote map keys.
     """
     safe: dict[str, Any] = {}
     for key, value in metadata.items():
         name = str(key)
-        if name in _RESERVED_PROPERTIES or name.startswith(_RESERVED_PREFIXES):
+        if (
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None
+            or name in _RESERVED_PROPERTIES
+            or name.startswith(_RESERVED_PREFIXES)
+        ):
             continue
         if isinstance(value, (list, tuple)):
             items = [v for v in (_scalar(item) for item in value) if v is not None]
@@ -532,7 +572,7 @@ async def _existing_documents(rag: GraphRAG, prefix: str) -> dict[str, str | Non
 
 
 async def _find_mapping(rag: GraphRAG, table: str) -> TableMapping | None:
-    ontology = await rag.get_ontology()
+    ontology = await rag.get_ontology(initialize=False)
     for mapping in ontology.tables:
         base = os.path.basename(os.path.normpath(mapping.source))
         if table in (base, os.path.splitext(base)[0]):
@@ -544,7 +584,7 @@ async def _mapping_named(rag: GraphRAG, table: str) -> TableMapping:
     mapping = await _find_mapping(rag, table)
     if mapping is not None:
         return mapping
-    ontology = await rag.get_ontology()
+    ontology = await rag.get_ontology(initialize=False)
     declared = ", ".join(m.source for m in ontology.tables) or "none"
     raise ValueError(
         f"No TableMapping in the ontology is for table '{table}' (declared: "

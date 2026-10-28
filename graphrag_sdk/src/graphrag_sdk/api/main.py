@@ -568,14 +568,23 @@ class GraphRAG:
 
         self._ontology_initialized = True
 
-    async def get_ontology(self) -> Ontology:
+    async def get_ontology(self, *, initialize: bool = True) -> Ontology:
         """Return the persisted global ontology.
 
         Reads from the ontology graph — the single source of truth. On the
         first call, also registers any ``ontology`` passed to :py:class:`GraphRAG`
         into the ontology graph (validating no type contradictions with what's
         already persisted).
+
+        With ``initialize=False``, only read the store. Before initialization,
+        overlay the supplied table mappings, if any, as a preview of the mappings
+        initialization will use. This never registers schema or reconciles data.
         """
+        if not initialize:
+            loaded = await self._ontology_store.load()
+            if not self._ontology_initialized and self.ontology.tables:
+                return loaded.model_copy(update={"tables": list(self.ontology.tables)})
+            return loaded
         await self._ensure_ontology_initialized()
         # Always reflect the latest persisted state in case another writer
         # has registered new types since our last ensure_initialized.

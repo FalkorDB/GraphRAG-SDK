@@ -49,18 +49,20 @@ HERE = Path(tempfile.gettempdir()) / "graphrag_connectors_demo"
 def prepare_sources() -> str:
     """A SQLite table of employees and a folder of notes about them."""
     notes = HERE / "notes"
-    notes.mkdir(parents=True, exist_ok=True)
-    for name, text in {
-        "acme.md": "Acme Corp missed its Q3 revenue target. Alice leads the recovery plan.",
-        "initech.md": "Bob moved from Acme Corp to Initech in September.",
-    }.items():
-        if not (notes / name).exists():
+    if not notes.exists():
+        notes.mkdir(parents=True)
+        for name, text in {
+            "acme.md": "Acme Corp missed its Q3 revenue target. Alice leads the recovery plan.",
+            "initech.md": "Bob moved from Acme Corp to Initech in September.",
+        }.items():
             (notes / name).write_text(text)
 
     db = HERE / "crm.sqlite"
+    initialize = not db.exists()
     with sqlite3.connect(db) as con:
         con.execute("CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY, name TEXT)")
-        con.execute("INSERT OR IGNORE INTO employees VALUES (1, 'Alice'), (2, 'Bob')")
+        if initialize:
+            con.execute("INSERT INTO employees VALUES (1, 'Alice'), (2, 'Bob')")
     return f"sqlite:///{db}"
 
 

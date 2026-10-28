@@ -7,10 +7,12 @@ skipped unless RUN_INTEGRATION=1.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -80,7 +82,8 @@ class FakeGraph:
         self.deletes.append(document_id)
         self.documents.pop(document_id, None)
 
-    async def get_ontology(self) -> Ontology:
+    async def get_ontology(self, *, initialize: bool = True) -> Ontology:
+        assert not initialize, "connector preflight must not initialize schema"
         return self.ontology
 
     async def ingest(self, source: str, *, record_loader: Any, ctx: Any = None):
@@ -97,6 +100,29 @@ class FakeGraph:
 
 
 # ── sync_documents ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("supplied", [True, False])
+async def test_mapping_preview_reads_without_initializing_schema(supplied):
+    stored = TableMapping(source="employees", label="Person", key="id", name="name")
+    declared = TableMapping(source="people", label="Person", key="id", name="name")
+    graph = object.__new__(GraphRAG)
+    graph.ontology = Ontology(
+        entities=[Entity(label="Person")], tables=[declared] if supplied else []
+    )
+    graph._ontology_initialized = False
+    graph._ontology_store = AsyncMock()
+    graph._ontology_store.load.return_value = Ontology(
+        entities=[Entity(label="Person")], tables=[stored]
+    )
+    graph._ensure_ontology_initialized = AsyncMock()
+
+    preview = await graph.get_ontology(initialize=False)
+
+    assert preview.tables == [declared if supplied else stored]
+    graph._ensure_ontology_initialized.assert_not_called()
+    graph._ontology_store.register.assert_not_called()
+    assert not graph._ontology_initialized
 
 
 async def test_first_sync_adds_every_document_under_the_source_prefix():
@@ -556,10 +582,81 @@ async def test_llamaindex_documents_takes_the_reader_id_and_metadata(dlt):
             assert kwargs == {"page_ids": ["p1"]}
             return [Doc("p1", "Alice.", {"url": "https://notion.so/p1"})]
 
-    resource = llamaindex_documents(Reader(), name="notion", page_ids=["p1"])
+    resource = llamaindex_documents(
+        Reader(), name="notion", id_from=lambda doc: doc.id_, page_ids=["p1"]
+    )
 
     assert resource.name == "notion"
     assert list(resource) == [SourceDocument("p1", "Alice.", {"url": "https://notion.so/p1"})]
+
+
+def test_llamaindex_documents_requires_an_explicit_id_callback(dlt):
+    from graphrag_sdk.connectors import llamaindex_documents
+
+    with pytest.raises(TypeError, match="id_from"):
+        llamaindex_documents(object(), name="notion")
+
+
+async def test_llamaindex_documents_uses_stable_metadata_ids(dlt):
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from graphrag_sdk.connectors import llamaindex_documents
+
+    class Reader:
+        def load_data(self):
+            return [SimpleNamespace(id_=str(uuid4()), text="Alice", metadata={"page_id": "p1"})]
+
+    resource = llamaindex_documents(
+        Reader(), name="notion", id_from=lambda doc: doc.metadata["page_id"]
+    )
+    graph = FakeGraph()
+    first = await sync(graph, resource)
+    second = await sync(graph, resource)
+    assert first.documents["notion"].added == ["notion:p1"]
+    assert second.documents["notion"].unchanged == ["notion:p1"]
+    assert graph.deletes == []
+
+
+def test_graph_safe_metadata_drops_non_identifier_keys():
+    assert graph_safe_metadata(
+        {"last modified": "today", "@odata.etag": "v1", "1key": 1, "source_url": "url"}
+    ) == {"source_url": "url"}
+
+
+async def test_same_source_syncs_are_serialized():
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    attempted = asyncio.Event()
+
+    class BlockingGraph(FakeGraph):
+        reads = 0
+
+        async def query(self, cypher, params):
+            self.reads += 1
+            snapshot = await super().query(cypher, params)
+            if self.reads == 1:
+                entered.set()
+                await release.wait()
+            return snapshot
+
+    graph = BlockingGraph()
+    first = asyncio.create_task(sync_documents(graph, [SourceDocument("a", "A")], source="wiki"))
+    await asyncio.wait_for(entered.wait(), 2)
+
+    async def next_sync():
+        attempted.set()
+        return await sync_documents(graph, [SourceDocument("b", "B")], source="wiki")
+
+    second = asyncio.create_task(next_sync())
+    try:
+        await asyncio.wait_for(attempted.wait(), 2)
+        assert graph.reads == 1
+    finally:
+        release.set()
+        results = await asyncio.wait_for(asyncio.gather(first, second), 2)
+    assert results[1].deleted == ["wiki:a"]
+    assert graph.documents == {"wiki:b": _hash("B")}
 
 
 async def test_file_documents_reads_text_files_and_skips_the_rest(dlt, tmp_path):
@@ -576,6 +673,26 @@ async def test_file_documents_reads_text_files_and_skips_the_rest(dlt, tmp_path)
     assert [d.text for d in docs] == ["# A\nAlice works at Acme."]
     assert docs[0].id == docs[0].metadata["source_url"]
     assert docs[0].id.endswith("/a.md")
+
+
+def test_demo_preparation_preserves_edits_and_deletions(dlt, tmp_path):
+    import runpy
+    import sqlite3
+
+    pytest.importorskip("sqlalchemy")
+    demo = runpy.run_path(str(Path(__file__).parents[1] / "examples" / "12_connectors.py"))
+    prepare = demo["prepare_sources"]
+    prepare.__globals__["HERE"] = tmp_path
+    prepare()
+    (tmp_path / "notes" / "acme.md").write_text("Edited")
+    (tmp_path / "notes" / "initech.md").unlink()
+    with sqlite3.connect(tmp_path / "crm.sqlite") as connection:
+        connection.execute("DELETE FROM employees WHERE id = 2")
+    prepare()
+    assert (tmp_path / "notes" / "acme.md").read_text() == "Edited"
+    assert not (tmp_path / "notes" / "initech.md").exists()
+    with sqlite3.connect(tmp_path / "crm.sqlite") as connection:
+        assert connection.execute("SELECT id FROM employees").fetchall() == [(1,)]
 
 
 async def test_file_documents_takes_one_file_at_a_time_too(dlt, tmp_path):
@@ -739,3 +856,44 @@ async def test_empty_table_and_metadata_refresh_against_falkordb(
     assert report.unchanged == ["notion:p1"]
     url = await rag.query("MATCH (d:Document {id: 'notion:p1'}) RETURN d.url")
     assert url == [["https://notion.so/new"]]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_mapping_preflight_preserves_live_properties(
+    real_falkordb_rag_factory, scripted_llm, dlt, dry_run
+):
+    original = TableMapping(
+        source="users", label="Person", key="id", name="name", properties={"city": "city"}
+    )
+    rag = real_falkordb_rag_factory(
+        llm=scripted_llm(),
+        resolver=None,
+        ontology=Ontology(entities=[Entity(label="Person")], tables=[original]),
+    )
+    await sync_table(rag, [{"id": 1, "name": "Alice", "city": "Rome"}], table="users")
+    stored = await rag.get_ontology()
+    rag.ontology = Ontology(
+        entities=[Entity(label="Person")],
+        tables=[TableMapping(source="users", label="Person", key="id", name="name")],
+    )
+    rag._ontology_initialized = False
+
+    @dlt.resource(name="users")
+    def users():
+        yield {"id": 1, "name": "Alice"}
+
+    @dlt.resource(name="invalid")
+    def invalid():
+        yield "not a document or row"
+
+    if dry_run:
+        result = await sync(rag, users(), dry_run=True)
+        assert result.table_rows == {"users": 1}
+    else:
+        with pytest.raises(TypeError, match="yielded str"):
+            await sync(rag, [users(), invalid()])
+
+    assert not rag._ontology_initialized
+    assert (await rag._ontology_store.load()).tables == stored.tables
+    assert await rag.query("MATCH (p:Person) RETURN p.users__city") == [["Rome"]]

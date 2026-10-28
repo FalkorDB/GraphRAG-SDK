@@ -34,7 +34,7 @@ def llamaindex_documents(
     reader: Any,
     *,
     name: str,
-    id_from: Callable[[Any], str] | None = None,
+    id_from: Callable[[Any], str],
     **load_kwargs: Any,
 ) -> DltResource:
     """A dlt resource of the documents a LlamaIndex reader loads.
@@ -48,25 +48,26 @@ def llamaindex_documents(
         from llama_index.readers.notion import NotionPageReader
 
         notion = llamaindex_documents(
-            NotionPageReader(integration_token=token), name="notion", page_ids=ids
+            NotionPageReader(integration_token=token),
+            name="notion", id_from=lambda doc: doc.id_, page_ids=ids
         )
         await sync(rag, notion)
 
     Args:
         reader: Any object with LlamaIndex's ``load_data(**kwargs)`` method.
         name: The source name. Each document's graph id is ``<name>:<id>``.
-        id_from: How to read a document's stable id. Defaults to the document's
-            ``id_``, which the Notion reader sets to the page id and the Google
-            Drive reader to the file id. A reader that leaves it unset gets a
-            random id per load, so every sync would add the documents again and
-            delete the previous copies; pass ``id_from`` for such a reader.
+        id_from: Required callback returning a stable source id. Use ``doc.id_``
+            only when the reader sets it to the source's id, as Notion does.
+            Other readers may generate random ids; use their metadata instead.
         **load_kwargs: Passed to ``reader.load_data``.
     """
 
     @dlt.resource(name=name)
     def documents() -> Iterator[SourceDocument]:
         for doc in reader.load_data(**load_kwargs):
-            doc_id = id_from(doc) if id_from is not None else doc.id_
+            doc_id = id_from(doc)
+            if not isinstance(doc_id, str) or not doc_id.strip():
+                raise ValueError("id_from must return a non-empty stable source id")
             yield SourceDocument(id=str(doc_id), text=doc.text, metadata=dict(doc.metadata or {}))
 
     return documents()

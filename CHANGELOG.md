@@ -32,11 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   written. Documents with incomplete writes are reported as failed, and metadata
   changes on unchanged text are applied without re-extraction. `dry_run=True`
   reports added, updated, unchanged and deleted documents before any model call.
-- **`llamaindex_documents(reader, name=...)`** wraps any LlamaIndex reader as a
+- **`llamaindex_documents(reader, name=..., id_from=...)`** wraps a LlamaIndex reader as a
   dlt resource, for apps dlt has no document source for (Notion, Confluence,
   SharePoint). **`file_documents(filesystem(...), name=...)`** reads Markdown,
   text and PDF out of a dlt filesystem listing. Source metadata such as URL and
   modified time is stored on the `Document` node.
+- **Connector safety:** mapping previews use `get_ontology(initialize=False)`
+  without schema registration or data reconciliation. Reader adapters require
+  an explicit stable-ID callback, unsafe metadata keys are dropped, and document
+  syncs on one SDK instance and event loop serialize by source. Cross-instance
+  and multi-process synchronization remains the caller's responsibility.
 - **`sync_documents()` and `sync_table()`** take plain iterables, for sources
   fetched without dlt.
 - **A `record_loader` now marks a source with no table suffix as a table**, so
