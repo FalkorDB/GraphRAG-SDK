@@ -74,13 +74,28 @@ class TestFiles:
             fs.resolve_root("~")
         (tmp_path / "docs").mkdir()
         assert fs.resolve_root(tmp_path / "docs") == (tmp_path / "docs").resolve()
+        home = tmp_path / "users" / "me"
+        home.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        with pytest.raises(ValueError, match="filesystem root or the home folder"):
+            fs.resolve_root(tmp_path / "users")
 
     def test_listing_is_capped(self, corpus):
         root = fs.resolve_root(corpus)
         with pytest.raises(ToolError, match="more than 3 entries"):
             fs.list_files(root, max_entries=3)
-        # A pattern naming a folder walks only that folder.
-        assert fs.list_files(root, "notes/*.md", max_entries=3) == ["notes/a.md", "notes/b.md"]
+
+    def test_folder_patterns_match_at_any_depth_with_disk_casing(self, tmp_path):
+        root = tmp_path / "root"
+        (root / "reports").mkdir(parents=True)
+        (root / "archive" / "reports").mkdir(parents=True)
+        (root / "reports" / "a.md").write_text("A.")
+        (root / "archive" / "reports" / "b.md").write_text("B.")
+        root = fs.resolve_root(root)
+        expected = ["archive/reports/b.md", "reports/a.md"]
+        assert fs.list_files(root, "reports/*.md") == expected
+        assert fs.list_files(root, "Reports/*.md") == expected
 
     def test_literal_names_with_glob_characters(self, corpus):
         root = fs.resolve_root(corpus)

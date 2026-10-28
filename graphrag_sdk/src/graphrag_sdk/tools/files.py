@@ -24,13 +24,15 @@ _GLOB_CHARS = frozenset("*?[")
 def resolve_root(root: str | os.PathLike[str]) -> Path:
     """``root`` as an absolute, symlink-free directory path.
 
-    The filesystem root and the home folder are refused: an agent could then
-    read every document of the machine or the user.
+    The filesystem root, the home folder and any folder holding it (such as
+    ``/Users``) are refused: an agent could then read every document of the
+    machine or the user.
     """
     path = Path(root).expanduser().resolve()
     if not path.is_dir():
         raise ValueError(f"files_root {str(root)!r} is not a directory")
-    if path == Path(path.anchor) or path == Path.home().resolve():
+    home = Path.home().resolve()
+    if path == Path(path.anchor) or home == path or home.is_relative_to(path):
         raise ValueError(
             f"files_root {str(root)!r} is the filesystem root or the home folder; "
             "choose the folder that holds the documents"
@@ -66,19 +68,6 @@ def _supported(name: str) -> bool:
     return name.lower().endswith(SUPPORTED_SUFFIXES)
 
 
-def _walk_start(root: Path, pattern: str) -> Path:
-    """The deepest folder named literally at the start of ``pattern``."""
-    start = root
-    for part in PurePosixPath(pattern).parts[:-1]:
-        if _GLOB_CHARS & set(part) or part.startswith("."):
-            break
-        nxt = start / part
-        if not nxt.is_dir() or nxt.is_symlink():
-            break
-        start = nxt
-    return start
-
-
 def list_files(
     root: Path, pattern: str = "**/*", *, max_entries: int = MAX_WALK_ENTRIES
 ) -> list[str]:
@@ -86,19 +75,19 @@ def list_files(
 
     Hidden files and folders are skipped, folder symlinks are not followed
     and a file symlink pointing outside the root is left out. The walk
-    starts at the folder the pattern names (``reports/**/*.pdf`` walks only
-    ``reports``) and stops with a ToolError after ``max_entries`` entries.
+    always starts at ``root`` (a pattern also matches at any depth) and stops
+    with a ToolError after ``max_entries`` entries.
     Blocking: call it from a worker thread in async code.
     """
     pattern = _check_relative(pattern)
     found: list[str] = []
     seen = 0
-    for folder, dirs, names in os.walk(_walk_start(root, pattern), followlinks=False):
+    for folder, dirs, names in os.walk(root, followlinks=False):
         seen += len(dirs) + len(names)
         if seen > max_entries:
             raise ToolError(
-                f"The files root holds more than {max_entries} entries under {pattern!r}.",
-                hint="Narrow the pattern to a folder, e.g. 'reports/**/*.pdf'.",
+                f"The files root holds more than {max_entries} entries.",
+                hint="Point files_root at the folder that holds the documents.",
             )
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         base = Path(folder)

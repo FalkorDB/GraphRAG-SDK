@@ -89,7 +89,7 @@ print(result.pruned)                                   # what the ontology misse
 await toolkit.finalize()
 ```
 
-Unchanged files are skipped (`status: "unchanged"`); pass `reextract=true` to extract them again. Text works the same way: an unchanged text comes back with `status: "unchanged"`, and `ingest(text=..., document_id=..., reextract=true)` extracts it again. A file name with `*`, `?` or `[` in it is read as that file when it exists. Listing a folder stops after 100,000 entries; narrow the pattern (`reports/**/*.pdf` walks only `reports`) for bigger trees. The filesystem root and the home folder are refused as `files_root`. The planner behind `plan` is `RuleBasedIngestionPlanner`, also usable directly with `rag.ingest(paths, planner=...)` (see [Ingestion](/ingestion#agentic-strategy-selection-auto%3Dtrue)).
+Unchanged files are skipped (`status: "unchanged"`); pass `reextract=true` to extract them again. Text works the same way: an unchanged text comes back with `status: "unchanged"`, and `ingest(text=..., document_id=..., reextract=true)` extracts it again. A file name with `*`, `?` or `[` in it is read as that file when it exists. Listing stops after walking 100,000 entries under `files_root`; point it at the folder that holds the documents. The filesystem root, the home folder and folders that contain it are refused as `files_root`. The planner behind `plan` is `RuleBasedIngestionPlanner`, also usable directly with `rag.ingest(paths, planner=...)` (see [Ingestion](/ingestion#agentic-strategy-selection-auto%3Dtrue)).
 
 ## Evidence and citations
 
