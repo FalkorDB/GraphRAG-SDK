@@ -99,7 +99,7 @@ def test_write_flags():
         for td in TOOL_REGISTRY
     }
     assert flags["preview_files"] == (True, False, False, True)
-    assert flags["set_ontology"] == (False, False, False, True)
+    assert flags["set_ontology"] == (False, True, False, True)
     assert flags["ingest"] == (False, False, False, True)
     assert flags["finalize"] == (False, True, True, True)
     for name in READ_NAMES:

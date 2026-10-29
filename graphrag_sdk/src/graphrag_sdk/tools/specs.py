@@ -418,6 +418,9 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "added to an existing relation). Labels: letters, digits, spaces, '_' or '-'. "
         "Returns the full ontology.",
         read_only=False,
+        # It rewrites the stored ontology that every later ingest prunes by,
+        # so MCP clients ask the user before running it.
+        destructive=True,
         ingest_only=True,
     ),
     ToolDef(

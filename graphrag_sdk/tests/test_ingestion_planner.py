@@ -250,6 +250,7 @@ def _fake_rag(llm, *, entities=None):
         embedder=MockEmbedder(),
         ontology=SimpleNamespace(entities=entities or []),
         _markdown_elements=GraphRAG._markdown_elements,
+        _chunk_budget=GraphRAG._chunk_budget,
     )
     rag._ontology_entity_types = lambda: GraphRAG._ontology_entity_types(rag)
     return rag

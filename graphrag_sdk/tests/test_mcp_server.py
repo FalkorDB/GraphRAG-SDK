@@ -73,6 +73,10 @@ class TestToolList:
         assert tools["cypher_query"]["annotations"]["readOnlyHint"] is True
         assert tools["ingest"]["annotations"]["readOnlyHint"] is False
         assert tools["finalize"]["annotations"]["destructiveHint"] is True
+        # set_ontology rewrites the stored ontology: clients confirm before running it.
+        assert tools["set_ontology"]["annotations"]["destructiveHint"] is True
+        assert tools["set_ontology"]["annotations"]["readOnlyHint"] is False
+        assert tools["ingest"]["annotations"].get("destructiveHint") is not True
         for tool in tools.values():
             assert tool["inputSchema"]["type"] == "object"
             assert tool["inputSchema"].get("additionalProperties") is False

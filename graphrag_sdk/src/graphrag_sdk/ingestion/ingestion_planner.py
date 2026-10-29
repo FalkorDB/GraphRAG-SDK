@@ -27,7 +27,9 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+from graphrag_sdk.core.exceptions import ChunkingError, LatencyBudgetExceededError
+from graphrag_sdk.core.models import DocumentOutput, TextChunks
+from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.contextual_chunking import (
     ContextualChunking,
 )
@@ -357,12 +359,63 @@ def _check_allowed(component: str, allowed: Any, known: tuple[str, ...]) -> tupl
 def _check_max_llm_pairs(value: Any) -> int:
     """``0`` (no llm_verified) or a pair budget within the resolver's range."""
     lo, hi = PARAM_SPECS["resolver"]["llm_verified"]["max_llm_pairs"][1:3]
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value != int(value)
+    ):
         raise ValueError("max_llm_pairs must be a whole number")
     value = int(value)
     if value != 0 and not (lo <= value <= hi):
         raise ValueError(f"max_llm_pairs must be 0 (no llm_verified) or in [{int(lo)}, {int(hi)}]")
     return value
+
+
+def _check_max_chunks(value: Any) -> int | None:
+    """``None`` (no budget) or a positive whole number of chunks."""
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value != int(value)
+        or value < 1
+    ):
+        raise ValueError("max_chunks must be a positive whole number or None")
+    return int(value)
+
+
+class ChunkBudgetExceededError(ChunkingError):
+    """A document makes more chunks than the planner's ``max_chunks`` allows."""
+
+
+class ChunkBudget(ChunkingStrategy):
+    """Wraps a chunker and refuses a document that makes over ``max_chunks`` chunks.
+
+    The pipeline chunks before it extracts, so a refused document costs no
+    extraction call (and writes nothing).
+    """
+
+    def __init__(self, chunker: ChunkingStrategy, max_chunks: int) -> None:
+        self.chunker = chunker
+        self.max_chunks = max_chunks
+
+    def _check(self, chunks: TextChunks) -> TextChunks:
+        if len(chunks.chunks) > self.max_chunks:
+            raise ChunkBudgetExceededError(
+                f"The document makes {len(chunks.chunks)} chunks, over max_chunks="
+                f"{self.max_chunks} (one extraction LLM call each); nothing was extracted. "
+                "Split the document, use larger chunks, or raise max_chunks."
+            )
+        return chunks
+
+    async def chunk(self, text: str, ctx: Context) -> TextChunks:
+        return self._check(await self.chunker.chunk(text, ctx))
+
+    async def chunk_document(self, document: DocumentOutput, ctx: Context) -> TextChunks:
+        return self._check(await self.chunker.chunk_document(document, ctx))
 
 
 def restrict_plan(
@@ -381,7 +434,9 @@ def restrict_plan(
     are dropped. ``max_llm_pairs`` caps the llm_verified resolver's pair budget:
     ``0`` disallows ``llm_verified`` altogether, otherwise it must be within
     the resolver's own range (10-5000). With ``tune_params=False`` every
-    parameter the plan set is dropped (each strategy keeps its defaults).
+    parameter the plan set is dropped (each strategy keeps its defaults),
+    except that a ``max_llm_pairs`` below the resolver's default is still
+    applied.
     The document sample is part of the planner's prompt, so this is what keeps
     document text from steering ingestion into the expensive strategies.
     """
@@ -400,8 +455,8 @@ def restrict_plan(
     extractor = pick(plan.extractor, extractors, DEFAULT_EXTRACTOR)
     resolver = pick(plan.resolver, resolvers, DEFAULT_RESOLVER)
     resolver_params = dict(plan.resolver_params) if resolver == plan.resolver else {}
+    default_pairs = int(PARAM_SPECS["resolver"]["llm_verified"]["max_llm_pairs"][3])
     if resolver == "llm_verified" and max_llm_pairs is not None:
-        default_pairs = int(PARAM_SPECS["resolver"]["llm_verified"]["max_llm_pairs"][3])
         pairs = int(resolver_params.get("max_llm_pairs", default_pairs))
         if pairs > max_llm_pairs:
             resolver_params["max_llm_pairs"] = int(max_llm_pairs)
@@ -411,7 +466,19 @@ def restrict_plan(
         note = "restricted to the allowed options"
         reason = f"{reason} ({note})" if reason else note
     if not tune_params:
-        return IngestionPlan(chunker=chunker, extractor=extractor, resolver=resolver, reason=reason)
+        # The plan's own params are dropped, but the pair ceiling is the
+        # caller's, not the plan's: without it the resolver takes its 500.
+        capped: dict[str, Any] = {}
+        if resolver == "llm_verified" and max_llm_pairs is not None:
+            if max_llm_pairs < default_pairs:
+                capped["max_llm_pairs"] = int(max_llm_pairs)
+        return IngestionPlan(
+            chunker=chunker,
+            extractor=extractor,
+            resolver=resolver,
+            reason=reason,
+            resolver_params=capped,
+        )
     return IngestionPlan(
         chunker=chunker,
         extractor=extractor,
@@ -609,9 +676,17 @@ class LLMIngestionPlanner:
             (or the first allowed option) and is never built.
         max_llm_pairs: upper bound on the llm_verified resolver's LLM pair
             budget the plan may set (default 500, the resolver's own default);
-            ``0`` disallows ``llm_verified``.
+            ``0`` disallows ``llm_verified``. The budget is per label group;
+            the resolver's cross-label pass (up to 200 pairs) and description
+            summaries are on top of it.
         tune_params: let the plan set parameters inside the chosen
-            strategies (default ``True``); ``False`` keeps every default.
+            strategies (default ``True``); ``False`` keeps every default
+            except a lower ``max_llm_pairs``.
+        max_chunks: most chunks one document may make (default ``None``: no
+            budget). ``GraphRAG.ingest`` applies it to whatever chunker it
+            uses: a document over it fails with
+            :class:`ChunkBudgetExceededError` after chunking, before any
+            extraction call.
     """
 
     def __init__(
@@ -623,8 +698,10 @@ class LLMIngestionPlanner:
         resolvers: tuple[str, ...] | list[str] = RESOLVERS,
         max_llm_pairs: int = 500,
         tune_params: bool = True,
+        max_chunks: int | None = None,
     ) -> None:
         self._llm = llm
+        self.max_chunks = _check_max_chunks(max_chunks)
         self.chunkers = _check_allowed("chunker", chunkers, CHUNKERS)
         self.extractors = _check_allowed("extractor", extractors, EXTRACTORS)
         self.max_llm_pairs = _check_max_llm_pairs(max_llm_pairs)
@@ -703,13 +780,15 @@ class LLMIngestionPlanner:
 
 
 #: The cheap options: no strategy that adds LLM calls beyond the one
-#: extraction call per chunk. The default ceiling for plans an outside agent
+#: extraction call per chunk, and at most 1000 chunks (so 1000 extraction
+#: calls) per document. The default ceiling for plans an outside agent
 #: writes (``GraphRAGToolkit(plan_limits=...)``).
 CHEAP_PLAN_LIMITS: Mapping[str, Any] = {
     "chunkers": ("sentence", "fixed", "structural"),
     "extractors": ("gliner",),
     "resolvers": ("exact",),
     "max_llm_pairs": 0,
+    "max_chunks": 1000,
 }
 
 _RULE_KEYS = frozenset(
@@ -805,9 +884,9 @@ class RuleBasedIngestionPlanner:
         rules: :class:`PlanRule` objects or dicts for :meth:`PlanRule.from_dict`.
         default: Plan for files no rule matches (default: the SDK defaults).
         root: Folder that file paths are matched relative to.
-        chunkers / extractors / resolvers / max_llm_pairs / tune_params:
-            The cost ceiling; see :class:`LLMIngestionPlanner`. ``None``
-            for ``max_llm_pairs`` leaves the resolver's own budget.
+        chunkers / extractors / resolvers / max_llm_pairs / tune_params /
+            max_chunks: The cost ceiling; see :class:`LLMIngestionPlanner`.
+            ``None`` for ``max_llm_pairs`` leaves the resolver's own budget.
     """
 
     def __init__(
@@ -820,9 +899,11 @@ class RuleBasedIngestionPlanner:
         resolvers: Sequence[str] = RESOLVERS,
         max_llm_pairs: int | None = None,
         tune_params: bool = True,
+        max_chunks: int | None = None,
         root: str | os.PathLike[str] | None = None,
     ) -> None:
         self.root = Path(root).resolve() if root is not None else None
+        self.max_chunks = _check_max_chunks(max_chunks)
         self.rules: tuple[PlanRule, ...] = tuple(
             r if isinstance(r, PlanRule) else PlanRule.from_dict(r) for r in rules
         )

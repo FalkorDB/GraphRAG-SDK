@@ -21,6 +21,7 @@ from typing import Any, Literal
 
 from graphrag_sdk.core.exceptions import ReadOnlyViolation
 from graphrag_sdk.tools.errors import ToolError
+from graphrag_sdk.tools.files import MAX_FILE_BYTES
 from graphrag_sdk.tools.toolkit import FinalizePolicy, GraphRAGToolkit
 
 logger = logging.getLogger(__name__)
@@ -64,13 +65,14 @@ so. When a call fails, read its hint: it names the tool to call or the exact
 names to use.
 """
 
-#: Added to :data:`GUIDE` when the ingestion tools are served.
-INGEST_GUIDE = """\
 
-To build or extend the graph from documents:
-1. Ask the user whether they have an ontology (the entity and relation types
-   to extract). If they do, declare it with set_ontology and go to step 3.
-2. If not, design one: call preview_files and follow next_offset until it is
+def _files_guide(*, ontology: bool, finalize: bool) -> str:
+    """The steps for building from files, naming only the tools that are served."""
+    if ontology:
+        steps = [
+            """Ask the user whether they have an ontology (the entity and relation types
+   to extract). If they do, declare it with set_ontology and go to step 3.""",
+            """If not, design one: call preview_files and follow next_offset until it is
    null, so you have seen one sample from every file. Choose ONE ontology for
    the whole corpus (types that recur across files, each with a short
    description, and relations with their [source, target] patterns), and
@@ -78,40 +80,90 @@ To build or extend the graph from documents:
    kind of link the samples show (owns, causes, supplies, depends on, ...):
    with only a few broad types, extraction files facts under the wrong one.
    Give each relation every [source, target] pair it can join; a relation
-   between undeclared types is dropped.
-3. Plan per file type from what preview_files showed, e.g. structural chunking
+   between undeclared types is dropped.""",
+        ]
+    else:
+        steps = [
+            """Call get_ontology: extraction keeps only its types, and only the server
+   operator can change them. Call preview_files and follow next_offset until
+   it is null, to see the files.""",
+        ]
+    steps.append(
+        """Plan per file type from what preview_files showed, e.g. structural chunking
    for Markdown with headings. Call ingest(files=[...], plan=[rules]) in
-   batches of at most 50 files; a glob such as 'reports/*.pdf' is fine.
-4. Call finalize once, after the last batch.
-5. Read each result's pruned and hint. Relations dropped for an undeclared
+   batches of at most 50 files; a glob such as 'reports/*.pdf' is fine."""
+    )
+    if finalize:
+        steps.append("Call finalize once, after the last batch.")
+    if ontology:
+        tail = (
+            " and\n   finalize again. Do the same for undeclared types that matter (dropped, or"
+            "\n   stored as Unknown)."
+            if finalize
+            else ".\n   Do the same for undeclared types that matter (dropped, or stored as"
+            "\n   Unknown)."
+        )
+        steps.append(
+            """Read each result's pruned and hint. Relations dropped for an undeclared
    [source, target] pair are often real facts. Add a pair only when the
    relation's meaning fits it (SUPPLIES Company->Product, not
    Company->Event); otherwise declare a better relation type for those
-   facts. Then call ingest(files=[the affected files], reextract=true) and
-   finalize again. Do the same for undeclared types that matter (dropped, or
-   stored as Unknown).
-To add a single text instead, call ingest(text=..., document_id=...).
-"""
+   facts. Then call ingest(files=[the affected files], reextract=true)"""
+            + tail
+        )
+    else:
+        steps.append(
+            """Read each result's pruned: it lists the types and [source, target] pairs
+   the ontology lacks, which were dropped. Tell the user which matter; only
+   the server operator can add them."""
+        )
+    body = "\n".join(f"{n}. {step}" for n, step in enumerate(steps, 1))
+    return (
+        "\nTo build or extend the graph from documents:\n"
+        f"{body}\n"
+        "To add a single text instead, call ingest(text=..., document_id=...).\n"
+    )
 
-#: Added to :data:`GUIDE` when only text ingestion is served.
-TEXT_INGEST_GUIDE = """\
 
-To add documents: optionally declare the ontology with set_ontology first,
-then ingest(text=..., document_id=...) per document, then finalize once.
-Check each result's pruned for types the ontology does not declare
-(dropped, or stored as Unknown); after adding them with set_ontology,
-ingest the same text and document_id with reextract=true.
-"""
+def _text_guide(*, ontology: bool, finalize: bool) -> str:
+    """The steps for adding texts, naming only the tools that are served."""
+    first = "optionally declare the ontology with set_ontology first,\nthen " if ontology else ""
+    then = ", then finalize once" if finalize else ""
+    fix = (
+        "after adding them with set_ontology,\n"
+        "ingest the same text and document_id with reextract=true."
+        if ontology
+        else "only the server operator can add them."
+    )
+    return (
+        f"\nTo add documents: {first}ingest(text=..., document_id=...) per document{then}.\n"
+        "Check each result's pruned for types the ontology does not declare\n"
+        f"(dropped, or stored as Unknown); {fix}\n"
+    )
+
+
+#: Added to :data:`GUIDE` when the ingestion tools are served (all of them).
+INGEST_GUIDE = _files_guide(ontology=True, finalize=True)
+
+#: Added to :data:`GUIDE` when only text ingestion is served (with
+#: set_ontology and finalize).
+TEXT_INGEST_GUIDE = _text_guide(ontology=True, finalize=True)
 
 
 def guide_for(toolkit: GraphRAGToolkit) -> str:
-    """:data:`GUIDE`, plus the ingestion steps for the tools ``toolkit`` serves."""
+    """:data:`GUIDE`, plus the ingestion steps for the tools ``toolkit`` serves.
+
+    Steps that need ``set_ontology`` or ``finalize`` are left out when the
+    toolkit does not serve them (``include``, or a ``finalize_policy`` other
+    than ``"manual"``).
+    """
     names = {spec.name for spec in toolkit.tool_specs()}
-    if "preview_files" in names and "ingest" in names:
-        return GUIDE + INGEST_GUIDE
-    if "ingest" in names:
-        return GUIDE + TEXT_INGEST_GUIDE
-    return GUIDE
+    if "ingest" not in names:
+        return GUIDE
+    served = {"ontology": "set_ontology" in names, "finalize": "finalize" in names}
+    if "preview_files" in names:
+        return GUIDE + _files_guide(**served)
+    return GUIDE + _text_guide(**served)
 
 
 #: Longest JSON text returned for one tool call.
@@ -241,6 +293,8 @@ class GraphRAGMCPServer:
             from; ``None`` (default) serves text ingestion only.
         plan_limits: The strategies an agent's ingest plan may use; passed
             to :class:`GraphRAGToolkit`.
+        max_file_bytes: Largest file ``ingest(files=...)`` reads (default
+            50 MiB); passed to :class:`GraphRAGToolkit`.
         instructions: Server instructions sent to the client; defaults to
             :func:`guide_for` the served tools.
     """
@@ -256,6 +310,7 @@ class GraphRAGMCPServer:
         finalize_policy: FinalizePolicy = "manual",
         files_root: str | os.PathLike[str] | None = None,
         plan_limits: Mapping[str, Any] | None = None,
+        max_file_bytes: int | None = MAX_FILE_BYTES,
         instructions: str | None = None,
     ) -> None:
         self._rag = rag
@@ -268,6 +323,7 @@ class GraphRAGMCPServer:
             finalize_policy=finalize_policy,
             files_root=files_root,
             plan_limits=plan_limits,
+            max_file_bytes=max_file_bytes,
         )
         self._instructions = guide_for(self._toolkit) if instructions is None else instructions
         self._sessions: weakref.WeakKeyDictionary[Any, GraphRAGToolkit] = (

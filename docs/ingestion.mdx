@@ -300,7 +300,7 @@ The planner may also tune parameters inside the chosen strategy (e.g. `max_token
 - **Opt-in** — `auto=False` is the default; nothing changes unless you enable it.
 - **Bounded blast radius on malicious content** — the `LLMIngestionPlanner` prompt includes a sample of the document itself, so adversarial document content could in principle try to steer the planner's choice. The worst case is still one of the options you allow (below) with clamped parameters (see `PARAM_SPECS`) — never an arbitrary strategy or an out-of-range value.
 
-**Cost ceiling.** By default the LLM planner may pick any option above, and the `llm_verified` pair budget it sets is capped at 500 (the resolver's default). To keep document text from choosing the strategies that add LLM calls, allow only the cheap options, and pass `tune_params=False` so chunk sizes stay at their defaults:
+**Cost ceiling.** By default the LLM planner may pick any option above, and the `llm_verified` pair budget it sets is capped at 500 (the resolver's default). To keep document text from choosing the strategies that add LLM calls, allow only the cheap options, pass `tune_params=False` so chunk sizes stay at their defaults, and set `max_chunks` to bound the extraction calls per document:
 
 ```python
 from graphrag_sdk import LLMIngestionPlanner
@@ -311,13 +311,20 @@ cheap = LLMIngestionPlanner(
     extractors=("gliner",),
     resolvers=("exact",),
     tune_params=False,
+    max_chunks=1000,
 )
 await rag.ingest(source="upload.pdf", planner=cheap)
 ```
 
-The planner itself still makes its one LLM call per document (`HeuristicIngestionPlanner` makes none), and the number of chunks — one extraction LLM call each — still depends on the document and on the chunker chosen (`structural` keeps sections apart). A choice outside the allowed options falls back to the default (or the first allowed option) and is never built; the prompt only lists the allowed options. `max_llm_pairs=` lowers the pair cap further, and `max_llm_pairs=0` disallows `llm_verified`.
+What the ceiling covers, per document:
 
-Two planners ship in the SDK:
+- **The planner call.** `LLMIngestionPlanner` makes one LLM call per document; `HeuristicIngestionPlanner` and `RuleBasedIngestionPlanner` make none.
+- **Extraction.** Each chunk costs one extraction LLM call, so the chunk count sets the cost. `max_chunks=N` refuses a document that splits into more than `N` chunks before anything of it is written or extracted (`ChunkBudgetExceededError` from `graphrag_sdk.ingestion.ingestion_planner`, a `ChunkingError`; in a batch, that file fails and the others go on). It wraps whatever chunker is used — the planner's, yours or the default — and `IngestionResult.metadata["plan"]["max_chunks"]` records it. The default, `None`, sets no limit. Chunking itself runs first, so `contextual` chunking's own LLM calls are not covered; leave it out of `chunkers=` to avoid them.
+- **Resolution.** A choice outside the allowed options falls back to the default (or the first allowed option) and is never built; the prompt only lists the allowed options. `max_llm_pairs=` caps the `llm_verified` pair budget, also with `tune_params=False`, and `max_llm_pairs=0` disallows `llm_verified`. The cap applies **per label group**: `LLMVerifiedResolution` verifies up to that many pairs within each entity type, plus up to 200 cross-label pairs (`cross_label_max_pairs`) and its description-summary calls. With `resolvers=("exact",)` resolution makes no LLM calls.
+
+The ceiling does not cover `finalize()` (embedding, and the LLM judge it uses for deduplication) or the questions you ask afterwards.
+
+Three planners ship in the SDK:
 
 | Planner | Cost | How it decides |
 |---------|------|----------------|
@@ -325,7 +332,7 @@ Two planners ship in the SDK:
 | `HeuristicIngestionPlanner` | Zero (no LLM call) | Cheap document features (file extension, headings, lists) |
 | `RuleBasedIngestionPlanner` | Zero (no LLM call) | Your rules: the first `{"match": "*.md", "chunker": ...}` whose glob matches the file path (relative to `root=`, when given) |
 
-`RuleBasedIngestionPlanner` is what the agent tools use for `ingest(files=..., plan=[...])` (see [Agentic retrieval](/agentic-retrieval#building-the-graph-from-a-folder)). It takes the same `chunkers` / `extractors` / `resolvers` / `max_llm_pairs` limits; `CHEAP_PLAN_LIMITS` holds the cheap ones.
+`RuleBasedIngestionPlanner` is what the agent tools use for `ingest(files=..., plan=[...])` (see [Agentic retrieval](/agentic-retrieval#building-the-graph-from-a-folder)). It takes the same `chunkers` / `extractors` / `resolvers` / `max_llm_pairs` / `max_chunks` limits; `CHEAP_PLAN_LIMITS` holds the cheap ones, with `max_chunks=1000` (about 380,000 tokens at the default chunk size).
 
 **What was chosen.** With `auto=True`, each `IngestionResult` records the decision in `metadata["plan"]`:
 

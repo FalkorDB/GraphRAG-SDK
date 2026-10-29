@@ -12,6 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from graphrag_sdk.api import main as main_mod
+from graphrag_sdk.api.main import GraphRAG
 from graphrag_sdk.core.exceptions import ReadOnlyViolation
 from graphrag_sdk.core.models import (
     DocumentInfo,
@@ -145,6 +147,34 @@ class TestFiles:
         root = fs.resolve_root(corpus)
         got = fs.resolve_files(root, ["notes/b.md", "*.md", "readme.rst"])
         assert got == ["notes/b.md", "notes/a.md", "readme.rst"]
+
+    def test_case_variants_of_one_file_are_one_path(self, corpus):
+        if not (corpus / "NOTES" / "A.MD").exists():
+            pytest.skip("case-sensitive filesystem")
+        root = fs.resolve_root(corpus)
+        got = fs.resolve_files(root, ["NOTES/A.MD", "notes/a.md", "Notes/a.MD"])
+        assert got == ["notes/a.md"]
+        assert fs.resolve_root(str(corpus).upper()) == root  # the root is respelled too
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+    def test_links_to_one_file_are_one_path(self, corpus):
+        os.link(corpus / "notes" / "a.md", corpus / "hard.md")
+        (corpus / "soft.md").symlink_to(corpus / "notes" / "b.md")
+        root = fs.resolve_root(corpus)
+        assert fs.resolve_files(root, ["notes/a.md", "hard.md"]) == ["notes/a.md"]
+        # A symlink is stored under its target's path, so both spellings are one id.
+        assert fs.resolve_files(root, ["soft.md", "notes/b.md"]) == ["notes/b.md"]
+        assert fs.resolve_files(root, ["*.md"]) == ["hard.md", "notes/b.md"]
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+    def test_links_to_hidden_or_unsupported_files_are_refused(self, corpus):
+        (corpus / "peek.md").symlink_to(corpus / ".secret.md")
+        (corpus / "table.md").symlink_to(corpus / "data.csv")
+        root = fs.resolve_root(corpus)
+        with pytest.raises(ToolError, match="hidden or outside"):
+            fs.resolve_files(root, ["peek.md"])
+        with pytest.raises(ToolError, match="unsupported file type"):
+            fs.resolve_files(root, ["table.md"])
 
     def test_resolve_files_errors(self, corpus):
         root = fs.resolve_root(corpus)
@@ -332,6 +362,10 @@ class TestPrunedTypes:
         unknown.add(PrunedTypes(unknown=1))
         assert unknown.unknown == 3 and unknown.missing_types
         assert "3 entities of no declared type" in unknown.summary()
+        ends = PrunedTypes.from_report({"unknown_endpoints": {"WORKS_AT": 2}})
+        ends.add(PrunedTypes(unknown_endpoints={"WORKS_AT": 1, "OWNS": 1}))
+        assert ends.unknown_endpoints == {"WORKS_AT": 3, "OWNS": 1} and ends.missing_types
+        assert "relations to Unknown entities WORKS_AT (3), OWNS (1)" in ends.summary()
 
     def test_ingest_result_text(self):
         result = IngestResult(
@@ -409,6 +443,11 @@ class FakeRAG:
     def _ontology_entity_types(self) -> list[str] | None:
         return [e.label for e in self.ontology.entities] or None
 
+    # Re-extraction plans with the real GraphRAG helper, like a first ingest.
+    _plan_ingestion_strategies = GraphRAG._plan_ingestion_strategies
+    _markdown_elements = staticmethod(GraphRAG._markdown_elements)
+    _chunk_budget = staticmethod(GraphRAG._chunk_budget)
+
     # ingest
     def _result(self, path: str, plan: dict | None) -> IngestionResult:
         name = os.path.basename(path)
@@ -459,6 +498,7 @@ class FakeRAG:
         document_id=None,
         force,
         if_missing,
+        loader=None,
         chunker=None,
         extractor=None,
         resolver=None,
@@ -466,6 +506,7 @@ class FakeRAG:
     ):
         key = source if source is not None else document_id
         self.calls.append(("update", (key, force, if_missing)))
+        self.update_strategies = (loader, chunker, extractor, resolver)
         if os.path.basename(key) in self.fail:
             raise RuntimeError("update failed")
         base = self._result(key, None)
@@ -492,13 +533,20 @@ def _no_live_counts(monkeypatch):
 
 @pytest.fixture
 def fake_strategies(monkeypatch):
-    built: list[Any] = []
+    """Records ``[chunker name, extraction entity types]`` per planned file."""
+    built: list[list[Any]] = []
 
-    def build(plan, *, llm, embedder=None, entity_types=None):
-        built.append((plan, entity_types))
-        return ("chunker", "extractor", "resolver")
+    def chunker(name, *, llm=None, params=None):
+        built.append([name, None])
+        return f"{name} chunker"
 
-    monkeypatch.setattr(planner_mod, "build_ingestion_strategies", build)
+    def extractor(name, *, llm, entity_types=None, params=None):
+        built[-1][1] = entity_types  # built right after its chunker, with no await between
+        return f"{name} extractor"
+
+    monkeypatch.setattr(main_mod, "build_chunker", chunker)
+    monkeypatch.setattr(main_mod, "build_extractor", extractor)
+    monkeypatch.setattr(main_mod, "build_resolver", lambda name, **kw: f"{name} resolver")
     return built
 
 
@@ -580,6 +628,178 @@ class TestPreviewFiles:
             await tk.preview_files("../*")
 
 
+def _text_pdf(path, pages: int) -> None:
+    """A PDF whose page i reads 'pageI words here'."""
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    writer = PdfWriter()
+    font = writer._add_object(
+        DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"),
+                NameObject("/BaseFont"): NameObject("/Helvetica"),
+            }
+        )
+    )
+    for i in range(pages):
+        page = writer.add_blank_page(612, 792)
+        content = DecodedStreamObject()
+        content.set_data(f"BT /F1 12 Tf 72 712 Td (page{i} words here) Tj ET".encode())
+        page[NameObject("/Contents")] = writer._add_object(content)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})}
+        )
+    with open(path, "wb") as fh:
+        writer.write(fh)
+
+
+class _ReadCounter:
+    """Counts the bytes read through every Path.open of the test."""
+
+    def __init__(self, monkeypatch):
+        from pathlib import Path
+
+        self.bytes = 0
+        original = Path.open
+        counter = self
+
+        class Handle:
+            def __init__(self, fh):
+                self._fh = fh
+
+            def read(self, *args):
+                data = self._fh.read(*args)
+                counter.bytes += len(data)
+                return data
+
+            def __getattr__(self, name):
+                return getattr(self._fh, name)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._fh.close()
+
+        monkeypatch.setattr(Path, "open", lambda p, *a, **k: Handle(original(p, *a, **k)))
+
+
+class TestBoundedPreview:
+    async def test_a_large_text_file_is_read_only_around_its_middle(self, tmp_path, monkeypatch):
+        root = tmp_path / "big"
+        root.mkdir()
+        half = "début " * 400_000  # ~2.8 MB of two-byte characters each side
+        (root / "big.txt").write_text(half + "MIDDLE_MARK " + "fin " * 700_000)
+        size = (root / "big.txt").stat().st_size
+        counter = _ReadCounter(monkeypatch)
+        result = await toolkit(FakeRAG(), root).preview_files(max_chars=200)
+        f = result.files[0]
+        assert counter.bytes <= 4096  # the window, not the ~5.6 MB file
+        assert f.size_bytes == size and f.chars_estimated
+        assert abs(f.chars - (size - 400_000)) < size * 0.05  # 'é' is 2 bytes, 1 char
+        assert 0 < len(f.sample) <= 200 and "\ufffd" not in f.sample
+        assert f"(~{f.chars} chars)" in result.to_llm_text()
+
+    def test_middle_window_is_cut_at_words(self, tmp_path):
+        path = tmp_path / "a.txt"
+        path.write_text(" ".join(f"w{i}" for i in range(20_000)))
+        sample, chars, estimated = fs.sample_file(path, 100)
+        words = sample.split()
+        assert estimated and chars == path.stat().st_size
+        assert all(w.startswith("w") and w[1:].isdigit() for w in words)
+        middle = [int(w[1:]) for w in words]
+        assert middle == list(range(middle[0], middle[0] + len(middle)))  # contiguous
+        assert 9_000 < middle[0] < 11_000
+
+    def test_a_small_file_is_read_whole_and_counted_exactly(self, tmp_path):
+        path = tmp_path / "a.md"
+        path.write_text("# Title\n\nshort body")
+        assert fs.sample_file(path, 1000) == ("# Title short body", 19, False)
+
+    async def test_a_pdf_parses_only_its_middle_pages(self, tmp_path, monkeypatch):
+        pytest.importorskip("pypdf")
+        root = tmp_path / "pdfs"
+        root.mkdir()
+        _text_pdf(root / "r.pdf", 9)
+        result = await toolkit(FakeRAG(), root).preview_files()
+        f = result.files[0]
+        assert f.error is None and f.chars_estimated
+        assert f.sample.startswith("page4") and "page0" not in f.sample
+        assert "page8" not in f.sample  # stopped after a few pages
+
+    def test_middle_pages_stop_once_the_sample_is_full(self):
+        read: list[int] = []
+
+        def page(i):
+            read.append(i)
+            return "x" * 400
+
+        _, chars, estimated = fs._middle_pages(100, page, 500)
+        assert read == [50, 51] and estimated and chars == 40_100  # (800 + 2) / 2 pages * 100
+
+
+class TestFileSizeCap:
+    async def test_an_oversize_file_is_refused_with_a_hint(self, corpus):
+        rag = FakeRAG()
+        tk = toolkit(rag, corpus, max_file_bytes=1000)
+        with pytest.raises(ToolError, match="larger than max_file_bytes") as exc:
+            await tk.ingest(files=["notes/*.md"])
+        assert "notes/a.md" in str(exc.value) and "notes/b.md" not in str(exc.value)
+        assert "Split the file or raise max_file_bytes" in (exc.value.hint or "")
+        assert rag.calls == []  # nothing ingested
+        await tk.ingest(files=["notes/b.md"])  # a small one still goes through
+
+    def test_default_and_validation(self, corpus):
+        assert toolkit(FakeRAG(), corpus)._max_file_bytes == 50 * 1024 * 1024
+        assert toolkit(FakeRAG(), corpus, max_file_bytes=None)._max_file_bytes is None
+        for bad in (0, -1, 1.5, True):
+            with pytest.raises(ValueError, match="max_file_bytes"):
+                toolkit(FakeRAG(), corpus, max_file_bytes=bad)
+
+    async def test_files_are_ingested_through_the_confined_loader(self, corpus):
+        rag = FakeRAG()
+        seen = []
+        original = rag.ingest
+
+        async def ingest(source=None, **kw):
+            seen.append(kw.get("loader"))
+            return await original(source, **kw)
+
+        rag.ingest = ingest
+        await toolkit(rag, corpus).ingest(files=["notes/b.md"])
+        assert type(seen[0]).__name__ == "_ConfinedLoader"
+
+
+class TestConfinedLoader:
+    async def test_loads_the_file_by_its_real_path(self, corpus):
+        from graphrag_sdk.core.context import Context
+        from graphrag_sdk.tools.toolkit import _ConfinedLoader
+
+        loader = _ConfinedLoader(corpus, None)
+        doc = await loader.load(str(corpus / "notes" / "b.md"), Context())
+        assert doc.text.startswith("# Beta") and doc.elements  # Markdown loader
+        assert doc.document_info.path == str(corpus / "notes" / "b.md")
+
+    async def test_a_symlink_swapped_in_after_validation_is_refused(self, corpus, tmp_path):
+        from graphrag_sdk.core.context import Context
+        from graphrag_sdk.tools.toolkit import _ConfinedLoader
+
+        target = corpus / "notes" / "b.md"
+        target.unlink()
+        target.symlink_to(tmp_path / "outside.md")  # after resolve_files accepted it
+        with pytest.raises(ToolError, match="no longer a file under the files root"):
+            await _ConfinedLoader(corpus, None).load(str(target), Context())
+
+    async def test_a_file_that_grew_past_the_cap_is_refused(self, corpus):
+        from graphrag_sdk.core.context import Context
+        from graphrag_sdk.tools.toolkit import _ConfinedLoader
+
+        with pytest.raises(ToolError, match="larger than max_file_bytes"):
+            await _ConfinedLoader(corpus, 100).load(str(corpus / "notes" / "a.md"), Context())
+
+
 class TestSetOntology:
     async def test_first_declaration_writes_once_without_defaults(self):
         rag = FakeRAG()
@@ -652,6 +872,40 @@ class TestSetOntology:
             await tk.set_ontology(entities=[{"label": "Drug"}])
         assert rag.calls == []
 
+    async def test_a_blank_label_is_a_tool_error_with_a_hint(self):
+        tk = toolkit(FakeRAG())
+        for args in ({"entities": [{"label": "   "}]}, {"relations": [{"label": "\t"}]}):
+            with pytest.raises(ToolError, match="not a usable type name") as err:
+                await tk.call("set_ontology", args)
+            assert "letters, digits, spaces" in err.value.hint
+
+    @pytest.mark.parametrize(
+        "label", ["Drug:Name", "a\nb", "tab\there", "zero\u200bwidth", "__Entity__", "__X__"]
+    )
+    async def test_labels_that_break_or_shadow_the_graph_are_refused(self, label):
+        rag = FakeRAG()
+        with pytest.raises(ToolError, match="not a usable type name") as err:
+            await toolkit(rag).set_ontology(entities=[{"label": label}])
+        assert "':'" in err.value.hint and "__X__" in err.value.hint
+        with pytest.raises(ToolError, match="not a usable type name"):
+            await toolkit(rag).set_ontology(relations=[{"label": label}])
+        assert rag.calls == []
+
+    async def test_spaces_hyphens_and_unicode_letters_are_fine(self):
+        rag = FakeRAG()
+        labels = ["Drug Brand", "Side-effect", "Médicament", "製品", "_private", "Gene__X"]
+        await toolkit(rag).set_ontology(entities=[{"label": label} for label in labels])
+        assert [e.label for e in rag.ontology.entities] == labels
+
+    @pytest.mark.parametrize("label", ["Chunk", "Document", "Unknown"])
+    async def test_reserved_labels_get_their_own_hint(self, label):
+        rag = FakeRAG()
+        with pytest.raises(ToolError, match=f"'{label}' is reserved by the SDK") as err:
+            await toolkit(rag).set_ontology(entities=[{"label": label}])
+        assert "choose another name" in err.value.hint
+        assert "Existing types cannot change" not in err.value.hint
+        assert rag.calls == []
+
     async def test_invalidates_the_schema_cache(self):
         tk = toolkit(FakeRAG())
         tk._shared["schema"] = object()
@@ -701,6 +955,18 @@ class TestIngestFiles:
         assert result.pruned.unknown == 3
         assert "MATCH (n:Unknown)" in result.hint
         assert "ingest(files=['notes/b.md'], reextract=true)" in result.hint
+
+    async def test_relations_to_unknown_entities_hint_at_the_entity_type(self, corpus):
+        rag = FakeRAG()
+        rag.pruned["a.md"] = {"unknown": 2, "unknown_endpoints": {"WORKS_AT": 3}}
+        result = await toolkit(rag, corpus).ingest(files=["notes/*"])
+        assert result.pruned.unknown_endpoints == {"WORKS_AT": 3}
+        assert result.pruned.pattern_mismatches == {}
+        hint = result.hint
+        assert "3 relation(s) (WORKS_AT) were dropped because an endpoint's type" in hint
+        assert "declare that entity type with set_ontology(entities=[...])" in hint
+        assert 'Unknown"]' not in hint and "'Unknown']" not in hint
+        assert "ingest(files=['notes/a.md'], reextract=true)" in hint
 
     async def test_dropped_patterns_say_how_to_keep_them(self, corpus):
         rag = FakeRAG()
@@ -760,8 +1026,8 @@ class TestIngestFiles:
         assert plans["notes/a.md"]["chunker"] == "structural"
         assert plans["notes/a.md"]["reason"] == "the plan of this file's last ingest"
         assert plans["notes/b.md"]["chunker"] != "structural"
-        built = [p.chunker for p, _ in fake_strategies]
-        assert built == ["structural", plans["notes/b.md"]["chunker"]]
+        built = sorted(name for name, _ in fake_strategies)
+        assert built == sorted(["structural", plans["notes/b.md"]["chunker"]])
 
         given = await tk.ingest(
             files=["notes/a.md"], plan=[{"match": "*", "chunker": "sentence"}], reextract=True
@@ -769,6 +1035,68 @@ class TestIngestFiles:
         assert given.documents[0].plan["chunker"] == "sentence"  # a passed plan wins
         again = await tk.ingest(files=["notes/a.md"], reextract=True)
         assert again.documents[0].plan["chunker"] == "sentence"
+
+    async def test_reextract_without_a_remembered_plan_says_so(self, corpus, fake_strategies):
+        tk = toolkit(FakeRAG(), corpus)  # a fresh toolkit, as after a restart
+        first = await tk.ingest(files=["notes/a.md"], reextract=True)
+        reason = first.documents[0].plan["reason"]
+        assert "kept in memory only" in reason and "plan=[...]" in reason
+        again = await tk.ingest(files=["notes/a.md"], reextract=True)
+        assert again.documents[0].plan["reason"] == "the plan of this file's last ingest"
+        given = await tk.ingest(
+            files=["notes/a.md"], plan=[{"match": "*", "chunker": "sentence"}], reextract=True
+        )
+        assert "memory" not in given.documents[0].plan["reason"]
+
+    async def test_reextract_parses_markdown_in_a_txt_like_a_first_ingest(
+        self, corpus, fake_strategies
+    ):
+        (corpus / "notes" / "md.txt").write_text("# Intro\n\nAlice works at Acme.\n\n# Later\n")
+        rag = FakeRAG()
+        structural = [{"match": "*", "chunker": "structural"}]
+        result = await toolkit(rag, corpus).ingest(
+            files=["notes/md.txt", "reports/2024/q1.txt"], plan=structural, reextract=True
+        )
+        plans = {d.path: d.plan for d in result.documents}
+        assert plans["notes/md.txt"]["chunker"] == "structural"
+        # Plain text has no structure: the plan says what really chunks it.
+        assert plans["reports/2024/q1.txt"]["chunker"] == "sentence"
+        assert sorted(name for name, _ in fake_strategies) == ["sentence", "structural"]
+
+    async def test_reextract_hands_the_parsed_elements_to_update(self, corpus, fake_strategies):
+        (corpus / "notes" / "md.txt").write_text("# Intro\n\nAlice works at Acme.\n\n# Later\n")
+        rag = FakeRAG()
+        await toolkit(rag, corpus).ingest(
+            files=["notes/md.txt"], plan=[{"match": "*", "chunker": "structural"}], reextract=True
+        )
+        document = await rag.update_strategies[0].load("ignored", None)
+        assert document.elements and document.document_info.path.endswith("md.txt")
+
+    async def test_reextract_falls_back_slot_by_slot(self, corpus, fake_strategies, monkeypatch):
+        def broken(name, **kw):
+            raise RuntimeError("no gliner here")
+
+        monkeypatch.setattr(main_mod, "build_extractor", broken)
+        rag = FakeRAG()
+        result = await toolkit(rag, corpus).ingest(
+            files=["notes/a.md"], plan=[{"match": "*", "chunker": "fixed"}], reextract=True
+        )
+        doc = result.documents[0]
+        assert doc.status == "reextracted" and doc.plan["chunker"] == "fixed"
+        _, chunker, extractor, resolver = rag.update_strategies
+        assert chunker.chunker == "fixed chunker"  # under the default max_chunks budget
+        assert extractor is None  # the default extractor
+        assert resolver.endswith("resolver")
+
+    async def test_reextract_keeps_the_chunk_budget(self, corpus, fake_strategies):
+        from graphrag_sdk.ingestion.ingestion_planner import ChunkBudget
+
+        rag = FakeRAG()
+        tk = toolkit(rag, corpus, plan_limits={"max_chunks": 7})
+        await tk.ingest(files=["notes/a.md"])
+        await tk.ingest(files=["notes/a.md"], reextract=True)  # with the remembered plan
+        chunker = rag.update_strategies[1]
+        assert isinstance(chunker, ChunkBudget) and chunker.max_chunks == 7
 
     async def test_reextract_failure_is_per_file(self, corpus, fake_strategies):
         rag = FakeRAG()
@@ -810,6 +1138,20 @@ class TestIngestFiles:
         result = await toolkit(rag, corpus, finalize_policy="on_write").ingest(files=["**/*"])
         assert result.finalized and rag.finalized == 1 and len(result.documents) == 4
 
+    async def test_on_write_policy_skips_finalize_when_nothing_changed(self, corpus):
+        rag = FakeRAG()
+        rag.unchanged.update({"a.md", "b.md", "d1"})
+        tk = toolkit(rag, corpus, finalize_policy="on_write")
+        files = await tk.ingest(files=["notes/*"])
+        assert {d.status for d in files.documents} == {"unchanged"}
+        text = await tk.ingest("Aspirin treats headache.", document_id="d1")
+        assert text.status == "unchanged"
+        assert rag.finalized == 0 and not files.finalized and not text.finalized
+        assert "Not finalized" not in files.to_llm_text() + text.to_llm_text()
+        rag.unchanged.discard("b.md")
+        partly = await tk.ingest(files=["notes/*"])
+        assert partly.finalized and rag.finalized == 1
+
     async def test_bad_file_arguments(self, corpus):
         tk = toolkit(FakeRAG(), corpus)
         with pytest.raises(ToolError, match="outside"):
@@ -829,6 +1171,25 @@ class TestGuide:
         assert guide_for(toolkit(rag, corpus)) == GUIDE + INGEST_GUIDE
         assert guide_for(toolkit(rag)) == GUIDE + TEXT_INGEST_GUIDE
         assert guide_for(toolkit(rag, corpus, read_only=True)) == GUIDE
+
+    @pytest.mark.parametrize("files", [True, False])
+    @pytest.mark.parametrize("policy", ["on_write", "never"])
+    def test_guide_leaves_out_finalize_when_it_is_not_served(self, corpus, policy, files):
+        tk = toolkit(FakeRAG(), corpus if files else None, finalize_policy=policy)
+        assert "finalize" not in {s.name for s in tk.tool_specs()}
+        guide = guide_for(tk)
+        assert "ingest(" in guide and "set_ontology" in guide
+        assert "finalize" not in guide
+
+    @pytest.mark.parametrize("files", [True, False])
+    def test_guide_leaves_out_set_ontology_when_it_is_not_served(self, corpus, files):
+        include = ["ingest", "finalize", "get_ontology"] + (["preview_files"] if files else [])
+        tk = toolkit(FakeRAG(), corpus if files else None, include=include)
+        guide = guide_for(tk)
+        assert "set_ontology" not in guide
+        assert "finalize" in guide and "server operator" in guide
+        if files:
+            assert "preview_files" in guide and "get_ontology" in guide
 
     def test_ingest_guide_asks_for_the_users_ontology_first(self):
         assert "Ask the user whether they have an ontology" in INGEST_GUIDE
@@ -872,3 +1233,6 @@ class TestGuide:
         assert server.instructions == GUIDE + INGEST_GUIDE
         assert "preview_files" in [t["name"] for t in server.tool_dicts()]
         assert GraphRAGMCPServer(FakeRAG(), instructions="x").instructions == "x"
+        assert server.toolkit._max_file_bytes == fs.MAX_FILE_BYTES
+        capped = GraphRAGMCPServer(FakeRAG(), files_root=corpus, max_file_bytes=10)
+        assert capped.toolkit._max_file_bytes == 10

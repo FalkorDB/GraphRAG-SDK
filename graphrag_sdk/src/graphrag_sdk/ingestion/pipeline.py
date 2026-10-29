@@ -591,6 +591,10 @@ class IngestionPipeline(LexicalGraphWriter):
         present only when non-empty. ``unknown`` counts kept "Unknown"
         entities: extraction told the ontology's types stores anything else
         as "Unknown", so this is where the missing entity types show up.
+        ``unknown_endpoints`` (rel_type -> count) holds relations dropped
+        because an endpoint is one of those "Unknown" entities: no pattern can
+        name "Unknown", so they point at a missing entity type, not a missing
+        pattern, and are left out of ``pattern_mismatches``.
         """
         if not ontology.entities and not ontology.relations:
             return graph_data, {}
@@ -627,6 +631,7 @@ class IngestionPipeline(LexicalGraphWriter):
         # cause and the hardest to debug without a structured warning.
         pattern_mismatches: dict[str, list[tuple[str, str]]] = {}
         pattern_examples: dict[str, dict[str, str]] = {}
+        unknown_endpoints: dict[str, int] = {}
         for r in graph_data.relationships:
             rel_label = r.properties.get("rel_type", r.type)
 
@@ -645,6 +650,8 @@ class IngestionPipeline(LexicalGraphWriter):
                 pruned_rels.append(r)
             elif valid_pairs and (src.label, tgt.label) in valid_pairs:
                 pruned_rels.append(r)
+            elif valid_pairs and "Unknown" in (src.label, tgt.label):
+                unknown_endpoints[rel_label] = unknown_endpoints.get(rel_label, 0) + 1
             elif valid_pairs:
                 # Declared rel type, but (src, tgt) doesn't match any pattern.
                 pattern_mismatches.setdefault(rel_label, []).append((src.label, tgt.label))
@@ -692,6 +699,8 @@ class IngestionPipeline(LexicalGraphWriter):
             report["dangling"] = dangling
         if unknown:
             report["unknown"] = unknown
+        if unknown_endpoints:
+            report["unknown_endpoints"] = unknown_endpoints
 
         # ``model_copy`` rather than rebuilding field-by-field, so report
         # fields (``chunks_attempted``, ``failed_chunks``, ...) survive.

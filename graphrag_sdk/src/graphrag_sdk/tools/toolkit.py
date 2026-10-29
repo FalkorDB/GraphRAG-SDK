@@ -13,6 +13,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import TracebackType
@@ -23,8 +24,15 @@ from pydantic import BaseModel, ValidationError
 from graphrag_sdk.core.connection import ConnectionConfig
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import ConfigError, DatabaseError, ReadOnlyViolation
-from graphrag_sdk.core.models import Entity, Ontology, Relation
+from graphrag_sdk.core.models import (
+    RESERVED_NODE_LABELS,
+    DocumentOutput,
+    Entity,
+    Ontology,
+    Relation,
+)
 from graphrag_sdk.core.providers import Embedder, LLMInterface
+from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.retrieval.graph_walk import DynamicGraphWalk
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 from graphrag_sdk.tools import files as fs
@@ -108,6 +116,10 @@ SAMPLE_BUDGET_CHARS = 30_000
 _FILE_CONCURRENCY = 3
 # Files whose last plan is remembered for reextract (oldest forgotten first).
 _PLAN_MEMORY = 10_000
+_NO_PLAN = (
+    " (no plan remembered for this file: plans are kept in memory only, so after"
+    " a restart pass plan=[...] to repeat a custom plan)"
+)
 #: retrieve's search paths and the MultiPath path behind each. ``links`` has
 #: none: retrieve walks the relations itself, so MultiPath's own expansion,
 #: whose output it never reads, is not run.
@@ -130,6 +142,80 @@ class _FixedPlan:
 
     async def plan(self, query: str, ctx: Context) -> list[str]:
         return list(self._paths)
+
+
+class _ConfinedLoader(LoaderStrategy):
+    """The default loader for a file, after checking again that it is inside the root.
+
+    Paths are validated when an ingest call starts; this repeats the check
+    (and the size cap) right before the file is read, and reads the resolved
+    path, so a symlink swapped in meanwhile cannot lead outside the root.
+    """
+
+    def __init__(self, root: Path, max_bytes: int | None) -> None:
+        self._root = root
+        self._max_bytes = max_bytes
+
+    async def load(self, source: str, ctx: Context) -> DocumentOutput:
+        from graphrag_sdk.api.main import GraphRAG  # local import: avoid cycle
+
+        real = await asyncio.to_thread(fs.confined, self._root, source, self._max_bytes)
+        # The loader follows the name the agent gave (a.md -> Markdown).
+        doc = await GraphRAG._default_loader_for(source).load(str(real), ctx)
+        info = doc.document_info.model_copy(update={"path": source})
+        return doc.model_copy(update={"document_info": info})
+
+
+class _Loaded(LoaderStrategy):
+    """Hands back a document already loaded (and planned from), so it is not read twice."""
+
+    def __init__(self, document: DocumentOutput) -> None:
+        self._document = document
+
+    async def load(self, source: str, ctx: Context) -> DocumentOutput:
+        return self._document
+
+
+class _SamePlan:
+    """An ingestion planner that returns one fixed plan, under another planner's limits."""
+
+    def __init__(self, plan: Any, max_chunks: int | None) -> None:
+        self._plan = plan
+        self.max_chunks = max_chunks
+
+    async def plan(self, text: str | None, *, source: str | None = None, ctx: Any = None) -> Any:
+        return self._plan
+
+
+#: Entity types the SDK writes itself: Unknown holds entities of no declared type.
+_RESERVED_ENTITY_TYPES = RESERVED_NODE_LABELS | {"Unknown"}
+_LABEL_HINT = (
+    "Use letters, digits, spaces, '-' or '_'; no '|', ':', backticks, line breaks "
+    "or other control characters, and no __X__ names (the SDK's own)."
+)
+
+
+def _label_error(label: str, *, entity: bool) -> ToolError | None:
+    """Why ``label`` cannot be a type name, as a ToolError, or ``None``."""
+    try:
+        clean = sanitize_cypher_label(label) == label
+    except ValueError:  # blank
+        clean = False
+    if (
+        not clean
+        or "|" in label
+        or ":" in label
+        or any(unicodedata.category(c).startswith("C") for c in label)
+        or (len(label) > 4 and label.startswith("__") and label.endswith("__"))
+    ):
+        return ToolError(f"{label!r} is not a usable type name.", hint=_LABEL_HINT)
+    if entity and label in _RESERVED_ENTITY_TYPES:
+        return ToolError(
+            f"{label!r} is reserved by the SDK.",
+            hint=f"{label!r} is reserved by the SDK; choose another name "
+            "(e.g. 'Publication' for Document, 'Passage' for Chunk).",
+        )
+    return None
 
 
 _FACT_RE = re.compile(r"^(.+?) —\[([^\]]+)\]→ (.+?)(?:: (.*))?$", re.S)
@@ -255,6 +341,9 @@ class GraphRAGToolkit:
             ``max_llm_pairs``, ``tune_params``). Default
             :data:`~graphrag_sdk.ingestion.ingestion_planner.CHEAP_PLAN_LIMITS`:
             no strategy that adds LLM calls.
+        max_file_bytes: Largest file ``ingest(files=...)`` reads (default
+            50 MiB); a larger one is refused with a hint. ``None``: no cap.
+            ``preview_files`` reads only part of each file, whatever its size.
     """
 
     def __init__(
@@ -269,6 +358,7 @@ class GraphRAGToolkit:
         ledger_capacity: int = DEFAULT_LEDGER_CAPACITY,
         files_root: str | os.PathLike[str] | None = None,
         plan_limits: Mapping[str, Any] | None = None,
+        max_file_bytes: int | None = fs.MAX_FILE_BYTES,
     ) -> None:
         from graphrag_sdk.ingestion.ingestion_planner import (
             CHEAP_PLAN_LIMITS,
@@ -293,6 +383,13 @@ class GraphRAGToolkit:
         self._files_root: Path | None = (
             fs.resolve_root(files_root) if files_root is not None else None
         )
+        if max_file_bytes is not None and (
+            isinstance(max_file_bytes, bool)
+            or not isinstance(max_file_bytes, int)
+            or max_file_bytes <= 0
+        ):
+            raise ValueError("max_file_bytes must be a positive int or None")
+        self._max_file_bytes = max_file_bytes
         limits = dict(CHEAP_PLAN_LIMITS if plan_limits is None else plan_limits)
         RuleBasedIngestionPlanner((), **limits)  # validate now, not at the first ingest
         self._plan_limits: dict[str, Any] = limits
@@ -1184,32 +1281,28 @@ class GraphRAGToolkit:
             types[kind] = types.get(kind, 0) + 1
         page = rels[inp.offset : inp.offset + inp.limit]
         per_file = min(inp.max_chars, SAMPLE_BUDGET_CHARS // max(len(page), 1))
-        ctx = ctx or self._new_ctx()
         gate = asyncio.Semaphore(_FILE_CONCURRENCY)
 
         async def sample(rel: str) -> DocSample:
             path = root / rel
             kind = path.suffix.lower().lstrip(".")
-            try:
-                size = path.stat().st_size
-            except OSError:
-                size = 0
+            size = 0
             async with gate:
                 try:
-                    from graphrag_sdk.api.main import GraphRAG  # local import: avoid cycle
-
-                    doc = await GraphRAG._default_loader_for(str(path)).load(str(path), ctx)
+                    real = await asyncio.to_thread(fs.confined, root, path)
+                    size = (await asyncio.to_thread(real.stat)).st_size
+                    text, chars, estimated = await asyncio.to_thread(fs.sample_file, real, per_file)
                 except Exception as exc:  # one unreadable file must not fail the page
                     return DocSample(
                         path=rel, type=kind, size_bytes=size, error=_short(str(exc), 300)
                     )
-            text = doc.text or ""
             return DocSample(
                 path=rel,
                 type=kind,
                 size_bytes=size,
-                chars=len(text),
-                sample=fs.middle_sample(text, per_file),
+                chars=chars,
+                chars_estimated=estimated,
+                sample=text,
             )
 
         samples = list(await asyncio.gather(*(sample(rel) for rel in page)))
@@ -1255,12 +1348,11 @@ class GraphRAGToolkit:
                 "set_ontology needs at least one entity or relation type.",
                 hint="Pass entities=[{label, description}] and/or relations=[...].",
             )
-        for label in [e.label for e in inp.entities] + [r.label for r in inp.relations]:
-            if "|" in label or sanitize_cypher_label(label) != label:
-                raise ToolError(
-                    f"{label!r} is not a usable type name.",
-                    hint="Use letters, digits, spaces, '-' or '_' (no '|', quotes or backticks).",
-                )
+        labels = [(e.label, True) for e in inp.entities] + [(r.label, False) for r in inp.relations]
+        for label, entity in labels:
+            error = _label_error(label, entity=entity)
+            if error is not None:
+                raise error
 
         store = self._rag._ontology_store
         stored = await store.load()
@@ -1362,10 +1454,12 @@ class GraphRAGToolkit:
         skipped unless ``reextract`` is set, which re-extracts it in place
         (after the ontology has grown, for instance); without a ``plan``, a
         file re-extracted this way keeps the plan of its last ingest by
-        this toolkit.
+        this toolkit. That memory is not persisted: after a restart the
+        planner plans the file afresh, so pass ``plan`` to repeat a custom one.
 
-        Under ``finalize_policy="on_write"`` this also finalizes, whose cost
-        grows with the graph; prefer "manual" and one :meth:`finalize` per batch.
+        Under ``finalize_policy="on_write"`` this also finalizes (unless
+        nothing changed), whose cost grows with the graph; prefer "manual"
+        and one :meth:`finalize` per batch.
         """
         self._ensure_writable("ingest")
         inp = IngestInput(
@@ -1400,7 +1494,7 @@ class GraphRAGToolkit:
             )
         else:
             out = await self._ingest_files(inp.files or [], inp.plan or [], inp.reextract, ctx)
-        if self._finalize_policy == "on_write":
+        if self._finalize_policy == "on_write" and not out.unchanged:
             await self._rag.finalize()
             out.finalized = True
         out.hint = self._ingest_hint(out)
@@ -1443,7 +1537,6 @@ class GraphRAGToolkit:
         from graphrag_sdk.ingestion.ingestion_planner import (
             PlanRule,
             RuleBasedIngestionPlanner,
-            build_ingestion_strategies,
         )
 
         root = self._require_root("ingest(files=...)")
@@ -1456,11 +1549,17 @@ class GraphRAGToolkit:
             )
         except ValueError as exc:
             raise ToolError(str(exc), hint="Fix the plan rules.") from None
+        await asyncio.to_thread(fs.check_sizes, root, rels, self._max_file_bytes)
+        loader = _ConfinedLoader(root, self._max_file_bytes)
         paths = [str(root / rel) for rel in rels]
         docs: list[IngestedDocument] = []
         if not reextract:
             results = await self._rag.ingest(
-                paths, planner=planner, max_concurrency=_FILE_CONCURRENCY, ctx=ctx
+                paths,
+                planner=planner,
+                loader=loader,
+                max_concurrency=_FILE_CONCURRENCY,
+                ctx=ctx,
             )
             for rel, res in zip(rels, results):
                 if isinstance(res, BaseException):
@@ -1482,24 +1581,38 @@ class GraphRAGToolkit:
                 )
         else:
             gate = asyncio.Semaphore(_FILE_CONCURRENCY)
-            entity_types = self._rag._ontology_entity_types()
 
             async def redo(rel: str, path: str) -> IngestedDocument:
                 async with gate:
                     try:
-                        p = None if rules else self._last_plan(path)
-                        if p is None:
-                            p = await planner.plan(None, source=path, ctx=ctx)
-                        chunker, extractor, resolver = build_ingestion_strategies(
-                            p,
-                            llm=self._rag.llm,
-                            embedder=self._rag.embedder,
-                            entity_types=entity_types,
+                        # Planned like a first ingest (the same Markdown parsing
+                        # of a .txt, per-slot fallback and chunk budget), with
+                        # the file's last plan unless rules were passed.
+                        document = await loader.load(path, ctx)
+                        last = None if rules else self._last_plan(path)
+                        active = planner if last is None else _SamePlan(last, planner.max_chunks)
+                        report: dict[str, Any] = {}
+                        (
+                            chunker,
+                            extractor,
+                            resolver,
+                            document,
+                        ) = await self._rag._plan_ingestion_strategies(
+                            text=None,
+                            source=path,
+                            chunker=None,
+                            extractor=None,
+                            resolver=None,
+                            planner=active,
+                            ctx=ctx,
+                            report=report,
+                            loaded_document=document,
                         )
                         res = await self._rag.update(
                             path,
                             force=True,
                             if_missing="ingest",
+                            loader=_Loaded(document) if document is not None else loader,
                             chunker=chunker,
                             extractor=extractor,
                             resolver=resolver,
@@ -1509,16 +1622,11 @@ class GraphRAGToolkit:
                         return IngestedDocument(
                             path=rel, status="failed", error=_short(str(exc), 300)
                         )
-                plan_info = {
-                    "chunker": p.chunker,
-                    "extractor": p.extractor,
-                    "resolver": p.resolver,
-                    "chunker_params": dict(p.chunker_params),
-                    "extractor_params": dict(p.extractor_params),
-                    "resolver_params": dict(p.resolver_params),
-                    "reason": p.reason,
-                }
-                self._remember_plan(path, plan_info)
+                plan_info = report.get("plan")
+                if plan_info:
+                    self._remember_plan(path, plan_info)
+                    if last is None and not rules:
+                        plan_info = {**plan_info, "reason": f"{plan_info['reason']}{_NO_PLAN}"}
                 status = "reextracted" if res.replaced_existing else "ingested"
                 return _ingested(rel, res, status, plan_info)
 
@@ -1560,6 +1668,15 @@ class GraphRAGToolkit:
             pruned = out.pruned
             if pruned.pattern_mismatches:
                 hints.append(_pattern_hint(pruned, redo))
+            if pruned.unknown_endpoints:
+                n = sum(pruned.unknown_endpoints.values())
+                hints.append(
+                    f"{n} relation(s) ({_names_hint(sorted(pruned.unknown_endpoints))}) were "
+                    "dropped because an endpoint's type is not declared (stored as Unknown). "
+                    "A pattern cannot name Unknown: declare that entity type with "
+                    "set_ontology(entities=[...]) and add it to the relation's patterns, "
+                    f"then {redo}."
+                )
             if pruned.entities or pruned.relations or pruned.unknown:
                 hints.append(
                     "Extraction found types the ontology does not declare (see pruned)."

@@ -12,10 +12,15 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import DocumentInfo, DocumentOutput, DocumentRecord
 from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
 from graphrag_sdk.ingestion.ingestion_planner import (
+    CHEAP_PLAN_LIMITS,
+    ChunkBudget,
+    ChunkBudgetExceededError,
     IngestionPlan,
     LLMIngestionPlanner,
+    RuleBasedIngestionPlanner,
     _guide,
     build_chunker,
+    build_resolver,
     parse_plan,
     restrict_plan,
 )
@@ -74,7 +79,7 @@ class TestMaxLlmPairs:
         plan = restrict_plan(IngestionPlan(resolver="llm_verified"), max_llm_pairs=0)
         assert plan.resolver == "exact"
 
-    @pytest.mark.parametrize("bad", [5, -1, 6000, 1.5])
+    @pytest.mark.parametrize("bad", [5, -1, 6000, 1.5, float("inf"), float("-inf"), float("nan")])
     def test_out_of_range_is_refused(self, bad):
         with pytest.raises(ValueError):
             restrict_plan(IngestionPlan(resolver="llm_verified"), max_llm_pairs=bad)
@@ -85,6 +90,34 @@ class TestMaxLlmPairs:
     def test_in_range_caps_the_budget(self):
         plan = IngestionPlan(resolver="llm_verified", resolver_params={"max_llm_pairs": 900})
         assert restrict_plan(plan, max_llm_pairs=40).resolver_params == {"max_llm_pairs": 40}
+
+    async def test_cap_survives_tune_params_false(self):
+        # tune_params=False drops the plan's own params, but the caller's
+        # pair ceiling must still reach the built resolver (it would
+        # otherwise default to 500 pairs).
+        reply = '{"resolver": "llm_verified", "resolver_params": {"max_llm_pairs": 900}}'
+        planner = LLMIngestionPlanner(
+            MockLLM(responses=[reply]), max_llm_pairs=20, tune_params=False
+        )
+        plan = await planner.plan("text")
+        assert plan.resolver == "llm_verified"
+        assert plan.resolver_params == {"max_llm_pairs": 20}
+        resolver = build_resolver(plan.resolver, params=plan.resolver_params)
+        assert resolver.max_llm_pairs == 20
+
+    async def test_rule_planner_cap_survives_tune_params_false(self):
+        planner = RuleBasedIngestionPlanner(
+            [{"match": "*", "resolver": "llm_verified"}], max_llm_pairs=20, tune_params=False
+        )
+        plan = await planner.plan(None, source="a.md")
+        resolver = build_resolver(plan.resolver, params=plan.resolver_params)
+        assert resolver.max_llm_pairs == 20
+
+    def test_cap_above_the_default_keeps_the_default_without_tuning(self):
+        plan = restrict_plan(
+            IngestionPlan(resolver="llm_verified"), max_llm_pairs=5000, tune_params=False
+        )
+        assert plan.resolver_params == {}  # the resolver's own 500
 
     def test_planner_with_zero(self):
         assert "llm_verified" not in LLMIngestionPlanner(MockLLM(), max_llm_pairs=0).resolvers
@@ -316,3 +349,53 @@ def test_markdown_parse_failure_means_no_elements(monkeypatch):
 
     monkeypatch.setattr(MarkdownLoader, "_parse_markdown", boom)
     assert GraphRAG._markdown_elements("# A\n\n# B\n", "x.md") == []
+
+
+# ── max_chunks: a per-document chunk budget, checked before extraction ──
+
+
+class TestMaxChunks:
+    @pytest.mark.parametrize("bad", [0, -1, 1.5, True, "10", float("inf")])
+    def test_invalid_budget_is_refused(self, bad):
+        with pytest.raises(ValueError, match="max_chunks"):
+            RuleBasedIngestionPlanner(max_chunks=bad)
+        with pytest.raises(ValueError, match="max_chunks"):
+            LLMIngestionPlanner(MockLLM(), max_chunks=bad)
+
+    def test_cheap_limits_carry_a_budget(self):
+        assert CHEAP_PLAN_LIMITS["max_chunks"] == 1000
+        assert RuleBasedIngestionPlanner(**CHEAP_PLAN_LIMITS).max_chunks == 1000
+        assert RuleBasedIngestionPlanner().max_chunks is None
+
+    async def test_over_budget_is_refused_before_any_extraction_call(
+        self,
+        mock_conn,  # noqa: F811
+        embedder,
+    ):
+        llm = MockLLM()
+        planner = RuleBasedIngestionPlanner(
+            [{"match": "*", "chunker": "fixed", "extractor": "llm"}], max_chunks=2
+        )
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        mock_conn.query.reset_mock()
+        with pytest.raises(ChunkBudgetExceededError, match="over max_chunks=2"):
+            await g.ingest(text=LONG_RUN.text, document_id="big", planner=planner)
+        assert llm._call_index == 0  # no extraction (or any other) LLM call
+        writes = [c for c in mock_conn.query.call_args_list if "MERGE" in str(c.args[0])]
+        assert writes == []  # nothing stored either
+
+    async def test_within_budget_ingests(self, mock_conn, embedder):  # noqa: F811
+        planner = RuleBasedIngestionPlanner([{"match": "*", "extractor": "llm"}], max_chunks=5)
+        g = GraphRAG(connection=mock_conn, llm=MockLLM(), embedder=embedder, embedding_dimension=8)
+        mock_conn.query.reset_mock()
+        result = await g.ingest(text="Alice works at Acme.", document_id="small", planner=planner)
+        assert result.chunks_indexed == 1
+        assert any("MERGE" in str(c.args[0]) for c in mock_conn.query.call_args_list)
+        assert result.metadata["plan"]["max_chunks"] == 5
+
+    async def test_wraps_whatever_chunker_is_used(self):
+        inner = build_chunker("fixed")
+        budget = ChunkBudget(inner, 3)
+        with pytest.raises(ChunkBudgetExceededError, match="makes \\d+ chunks"):
+            await budget.chunk_document(LONG_RUN, Context())
+        assert len((await ChunkBudget(inner, 10**6).chunk(LONG_RUN.text, Context())).chunks) > 3

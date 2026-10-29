@@ -78,6 +78,7 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     _coerce_attribute_value,
 )
 from graphrag_sdk.ingestion.ingestion_planner import (
+    ChunkBudget,
     IngestionPlan,
     IngestionPlanner,
     LLMIngestionPlanner,
@@ -3135,6 +3136,7 @@ class GraphRAG:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Ingestion planner failed (%s); using the default strategies", exc)
             info["notes"].append(f"planner failed: {exc}")
+            chunker = self._chunk_budget(active, chunker, info)
             return chunker, extractor, resolver, preloaded_document
 
         # "structural" groups a loaded document's elements. Only the Markdown
@@ -3204,7 +3206,23 @@ class GraphRAG:
                     slot,
                 )
 
-        return slots["chunker"], slots["extractor"], slots["resolver"], preloaded_document
+        return (
+            self._chunk_budget(active, slots["chunker"], info),
+            slots["extractor"],
+            slots["resolver"],
+            preloaded_document,
+        )
+
+    @staticmethod
+    def _chunk_budget(
+        planner: Any, chunker: ChunkingStrategy | None, info: dict[str, Any]
+    ) -> ChunkingStrategy | None:
+        """``chunker`` (or the default one) held to the planner's ``max_chunks``, if any."""
+        max_chunks = getattr(planner, "max_chunks", None)
+        if not isinstance(max_chunks, int) or isinstance(max_chunks, bool) or max_chunks < 1:
+            return chunker
+        info["max_chunks"] = max_chunks
+        return ChunkBudget(chunker or SentenceTokenCapChunking(), max_chunks)
 
     @staticmethod
     def _markdown_elements(text: str | None, source: str | None) -> list[Any]:

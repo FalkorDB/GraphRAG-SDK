@@ -528,7 +528,10 @@ class DocSample(BaseModel):
     path: str
     type: str
     size_bytes: int = 0
-    chars: int = 0
+    chars: int = Field(
+        default=0, description="Text length; estimated from the part read when chars_estimated."
+    )
+    chars_estimated: bool = False
     sample: str = ""
     error: str | None = None
 
@@ -560,7 +563,8 @@ class PreviewFilesResult(ToolResult):
         items = []
         for f in self.files:
             body = f"error: {_clean(f.error)}" if f.error else _snippet(f.sample, 600)
-            items.append(f"- {_clean(f.path)} ({f.chars} chars): {body}")
+            chars = f"~{f.chars}" if f.chars_estimated else str(f.chars)
+            items.append(f"- {_clean(f.path)} ({chars} chars): {body}")
         return [("Files", items)]
 
 
@@ -590,6 +594,13 @@ class PrunedTypes(BaseModel):
         default=0,
         description="Entities kept with label Unknown: their type is not in the ontology.",
     )
+    unknown_endpoints: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Declared relation -> relations dropped because an endpoint is an Unknown "
+            "entity (declare that entity's type; a pattern cannot name Unknown)."
+        ),
+    )
 
     @classmethod
     def from_report(cls, report: Any) -> PrunedTypes | None:
@@ -609,6 +620,9 @@ class PrunedTypes(BaseModel):
             },
             dangling=int(report.get("dangling") or 0),
             unknown=int(report.get("unknown") or 0),
+            unknown_endpoints={
+                str(k): int(v) for k, v in (report.get("unknown_endpoints") or {}).items()
+            },
         )
 
     def add(self, other: PrunedTypes) -> None:
@@ -626,11 +640,19 @@ class PrunedTypes(BaseModel):
                 kept.setdefault(pair, text)
         self.dangling += other.dangling
         self.unknown += other.unknown
+        for key, n in other.unknown_endpoints.items():
+            self.unknown_endpoints[key] = self.unknown_endpoints.get(key, 0) + n
 
     @property
     def missing_types(self) -> bool:
         """Whether an undeclared type or pattern showed up (not only dangling edges)."""
-        return bool(self.entities or self.relations or self.pattern_mismatches or self.unknown)
+        return bool(
+            self.entities
+            or self.relations
+            or self.pattern_mismatches
+            or self.unknown
+            or self.unknown_endpoints
+        )
 
     def summary(self, limit: int = 8) -> str:
         def top(counts: dict[str, int]) -> str:
@@ -652,6 +674,8 @@ class PrunedTypes(BaseModel):
             parts.append(f"undeclared relation patterns {top(flat)}")
         if self.unknown:
             parts.append(f"{self.unknown} entities of no declared type (stored as Unknown)")
+        if self.unknown_endpoints:
+            parts.append(f"relations to Unknown entities {top(self.unknown_endpoints)}")
         if self.dangling:
             parts.append(f"{self.dangling} relations to dropped entities")
         return "; ".join(parts)
@@ -695,6 +719,13 @@ class IngestResult(ToolResult):
     finalized: bool = False
     hint: str | None = None
 
+    @property
+    def unchanged(self) -> bool:
+        """True when nothing was written: every document was already stored as is."""
+        if self.document_id is not None:
+            return self.status == "unchanged"
+        return bool(self.documents) and all(d.status == "unchanged" for d in self.documents)
+
     def _preamble(self) -> list[str]:
         totals = (
             f"{self.chunks_indexed} chunks, {self.nodes_created} nodes, "
@@ -716,7 +747,10 @@ class IngestResult(ToolResult):
             lines = [f"Files: {status} ({totals})."]
         if self.pruned is not None:
             lines.append(f"Dropped (not in the ontology): {self.pruned.summary()}.")
-        lines.append("Finalized." if self.finalized else "Not finalized yet.")
+        if self.finalized:
+            lines.append("Finalized.")
+        elif not self.unchanged:
+            lines.append("Not finalized yet.")
         if self.hint:
             lines.append(f"Hint: {_clean(self.hint)}")
         return lines
