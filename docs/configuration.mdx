@@ -4,7 +4,27 @@ sidebarTitle: "Configuration"
 description: "Comprehensive GraphRAG SDK configuration reference -- every configurable component, its parameters, defaults, and usage examples."
 ---
 
-This document is the comprehensive configuration reference for GraphRAG SDK v2. Each section covers a configurable component, its parameters, defaults, and usage examples.
+This document is the configuration reference for GraphRAG SDK. Each section covers a configurable component, its parameters, defaults, and usage examples.
+
+---
+
+## FalkorDB server version
+
+GraphRAG SDK requires **FalkorDB 4.20 or later**. The 4.x line from 4.20 and the 6.0.x line are both supported; the repository's `docker-compose.yml`, the README and the examples use `falkordb/falkordb:v4.22.2`:
+
+```bash
+docker run -d -p 6379:6379 -p 3000:3000 --name falkordb falkordb/falkordb:v4.22.2
+```
+
+Each connection asks the server for its version once, before its first query, and refuses an older server with `FalkorDBVersionError` (a `DatabaseError`), so `ingest()`, `query()`, `finalize()` and every other call fail before anything is written. Earlier servers dropped vector-index entries on every write to a node holding a vector, so search and dedup missed entities.
+
+- A server that refuses to report its version (an ACL without `MODULE LIST`, or a managed server that disabled it) is let through with a warning.
+- Any other answer to the version check is handled as a query's would be: a temporary error is retried, and a server that cannot be reached fails the call with `DatabaseUnavailableError` and is asked again by the next one.
+- `close()` makes the next query ask again.
+
+<Warning>
+  Keep the image tag. A bare `falkordb/falkordb` reuses whatever image Docker has cached, which may be older than 4.20.
+</Warning>
 
 ---
 
@@ -19,35 +39,44 @@ This document is the comprehensive configuration reference for GraphRAG SDK v2. 
 | `host`             | `str`             | `"localhost"`       | FalkorDB server hostname or IP address.                             |
 | `port`             | `int`             | `6379`              | FalkorDB server port.                                               |
 | `username`         | `str \| None`     | `None`              | Authentication username (omit for unauthenticated connections).     |
-| `password`         | `str \| None`     | `None`              | Authentication password.                                            |
-| `graph_name`       | `str`             | `"knowledge_graph"` | Name of the FalkorDB graph to operate on.                           |
+| `password`         | `str \| None`     | `None`              | Authentication password. Hidden from `repr()`.                      |
+| `graph_name`       | `str`             | `"knowledge_graph"` | Name of the FalkorDB graph to operate on. The ontology lives beside it in `<graph_name>__ontology`. |
 | `max_connections`  | `int`             | `16`                | Maximum number of connections in the Redis `BlockingConnectionPool`.|
 | `retry_count`      | `int`             | `3`                 | Attempts per query for transient failures, first try included (`1` disables retries). |
 | `retry_delay`      | `float`           | `1.0`               | Base delay (seconds) for exponential backoff with jitter: `retry_delay * 2^attempt * random(0.5, 1.5)`. |
 | `pool_timeout`     | `float`           | `30.0`              | Timeout (seconds) waiting to acquire a connection from the pool.    |
 | `query_timeout_ms` | `int \| None`     | `10_000`            | Per-query timeout in milliseconds forwarded to FalkorDB, which applies it to reads only. The client waits this long plus 5 s for any reply. Set to `None` to disable both: the client then waits indefinitely for every reply. |
+| `ssl`              | `bool`            | `False`             | Connect over TLS.                                                   |
+| `ssl_cert_reqs`    | `str`             | `"required"`        | Certificate verification mode. Certificates are verified by default. |
+| `ssl_ca_certs`     | `str \| None`     | `None`              | CA bundle path.                                                     |
+| `ssl_certfile`     | `str \| None`     | `None`              | Client certificate path.                                            |
+| `ssl_keyfile`      | `str \| None`     | `None`              | Client key path.                                                    |
+| `ssl_check_hostname` | `bool`          | `True`              | Check the server hostname against its certificate.                  |
+
+The TLS fields mirror `redis-py`'s naming and have no effect unless `ssl=True`.
 
 ### Creating from a URL
 
-`ConnectionConfig.from_url()` parses a `redis://` URL and returns a `ConnectionConfig`:
+`ConnectionConfig.from_url()` parses a `redis://` or `rediss://` URL and returns a `ConnectionConfig`:
 
 ```python
+from graphrag_sdk import ConnectionConfig
+
 config = ConnectionConfig.from_url(
-    "redis://user:pass@my-falkordb.example.com:6380",
+    "rediss://user:pass@my-falkordb.example.com:6380",   # rediss:// turns TLS on
     graph_name="my_graph",
     query_timeout_ms=15_000,
 )
 ```
 
-The URL format is `redis://[user:pass@]host[:port][/db]`. Any keyword argument overrides the value parsed from the URL.
+The URL format is `redis://[user:pass@]host[:port][/db]` (plaintext) or `rediss://...` (TLS). Any other scheme raises `ValueError`. Keyword arguments override the values parsed from the URL.
 
 ### Passing to GraphRAG
 
 You can pass either a `ConnectionConfig` or a pre-built `FalkorDBConnection`:
 
 ```python
-from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
-from graphrag_sdk.api.main import GraphRAG
+from graphrag_sdk import ConnectionConfig, FalkorDBConnection, GraphRAG
 
 # Option A: pass a config (connection created internally)
 rag = GraphRAG(
@@ -61,17 +90,37 @@ conn = FalkorDBConnection(ConnectionConfig(host="10.0.0.5", password="secret"))
 rag = GraphRAG(connection=conn, llm=my_llm, embedder=my_embedder)
 ```
 
+### Timeouts
+
+| What | Limit |
+|------|-------|
+| Opening a connection | 5 s |
+| `ping()` | 5 s (returns `False` instead of raising) |
+| The driver's first probe of the server | 5 s |
+| Waiting for a query reply | `query_timeout_ms` + 5 s (15 s at the defaults); no limit when `query_timeout_ms` is `None` |
+| Server-side read timeout | `query_timeout_ms`, or the `timeout=` passed to `FalkorDBConnection.query()` |
+
+A query needing more than 5 s but less than `query_timeout_ms` completes normally.
+
 ### Retry Behavior
 
-Each query is attempted up to `retry_count` times in total, the first try included, with exponential backoff and jitter between attempts (`retry_delay * 2^attempt * random(0.5, 1.5)`, `attempt` counting from 0). Everything that is not a server reply is retried: a lost connection or socket timeout, `LOADING`, an error raised in the driver. Of the server's replies only the temporary ones are: a full query queue, `BUSY`, `NOREPLICAS`, `MISCONF`, a cluster redirect or failover, a read-only replica, and out of memory. If one outlasts every attempt, the circuit breaker is open, or the first connection to the server fails, `query()` raises `DatabaseUnavailableError`. On a server that accepts connections but never answers, that takes about `retry_count` × (`query_timeout_ms` + 5 s); lower either to fail sooner.
+Each query is attempted up to `retry_count` times in total, the first try included, with exponential backoff and jitter between attempts (`retry_delay * 2^attempt * random(0.5, 1.5)`, `attempt` counting from 0). Everything that is not a server reply is retried: a lost connection or socket timeout, `LOADING`, an error raised in the driver. Of the server's replies only the temporary ones are: a full query queue, `BUSY`, `NOREPLICAS`, `MISCONF`, a cluster redirect or failover, a read-only replica, and out of memory. If one outlasts every attempt, the circuit breaker is open, or the first connection to the server fails, `query()` raises `DatabaseUnavailableError`.
 
-Any other server reply means the query itself was rejected -- a syntax error, an unknown variable, division by zero, a `MERGE` on a null key, a missing index, a procedure called with the wrong arguments. A read the server stops at its timeout (`query_timeout_ms`, or the `timeout=` passed to `query()`) is treated the same way, since a retry would cost as much again. FalkorDB applies no timeout to writes: a write slower than `query_timeout_ms` + 5 s is cut on the client as a socket timeout and re-sent, while the first attempt may still run. Both raise `DatabaseError` on the first attempt, and the circuit breaker counts them as a healthy answer, not a failure. `DatabaseUnavailableError` subclasses `DatabaseError`, so `except DatabaseError` catches both.
+On a server that stops answering queries once the connection is open, each attempt waits `query_timeout_ms` + 5 s for a reply, plus the backoff between attempts: about 48 s at the defaults (46–50 s, with the jitter) before `DatabaseUnavailableError`. A server that never answers at all fails at the driver's first probe instead, which redis-py retries on its own (about 60 s; see [Storage](/storage)). Lower `query_timeout_ms` or `retry_count` to fail sooner. `ping()` still answers within 5 s.
+
+Any other server reply means the query itself was rejected -- a syntax error, an unknown variable, division by zero, a `MERGE` on a null key, a missing index, a procedure called with the wrong arguments. A read the server stops at its timeout ("Query timed out") is treated the same way, since a retry would cost as much again. Both raise `DatabaseError` on the first attempt, and the circuit breaker counts them as a healthy answer, not a failure. FalkorDB applies no timeout to writes: a write slower than `query_timeout_ms` + 5 s is cut on the client as a socket timeout and re-sent, while the first attempt may still run.
+
+`DatabaseUnavailableError` subclasses `DatabaseError`, so `except DatabaseError` catches both. If you catch `DatabaseUnavailableError` to detect an outage, a rejected or timed-out query does not reach that handler.
+
+### Circuit Breaker
+
+Every connection has a circuit breaker. After 5 consecutive transient failures it opens and refuses every query at once, with `DatabaseUnavailableError`, for 30 seconds; then it lets one probe query through. A successful query, or a rejected one (the server answered), closes it again.
 
 ---
 
 ## 2. LLM Providers
 
-The SDK defines an abstract `LLMInterface` base class. All LLM providers must implement `invoke()` for synchronous calls. Async calls (`ainvoke`) default to running `invoke` in a thread pool but can be overridden for true async support.
+The SDK defines an abstract `LLMInterface` base class. All LLM providers must implement `invoke()` for synchronous calls. Async calls (`ainvoke`) default to running `invoke` in a thread pool but can be overridden for true async support. See [Providers](/providers) for the full method list.
 
 ### Common Parameters
 
@@ -80,7 +129,7 @@ The `LLMInterface` base class accepts:
 | Parameter         | Type                    | Default | Description                                    |
 |-------------------|-------------------------|---------|------------------------------------------------|
 | `model_name`      | `str`                   | --      | Model identifier (e.g. `"gpt-4.1"`).          |
-| `model_params`    | `dict[str, Any] \| None`| `{}`    | Provider-specific parameters.                  |
+| `model_params`    | `dict[str, Any] \| None`| `None` (stored as `{}`) | Provider-specific parameters.  |
 | `max_concurrency` | `int`                   | `12`    | Concurrency limit for `abatch_invoke()`.       |
 
 ### LiteLLM (Recommended)
@@ -88,7 +137,7 @@ The `LLMInterface` base class accepts:
 LiteLLM supports 100+ LLM providers through a unified interface. Install with `pip install graphrag-sdk[litellm]`.
 
 ```python
-from graphrag_sdk.core.providers import LiteLLM
+from graphrag_sdk import LiteLLM
 
 # OpenAI
 llm = LiteLLM(model="gpt-4.1", api_key="sk-...")
@@ -118,12 +167,14 @@ llm = LiteLLM(model="anthropic/claude-sonnet-4-20250514", api_key="sk-ant-...")
 | `temperature` | `float`         | `0.0`   | Sampling temperature.                    |
 | `max_tokens`  | `int \| None`   | `None`  | Maximum tokens in response.              |
 
+Other keyword arguments are forwarded to LiteLLM.
+
 ### OpenRouter
 
 OpenRouter provides access to many models through a single API. Install with `pip install graphrag-sdk[openrouter]`.
 
 ```python
-from graphrag_sdk.core.providers import OpenRouterLLM
+from graphrag_sdk import OpenRouterLLM
 
 llm = OpenRouterLLM(
     model="anthropic/claude-sonnet-4-20250514",
@@ -138,14 +189,14 @@ llm = OpenRouterLLM(
 | Parameter       | Type                     | Default                                       | Description                          |
 |-----------------|--------------------------|-----------------------------------------------|--------------------------------------|
 | `model`         | `str`                    | --                                            | Model identifier in OpenRouter format.|
-| `api_key`       | `str \| None`            | `os.environ["OPENROUTER_API_KEY"]`            | OpenRouter API key.                  |
+| `api_key`       | `str \| None`            | `None` (reads `OPENROUTER_API_KEY`)           | OpenRouter API key.                  |
 | `temperature`   | `float`                  | `0.0`                                         | Sampling temperature.                |
 | `max_tokens`    | `int \| None`            | `None`                                        | Maximum tokens in response.          |
 | `extra_headers` | `dict[str, str] \| None` | `None`                                        | Additional HTTP headers.             |
 
 ### Azure OpenAI via Environment Variables
 
-When using LiteLLM with Azure, the following environment variables are recognized:
+When using LiteLLM with Azure, you can read the settings from environment variables:
 
 ```bash
 export AZURE_OPENAI_API_KEY="your-key"
@@ -157,7 +208,7 @@ Then configure the LLM:
 
 ```python
 import os
-from graphrag_sdk.core.providers import LiteLLM
+from graphrag_sdk import LiteLLM
 
 llm = LiteLLM(
     model="azure/gpt-4.1",
@@ -172,7 +223,7 @@ llm = LiteLLM(
 Implement the `LLMInterface` abstract class:
 
 ```python
-from graphrag_sdk.core.providers import LLMInterface
+from graphrag_sdk import LLMInterface
 from graphrag_sdk.core.models import LLMResponse
 
 class MyLLM(LLMInterface):
@@ -184,6 +235,19 @@ class MyLLM(LLMInterface):
         text = my_custom_api(prompt)
         return LLMResponse(content=text)
 ```
+
+### Which model does what
+
+One `llm` serves every LLM call the SDK makes, unless you pass another for a specific job:
+
+| Job | Where | Model guidance |
+|-----|-------|----------------|
+| Extraction (step 2 of `GraphExtraction`) | `ingest()` | Your main model; `GraphExtraction(llm=...)` to use another |
+| Keyword extraction | every `retrieve()` / `completion()` | Cheap calls; uses the instance's `llm` |
+| Text-to-Cypher | every question, when `enable_cypher=True` | Uses the instance's `llm` |
+| Answer generation | `completion()` | Uses the instance's `llm` |
+| Dedup judge | `finalize()` / `deduplicate_entities()` | A gpt-4.1-class model: `finalize(judge=LLMJudge(gpt41))`. See [Post-Ingestion](#7-post-ingestion) |
+| Mapping proposal for an undeclared table | `ingest()` of a `.csv` with no mapping | One call per table (up to 3 when a proposal does not fit the data) |
 
 ---
 
@@ -200,19 +264,20 @@ Individual embedding calls to Azure OpenAI take approximately 0.22 seconds each.
 Supports OpenAI, Azure, Cohere, and other embedding models via LiteLLM.
 
 ```python
-from graphrag_sdk.core.providers import LiteLLMEmbedder
+from graphrag_sdk import LiteLLMEmbedder
 
 # Azure OpenAI
 embedder = LiteLLMEmbedder(
-    model="azure/text-embedding-ada-002",
+    model="azure/text-embedding-3-large",
     api_key="your-key",
     api_base="https://your-resource.openai.azure.com/",
     api_version="2024-12-01-preview",
     batch_size=500,
+    dimensions=256,          # forwarded to LiteLLM; match GraphRAG(embedding_dimension=...)
 )
 
 # OpenAI
-embedder = LiteLLMEmbedder(model="text-embedding-ada-002", api_key="sk-...")
+embedder = LiteLLMEmbedder(model="text-embedding-3-large", api_key="sk-...", dimensions=256)
 ```
 
 **Parameters:**
@@ -225,12 +290,14 @@ embedder = LiteLLMEmbedder(model="text-embedding-ada-002", api_key="sk-...")
 | `api_version` | `str \| None`   | `None`  | API version string.                                            |
 | `batch_size`  | `int`           | `2048`  | Maximum texts per batch call. Azure users should set to `500`. |
 
-For Azure OpenAI, set `batch_size=500` to stay within the API rate limits. The default of 2048 works well for OpenAI's direct API.
+Other keyword arguments (such as `dimensions`) are forwarded to LiteLLM. For Azure OpenAI, set `batch_size=500` to stay within the API rate limits. The default of 2048 works well for OpenAI's direct API.
+
+`GraphRAG(embedding_dimension=...)` defaults to `256` and must match the vectors your embedder produces; a mismatch raises `ConfigError` before any extraction work. The embedding model and dimension are stored in the graph, and a later session with a different model is refused.
 
 ### OpenRouterEmbedder
 
 ```python
-from graphrag_sdk.core.providers import OpenRouterEmbedder
+from graphrag_sdk import OpenRouterEmbedder
 
 embedder = OpenRouterEmbedder(
     model="openai/text-embedding-ada-002",
@@ -244,7 +311,7 @@ embedder = OpenRouterEmbedder(
 | Parameter       | Type                     | Default                                       | Description              |
 |-----------------|--------------------------|-----------------------------------------------|--------------------------|
 | `model`         | `str`                    | --                                            | Model identifier.        |
-| `api_key`       | `str \| None`            | `os.environ["OPENROUTER_API_KEY"]`            | API key.                 |
+| `api_key`       | `str \| None`            | `None` (reads `OPENROUTER_API_KEY`)           | API key.                 |
 | `batch_size`    | `int`                    | `2048`                                        | Maximum texts per batch. |
 | `extra_headers` | `dict[str, str] \| None` | `None`                                        | Additional HTTP headers. |
 
@@ -253,9 +320,13 @@ embedder = OpenRouterEmbedder(
 Implement the `Embedder` abstract class:
 
 ```python
-from graphrag_sdk.core.providers import Embedder
+from graphrag_sdk import Embedder
 
 class MyEmbedder(Embedder):
+    @property
+    def model_name(self) -> str:
+        return "my-embedding-model"
+
     def embed_query(self, text: str, **kwargs) -> list[float]:
         return my_embedding_api(text)
 
@@ -272,141 +343,139 @@ Both `LiteLLMEmbedder` and `OpenRouterEmbedder` implement binary-split error rec
 
 ---
 
-## 4. GraphSchema
+## 4. Ontology
 
-`GraphSchema` defines the structure of your knowledge graph. It constrains LLM extraction and powers the pruning step that filters non-conforming data.
+An `Ontology` defines the structure of your knowledge graph. It constrains LLM extraction, powers the pruning step that filters non-conforming data, tells text-to-Cypher which labels and typed properties exist, and holds the mappings for [tables](/structured-ingestion).
 
 ### Components
 
-**EntityType** -- defines a node type:
+**Entity** -- defines a node type:
 
 | Field         | Type                | Default       | Description                            |
 |---------------|---------------------|---------------|----------------------------------------|
-| `label`       | `str`               | --            | The node label (e.g. `"Person"`).      |
-| `description` | `str \| None`       | `None`        | Human-readable description.            |
-| `properties`  | `list[PropertyType]` | `[]`          | Expected properties on this node type. |
+| `label`       | `str`               | --            | The node label (e.g. `"Person"`). `Document` and `Chunk` are reserved. |
+| `description` | `str \| None`       | `None`        | Human-readable description; helps the LLM decide when to use the type. |
+| `properties`  | `list[Attribute]`   | `[]`          | Typed attributes on this node type.    |
 
-**RelationType** -- defines a relationship type:
+**Relation** -- defines a relationship type:
 
-| Field         | Type                | Default       | Description                              |
-|---------------|---------------------|---------------|------------------------------------------|
-| `label`       | `str`               | --            | The relationship type (e.g. `"KNOWS"`).  |
-| `description` | `str \| None`       | `None`        | Human-readable description.              |
-| `properties`  | `list[PropertyType]` | `[]`          | Expected properties on this relationship.|
+| Field         | Type                     | Default       | Description                              |
+|---------------|--------------------------|---------------|------------------------------------------|
+| `label`       | `str`                    | --            | The relationship type (e.g. `"KNOWS"`).  |
+| `description` | `str \| None`            | `None`        | Human-readable description.              |
+| `patterns`    | `list[tuple[str, str]]`  | `[]`          | Allowed `(source_label, target_label)` pairs. Direction matters. Empty means any. |
+| `properties`  | `list[Attribute]`        | `[]`          | Typed attributes on this relationship.   |
 
-**PropertyType** -- defines a property on a node or relationship:
+**Attribute** -- defines a property on a node or relationship:
 
 | Field         | Type            | Default     | Description                                                  |
 |---------------|-----------------|-------------|--------------------------------------------------------------|
 | `name`        | `str`           | --          | Property name.                                               |
-| `type`        | `str`           | `"STRING"`  | Type hint: `STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`. |
+| `type`        | `str`           | `"STRING"`  | `STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`. Extracted values are coerced to it; one that does not fit is dropped. |
 | `description` | `str \| None`   | `None`      | Human-readable description.                                  |
-| `required`    | `bool`          | `False`     | Whether the property is required.                            |
+| `structured`  | `bool`          | `False`     | Set by the SDK on a column a table mapping declared.         |
 
-### Example Schema Definition
+**tables** -- `Ontology(tables=[TableMapping(...)])` declares how CSV/TSV files become nodes. See [Structured Ingestion](/structured-ingestion).
+
+### Example Ontology
 
 ```python
-from graphrag_sdk.core.models import (
-    EntityType, RelationType, PropertyType, GraphSchema,
-)
+from graphrag_sdk import Attribute, Entity, Ontology, Relation
 
-schema = GraphSchema(
+ontology = Ontology(
     entities=[
-        EntityType(
+        Entity(
             label="Person",
             description="A character or real person",
             properties=[
-                PropertyType(name="name", type="STRING", required=True),
-                PropertyType(name="age", type="INTEGER"),
-                PropertyType(name="occupation", type="STRING"),
+                Attribute(name="age", type="INTEGER"),
+                Attribute(name="occupation", type="STRING"),
             ],
         ),
-        EntityType(
+        Entity(
             label="Location",
             description="A geographical place or setting",
-            properties=[
-                PropertyType(name="name", type="STRING", required=True),
-                PropertyType(name="country", type="STRING"),
-            ],
+            properties=[Attribute(name="country", type="STRING")],
         ),
-        EntityType(
-            label="Organization",
-            description="A company, institution, or group",
-        ),
+        Entity(label="Organization", description="A company, institution, or group"),
     ],
     relations=[
-        RelationType(
-            label="LIVES_IN",
-            description="Person resides at location",
-            patterns=[("Person", "Location")],
-        ),
-        RelationType(
-            label="WORKS_FOR",
-            description="Person is employed by organization",
-            patterns=[("Person", "Organization")],
-        ),
-        RelationType(
-            label="LOCATED_IN",
-            description="Organization is located at a place",
-            patterns=[("Organization", "Location")],
-        ),
-        RelationType(
-            label="KNOWS",
-            description="Two people know each other",
-            patterns=[("Person", "Person")],
-        ),
+        Relation(label="LIVES_IN", description="Person resides at location",
+                 patterns=[("Person", "Location")]),
+        Relation(label="WORKS_FOR", description="Person is employed by organization",
+                 patterns=[("Person", "Organization")]),
+        Relation(label="LOCATED_IN", description="Organization is located at a place",
+                 patterns=[("Organization", "Location")]),
+        Relation(label="KNOWS", description="Two people know each other",
+                 patterns=[("Person", "Person")]),
     ],
 )
+
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)
 ```
 
-Each `RelationType.patterns` entry is a `(source_label, target_label)` tuple.
-An empty `patterns` list means the relation is allowed between any entity types.
+`name` is managed by the SDK and need not be declared. The ontology is persisted in the paired `<graph_name>__ontology` graph; `await rag.save_ontology("ontology.json")` and `Ontology.from_file("ontology.json")` round-trip it as JSON.
 
-### Open Schema Mode
+### No Ontology
 
-If no entity types or relation types are defined (empty `GraphSchema()`), the extraction operates in open-schema mode and the pruning step is skipped. This lets the LLM extract any entities and relationships it finds.
+With no entity types, relation types or tables (and no ontology stored for the graph yet), the first use seeds the 11 default entity types (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method). No relation is enforced: the extraction prompt lists `DEFAULT_RELATION_TYPES` (31 labels) as preferred relationships and accepts any other UPPER_SNAKE_CASE label. See [Pipeline Tuning](#5-pipeline-tuning).
+
+`GraphSchema`, `EntityType`, `RelationType` and `PropertyType` are deprecated aliases of `Ontology`, `Entity`, `Relation` and `Attribute`, and `GraphRAG(schema=...)` of `ontology=`; each use emits a `DeprecationWarning`.
 
 ---
 
 ## 5. Pipeline Tuning
 
-### Chunking Parameters
+### Chunking
 
-`FixedSizeChunking` splits text into fixed-size character windows with overlap.
+The default chunker is `SentenceTokenCapChunking`: it splits at sentence boundaries and caps each chunk at **384 tokens**, with 2 sentences of overlap.
 
-| Parameter       | Type  | Default | Benchmark Value | Description                                           |
-|-----------------|-------|---------|-----------------|-------------------------------------------------------|
-| `chunk_size`    | `int` | `1000`  | `1500`          | Maximum characters per chunk.                         |
-| `chunk_overlap` | `int` | `100`   | `200`           | Overlapping characters between consecutive chunks.    |
+| Parameter           | Type  | Default         | Description                                           |
+|---------------------|-------|-----------------|-------------------------------------------------------|
+| `max_tokens`        | `int` | `384`           | Maximum tokens per chunk.                             |
+| `overlap_sentences` | `int` | `2`             | Sentences shared between consecutive chunks.          |
+| `encoding_name`     | `str` | `"cl100k_base"` | tiktoken encoding used to count tokens.               |
+
+`StructuralChunking` and `ContextualChunking` also default to 384 tokens.
+
+<Note>
+  **Cost of the 384-token default.** Smaller chunks mean more extraction calls. On the 11-document benchmark corpus, 384 tokens made 157 extraction LLM calls where 512 made 103 (+52 %); on a 53k-token corpus the increase was 35 %, with about 19 % more input tokens. In return, relation F1 and answer accuracy rose on the same corpus. Pass `chunker=SentenceTokenCapChunking(max_tokens=512)` to keep the larger size.
+</Note>
 
 ```python
-from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+from graphrag_sdk import SentenceTokenCapChunking, FixedSizeChunking
 
-chunker = FixedSizeChunking(chunk_size=1500, chunk_overlap=200)
+result = await rag.ingest("document.txt", chunker=SentenceTokenCapChunking(max_tokens=512))
 
-result = await rag.ingest("document.txt", chunker=chunker)
+# Character windows instead of sentences
+result = await rag.ingest("document.txt", chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200))
 ```
 
-Larger chunks provide more context per extraction call but increase LLM token usage. The benchmark-optimized values (1500/200) balance extraction quality against cost.
+`FixedSizeChunking` splits into fixed-size character windows (`chunk_size=1000`, `chunk_overlap=100` by default). Tables are not chunked: each row is one record chunk.
+
+To re-chunk documents already in the graph after changing the chunker, use `update(path, force=True)`; a plain `ingest()` of unchanged content is a no-op.
 
 ### Extraction Strategy Parameters
 
-**GraphExtraction** -- composable 2-step extraction (GLiNER NER + LLM relationship extraction):
+**GraphExtraction** -- composable 2-step extraction (GLiNER NER + LLM verification and relationship extraction):
 
 | Parameter          | Type            | Default        | Description                                                |
 |--------------------|-----------------|----------------|------------------------------------------------------------|
 | `llm`              | `LLMInterface`  | required       | LLM provider for step 2 (verify + relationship extraction). |
 | `entity_extractor` | `EntityExtractor \| None` | `None` (`GLiNERExtractor()`) | Pluggable NER backend for step 1. |
 | `coref_resolver`   | `CorefResolver \| None` | `None` | Optional coreference resolution (e.g. `FastCorefResolver()`). |
-| `entity_types`     | `list[str] \| None` | `None` (11 default types) | Custom entity types. Overridden by `schema.entities` if set. |
+| `entity_types`     | `list[str] \| None` | `None` (11 default types) | Custom entity types. Overridden by `ontology.entities` if set. |
+| `relation_types`   | `list[str] \| None` | `None` (`DEFAULT_RELATION_TYPES`, 31 labels) | Preferred relationship labels for the prompt. Guidance, not a filter. `[]` restores open-vocabulary labels. Overridden by `ontology.relations`, which is enforced. |
 | `max_concurrency`  | `int \| None`   | `None` (uses LLM default) | Maximum parallel LLM calls during step 2. |
 
 **Built-in entity extractors:**
 
 | Class | Description | Parameters |
 |-------|-------------|------------|
-| `GLiNERExtractor` | Local GLiNER model (default) | `threshold=0.75`, `model_name="urchade/gliner_medium-v2.1"` |
+| `GLiNERExtractor` | Local GLiNER model (default) | `threshold=None` (0.75 for the default model), `model_name=None` (`urchade/gliner_medium-v2.1`), `window_tokens=None`, `window_overlap=48`, `candidate_threshold` |
 | `LLMExtractor` | LLM-based NER via prompt | `llm` (required), `threshold=0.75` |
+| `SpacyExtractor` | spaCy NER (`spacy` extra) | `model_name=None`, `labels=None`, `confidence=None` |
+| `CompositeExtractor` | Several extractors in priority order | `extractors`, `suppress_overlaps=True` |
 
 ```python
 from graphrag_sdk import GraphExtraction, GLiNERExtractor, LLMExtractor
@@ -415,43 +484,33 @@ from graphrag_sdk import GraphExtraction, GLiNERExtractor, LLMExtractor
 extractor = GraphExtraction(llm=my_llm)
 
 # Use LLM for step 1 instead of GLiNER
-extractor = GraphExtraction(
-    llm=my_llm,
-    entity_extractor=LLMExtractor(my_llm),
-)
+extractor = GraphExtraction(llm=my_llm, entity_extractor=LLMExtractor(my_llm))
 
 # GLiNER with lower confidence threshold
-extractor = GraphExtraction(
-    llm=my_llm,
-    entity_extractor=GLiNERExtractor(threshold=0.6),
-)
+extractor = GraphExtraction(llm=my_llm, entity_extractor=GLiNERExtractor(threshold=0.6))
+
+# Open-vocabulary relation labels
+extractor = GraphExtraction(llm=my_llm, relation_types=[])
 
 result = await rag.ingest("document.txt", extractor=extractor)
 ```
 
 ### Custom Entity Types
 
-Override the default 11 entity types with your own domain-specific ontology:
+Override the default 11 entity types with your own domain-specific types by declaring them in the ontology:
 
 ```python
-# Pass entity_types to GraphExtraction
-extractor = GraphExtraction(
-    llm=my_llm,
-    entity_types=["Gene", "Protein", "Disease", "Drug", "Pathway"],
-)
+from graphrag_sdk import Entity, Ontology
 
-# Or define them in the schema (takes priority)
-from graphrag_sdk import GraphSchema, EntityType
-
-schema = GraphSchema(entities=[
-    EntityType(label="Gene", description="A gene or genetic locus"),
-    EntityType(label="Protein", description="A protein or enzyme"),
-    EntityType(label="Disease", description="A disease or condition"),
+ontology = Ontology(entities=[
+    Entity(label="Gene", description="A gene or genetic locus"),
+    Entity(label="Protein", description="A protein or enzyme"),
+    Entity(label="Disease", description="A disease or condition"),
 ])
-rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)
 ```
 
-Priority: `schema.entities` > `entity_types` param > defaults (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method).
+Priority: `ontology.entities` > the `entity_types` parameter of `GraphExtraction` > defaults (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method). Through `GraphRAG`, the working ontology always has entity types, because a graph with no ontology is seeded with the 11 defaults on first use, so `GraphExtraction(entity_types=...)` has no effect there. It applies only when you run `GraphExtraction` with an ontology that declares no entities, such as in your own `IngestionPipeline`.
 
 ### LLM Concurrency
 
@@ -478,88 +537,95 @@ extractor = GraphExtraction(llm=my_llm, max_concurrency=6)
 
 | Parameter            | Type  | Default | Description                                           |
 |----------------------|-------|---------|-------------------------------------------------------|
-| `chunk_top_k`        | `int` | `15`    | Final chunks kept after cosine reranking.             |
-| `max_entities`       | `int` | `30`    | Maximum entities to include in context.               |
+| `chunk_top_k`        | `int` | `15`    | Final passages kept after cosine reranking.           |
+| `max_entities`       | `int` | `30`    | Maximum entities carried into relationship expansion. |
 | `max_relationships`  | `int` | `20`    | Maximum relationships in context (after 1-hop + 2-hop expansion). |
 | `rel_top_k`          | `int` | `15`    | RELATES edge vector search results to retrieve.       |
-| `keyword_limit`      | `int` | `10`    | Maximum keywords extracted from the question.         |
+| `keyword_limit`      | `int` | `10`    | Accepted but not read: the keyword caps are fixed (8 LLM keywords plus 12 question words). |
+| `enable_cypher`      | `bool` | `False` | Add the text-to-Cypher path.                         |
+| `ontology`           | `Ontology \| None` | `None` | The ontology generated Cypher is written against. |
+
+### Text-to-Cypher
+
+Text-to-Cypher answers the questions no passage contains: counts, averages, "how many of these". It is **off by default**, because it costs an extra LLM call per question (up to 3 when a generated query fails validation). Turn it on for the default strategy with one flag:
 
 ```python
-from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology, enable_cypher=True)
+```
+
+It is most useful with an ontology that declares typed properties, and above all with [tables](/structured-ingestion), whose declared column types (an `INTEGER` age, a `FLOAT` revenue) reach the ontology so the generated query can aggregate over them. `GraphRAG` passes every ontology change to its retrieval strategy, so a column becomes visible to generated Cypher as soon as a table declares it. `enable_cypher` is ignored when you pass your own `retrieval_strategy`; set `enable_cypher=True` on that strategy instead.
+
+### Custom MultiPathRetrieval
+
+```python
+from graphrag_sdk import (
+    ConnectionConfig, FalkorDBConnection, GraphRAG, GraphStore, MultiPathRetrieval, VectorStore,
+)
+
+conn = FalkorDBConnection(ConnectionConfig(host="localhost", graph_name="my_graph"))
 
 retriever = MultiPathRetrieval(
-    graph_store=rag.graph_store,
-    vector_store=rag.vector_store,
-    embedder=rag.embedder,
-    llm=rag.llm,
-    chunk_top_k=20,           # more passages for complex questions
+    graph_store=GraphStore(conn),
+    vector_store=VectorStore(conn, embedder=embedder, embedding_dimension=256),
+    embedder=embedder,
+    llm=llm,
+    chunk_top_k=10,           # fewer, more focused passages (the passages section holds at most 15)
     max_entities=40,          # wider entity coverage
     max_relationships=30,     # more graph context
     rel_top_k=20,             # more RELATES edge hits
-    keyword_limit=12,         # extract more keywords
 )
 
+# As the instance default: GraphRAG keeps its ontology up to date
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, retrieval_strategy=retriever)
+
+# Or per call
 result = await rag.completion("What happened?", strategy=retriever)
 ```
 
-### Retrieval Pipeline (9 Steps)
+A strategy passed as `GraphRAG(retrieval_strategy=...)` receives every ontology change through `set_ontology()`. A strategy passed only per call (`strategy=`) does not; give it `ontology=await rag.get_ontology()` if it generates Cypher.
 
-The retrieval pipeline proceeds as follows:
+### Retrieval Pipeline (9 Steps)
 
 1. **Keyword extraction** -- stopword filtering + LLM proper-noun extraction.
 2. **Embed question** -- single embedding API call for the query.
-3. **RELATES edge vector search** -- finds fact strings and entity entry points via edge embeddings.
-4. **Entity discovery** (2 paths) -- Cypher `CONTAINS` on entity names + fulltext search on the `__Entity__` index. Merged with entities from step 3.
+3. **RELATES edge vector search** -- finds fact strings and entity entry points via edge embeddings. Text-to-Cypher runs in parallel when enabled.
+4. **Entity discovery** -- exact name match, then name `CONTAINS`, then fulltext search on the `__Entity__` index (name matches first). Merged with entities from step 3. Enumeration questions add sibling entities.
 5. **Relationship expansion** -- 1-hop (top 15 entities, limit 150) + 2-hop (top 5 entities, limit 25) traversal of RELATES edges.
 6. **Chunk retrieval** (4 paths) -- fulltext search, vector search, MENTIONED_IN traversal, and 2-hop entity-to-neighbor-to-chunk traversal.
 7. **Source document names** -- batch-fetch document paths via PART_OF edges.
-8. **Cosine reranking** -- batch-embed candidate chunks and sort by cosine similarity to the query vector.
-9. **Context assembly** -- structured sections: hint, entities, relationships, facts, passages.
+8. **Cosine reranking** -- rerank candidate chunks against the question using their stored embeddings.
+9. **Context assembly** -- structured sections: hint, Cypher results, entities, relationships, facts, passages.
 
-### Overriding the Default Strategy
-
-Pass a custom strategy to individual queries or set it as the default:
-
-```python
-# Per-query override
-result = await rag.completion("...", strategy=my_custom_retriever)
-
-# Default at init time
-rag = GraphRAG(
-    connection=config,
-    llm=my_llm,
-    embedder=my_embedder,
-    retrieval_strategy=my_custom_retriever,
-)
-```
+See [Retrieval](/retrieval) for each step.
 
 ---
 
 ## 7. Post-Ingestion
 
-After all documents have been ingested, run post-ingestion steps to deduplicate entities, embed entity names and relationships, and ensure all indexes exist.
+After all documents and tables have been ingested, call `finalize()`. It deduplicates entities across documents, embeds entity names and relationships, and ensures every index exists.
 
 ### `finalize()` -- All-In-One
 
-The recommended approach is to call `finalize()` after all ingestion is complete. It bundles four steps in order:
+It bundles these steps in order:
 
 1. Remove NULL-name stub entities left by legacy writes (only nodes no mapping wrote).
-2. `deduplicate_entities()` -- incremental and crash-safe: the entities whose check is pending (added since the last `finalize()`, or left pending by it) get exact-name dedup, then one judge pass over their nearest names in the whole graph. Dedup also gives every entity its name embedding (its id, for an entity with no name, which is never judged). A second `finalize()` with nothing pending does no dedup work. An entity whose check did not complete stays pending and is retried; after 3 judged runs without a usable verdict it is reported in `dedup_unresolved` and no longer retried. An interrupted `finalize()` is finished by the next one. `finalize(dedup_all=True)` checks every entity.
+2. `deduplicate_entities()` -- incremental and crash-safe: the entities whose check is pending (added since the last `finalize()`, or left pending by it) get exact-name dedup, then one judge pass over their nearest names in the whole graph. Dedup also gives every entity its name embedding. A second `finalize()` with nothing pending does no dedup work. An entity whose check did not complete stays pending and is retried; after 3 judged runs without a usable verdict it is reported in `dedup_unresolved` and no longer retried. An interrupted `finalize()` is finished by the next one. `finalize(dedup_all=True)` checks every entity.
 3. `embed_relationships()` -- embed fact text on RELATES edges.
-4. `ensure_indices()` -- create all 5 standard indexes (idempotent).
+4. `ensure_indices()` -- create all standard indexes (idempotent) and wait until they are built.
+5. Report what it found (probable duplicates, property conflicts, proposed table mappings and more) at WARNING and on the result.
 
-GraphRAG SDK requires FalkorDB 4.20 or later (see [Storage](/storage#version)). One dedup run per graph at a time: a second `finalize()` or `deduplicate_entities()` — from another process, or on the same `GraphRAG` — raises `DedupRunActiveError` when it reaches dedup, and the running one is left untouched. `update()` and deletes may run meanwhile.
+One dedup run per graph at a time: a second `finalize()` or `deduplicate_entities()` -- from another process, or on the same `GraphRAG` -- raises `DedupRunActiveError` when it reaches dedup, and the running one is left untouched. `update()` and deletes may run meanwhile.
 
 ```python
-# After ingesting all documents:
-stats = await rag.finalize()  # a FinalizeResult model, not a dict
-print(stats.entities_deduplicated)   # 142
-print(stats.entities_embedded)       # 3200
-print(stats.relationships_embedded)  # 8500
-print(stats.dedup_pending)           # 0: every check completed
+stats = await rag.finalize()  # a FinalizeResult model
+print(stats.entities_deduplicated)
+print(stats.entities_embedded)
+print(stats.relationships_embedded)
+print(stats.dedup_pending)           # 0 when every check completed
+print(stats.judge_calls, stats.judge_stats)
 print(stats.indexes)
-# {"vector_Chunk": True, "vector___Entity__": True, "vector_RELATES": True,
-#  "fulltext_Chunk": True, "fulltext___Entity__": True}
+# {"range_ids": True, "vector_Chunk": True, "vector_Entity": True, "vector_RELATES": True,
+#  "fulltext_Chunk": True, "fulltext_Entity": True}
 ```
 
 A synchronous convenience method is also available:
@@ -567,6 +633,27 @@ A synchronous convenience method is also available:
 ```python
 stats = rag.finalize_sync()
 ```
+
+All `FinalizeResult` fields are listed in the [API Reference](/api-reference#finalizeresult).
+
+### Choosing the judge model
+
+`finalize()` calls the LLM: the dedup judge decides which candidates are one entity. By default the judge is `LLMJudge` with the instance's `llm`. Give it a gpt-4.1-class model: on the benchmark corpus a gpt-4.1-class judge made 9 wrong merges where gpt-4o-mini made 51.
+
+```python
+from graphrag_sdk import LiteLLM, LLMJudge
+
+judge_llm = LiteLLM(model="openai/gpt-4.1")
+stats = await rag.finalize(judge=LLMJudge(judge_llm))
+```
+
+| `LLMJudge` parameter | Default | Description |
+|----------------------|---------|-------------|
+| `llm` | required | The judge model |
+| `max_concurrency` | `None` | Judge prompts in flight; `None` uses the LLM's own `max_concurrency` |
+| `min_output_tokens` | `4096` | An output limit below this set on the LLM (`max_tokens`) is raised to it for judge calls, so an answer is not cut short. `None` keeps the LLM's own limit, for a server whose context window cannot hold a ~3,000-token prompt plus 4,096 output tokens |
+
+To keep dedup free of LLM calls, pass a `DedupJudge` of your own, such as one that groups by spelling; see [Strategies](/strategies#7-dedupjudge). There is no run without a judge: `judge=False` raises `TypeError`.
 
 ### `deduplicate_entities()` -- Entity Deduplication
 
@@ -585,57 +672,40 @@ merged_count = await rag.deduplicate_entities(
 | Parameter              | Type    | Default | Description                                                         |
 |------------------------|---------|---------|---------------------------------------------------------------------|
 | `batch_size`           | `int`   | `500`   | Entities per query batch.                                           |
-| `judge`                | `DedupJudge \| None` | `None` | Decides which candidates are one entity; `None` is `LLMJudge` with the instance's `llm`. Every run has a judge — see [DedupJudge](/strategies#7-dedupjudge). |
+| `judge`                | `DedupJudge \| None` | `None` | Decides which candidates are one entity; `None` is `LLMJudge` with the instance's `llm`. Every run has a judge -- see [DedupJudge](/strategies#7-dedupjudge). |
 | `dedup_all`            | `bool`  | `False` | Check every entity, not only the pending ones, and retry the unresolved ones. |
+| `fuzzy`, `similarity_threshold` | | `None` | Deprecated. The fuzzy name-embedding phase is removed: `fuzzy=False` and `similarity_threshold` are ignored with a `DeprecationWarning`, and `fuzzy=True` raises `ValueError`. |
 
-Only the pending entities are checked: those with no name vector yet (ingest writes entities without one), and those a `pending` system record lists — a run lists every entity before it embeds it, and clears it once its check completes. An entity whose check did not complete (a failed lookup or judge call, an answer that was not a clean partition, a group held for one, a merge an `update()` changed) stays pending for the next run. See [Storage](/storage) for the merge plan and crash safety.
+Only the pending entities are checked: those with no name vector yet (ingest writes entities without one), and those a `pending` system record lists -- a run lists every entity before it embeds it, and clears it once its check completes. See [Storage](/storage) for the merge plan and crash safety.
 
-**Phase 1 (always runs): Exact name match.** Groups the pending entities and their nearest names from the vector index by canonical name (case, accents, punctuation and a leading English article folded; `A.I.` = `AI`; `Surname, Given` un-inverted; common abbreviations expanded; one trailing legal form such as `Ltd` or `Inc` dropped) and label to prevent cross-type merging. An acronym joins its long form when exactly one same-label entity spells its initials (`AIHS` / `Ashford Island Historical Society`). The survivor is the node whose id came from a declared table key, then a real node over a placeholder, then the long form over an acronym, then the best-connected entity (most RELATES and MENTIONED_IN edges), then the longest description, then the longest name. A group of extracted mentions only goes to the judge instead: the same spelling is evidence, not proof. The duplicate's description is appended to the survivor's with `" | "`, its name is recorded in the survivor's `aliases`, its `source_chunk_ids` are unioned in, any property the survivor lacks is copied over, and every relationship it has, of every type, moves to the survivor in the same query that deletes it.
+**Phase 1 (always runs): Exact name match.** Groups the pending entities and their nearest names from the vector index by canonical name (case, accents, punctuation, `&` and a leading English article folded; `A.I.` = `AI`; `Surname, Given` un-inverted; common abbreviations expanded; one trailing legal form such as `Ltd` or `Inc` dropped; word order kept) and label, to prevent cross-type merging. An acronym joins its long form when exactly one same-label entity spells its initials. A group holding a table row merges by rule; a group of extracted mentions only goes to the judge instead, so two mentions named `Paris`, one the city in France and one the city in Texas, are judged rather than merged on the name.
 
-**Phase 2: judged match.** Each pending entity's nearest names from the vector index form small candidate sets; the judge partitions each set once, and agreed groups merge by the Phase 1 rules. Every set is judged before anything merges. See [Storage](/storage).
+**Phase 2: judged match.** Each pending entity's nearest names from the vector index form small candidate sets; the judge partitions each set once, seeing names, labels, aliases, descriptions and the values of the attributes the ontology declares. Agreed groups merge by the Phase 1 rules. Every set is judged before anything merges. See [Storage](/storage).
 
-### `backfill_entity_embeddings()` -- Entity Vector Backfill
+### Lower-level steps
 
-Embeds `__Entity__` nodes that are missing embeddings. Queries entities where `embedding IS NULL`, batch-embeds the entity `name`, and stores vectors. It is **not** a dedup step: an entity with a vector and no pending record counts as checked, so a vector written here skips that entity's dedup check. `finalize()` no longer calls it — dedup embeds every entity — and after calling it directly, run `finalize(dedup_all=True)` once.
+`embed_relationships()`, `ensure_indices()` and `backfill_entity_embeddings()` are `VectorStore` methods. `GraphRAG` keeps its `VectorStore` private and `finalize()` runs what it needs; call them on a `VectorStore` of your own only for special cases.
 
-```python
-count = await rag.vector_store.backfill_entity_embeddings(batch_size=500)
-```
+| Index Type   | Label/Type       | Property               | Key in `FinalizeResult.indexes` |
+|-------------|------------------|------------------------|---------------------------------|
+| Range       | `Document`, `Chunk`, `__Entity__` | `id`  | `range_ids`                     |
+| Vector      | `Chunk`          | `embedding`            | `vector_Chunk`                  |
+| Vector      | `__Entity__`     | `embedding`            | `vector_Entity`                 |
+| Vector      | `RELATES` (edge) | `embedding`            | `vector_RELATES`                |
+| Fulltext    | `Chunk`          | `text`                 | `fulltext_Chunk`                |
+| Fulltext    | `__Entity__`     | `name`, `description`  | `fulltext_Entity`               |
 
-### `embed_relationships()` -- RELATES Edge Embeddings
+Separately, every write range-indexes `id` and `entity_key` on each label it writes into, the first time it writes there. `ensure_indices()` is also called after each `ingest()` of a document; ingesting a table creates only the `id` range indexes, and `finalize()` builds the rest. It returns once FalkorDB reports every index built (up to 10 minutes, logging progress every 10 s), since a vector search on an index still being built finds nothing.
 
-Batch-embeds all RELATES edges that have a `fact` property but are missing embeddings. These edge embeddings power the RELATES vector search path in retrieval.
-
-```python
-count = await rag.vector_store.embed_relationships(batch_size=500)
-```
-
-### `ensure_indices()` -- Index Creation
-
-Creates all standard indexes (idempotent -- safe to call repeatedly):
-
-| Index Type   | Label/Type     | Property               |
-|-------------|----------------|------------------------|
-| Vector      | `Chunk`        | `embedding`            |
-| Vector      | `__Entity__`   | `embedding`            |
-| Vector      | `RELATES` (edge) | `embedding`          |
-| Fulltext    | `Chunk`        | `text`                 |
-| Fulltext    | `__Entity__`   | `name`, `description`  |
-
-```python
-results = await rag.vector_store.ensure_indices()
-```
-
-Note: `ensure_indices()` is called automatically after each `ingest()` call. The `finalize()` method resets the internal `_indices_ensured` flag and re-runs it to catch any newly needed indexes. It returns once FalkorDB reports every index built (up to 10 minutes), since a vector search on an index still being built finds nothing.
+<Warning>
+  Do **not** call `backfill_entity_embeddings()` between ingests. An entity with a vector and no pending record counts as checked, so every entity it embeds skips its dedup check. `finalize()` does not call it. If you did call it, run `finalize(dedup_all=True)` once.
+</Warning>
 
 ### When to Call Each
 
 | Scenario                                    | What to Call                          |
 |---------------------------------------------|---------------------------------------|
-| After ingesting all documents               | `await rag.finalize()`                |
-| After incremental ingestion (new documents) | `await rag.finalize()`                |
+| After ingesting all documents and tables    | `await rag.finalize()`                |
+| After incremental ingestion (`update()`, `apply_changes()`) | `await rag.finalize()`, once per batch |
 | Only need dedup                             | `await rag.deduplicate_entities()` (it embeds entity names too) |
-| Only need RELATES edge embeddings           | `await rag.vector_store.embed_relationships()`        |
-| Only need indexes                           | `await rag.vector_store.ensure_indices()`             |
-
-Do **not** call `backfill_entity_embeddings()` between ingests: every entity it embeds skips its dedup check. Ingest all documents first, then call `finalize()` once.
+| Check every entity again                    | `await rag.finalize(dedup_all=True)`  |
