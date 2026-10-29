@@ -43,4 +43,8 @@ def merge_key_value(value: Any) -> Any:
         return ("number", value)
     if isinstance(value, str):
         return ("string", value)
-    return ("other", json.dumps(value, sort_keys=True, default=str))
+    try:
+        return ("other", json.dumps(value, sort_keys=True, default=str))
+    except TypeError:
+        # sort_keys cannot order mixed key types such as {"a": 1, 1: "b"}.
+        return ("other", json.dumps(value, default=str))

@@ -1389,6 +1389,16 @@ class TestRelationshipMergeUnion:
         assert len(merged.relationships) == 1
         assert merged.relationships[0].properties["source_chunk_ids"] == ["c1", "c2"]
 
+    def test_rel_type_with_mixed_key_types_does_not_raise(self):
+        odd = {"label": "WORKS_AT", 1: "alt"}
+        a = GraphData(nodes=[], relationships=[self._typed(odd, "x", ["c1"])])
+        b = GraphData(nodes=[], relationships=[self._typed(dict(odd), "x", ["c2"])])
+
+        merged = CachedChunkExtraction._merge([a, b])
+
+        assert len(merged.relationships) == 1
+        assert merged.relationships[0].properties["source_chunk_ids"] == ["c1", "c2"]
+
     async def test_extracted_only_facts_survive_merge(self, ontology, ctx):
         """extract() routes the inner result through _merge even with zero
         cache hits, so two fresh facts between one pair must both come out."""
