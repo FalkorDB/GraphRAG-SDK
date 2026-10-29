@@ -50,7 +50,8 @@ def _canonical(value: Any) -> Any:
     """``value`` with dict keys in a fixed order, even when key types are mixed."""
     if isinstance(value, dict):
         items = [((type(k).__name__, str(k)), _canonical(v)) for k, v in value.items()]
-        return sorted(items, key=lambda item: item[0])
+        # A JSON object, so a dict never serializes like a list of the same pairs.
+        return {"dict": sorted(items, key=lambda item: item[0])}
     if isinstance(value, list | tuple):
         return [_canonical(v) for v in value]
     return value
