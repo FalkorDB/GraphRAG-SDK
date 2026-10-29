@@ -266,6 +266,18 @@ async def test_retrieve(toolkit: GraphRAGToolkit):
     assert "embedding" not in json.dumps(result.model_dump())
 
 
+async def test_retrieve_on_chosen_paths(toolkit: GraphRAGToolkit):
+    passages = await toolkit.call(
+        "retrieve", {"question": "Who works at Acme Corp?", "paths": ["passages"]}
+    )
+    assert passages.chunks and not passages.relations
+    names = await toolkit.call(
+        "retrieve", {"question": "Who works at Acme Corp?", "paths": ["exact_names", "links"]}
+    )
+    assert names.entities and names.relations and not names.chunks
+    assert any(r.type == "WORKS_AT" for r in names.relations)
+
+
 async def test_run_skill(toolkit: GraphRAGToolkit):
     compared = await toolkit.call(
         "run_skill",

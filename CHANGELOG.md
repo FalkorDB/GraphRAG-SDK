@@ -54,6 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no procedure calls, injects a row limit and a timeout, and rejects labels,
   relation types and properties the graph does not have, with a hint listing
   the ones it does.
+- **`retrieve` runs every search path unless the agent names a few.**
+  `paths` picks from `facts`, `exact_names`, `fuzzy_names`, `links` and
+  `passages`, so a question that only needs the source text skips the entity
+  searches and the graph walk. Leave it out to run them all; when the chosen
+  paths find nothing, the result says to run again without them.
 - **Five built-in skills** run through `run_skill`: `impact_analysis`,
   `entity_comparison`, `contradiction_detection`, `gap_analysis` and
   `timeline_reconstruction`.
