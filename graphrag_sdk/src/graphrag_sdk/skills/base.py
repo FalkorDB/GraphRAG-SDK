@@ -67,6 +67,8 @@ def check_arguments(schema: dict[str, Any], args: dict[str, Any]) -> list[str]:
             continue
         python_types = _JSON_TYPES[expected]
         is_bool = isinstance(value, bool)
+        if expected == "integer" and isinstance(value, float) and value.is_integer():
+            continue  # JSON has one number type: 10.0 is the integer 10
         if not isinstance(value, python_types) or (is_bool and expected != "boolean"):
             problems.append(f"'{name}' must be {expected}, got {type(value).__name__}")
     return problems
@@ -127,18 +129,21 @@ class Skill(ABC):
         return max(low, min(high, number))
 
     async def _rows(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
-        """Run a read-only Cypher query and return its raw ``result_set`` rows."""
+        """Run a read-only Cypher query and return its raw ``result_set`` rows.
+
+        Database errors propagate: a failed query is not reported as "nothing found".
+        A graph that was never written is just empty, so it gives no rows.
+        """
         try:
             try:
                 result = await self._graph.query_raw(cypher, params or {}, read_only=True)
             except TypeError:  # graph stores without the read_only keyword
                 result = await self._graph.query_raw(cypher, params or {})
-            return list(getattr(result, "result_set", []) or [])
-        except LatencyBudgetExceededError:
-            raise
         except Exception as exc:
-            logger.warning("Skill %s query failed: %s", self.name, exc)
-            return []
+            if "empty key" in str(exc):
+                return []
+            raise
+        return list(getattr(result, "result_set", []) or [])
 
     async def _resolve_entity(self, ref: Any, param: str = "entity") -> str:
         """Return the id of the one entity ``ref`` names (its id or its name).

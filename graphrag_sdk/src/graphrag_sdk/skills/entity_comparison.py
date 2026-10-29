@@ -50,10 +50,10 @@ class EntityComparisonSkill(Skill):
         shared = sorted(nbrs_a & nbrs_b)
         only_a = sorted(nbrs_a - nbrs_b)
         only_b = sorted(nbrs_b - nbrs_a)
-        shared_keys = sorted(set(props_a) & set(props_b))
+        keys = sorted(set(props_a) | set(props_b))
         differing = {
             k: {"a": props_a.get(k), "b": props_b.get(k)}
-            for k in shared_keys
+            for k in keys
             if props_a.get(k) != props_b.get(k)
         }
 
@@ -64,8 +64,9 @@ class EntityComparisonSkill(Skill):
             "neighbors_only_a": only_a,
             "neighbors_only_b": only_b,
             "differing_attributes": differing,
-            # A capped side compares only its strongest MAX_NEIGHBOURS, so
-            # shared and unique neighbour lists may be incomplete.
+            # A capped side keeps only its strongest MAX_NEIGHBOURS: shared
+            # neighbours may be missing, and one cut from that side can show
+            # up as unique to the other.
             "neighbors_truncated": {"entity_a": capped_a, "entity_b": capped_b},
             "truncated": capped_a or capped_b,
         }

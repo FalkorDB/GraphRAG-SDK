@@ -263,7 +263,7 @@ async def test_cypher_query_never_returns_system_nodes(toolkit: GraphRAGToolkit)
         result = await toolkit.call(
             "cypher_query",
             {
-                "cypher": f"MATCH (n) WHERE '__GraphRAG' + '{label}__' IN labels(n) "
+                "cypher": f"MATCH (n) WHERE ('__GraphRAG' + '{label}__') IN labels(n) "
                 "RETURN n, properties(n) AS p, [n] AS wrapped"
             },
         )

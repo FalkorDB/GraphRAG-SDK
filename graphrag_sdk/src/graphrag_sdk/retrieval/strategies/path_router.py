@@ -88,11 +88,11 @@ def all_paths() -> set[str]:
 def parse_paths(text: str) -> set[str]:
     """Parse a model/heuristic response into a validated set of path ids.
 
-    Accepts comma/space/newline separated tokens; ignores anything that is
-    not a known path. Returns an empty set when nothing valid is found (the
-    caller is expected to fall back to ``all_paths()``).
+    Accepts tokens separated by whitespace or punctuation; ignores anything
+    that is not a known path. Returns an empty set when nothing valid is
+    found (the caller is expected to fall back to ``all_paths()``).
     """
-    tokens = re.split(r"[\s,]+", (text or "").strip().lower())
+    tokens = re.findall(r"[a-z_]+", (text or "").lower())
     return {t for t in tokens if t in _PATH_SET}
 
 

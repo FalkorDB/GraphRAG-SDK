@@ -36,6 +36,14 @@ class TestParsePaths:
     def test_drops_unknown_tokens(self):
         assert parse_paths("relates, bogus, foo") == {"relates"}
 
+    def test_strips_punctuation(self):
+        assert parse_paths("relates, expansion.") == {"relates", "expansion"}
+        assert parse_paths("relates; chunks") == {"relates", "chunks"}
+        assert parse_paths("[entity_cypher|entity_fulltext]") == {
+            "entity_cypher",
+            "entity_fulltext",
+        }
+
     def test_empty_input_returns_empty_set(self):
         assert parse_paths("") == set()
         assert parse_paths("   ") == set()
@@ -127,6 +135,33 @@ class _FixedRouter:
 
     async def plan(self, query, ctx=None):
         return self._paths
+
+
+def _record_paths(monkeypatch) -> dict[str, dict]:
+    """Replace the four path functions; return {path: kwargs of its call}."""
+    called: dict[str, dict] = {}
+
+    async def _relates(*a, **k):
+        called["relates"] = k
+        return [], {}
+
+    async def _discover(*a, **k):
+        called["discover"] = k
+        return {}, {}
+
+    async def _expand(*a, **k):
+        called["expand"] = k
+        return []
+
+    async def _chunks(*a, **k):
+        called["chunks"] = k
+        return {}, {}, {}
+
+    monkeypatch.setattr(mp_module, "search_relates_edges", _relates)
+    monkeypatch.setattr(mp_module, "discover_entities", _discover)
+    monkeypatch.setattr(mp_module, "expand_relationships", _expand)
+    monkeypatch.setattr(mp_module, "retrieve_chunks", _chunks)
+    return called
 
 
 class TestMultiPathGating:
@@ -230,6 +265,35 @@ class TestMultiPathGating:
         await strategy.search("Who is Alice?")
 
         assert called == {"relates", "discover", "expand", "chunks"}
+
+    @pytest.mark.parametrize("paths", [{"bogus"}, set()])
+    async def test_unknown_or_empty_plan_runs_all_paths(self, monkeypatch, paths):
+        called = _record_paths(monkeypatch)
+        await _make_strategy(router=_FixedRouter(paths)).search("Who is Alice?")
+        assert set(called) == {"relates", "discover", "expand", "chunks"}
+        assert called["discover"]["use_cypher"] and called["discover"]["use_fulltext"]
+
+    async def test_expansion_only_plan_gets_every_entity_seed_path(self, monkeypatch):
+        # Cypher discovery matches only LLM-extracted names; fulltext also
+        # uses the plain keywords, so expansion still gets seeds when name
+        # extraction returns nothing.
+        called = _record_paths(monkeypatch)
+        await _make_strategy(router=_FixedRouter({"expansion"})).search("Who is Alice?")
+        assert set(called) == {"discover", "expand"}
+        assert called["discover"]["use_cypher"] is True
+        assert called["discover"]["use_fulltext"] is True
+
+    async def test_router_budget_error_propagates(self, monkeypatch):
+        called = _record_paths(monkeypatch)
+
+        class _OutOfTimeRouter:
+            async def plan(self, query, ctx=None):
+                raise LatencyBudgetExceededError("router out of time")
+
+        strategy = _make_strategy(router=_OutOfTimeRouter())
+        with pytest.raises(LatencyBudgetExceededError):
+            await strategy.search("Who is Alice?")
+        assert called == {}
 
 
 class TestHeuristicRelationshipStems:

@@ -298,3 +298,42 @@ class TestClaimChecks:
     def test_flagged_claims_are_capped(self):
         answer = "Fact [1]. " + " ".join(f"Item {i} costs {i + 100} EUR." for i in range(30))
         assert len(ground_answer(answer, contract()).uncited) == 10
+
+
+class TestLargeNumbersAndAbbreviations:
+    def test_four_digit_citations_count_when_the_ledger_has_them(self):
+        led = ledger(1001)
+        g = ground_answer("Big fact [1000]. More [1, 1000].", led)
+        assert g.grounded and g.cited == [1000, 1] and g.invalid == []
+
+    def test_a_year_in_brackets_is_not_a_citation(self):
+        g = ground_answer("The war ended [1945].", ledger(3))
+        assert not g.grounded and g.reason == "no_citations" and g.invalid == []
+        assert g.answer == "The war ended [1945]."
+        cited = ground_answer("The war ended [1945] [1].", ledger(1001))
+        assert cited.cited == [1] and cited.answer == "The war ended [1945] [1]."
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            "Sales at Corvane Inc. were 2.8 billion [1].",
+            "Sales grew 40 percent under Mr. Stone [1].",
+            "Sales grew 40 percent, e.g. at Corvane [1].",
+            "Sales grew 40 percent in the U.S. under Stone [1].",
+        ],
+    )
+    def test_abbreviations_do_not_end_a_sentence(self, answer):
+        led = EvidenceLedger()
+        led.add(
+            tool="retrieve",
+            kind="fact",
+            content="Corvane Inc U.S. sales were 2.8 billion, up 40 percent under Stone",
+        )
+        g = ground_answer(answer, led)
+        assert g.grounded and g.uncited == [] and g.unsupported == []
+
+    def test_sentences_still_split_after_a_plain_full_stop(self):
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="fact", content="Bob works at Acme")
+        g = ground_answer("Acme grew 40 percent. It hired Bob Stone [1].", led)
+        assert g.uncited == ["Acme grew 40 percent."]

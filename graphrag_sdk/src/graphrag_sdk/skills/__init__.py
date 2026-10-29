@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import inspect
 import re
 
 from graphrag_sdk.skills.base import ENTITY_PARAM, Skill, check_arguments, skill_parameters
@@ -47,14 +48,24 @@ def register_skill(skill_cls: type[Skill], *, replace: bool = False) -> type[Ski
     """
     if not (isinstance(skill_cls, type) and issubclass(skill_cls, Skill)):
         raise TypeError("register_skill expects a Skill subclass")
+    if inspect.isabstract(skill_cls):
+        raise TypeError(f"{skill_cls.__name__} is abstract: implement `run` before registering it")
     name = getattr(skill_cls, "name", "")
-    if not isinstance(name, str) or not _SKILL_NAME_RE.match(name) or name == "skill":
+    if not isinstance(name, str) or not _SKILL_NAME_RE.fullmatch(name) or name == "skill":
         raise ValueError(
             f"Invalid skill name {name!r}: set a unique `name` of letters, digits, _ or -"
         )
     params = getattr(skill_cls, "parameters", None)
     if not isinstance(params, dict) or params.get("type") != "object":
         raise ValueError(f"Skill {name!r}: `parameters` must be a JSON Schema object")
+    properties = params.get("properties", {})
+    required = params.get("required", [])
+    if not isinstance(properties, dict) or not all(
+        isinstance(p, dict) for p in properties.values()
+    ):
+        raise ValueError(f"Skill {name!r}: `parameters.properties` must map names to schemas")
+    if not isinstance(required, list) or not all(isinstance(r, str) for r in required):
+        raise ValueError(f"Skill {name!r}: `parameters.required` must be a list of names")
     if name in SKILL_REGISTRY and SKILL_REGISTRY[name] is not skill_cls and not replace:
         raise ValueError(f"A skill named {name!r} is already registered (pass replace=True)")
     SKILL_REGISTRY[name] = skill_cls

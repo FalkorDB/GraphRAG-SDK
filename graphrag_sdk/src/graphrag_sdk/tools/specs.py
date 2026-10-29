@@ -439,7 +439,7 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "1500}}]. Unchanged files are skipped; reextract=true runs them again (with "
         "their last plan unless you pass one). The "
         "result gives each file's plan and the types dropped because the ontology lacks "
-        "them. Call finalize once after the whole batch.",
+        "them.",
         read_only=False,
         destructive=True,
         ingest_only=True,
@@ -494,14 +494,22 @@ def _plan_options(plan_limits: Mapping[str, Any] | None) -> str:
     return f" Allowed plan options: {'; '.join(parts)}; others fall back to these."
 
 
-def _description(td: ToolDef, plan_limits: Mapping[str, Any] | None = None) -> str:
+def _description(
+    td: ToolDef,
+    finalize_policy: str,
+    plan_limits: Mapping[str, Any] | None = None,
+) -> str:
     if td.name == "run_skill":
         return (
             f"{td.description} Pass the skill's arguments in params. Skills:\n"
             f"{skill_catalog()}\nThe result is one piece of evidence [n] to cite."
         )
     if td.name == "ingest":
-        return td.description + _plan_options(plan_limits)
+        description = td.description + _plan_options(plan_limits)
+        if finalize_policy == "manual":
+            # Only an agent that has the finalize tool is told to call it.
+            description += " Call finalize once after the whole batch."
+        return description
     return td.description
 
 
@@ -539,7 +547,7 @@ def build_tool_specs(
     return [
         ToolSpec(
             name=td.name,
-            description=_description(td, plan_limits),
+            description=_description(td, finalize_policy, plan_limits),
             input_schema=td.input_model.model_json_schema(),
             read_only=td.read_only,
             destructive=td.destructive,

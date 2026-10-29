@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import GraphNode, GraphRelationship
+from graphrag_sdk.storage import graph_store as gs
 from graphrag_sdk.storage.graph_store import GraphStore, ReferenceNode
 
 
@@ -1938,10 +1940,10 @@ class TestPageRankCache:
         assert state["calls"] == 2
 
     async def test_old_results_expire(self, monkeypatch):
-        import graphrag_sdk.storage.graph_store as gs
-
+        # Swap the module's ``time`` only; patching time.monotonic itself
+        # would also freeze the event loop's clock.
         now = [1000.0]
-        monkeypatch.setattr(gs.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(gs, "time", SimpleNamespace(monotonic=lambda: now[0]))
         conn, state = self.counting_conn()
         store = GraphStore(conn)
         await store.pagerank(max_age_seconds=10)

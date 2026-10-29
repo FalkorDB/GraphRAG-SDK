@@ -77,6 +77,8 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
     "jsonschema>=4.0",
+    # Runs tests/test_mcp_server.py in CI; same pin as the mcp extra.
+    "mcp>=1.22,<3",
 ]
 
 [project.urls]

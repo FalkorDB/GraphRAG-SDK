@@ -42,6 +42,7 @@ def _render(
         return ""
     lines: list[str] = []
     used = 0
+    cut = False  # whether the text already shows that something was dropped
 
     def try_add(line: str) -> bool:
         nonlocal used
@@ -72,7 +73,12 @@ def _render(
         # guarantees every emitted header is followed by an item or a marker.
         needed = used + (1 if lines else 0) + len(header_line) + 1 + len(full_marker)
         if needed > max_chars:
-            try_add(f"{header}: {_ELLIPSIS}({len(items)} items)")
+            if try_add(f"{header}: {_ELLIPSIS}({len(items)} items)"):
+                cut = True
+            elif not cut:
+                # Not even the summary fits: a bare marker still tells the
+                # reader that something was cut.
+                cut = try_add(_ELLIPSIS)
             continue
         try_add(header_line)
         for idx, item in enumerate(items):
@@ -81,7 +87,7 @@ def _render(
             if used + len(item) + 1 + reserve <= max_chars:
                 try_add(item)
             else:
-                try_add(marker)
+                cut = try_add(marker) or cut
                 break
     return "\n".join(lines)
 
@@ -303,7 +309,7 @@ class TraverseResult(ToolResult):
     hint: str | None = None
 
     def _preamble(self) -> list[str]:
-        path = f" via {' -> '.join(self.via)}" if self.via else ""
+        path = f" via {' -> '.join(_clean(v) for v in self.via)}" if self.via else ""
         lines = [f"From {_clean(self.start)}{path}: stopped={self.stopped}"]
         if self.hint:
             lines.append(f"Hint: {_clean(self.hint)}")
@@ -338,7 +344,7 @@ def path_text(p: WalkPath) -> str:
     parts = [_clean(p.nodes[0])] if p.nodes else []
     for i, name in enumerate(p.nodes[1:]):
         rel = _clean(p.edges[i]) if i < len(p.edges) else "?"
-        forward = p.edge_forward[i] if i < len(p.edge_forward) else True
+        forward = p.edge_forward[i] if i < len(p.edge_forward) else None
         arrow = {True: f"-[{rel}]->", False: f"<-[{rel}]-", None: f"-[{rel}]-"}[forward]
         parts.append(f"{arrow} {_clean(name)}")
     return " ".join(parts)

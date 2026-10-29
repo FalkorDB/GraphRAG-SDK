@@ -157,6 +157,14 @@ def test_finalize_is_only_offered_with_the_manual_policy(policy):
     assert "finalize" not in names and "ingest" in names
 
 
+@pytest.mark.parametrize(
+    ("policy", "mentioned"), [("manual", True), ("on_write", False), ("never", False)]
+)
+def test_ingest_mentions_finalize_only_when_the_agent_calls_it(policy, mentioned):
+    ingest = next(s for s in specs(finalize_policy=policy) if s.name == "ingest")
+    assert ("Call finalize" in ingest.description) is mentioned
+
+
 def test_include_filters_and_keeps_registry_order():
     built = specs(include=frozenset({"retrieve", "status", "nonexistent"}))
     assert [s.name for s in built] == ["status", "retrieve"]

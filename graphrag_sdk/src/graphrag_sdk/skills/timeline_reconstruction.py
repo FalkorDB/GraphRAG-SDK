@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import re
 import string
 from typing import Any
@@ -84,7 +85,7 @@ class TimelineReconstructionSkill(Skill):
         limit = self._int_param(params, "limit", 100, 1, MAX_EVENTS)
         scan = min(limit * _SCAN_FACTOR, _MAX_SCAN)
 
-        match = f"(e:`{sanitize_cypher_label(label)}`)" if label else "(e:__Entity__)"
+        match = f"(e:__Entity__:`{sanitize_cypher_label(label)}`)" if label else "(e:__Entity__)"
         # Filter to entities with a date-like property *before* the LIMIT, so
         # undated entities cannot use up the scan and hide dated ones, and
         # return only those properties (never the embedding vector). The key
@@ -183,7 +184,10 @@ def _extract_date(props: dict[str, Any]) -> tuple[tuple[int, int, int], str, str
             year = int(match.group(1))
             month = int(match.group(2)) if match.group(2) else 0
             day = int(match.group(3)) if match.group(3) else 0
-            if month > 12 or day > 31:
+            # 0 means "not given"; a given month or day must exist (no 2001-02-31).
+            if match.group(2) and not 1 <= month <= 12:
+                continue
+            if match.group(3) and not 1 <= day <= calendar.monthrange(year, month)[1]:
                 continue
             return (year, month, day), str(value), key
     return None

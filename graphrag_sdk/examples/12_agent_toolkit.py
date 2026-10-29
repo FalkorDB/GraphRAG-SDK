@@ -19,6 +19,7 @@ More providers: see docs/providers.md (mirror 01_quickstart.py's setup).
 import asyncio
 import json
 import os
+from uuid import uuid4
 
 from graphrag_sdk import ConnectionConfig, GraphRAG, LiteLLM, LiteLLMEmbedder
 from graphrag_sdk.tools import GraphRAGToolkit, ToolError
@@ -38,7 +39,10 @@ async def main():
     embedder = LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256)
 
     rag = GraphRAG(
-        connection=ConnectionConfig(host="localhost", graph_name="agent_toolkit_demo"),
+        # A fresh graph per run, so the cleanup below never drops one you keep
+        connection=ConnectionConfig(
+            host="localhost", graph_name=f"agent_toolkit_demo_{uuid4().hex[:8]}"
+        ),
         llm=llm,
         embedder=embedder,
         embedding_dimension=256,
@@ -57,6 +61,8 @@ async def main():
         print("=== status ===\n" + status.to_llm_text(max_chars=800), "\n")
 
         names = await session.lookup_entity("Alice")
+        if not names.matches:
+            raise SystemExit("No entity named like 'Alice' was extracted; check the LLM setup.")
         alice = names.matches[0].name
         print(f"=== lookup_entity -> {alice} ===\n")
 
@@ -85,8 +91,11 @@ async def main():
             print(f"Guard: {exc}\n")
 
         # 4. Your agent drafts an answer citing [n]; check it before replying
-        edge = walk.edges[0]
-        draft = f"{edge.source} {edge.type} {edge.target} [{edge.n}]. Also [999]."
+        if walk.edges:
+            edge = walk.edges[0]
+            draft = f"{edge.source} {edge.type} {edge.target} [{edge.n}]. Also [999]."
+        else:
+            draft = f"{alice} is in the graph. Also [999]."
         check = await session.check_citations(draft)
         print(f"grounded={check.grounded} cited={check.cited} invalid={check.invalid}\n")
 

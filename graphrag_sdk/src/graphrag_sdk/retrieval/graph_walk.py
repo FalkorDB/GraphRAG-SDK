@@ -47,6 +47,10 @@ def _edge(item: tuple[Any, ...]) -> tuple[str, float, str, bool | None]:
     return item[0], float(item[1]), item[2], None if outgoing is None else bool(outgoing)
 
 
+class _LookupTimeout(Exception):
+    """A neighbour lookup's own timeout, kept apart from the walk's budget."""
+
+
 def _flip(forward: bool | None) -> bool | None:
     return None if forward is None else not forward
 
@@ -277,11 +281,14 @@ class DynamicGraphWalk:
                         raise asyncio.TimeoutError
                     fetched = await asyncio.wait_for(
                         gather_limited(
-                            [(lambda n=n: self._neighbor_fn(n)) for n in frontier],
+                            [(lambda n=n: self._lookup(n)) for n in frontier],
                             self._max_concurrency,
                         ),
                         timeout=left,
                     )
+                except _LookupTimeout as exc:
+                    # The lookup itself timed out, not the walk's budget.
+                    raise exc.__cause__ from None
                 except asyncio.TimeoutError:
                     self.stopped = "time_budget"
                     return None
@@ -309,6 +316,12 @@ class DynamicGraphWalk:
                 next_layer.sort(key=lambda n: self._chain_score(side, n), reverse=True)
                 frontiers[forward] = next_layer[: self._beam_width]
         return None
+
+    async def _lookup(self, node: str) -> list[tuple[Any, ...]]:
+        try:
+            return await self._neighbor_fn(node)
+        except asyncio.TimeoutError as exc:
+            raise _LookupTimeout from exc
 
     @staticmethod
     def _chain(
@@ -367,6 +380,18 @@ class DynamicGraphWalk:
         )
 
 
+def _path_text(p: ScoredPath) -> str:
+    """``A -[R]-> B <-[S]- C``: each edge drawn in its stored direction
+    (undirected ``-[R]-`` when the direction is unknown)."""
+    parts = [p.nodes[0]] if p.nodes else []
+    for i, node in enumerate(p.nodes[1:]):
+        label = p.edges[i] if i < len(p.edges) else "?"
+        forward = p.edge_forward[i] if i < len(p.edge_forward) else None
+        arrow = {True: f"-[{label}]->", False: f"<-[{label}]-", None: f"-[{label}]-"}[forward]
+        parts.append(f"{arrow} {node}")
+    return " ".join(parts)
+
+
 class GraphWalkRetrieval(RetrievalStrategy):
     """RetrievalStrategy wrapper around :class:`DynamicGraphWalk`.
 
@@ -393,6 +418,8 @@ class GraphWalkRetrieval(RetrievalStrategy):
         max_paths: int = 10,
     ) -> None:
         super().__init__(graph_store=graph_store)
+        if max_paths < 0:
+            raise ValueError("max_paths must be >= 0")
         self._seed_fn = seed_fn
         self._beam_width = beam_width
         self._max_depth = max_depth
@@ -413,7 +440,7 @@ class GraphWalkRetrieval(RetrievalStrategy):
                 ctx.log(f"PageRank unavailable, walking unweighted: {exc}")
 
         async def neighbor_fn(node_id: str) -> list[tuple[Any, ...]]:
-            return await self._graph.weighted_neighbors(node_id)
+            return await self._graph.weighted_neighbors(node_id, with_direction=True)
 
         walk = DynamicGraphWalk(
             neighbor_fn,
@@ -431,7 +458,7 @@ class GraphWalkRetrieval(RetrievalStrategy):
 
         records = [
             {
-                "path": " -> ".join(p.nodes),
+                "path": _path_text(p),
                 "edges": p.edges,
                 "score": p.score,
             }

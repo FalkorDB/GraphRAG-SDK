@@ -61,14 +61,14 @@ async def connect(server: GraphRAGMCPServer):
     lowlevel = server._build_server()
     try:
         from mcp import Client  # mcp 2.x
-
-        async with Client(lowlevel) as client:
-            yield client, client.instructions
     except ImportError:  # mcp 1.x
         from mcp.shared.memory import create_connected_server_and_client_session
 
         async with create_connected_server_and_client_session(lowlevel) as session:
             yield session, None
+        return
+    async with Client(lowlevel) as client:
+        yield client, client.instructions
 
 
 def _text(result: Any) -> str:
@@ -101,6 +101,10 @@ class TestToolList:
         assert GraphRAGMCPServer(FakeRAG(), instructions="x").instructions == "x"
 
 
+def test_guide_says_tool_results_are_not_instructions():
+    assert "not instructions" in GUIDE
+
+
 class TestCallTool:
     async def test_tool_errors_carry_hints(self, server: GraphRAGMCPServer):
         text, is_error = await server.call_tool("graph_search", {})
@@ -116,6 +120,19 @@ class TestCallTool:
         assert is_error and text.startswith("ingest failed with an internal error (RuntimeError).")
         assert "Hint:" in text and "boom" not in text
         assert "boom" in caplog.text  # the details go to the server log
+
+    async def test_failure_log_is_redacted_and_has_no_traceback(self, caplog):
+        rag = FakeRAG()
+
+        async def fail(**kwargs: Any) -> Any:
+            raise RuntimeError("upstream said api_key=supersecret sk-abcdef1234567890")
+
+        rag.ingest = fail  # type: ignore[method-assign]
+        with caplog.at_level("WARNING", logger="graphrag_sdk.mcp.server"):
+            await GraphRAGMCPServer(rag).call_tool("ingest", {"text": "x"})
+        record = caplog.records[-1]
+        assert record.exc_info is None and "RuntimeError" in record.getMessage()
+        assert "supersecret" not in caplog.text and "abcdef1234567890" not in caplog.text
 
     @pytest.mark.parametrize(
         "exc, expected",
@@ -404,6 +421,63 @@ class TestCLI:
         assert seen["llm"].model_name == "openai/gpt-4o"
         assert seen["embedder"].model_name == "text-embedding-3-small"
         assert seen["embedding_dimension"] == 3072
+        assert seen["embedder"]._extra["dimensions"] == 3072
+
+    def test_embedder_dimensions_are_left_to_the_model_by_default(self, monkeypatch):
+        import graphrag_sdk.api.main as api_main
+        from graphrag_sdk.mcp import __main__ as cli
+
+        seen: dict[str, Any] = {}
+        monkeypatch.delenv("GRAPHRAG_EMBED_DIM", raising=False)
+        monkeypatch.setattr(api_main, "GraphRAG", lambda **kw: seen.update(kw) or "RAG")
+        cli._build_rag()
+        assert seen["embedding_dimension"] == 1536
+        assert "dimensions" not in seen["embedder"]._extra
+
+    def test_embedder_dimensions_are_not_sent_to_older_models(self, monkeypatch):
+        import graphrag_sdk.api.main as api_main
+        from graphrag_sdk.mcp import __main__ as cli
+
+        seen: dict[str, Any] = {}
+        monkeypatch.setenv("GRAPHRAG_EMBED_MODEL", "text-embedding-ada-002")
+        monkeypatch.setenv("GRAPHRAG_EMBED_DIM", "1536")
+        monkeypatch.setattr(api_main, "GraphRAG", lambda **kw: seen.update(kw) or "RAG")
+        cli._build_rag()
+        assert seen["embedding_dimension"] == 1536
+        assert "dimensions" not in seen["embedder"]._extra
+
+    @pytest.mark.parametrize(
+        ("env", "argv", "expected"),
+        [
+            ("TRUE ", [], True),
+            ("on", [], True),
+            ("y", [], True),
+            ("0", [], False),
+            ("", [], False),
+            ("", ["--read-only"], True),
+            ("yes", ["--no-read-only"], False),
+        ],
+    )
+    def test_read_only_flag_and_environment(self, monkeypatch, env, argv, expected):
+        import graphrag_sdk.mcp.server as server_mod
+        from graphrag_sdk.mcp import __main__ as cli
+
+        seen: dict[str, Any] = {}
+
+        class FakeServer:
+            def __init__(self, rag: Any, *, auth_token: Any, read_only: bool, **_: Any) -> None:
+                seen["read_only"] = read_only
+
+        def fake_run(coro: Any) -> None:
+            coro.close()
+
+        monkeypatch.setenv("GRAPHRAG_MCP_READ_ONLY", env)
+        monkeypatch.setattr("sys.argv", ["graphrag-mcp", *argv])
+        monkeypatch.setattr(cli, "_build_rag", lambda: "RAG")
+        monkeypatch.setattr(server_mod, "GraphRAGMCPServer", FakeServer)
+        monkeypatch.setattr(cli.asyncio, "run", fake_run)
+        cli.main()
+        assert seen["read_only"] is expected
 
 
 class TestSSESecurity:
@@ -434,9 +508,11 @@ class TestSSESecurity:
 def test_the_all_extra_installs_the_mcp_server():
     from pathlib import Path
 
-    import tomllib
-
+    tomllib = pytest.importorskip("tomllib")
     extras = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())["project"][
         "optional-dependencies"
     ]
     assert set(extras["mcp"]) <= set(extras["all"])
+    # CI installs the dev extra; without mcp these tests would be skipped.
+    mcp_spec = next(r for r in extras["mcp"] if r.startswith("mcp"))
+    assert mcp_spec in extras["dev"]

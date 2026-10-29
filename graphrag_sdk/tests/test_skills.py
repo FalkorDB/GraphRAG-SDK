@@ -356,7 +356,7 @@ class TestContradictionDetection:
     async def test_limit_is_a_parameter_and_capped(self, ctx: Context):
         store = FakeGraphStore(entities=PEOPLE)
         await ContradictionDetectionSkill(store).run(ctx, entity="alice", limit=10_000)
-        cypher, params = store.queries[-1]
+        cypher, params = next(q for q in store.queries if "-[r:RELATES]-" in q[0])
         # One row past the cap tells a full list from a cut one.
         assert params["limit"] == 201 and "LIMIT $limit" in cypher
         with pytest.raises(ValueError, match=">= 1"):
@@ -611,3 +611,136 @@ class TestImpactNeighbourLimits:
         result = await _impact_skill(Store()).run(Context(), entity="root", max_depth=2)
         assert result.data["num_impacted"] == 1
         assert [(i["entity"], i["distance"]) for i in result.data["impacted"]] == [("a", 1)]
+
+
+class TestReviewFixes:
+    def test_register_rejects_abstract_skills(self):
+        class Half(Skill):
+            name = "half_test"
+            parameters = skill_parameters({})
+
+        with pytest.raises(TypeError, match="abstract"):
+            register_skill(Half)
+        assert "half_test" not in SKILL_REGISTRY
+
+    def test_register_rejects_a_name_with_a_trailing_newline(self):
+        cls = type("Bad", (GapAnalysisSkill,), {"name": "bad_name\n"})
+        with pytest.raises(ValueError, match="Invalid skill name"):
+            register_skill(cls)
+
+    @pytest.mark.parametrize(
+        "parameters",
+        [
+            {"type": "object", "properties": ["entity"]},
+            {"type": "object", "properties": {"entity": "string"}},
+            {"type": "object", "properties": {}, "required": "entity"},
+            {"type": "object", "properties": {}, "required": [1]},
+        ],
+    )
+    def test_register_rejects_malformed_parameters(self, parameters):
+        cls = type(
+            "Bad", (GapAnalysisSkill,), {"name": "bad_params_test", "parameters": parameters}
+        )
+        with pytest.raises(ValueError, match="parameters"):
+            register_skill(cls)
+        assert "bad_params_test" not in SKILL_REGISTRY
+
+    def test_whole_number_floats_are_integers(self):
+        from graphrag_sdk.skills import check_arguments
+
+        schema = skill_parameters({"limit": {"type": "integer"}})
+        assert check_arguments(schema, {"limit": 10.0}) == []
+        assert check_arguments(schema, {"limit": 10.5})
+        assert check_arguments(schema, {"limit": True})
+
+    async def test_database_errors_are_not_reported_as_empty(self, ctx: Context):
+        class Broken(FakeGraphStore):
+            async def query_raw(self, cypher, params=None, **kw):
+                raise ConnectionError("database down")
+
+        with pytest.raises(ConnectionError, match="database down"):
+            await GapAnalysisSkill(Broken()).run(ctx)
+        with pytest.raises(ConnectionError, match="database down"):
+            await ContradictionDetectionSkill(Broken()).run(ctx, entity="alice")
+
+    async def test_a_graph_never_written_is_empty_not_an_error(self, ctx: Context):
+        class Missing(FakeGraphStore):
+            async def query_raw(self, cypher, params=None, **kw):
+                raise RuntimeError("Invalid graph operation on empty key")
+
+        result = await GapAnalysisSkill(Missing()).run(ctx)
+        assert result.data["num_isolated"] == 0
+        with pytest.raises(ValueError, match="no entity"):
+            await ContradictionDetectionSkill(Missing()).run(ctx, entity="alice")
+
+    async def test_attributes_on_one_side_only_differ(self, ctx: Context):
+        class Store(FakeGraphStore):
+            async def query_raw(self, cypher, params=None, **kw):
+                if "properties(e)" in cypher:
+                    props = {"name": "A"} if params["id"] == "alice" else {"name": "A", "ceo": "Z"}
+                    return FakeResult([[props]])
+                return await super().query_raw(cypher, params, **kw)
+
+        result = await EntityComparisonSkill(Store(entities=PEOPLE)).run(
+            ctx, entity_a="alice", entity_b="carol"
+        )
+        assert result.data["differing_attributes"] == {"ceo": {"a": None, "b": "Z"}}
+
+    async def test_gap_analysis_counts_every_type_label(self, ctx: Context):
+        store = FakeGraphStore()
+        await GapAnalysisSkill(store).run(ctx)
+        cypher = next(c for c, _ in store.queries if "count(*) AS n" in c)
+        assert "UNWIND [l IN labels(e) WHERE l <> '__Entity__'] AS label" in cypher
+        assert "][0]" not in cypher
+
+    async def test_timeline_label_keeps_the_entity_label(self, ctx: Context):
+        store = FakeGraphStore()
+        await TimelineReconstructionSkill(store).run(ctx, label="Event")
+        assert store.queries[-1][0].startswith("MATCH (e:__Entity__:`Event`) ")
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("2001-02-31", None),
+            ("2001-00-05", None),
+            ("2001-04-00", None),
+            ("2001-04-31", None),
+            ("2000-02-29", (2000, 2, 29)),
+            ("2001-04", (2001, 4, 0)),
+            ("2001", (2001, 0, 0)),
+        ],
+    )
+    def test_impossible_dates_are_rejected(self, raw, expected):
+        found = _extract_date({"date": raw})
+        assert (found[0] if found else None) == expected
+
+    async def test_contradiction_facts_keep_the_edge_direction(self, ctx: Context):
+        store = FakeGraphStore(
+            entities=PEOPLE,
+            query_map={
+                "-[r:RELATES]-(m:__Entity__)": [
+                    ["WORKS_AT", "acme", "", "Acme", "Alice", True],
+                    ["MANAGES", "bob", "", "Bob", "Alice", False],
+                ]
+            },
+        )
+        llm = FakeLLM('{"contradictions": [], "summary": ""}')
+        result = await ContradictionDetectionSkill(store, llm).run(ctx, entity="alice")
+        assert "startNode(r) = e AS outgoing" in store.queries[-1][0]
+        assert [f["outgoing"] for f in result.data["facts"]] == [True, False]
+        prompt = llm.prompts[0]
+        assert "- Alice -[WORKS_AT]-> Acme" in prompt
+        assert "- Bob -[MANAGES]-> Alice" in prompt
+
+    async def test_contradiction_entity_without_relations_keeps_its_name(self, ctx: Context):
+        store = FakeGraphStore(
+            entities=PEOPLE, query_map={"RETURN coalesce(e.name, e.id) AS name": [["Alice"]]}
+        )
+        result = await ContradictionDetectionSkill(store, None).run(ctx, entity="alice")
+        assert result.data["facts"] == [] and result.data["entity_name"] == "Alice"
+
+    def test_registration_helpers_are_exported_from_the_package(self):
+        import graphrag_sdk
+
+        for name in ("register_skill", "skill_parameters", "ENTITY_PARAM"):
+            assert name in graphrag_sdk.__all__ and hasattr(graphrag_sdk, name)

@@ -10,6 +10,7 @@ import asyncio
 import copy
 import dataclasses
 import json
+import logging
 import os
 import re
 import time
@@ -105,6 +106,8 @@ _POLICIES = ("manual", "on_write", "never")
 _TENANT_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 #: Seconds a cached schema is trusted when the graph's topology has not changed.
 SCHEMA_CACHE_SECONDS = 60.0
+logger = logging.getLogger(__name__)
+
 #: Time allowed to resolve graph_walk's start / goal names.
 _RESOLVE_BUDGET_SECONDS = 2.0
 #: Wall-clock budget of graph_walk's start-to-goal search.
@@ -593,7 +596,9 @@ class GraphRAGToolkit:
             _, rel_counts = await ops.schema_counts(self._store)
             schema.semantic_relations = sorted(set(schema.semantic_relations) | set(rel_counts))
         except Exception:
-            pass
+            logger.debug(
+                "schema_counts failed; RELATES types come from the ontology only", exc_info=True
+            )
         self._shared["schema"] = (version, now, schema)
         return schema
 
@@ -731,9 +736,10 @@ class GraphRAGToolkit:
 
         if inp.via:
             path = await self._resolve_via(inp.via)
-            nodes, stopped = await ops.typed_path(
-                self._store, start_id, path, max(1, remaining_ms())
-            )
+            if remaining_ms() <= 0:
+                nodes, stopped = [], "time_budget"
+            else:
+                nodes, stopped = await ops.typed_path(self._store, start_id, path, remaining_ms())
             arrow = " -> ".join(path)
             reached = [
                 TraverseNode(
@@ -873,8 +879,9 @@ class GraphRAGToolkit:
                 self._store, inp.goal.strip(), time.monotonic() + _RESOLVE_BUDGET_SECONDS
             )
         try:
-            weights = await self._store.pagerank()
+            weights = await asyncio.wait_for(self._store.pagerank(), _WALK_BUDGET_SECONDS)
         except Exception:
+            # Includes a timeout: the walk then runs without node weights.
             weights = {}
 
         async def neighbor_fn(node_id: str) -> list[tuple[Any, ...]]:
@@ -891,7 +898,16 @@ class GraphRAGToolkit:
             found = await walk.bidirectional_search(start_id, goal_id, ctx=ctx)
             scored = [found] if found is not None else []
         else:
-            scored = [p for p in await walk.beam_search(start_id, ctx=ctx) if p.length >= 1]
+            try:
+                found_paths = await asyncio.wait_for(
+                    walk.beam_search(start_id, ctx=ctx), _WALK_BUDGET_SECONDS
+                )
+            except asyncio.TimeoutError:
+                raise ToolError(
+                    f"graph_walk ran past its time budget ({_WALK_BUDGET_SECONDS:g}s).",
+                    hint="Use a smaller beam_width or max_depth, or traverse from the start.",
+                ) from None
+            scored = [p for p in found_paths if p.length >= 1]
         names = await ops.entity_names(self._store, [n for p in scored for n in p.nodes])
         paths = []
         for p in scored:
@@ -960,7 +976,7 @@ class GraphRAGToolkit:
                 hint=self._schema_hint(schema),
             )
         try:
-            capped = enforce_row_cap(inp.cypher, inp.max_rows + 1)
+            capped = enforce_row_cap(inp.cypher, inp.max_rows + 1, inp.params)
         except ValueError as exc:
             raise ToolError(f"The query could not be read: {exc}.") from None
         try:

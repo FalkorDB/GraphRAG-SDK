@@ -129,8 +129,10 @@ def test_reads_are_accepted(cypher):
         "CALL db.idx.fulltext.queryNodes('Entity', 'alice') YIELD node RETURN node.name",
         "CALL db.idx.fulltext.createNodeIndex('L','p')",
         "CALL apoc.load.json('u')",
-        "UNWIND $kws AS kw CALL { WITH kw MATCH (e:__Entity__) WHERE e.name = kw "
-        "RETURN e LIMIT 1 } RETURN e",
+        (
+            "UNWIND $kws AS kw CALL { WITH kw MATCH (e:__Entity__) WHERE e.name = kw "
+            "RETURN e LIMIT 1 } RETURN e"
+        ),
         "",
         "   ",
         "// only a comment",
@@ -186,8 +188,13 @@ def test_errors_are_not_repeated():
         "MATCH (p) RETURN p.limit",
         "MATCH (p {limit: 5}) RETURN p.skip AS s",
         "MATCH (p) RETURN 1 AS `limit`",
-        "MATCH (a {name:'x'}),(b {name:'y'}) "
-        "WITH a, b, a.match AS m, shortestPath((a)-[*]->(b)) AS p RETURN length(p)",
+        (
+            "MATCH (a {name:'x'}),(b {name:'y'}) "
+            "WITH a, b, a.match AS m, shortestPath((a)-[*]->(b)) AS p RETURN length(p)"
+        ),
+        "MATCH (n:Set) RETURN n",
+        "MATCH (a)-[r:Merge]->(b) RETURN r",
+        "MATCH (n) WHERE n:Delete RETURN n",
     ],
 )
 def test_keywords_used_as_names_are_not_clauses(cypher):
@@ -497,3 +504,36 @@ async def test_introspection_store_without_read_only_keyword():
     schema = await introspect_schema(store)
     assert schema.labels == ["Person"]
     assert len(store.calls) == 3
+
+
+class TestReviewFixes:
+    def test_backticked_names_with_punctuation_match_the_schema(self):
+        schema = GraphSchema(
+            labels=["Non-Profit", "Person"],
+            relationship_types=["RELATES"],
+            property_keys=["first-name", "name"],
+        )
+        cypher = "MATCH (o:`Non-Profit`)<-[:RELATES]-(p:Person) RETURN p.`first-name`"
+        assert validate_read_query(cypher, schema, require_rel_type=False) == []
+        errors = validate_read_query("MATCH (o:`Non-Charity`) RETURN o.`last-name`", schema)
+        assert any("Non_Charity" in e for e in errors), errors
+        assert any("last_name" in e for e in errors), errors
+
+    def test_each_anonymous_relates_edge_needs_its_own_rel_type(self):
+        one_typed = "MATCH (a)-[:RELATES {rel_type: 'WORKS_AT'}]->(b)-[:RELATES]->(c) RETURN c.name"
+        errors = validate_read_query(one_typed, SCHEMA)
+        assert any("must bind" in e for e in errors), errors
+        both_typed = (
+            "MATCH (a)-[:RELATES {rel_type: 'WORKS_AT'}]->(b)"
+            "-[:RELATES {rel_type: 'WORKS_AT'}]->(c) RETURN c.name"
+        )
+        assert validate_read_query(both_typed, SCHEMA) == []
+
+    def test_final_limit_parameter_above_the_cap_is_clamped(self):
+        cypher = "MATCH (n) RETURN n LIMIT $k"
+        assert enforce_row_cap(cypher, 26, {"k": 100000}) == "MATCH (n) RETURN n LIMIT 26"
+        assert enforce_row_cap(cypher, 26, {"k": 5}) == cypher
+        assert enforce_row_cap(cypher, 26) == cypher
+        assert enforce_row_cap(cypher, 26, {"k": True}) == cypher
+        inner = "MATCH (n) WITH n LIMIT $k RETURN count(n) AS c"
+        assert enforce_row_cap(inner, 26, {"k": 100000}) == f"{inner}\nLIMIT 26"

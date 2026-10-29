@@ -294,13 +294,15 @@ class MultiPathRetrieval(RetrievalStrategy):
                 plan = all_paths()
             # Expansion traverses from discovered entities, so a plan that
             # selects it without any seed-producing path would always return
-            # zero relationships. Guarantee a seed source.
+            # zero relationships. Guarantee a seed source: Cypher matches only
+            # LLM-extracted names, fulltext also the plain keywords, so seeds
+            # survive a failed or empty name extraction.
             if "expansion" in plan and not plan & {
                 "entity_cypher",
                 "entity_fulltext",
                 "relates",
             }:
-                plan.add("entity_cypher")
+                plan.update({"entity_cypher", "entity_fulltext"})
             ctx.log(f"MultiPath plan: {sorted(plan)}")
 
         # 3. RELATES vector search + Text-to-Cypher (parallel when enabled)
@@ -330,8 +332,10 @@ class MultiPathRetrieval(RetrievalStrategy):
                 self._vector, query_vector, rel_top_k, ctx=ctx
             )
 
-        # Filter RELATES vector facts by relevance score
-        fact_strings = filter_facts_by_relevance(fact_strings_scored)
+        # Filter RELATES vector facts by relevance score. The filter keeps 12
+        # by default; widen it only when the caller asks for more facts.
+        fact_cap = max(12, max_facts_out) if "max_facts_out" in kwargs else 12
+        fact_strings = filter_facts_by_relevance(fact_strings_scored, max_facts=fact_cap)
         # Cypher results stay separate — they bypass the reranker and go
         # directly to the final LLM context as their own section.
         ctx.log(
@@ -422,11 +426,15 @@ class MultiPathRetrieval(RetrievalStrategy):
 
         # Structured provenance for graphrag_sdk.tools — additive only; does
         # not alter section content. Captured before [Source:] tagging so
-        # chunk texts still match candidate_chunks values exactly.
-        text_to_cid: dict[str, str] = {}
+        # chunk texts still match candidate_chunks values exactly. Chunks
+        # with identical text each keep their own id (and source document).
+        text_to_cids: dict[str, list[str]] = {}
         for cid, text in candidate_chunks.items():
-            text_to_cid.setdefault(text, cid)
-        kept_cids = [text_to_cid[p] for p in source_passages if p in text_to_cid]
+            text_to_cids.setdefault(text, []).append(cid)
+        passage_cids: list[str | None] = [
+            text_to_cids[p].pop(0) if text_to_cids.get(p) else None for p in source_passages
+        ]
+        kept_cids = [cid for cid in passage_cids if cid is not None]
         provenance: dict[str, Any] = {
             "entities": [
                 {
@@ -449,13 +457,9 @@ class MultiPathRetrieval(RetrievalStrategy):
         }
 
         # Tag with source docs
-        text_to_doc: dict[str, str] = {
-            candidate_chunks[cid]: doc_name
-            for cid, doc_name in chunk_doc_map.items()
-            if cid in candidate_chunks
-        }
         source_passages = [
-            f"[Source: {text_to_doc[p]}]\n{p}" if p in text_to_doc else p for p in source_passages
+            f"[Source: {chunk_doc_map[cid]}]\n{p}" if cid in chunk_doc_map else p
+            for p, cid in zip(source_passages, passage_cids)
         ]
         ctx.log(f"MultiPath [8/9]: {len(source_passages)} passages after rerank")
 

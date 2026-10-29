@@ -822,11 +822,26 @@ class TestReadOnlyFailFast:
         assert (await conn.query("RETURN 1")).result_set == [[1]]
 
     async def test_network_errors_are_still_retried(self):
-        conn, graph, breaker = _ro_conn(ConnectionError("reset"))
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        conn, graph, breaker = _ro_conn(RedisConnectionError("reset"))
         with pytest.raises(DatabaseError):
             await conn.query("MATCH (n) RETURN n", read_only=True)
         assert graph.ro_query.await_count == 3
         assert breaker.record_failure.await_count == 3
+
+    @pytest.mark.parametrize(
+        "reply", ["Max pending queries exceeded", "BUSY Redis is busy running a script"]
+    )
+    async def test_overload_replies_are_retried_as_failures(self, reply):
+        # The server is overloaded, not rejecting the query: retry it and
+        # count it against the breaker.
+        conn, graph, breaker = _ro_conn(ResponseError(reply))
+        with pytest.raises(DatabaseUnavailableError):
+            await conn.query("MATCH (n) RETURN n", read_only=True)
+        assert graph.ro_query.await_count == 3
+        assert breaker.record_failure.await_count == 3
+        breaker.record_success.assert_not_awaited()
 
     async def test_cluster_redirects_are_still_retried(self):
         from redis.exceptions import TryAgainError

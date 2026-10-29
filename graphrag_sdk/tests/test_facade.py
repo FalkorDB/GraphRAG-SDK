@@ -3197,3 +3197,21 @@ class TestRetrievalEdges:
             await rag.run_skill("gap_analysis", colour="red")
         result = await rag.run_skill("gap_analysis")
         assert result.skill == "gap_analysis"
+
+    async def test_run_skill_respects_an_exhausted_budget(self, rag, mock_conn):
+        ctx = Context(latency_budget_ms=0)
+        with pytest.raises(LatencyBudgetExceededError):
+            await rag.run_skill("gap_analysis", ctx=ctx)
+        mock_conn.query.assert_not_awaited()
+        mock_conn._driver.select_graph.return_value.query.assert_not_awaited()
+
+    async def test_run_skill_checks_the_budget_after_ontology_setup(self, rag, mock_conn):
+        ctx = Context()
+
+        async def slow_setup():
+            ctx.latency_budget_ms = 0  # the budget runs out during setup
+
+        rag._ensure_ontology_initialized = slow_setup
+        with pytest.raises(LatencyBudgetExceededError, match="gap_analysis"):
+            await rag.run_skill("gap_analysis", ctx=ctx)
+        mock_conn.query.assert_not_awaited()

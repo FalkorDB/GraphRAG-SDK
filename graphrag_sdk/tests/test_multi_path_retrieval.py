@@ -1016,6 +1016,54 @@ class TestProvenanceMetadata:
         )
         assert result.metadata["strategy"] == "multi_path"
 
+    async def test_provenance_facts(self, prov_strategy, mp_vector_store):
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "Alice",
+                    "tgt_name": "Acme Corp",
+                    "type": "WORKS_AT",
+                    "fact": "Alice is employed by Acme",
+                    "score": 0.9,
+                }
+            ]
+        )
+        result = await prov_strategy.search("Who is Alice?")
+        assert result.metadata["provenance"]["facts"] == [
+            "Alice —[WORKS_AT]→ Acme Corp: Alice is employed by Acme"
+        ]
+
+    async def test_identical_chunk_texts_keep_their_own_ids_and_sources(
+        self, mp_vector_store, mp_embedder
+    ):
+        text = "Alice works at Acme."
+        graph_store = MagicMock()
+
+        async def route_query(cypher, params=None):
+            if "PART_OF" in cypher:
+                return _rows([["c1", "docs/a.md"], ["c2", "docs/b.md"]])
+            return _rows([])
+
+        graph_store.query_raw = AsyncMock(side_effect=route_query)
+        mp_vector_store.search_chunks = AsyncMock(
+            return_value=[{"id": "c1", "text": text}, {"id": "c2", "text": text}]
+        )
+        strategy = MultiPathRetrieval(
+            graph_store=graph_store,
+            vector_store=mp_vector_store,
+            embedder=mp_embedder,
+            llm=MockLLM(responses=["Alice"]),
+        )
+        result = await strategy.search("Who is Alice?")
+        chunks = result.metadata["provenance"]["chunks"]
+        assert {(c["id"], c["document_path"]) for c in chunks} == {
+            ("c1", "docs/a.md"),
+            ("c2", "docs/b.md"),
+        }
+        passages = {i.metadata["section"]: i.content for i in result.items}["passages"]
+        assert f"[Source: docs/a.md]\n{text}" in passages
+        assert f"[Source: docs/b.md]\n{text}" in passages
+
     async def test_empty_graph_provenance(self, mp_graph_store, mp_vector_store, mp_embedder):
         s = MultiPathRetrieval(
             graph_store=mp_graph_store,
@@ -1027,3 +1075,36 @@ class TestProvenanceMetadata:
         prov = result.metadata["provenance"]
         assert prov["entities"] == [] and prov["chunks"] == []
         assert prov["facts"] == [] and prov["relationships"] == []
+
+
+class TestMaxFactsOut:
+    def _strategy(self, mp_graph_store, mp_vector_store, mp_embedder):
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {"src_name": f"S{i}", "tgt_name": f"T{i}", "type": "R", "score": 0.9}
+                for i in range(20)
+            ]
+        )
+        return MultiPathRetrieval(
+            graph_store=mp_graph_store,
+            vector_store=mp_vector_store,
+            embedder=mp_embedder,
+            llm=MockLLM(responses=["S1"]),
+        )
+
+    @staticmethod
+    def _fact_lines(result) -> int:
+        facts = {i.metadata["section"]: i.content for i in result.items}["facts"]
+        return len(facts.splitlines()) - 1  # minus the heading
+
+    async def test_caller_can_widen_facts_past_twelve(
+        self, mp_graph_store, mp_vector_store, mp_embedder
+    ):
+        s = self._strategy(mp_graph_store, mp_vector_store, mp_embedder)
+        result = await s.search("q", max_facts_out=20, rel_top_k=20)
+        assert self._fact_lines(result) == 20
+
+    async def test_default_keeps_twelve_facts(self, mp_graph_store, mp_vector_store, mp_embedder):
+        s = self._strategy(mp_graph_store, mp_vector_store, mp_embedder)
+        result = await s.search("q", rel_top_k=20)
+        assert self._fact_lines(result) == 12
