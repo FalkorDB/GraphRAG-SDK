@@ -455,6 +455,17 @@ class TestGraphRAGDefaultExtractor:
         assert "Person" in extractor.entity_types
         assert "Company" in extractor.entity_types
 
+    async def test_default_extractor_uses_persisted_ontology(
+        self, mock_conn, embedder, llm, sample_ontology
+    ):
+        """With no ontology passed, the labels already stored on the graph are used (#363)."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._ontology_store = MagicMock()
+        g._ontology_store.load = AsyncMock(return_value=sample_ontology)
+        await g._ensure_ontology_initialized()
+
+        assert g._default_extractor().entity_types == [e.label for e in sample_ontology.entities]
+
 
 class TestGraphRAGFinalize:
     """A8: finalize() must return a typed FinalizeResult."""
