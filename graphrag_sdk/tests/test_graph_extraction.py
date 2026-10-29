@@ -568,7 +568,9 @@ class TestSpansMerging:
         assert alice.chunk_descriptions == {"c0": "CEO of Acme."}
         assert alice.spans == {"c0": [{"start": 27, "end": 32}]}
         # Without one, the sentences around the spans stand in.
-        assert acme.chunk_descriptions == {"c0": "Alice, CEO of Acme, announced results. … Acme grew."}
+        assert acme.chunk_descriptions == {
+            "c0": "Alice, CEO of Acme, announced results. … Acme grew."
+        }
         assert len(acme.spans["c0"]) == 2
 
     def test_no_spans_not_in_node_properties(self):
