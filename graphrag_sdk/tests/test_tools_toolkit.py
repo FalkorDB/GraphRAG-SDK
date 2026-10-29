@@ -81,6 +81,7 @@ class FakeRAG:
         return FinalizeResult(entities_deduplicated=1, entities_embedded=2)
 
     async def retrieve(self, question: str, **kwargs: Any) -> RetrieverResult:
+        self.retrieve_kwargs = kwargs
         return self.retrieve_result
 
     async def close(self) -> None:
@@ -509,6 +510,72 @@ class TestReadTools:
         result = await toolkit.retrieve("anything")
         assert "lookup_entity" in (result.hint or "")
 
+    @pytest.fixture
+    def found(self, rag, monkeypatch):
+        """One entity, relation, fact and passage; records whether links ran."""
+        rag.retrieve_result = RetrieverResult(
+            items=[],
+            metadata={
+                "provenance": {
+                    "entities": [{"id": "a", "name": "Alice", "description": ""}],
+                    "facts": ["Alice works at Acme"],
+                    "chunks": [{"id": "c1", "text": "Alice works at Acme.", "document_path": "p"}],
+                }
+            },
+        )
+        walked: list[list[str]] = []
+
+        async def triples(store, ids, *, hops, cap):
+            walked.append(ids)
+            return [{"source": "Alice", "type": "WORKS_AT", "target": "Acme", "fact": ""}]
+
+        monkeypatch.setattr(ops, "enrich_entities", lambda *a, **k: _const({}))
+        monkeypatch.setattr(ops, "expand_triples", triples)
+        monkeypatch.setattr(ops, "chunk_documents", lambda *a, **k: _const({}))
+        return walked
+
+    @staticmethod
+    async def _plan(rag) -> list[str]:
+        strategy = rag.retrieve_kwargs["strategy"]
+        return await strategy._router.plan("", None)
+
+    async def test_retrieve_runs_every_path_by_default(self, toolkit, rag, found):
+        result = await toolkit.retrieve("Where does Alice work?")
+        # MultiPath's own expansion is skipped: retrieve walks the links itself.
+        assert await self._plan(rag) == ["chunks", "entity_cypher", "entity_fulltext", "relates"]
+        assert found == [["a"]] and result.relations and result.chunks
+
+    async def test_retrieve_runs_only_the_paths_named(self, toolkit, rag, found):
+        result = await toolkit.call("retrieve", {"question": "Who?", "paths": ["passages"]})
+        assert await self._plan(rag) == ["chunks"]
+        assert found == [] and result.relations == []
+
+    async def test_links_alone_still_finds_entities_to_walk_from(self, toolkit, rag, found):
+        await toolkit.retrieve("Who?", paths=["links"])
+        assert await self._plan(rag) == ["entity_cypher"]
+        assert found == [["a"]]
+
+    async def test_include_chunks_false_skips_the_passages_path(self, toolkit, rag, found):
+        result = await toolkit.retrieve("Who?", include_chunks=False)
+        assert "chunks" not in await self._plan(rag)
+        assert result.chunks == []
+
+    async def test_passages_only_without_chunks_is_refused(self, toolkit, found):
+        with pytest.raises(ToolError, match="include_chunks") as exc:
+            await toolkit.retrieve("Who?", paths=["passages"], include_chunks=False)
+        assert "Drop include_chunks" in (exc.value.hint or "")
+
+    async def test_unknown_path_is_refused(self, toolkit):
+        with pytest.raises(ToolError, match="paths"):
+            await toolkit.call("retrieve", {"question": "Who?", "paths": ["vectors"]})
+
+    async def test_nothing_found_on_chosen_paths_says_retry_without(self, toolkit, monkeypatch):
+        monkeypatch.setattr(ops, "enrich_entities", lambda *a, **k: _const({}))
+        monkeypatch.setattr(ops, "expand_triples", lambda *a, **k: _const([]))
+        monkeypatch.setattr(ops, "chunk_documents", lambda *a, **k: _const({}))
+        result = await toolkit.retrieve("anything", paths=["facts"])
+        assert "without paths" in (result.hint or "")
+
     async def test_retrieve_on_an_uninitialised_rag_writes_no_ontology(
         self, toolkit, rag, monkeypatch
     ):
@@ -539,7 +606,9 @@ class TestReadTools:
                 seen["question"] = question
                 return RetrieverResult(items=[], metadata={})
 
-        monkeypatch.setattr(toolkit, "_make_strategy", lambda top_k, onto=None: Strategy(onto))
+        monkeypatch.setattr(
+            toolkit, "_make_strategy", lambda top_k, onto=None, plan=None: Strategy(onto)
+        )
         for name in ("enrich_entities", "chunk_documents"):
             monkeypatch.setattr(ops, name, lambda *a, **k: _const({}))
         monkeypatch.setattr(ops, "expand_triples", lambda *a, **k: _const([]))

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -101,6 +101,11 @@ class CypherQueryInput(_Input):
     )
 
 
+#: The search paths retrieve can run, as the agent names them.
+RetrievePath = Literal["facts", "exact_names", "fuzzy_names", "links", "passages"]
+RETRIEVE_PATHS: tuple[str, ...] = ("facts", "exact_names", "fuzzy_names", "links", "passages")
+
+
 class RetrieveInput(_Input):
     """Arguments for retrieve."""
 
@@ -112,6 +117,18 @@ class RetrieveInput(_Input):
         default=1, ge=1, le=3, description="Relation hops to expand around found entities."
     )
     include_chunks: bool = Field(default=True, description="Include source text passages.")
+    paths: list[RetrievePath] | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Search paths to run; leave out to run them all (the safe default). "
+            "facts: relation facts close in meaning to the question. "
+            "exact_names: entities whose name appears in the question. "
+            "fuzzy_names: entities with partly matching or misspelt names. "
+            "links: the relations around the entities found. "
+            "passages: the source text that holds the answer."
+        ),
+    )
 
 
 class RunSkillInput(_Input):
@@ -220,8 +237,10 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "Hybrid search (vector + full-text + graph) for a question: the most relevant "
         "entities, relations, facts and source passages. Use it for open questions or "
         "when you do not know which entity to start from. Pass the user's question word "
-        "for word; keywords find less. Needs the embedding model the graph was built "
-        "with." + _CITE,
+        "for word; keywords find less. Runs every search path unless paths names a "
+        "few: pick them only when you know what the question needs, and run it again "
+        "without paths if nothing comes back. Needs the embedding model the graph was "
+        "built with." + _CITE,
     ),
     ToolDef(
         "run_skill",

@@ -61,6 +61,7 @@ from graphrag_sdk.tools.models import (
     WalkResult,
 )
 from graphrag_sdk.tools.specs import (
+    RETRIEVE_PATHS,
     TOOL_REGISTRY,
     CheckCitationsInput,
     CypherQueryInput,
@@ -88,6 +89,28 @@ _RESOLVE_BUDGET_SECONDS = 2.0
 _EVIDENCE_CHARS = 2000
 #: Most names listed in a hint.
 _HINT_NAMES = 30
+#: retrieve's search paths and the MultiPath path behind each. ``links`` has
+#: none: retrieve walks the relations itself, so MultiPath's own expansion,
+#: whose output it never reads, is not run.
+_MULTIPATH_PATH = {
+    "facts": "relates",
+    "exact_names": "entity_cypher",
+    "fuzzy_names": "entity_fulltext",
+    "passages": "chunks",
+}
+_ALL_MULTIPATH_PATHS = frozenset(_MULTIPATH_PATH.values())
+#: Paths that find the entities links walk from.
+_SEED_PATHS = frozenset({"facts", "exact_names", "fuzzy_names"})
+
+
+class _FixedPlan:
+    """A MultiPath path router that always runs the same paths."""
+
+    def __init__(self, paths: frozenset[str]) -> None:
+        self._paths = sorted(paths)
+
+    async def plan(self, query: str, ctx: Context) -> list[str]:
+        return list(self._paths)
 
 
 _FACT_RE = re.compile(r"^(.+?) —\[([^\]]+)\]→ (.+?)(?:: (.*))?$", re.S)
@@ -736,8 +759,17 @@ class GraphRAGToolkit:
             hint=hint,
         )
 
-    def _make_strategy(self, top_k: int, ontology: Ontology | None = None) -> MultiPathRetrieval:
-        """A MultiPathRetrieval sized to ``top_k`` (its constructor only assigns)."""
+    def _make_strategy(
+        self,
+        top_k: int,
+        ontology: Ontology | None = None,
+        plan: frozenset[str] | None = None,
+    ) -> MultiPathRetrieval:
+        """A MultiPathRetrieval sized to ``top_k`` (its constructor only assigns).
+
+        ``plan`` names the MultiPath paths to run (default: every path
+        retrieve reads).
+        """
         return MultiPathRetrieval(
             graph_store=self._rag._graph_store,
             vector_store=self._rag._vector_store,
@@ -746,10 +778,13 @@ class GraphRAGToolkit:
             chunk_top_k=top_k,
             rel_top_k=top_k,
             max_entities=max(2 * top_k, 10),
+            router=_FixedPlan(plan or _ALL_MULTIPATH_PATHS),
             ontology=ontology or self._rag._global_ontology,
         )
 
-    async def _search(self, question: str, top_k: int, ctx: Context) -> Any:
+    async def _search(
+        self, question: str, top_k: int, ctx: Context, plan: frozenset[str] | None = None
+    ) -> Any:
         """Run MultiPath retrieval without writing to the graph.
 
         ``GraphRAG.retrieve`` first initialises the ontology, which on a graph
@@ -758,12 +793,14 @@ class GraphRAGToolkit:
         the strategy directly on the declared ontology instead.
         """
         if getattr(self._rag, "_ontology_initialized", True):
-            return await self._rag.retrieve(question, strategy=self._make_strategy(top_k), ctx=ctx)
+            return await self._rag.retrieve(
+                question, strategy=self._make_strategy(top_k, plan=plan), ctx=ctx
+            )
         declared = await self._declared_ontology()
         ontology = declared if (declared.entities or declared.relations) else None
         await self._rag._validate_graph_config(ctx=ctx)
         ctx.ensure_budget("retrieval strategy search")
-        return await self._make_strategy(top_k, ontology).search(question, ctx)
+        return await self._make_strategy(top_k, ontology, plan).search(question, ctx)
 
     async def retrieve(
         self,
@@ -772,20 +809,38 @@ class GraphRAGToolkit:
         top_k: int = 8,
         expand_hops: int = 1,
         include_chunks: bool = True,
+        paths: list[str] | None = None,
         ctx: Context | None = None,
     ) -> RetrieveResult:
         """Hybrid retrieval for ``question``: entities, relations, facts, passages.
 
         Runs the SDK's MultiPath retrieval (vector, full-text and graph) and
         returns the ranked context, without generating an answer. Each
-        entity, relation, fact and passage is a piece of evidence.
+        entity, relation, fact and passage is a piece of evidence. ``paths``
+        runs only the named search paths (see ``RETRIEVE_PATHS``); by default
+        every path runs.
         """
         inp = RetrieveInput(
-            question=question, top_k=top_k, expand_hops=expand_hops, include_chunks=include_chunks
+            question=question,
+            top_k=top_k,
+            expand_hops=expand_hops,
+            include_chunks=include_chunks,
+            paths=paths,  # type: ignore[arg-type]
         )
+        wanted = set(inp.paths or RETRIEVE_PATHS)
+        if not inp.include_chunks:
+            wanted.discard("passages")
+        if not wanted:
+            raise ToolError(
+                "paths names only passages, but include_chunks is false.",
+                hint="Drop include_chunks, or add other paths.",
+            )
+        if "links" in wanted and not wanted & _SEED_PATHS:
+            wanted.add("exact_names")  # links walk from found entities
+        plan = frozenset(_MULTIPATH_PATH[p] for p in wanted if p in _MULTIPATH_PATH)
         ctx = ctx or self._new_ctx()
         store = self._store
-        rr = await self._search(inp.question, inp.top_k, ctx)
+        rr = await self._search(inp.question, inp.top_k, ctx, plan)
         prov: dict[str, Any] = rr.metadata.get("provenance") or {}
         seeds = [e for e in (prov.get("entities") or []) if e.get("id")][: inp.top_k]
         seed_ids = [e["id"] for e in seeds]
@@ -811,9 +866,14 @@ class GraphRAGToolkit:
 
         relations = []
         shown: set[tuple[str, str, str]] = set()
-        for t in await ops.expand_triples(
-            store, seed_ids, hops=inp.expand_hops, cap=min(4 * inp.top_k, 40)
-        ):
+        triples = (
+            await ops.expand_triples(
+                store, seed_ids, hops=inp.expand_hops, cap=min(4 * inp.top_k, 40)
+            )
+            if "links" in wanted
+            else []
+        )
+        for t in triples:
             text = f"{t['source']} -[{t['type']}]-> {t['target']}"
             if t["fact"]:
                 text += f": {t['fact']}"
@@ -868,6 +928,11 @@ class GraphRAGToolkit:
                 "Nothing relevant was found. Try lookup_entity with a name from the "
                 "question, or rephrase."
             )
+            if inp.paths:
+                hint = (
+                    "Nothing relevant was found on the paths you chose. Run retrieve "
+                    "again without paths."
+                )
         return RetrieveResult(
             question=inp.question,
             entities=entities,
