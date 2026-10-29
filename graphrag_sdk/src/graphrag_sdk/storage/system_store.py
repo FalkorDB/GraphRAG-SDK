@@ -364,21 +364,41 @@ class SystemStore:
     # ── pending and unresolved ───────────────────────────────────
 
     async def pending_pages(self) -> list[PendingPage]:
-        """Every ``pending`` record, by page."""
+        """Every ``pending`` record, by page, its lists aligned to its ids.
+
+        Every write stores the three lists together, but FalkorDB 4.22.2 was
+        seen to change a stored record no query wrote: ``reasons``, then
+        ``attempts``, read back empty while ``ids`` kept every entry, and each
+        reader that indexes them by position failed. A count lost that way
+        reads 0 and a reason empty: the entity is judged again, never given up
+        early; the record's next write stores the lists aligned."""
         result = await self._graph.query_raw(
             f"MATCH (p:{PROCESSING_LABEL} {{kind: '{PENDING}'}}) "
             "RETURN p.page, p.ids, p.attempts, p.reasons, p.claimed_run ORDER BY p.page"
         )
-        return [
-            PendingPage(
+        pages: list[PendingPage] = []
+        for page, ids, attempts, reasons, claimed in result.result_set or []:
+            rec = PendingPage(
                 page=int(page),
                 ids=list(ids or []),
                 attempts=[int(a) for a in (attempts or [])],
                 reasons=list(reasons or []),
                 claimed_run=claimed,
             )
-            for page, ids, attempts, reasons, claimed in result.result_set or []
-        ]
+            n = len(rec.ids)
+            if len(rec.attempts) != n or len(rec.reasons) != n:
+                logger.warning(
+                    "Pending record %d lists %d ids, %d attempts and %d reasons; "
+                    "read with each list aligned to its ids",
+                    rec.page,
+                    n,
+                    len(rec.attempts),
+                    len(rec.reasons),
+                )
+                rec.attempts = (rec.attempts + [0] * n)[:n]
+                rec.reasons = (rec.reasons + [""] * n)[:n]
+            pages.append(rec)
+        return pages
 
     async def add_pending(self, ids: list[str]) -> None:
         """List ``ids`` as pending, ``RECORD_PAGE`` per record, attempts 0.

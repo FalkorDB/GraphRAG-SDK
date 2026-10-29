@@ -367,6 +367,23 @@ async def test_a_failed_check_stays_pending_and_three_make_it_unresolved(graph):
     assert dd.last_report.unresolved == {}, "dedup_all retries it"
 
 
+@pytest.mark.parametrize("emptied", ["p.reasons = []", "p.attempts = [], p.reasons = []"])
+async def test_a_pending_record_whose_lists_lost_their_entries_is_still_checked(graph, emptied):
+    """FalkorDB 4.22.2 was seen to change a stored pending record no query
+    wrote: ``ids`` kept 28 entries while ``reasons``, and later ``attempts``,
+    read back empty. Every later finalize() then crashed with IndexError, in
+    the claim (``reasons``) or in the move to unresolved (``attempts``). The
+    record is read aligned to its ids instead: a lost count is 0, a lost
+    reason empty, and the entity is checked."""
+    await checked_graph(graph)
+    await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([APPLE], fail={"Timothy Cook"})))
+    await graph.query_raw(f"MATCH (p:__GraphRAGProcessing__ {{kind: 'pending'}}) SET {emptied}")
+
+    dd = dedup(graph)
+    assert await dd.deduplicate(judge=LLMJudge(NameOracleLLM([TIM]))) == 1
+    assert dd.last_report.checked == 1 and await records(graph) == []
+
+
 async def test_a_retry_of_the_unresolved_cut_short_lists_them_once(graph):
     """dedup_all lists the unresolved entities as pending, then drops them
     from their record. A crash between the two left both, and the next
