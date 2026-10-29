@@ -231,7 +231,12 @@ class CachedChunkExtraction(ExtractionStrategy):
             if not new_uids:
                 continue
             for new_uid in new_uids:
-                mentions.append(EntityMention(chunk_id=new_uid, entity_id=row.entity_id))
+                # The unchanged chunk keeps what its old mention edge said.
+                mentions.append(
+                    EntityMention(
+                        chunk_id=new_uid, entity_id=row.entity_id, description=row.description or ""
+                    )
+                )
             srcs = ent_sources.setdefault(row.entity_id, [])
             if row.entity_id not in ent_props:
                 # Only emit non-empty fields — SET n += props would null-out

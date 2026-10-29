@@ -779,9 +779,9 @@ class TestCachedUpdateIntegration:
         assert await count("Carol") == 0, "replaced-chunk entity must be orphan-cleaned"
         assert await count("Dave") == 1, "new-chunk entity must be extracted"
 
-        # Provenance: Alice's source_chunk_ids must point only at LIVE chunks.
+        # Provenance: Alice's mention edges must point only at LIVE chunks.
         r = await rag._graph_store.query_raw(
-            "MATCH (e:__Entity__) WHERE e.name = 'Alice' RETURN e.source_chunk_ids"
+            "MATCH (e:__Entity__ {name: 'Alice'})-[:MENTIONED_IN]->(c:Chunk) RETURN collect(c.id)"
         )
         alice_srcs = r.result_set[0][0] or []
         r = await rag._graph_store.query_raw(

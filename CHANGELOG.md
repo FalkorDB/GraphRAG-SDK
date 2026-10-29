@@ -226,6 +226,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **An entity stays the same size however often it is mentioned.** Its node
+  held a `source_chunk_ids` list and a `spans` JSON that grew with every
+  mention and were rewritten on every write, and a merge appended every
+  member's description to `descriptions`, without limit. Now which chunks
+  mention an entity, where (`spans`) and what each says it is (`description`)
+  are on its `MENTIONED_IN` edges, one per chunk, written once and deleted with
+  the chunk; the node holds no chunk list. A second document that mentions an
+  entity adds its description instead of replacing the first's (`SET n +=
+  props` kept only the last). A write leaves at most 20 descriptions on a node,
+  and `finalize()`, after dedup, replaces those of every entity holding more
+  than 5 with one LLM summary. `delete_document()` rebuilds the descriptions of
+  the entities the document mentioned from their remaining edges, without an
+  LLM call, so nothing the document said stays on them. On the Verdantix
+  benchmark (57 documents, a `finalize()` after every 10, the same three
+  extractions for both): dedup F1 0.53 → 0.70, precision 0.955 → 0.987, wrong
+  merges 1.8 → 0.7 per run, answers unchanged; at most 5 descriptions per node
+  after `finalize()` (was up to 15); LLM cost +3%; `finalize()` ~3 s longer
+  (median 3.2 → 6.1 s), ingest and queries unchanged. Graphs written by an
+  earlier version keep their entity `source_chunk_ids` lists; nothing reads
+  them, and a delete or a merge removes the ids it touches.
+
+- **The dedup judge's fixed instructions come first in its prompt, so the
+  provider caches them.** The set count sat ~150 tokens in and the decision
+  procedure followed the sets, so no two judge prompts shared a prefix the
+  provider could cache. The instructions are unchanged word for word; the set
+  count moves to a heading over the sets. Measured: 44% of judge input served
+  from the provider's cache (was 9%), judge cost −26%, dedup unchanged.
+
 - **`finalize()` deduplicates incrementally, with one judge pass, and
   survives a crash.** `finalize()` checks only the entities whose check is
   pending — against the whole graph, through the `__Entity__` vector index,

@@ -179,11 +179,17 @@ class LexicalGraphWriter:
             if key in seen:
                 continue
             seen.add(key)
+            props: dict = {}
+            if m.spans:
+                props["spans"] = list(m.spans)
+            if m.description:
+                props["description"] = m.description
             mention_rels.append(
                 GraphRelationship(
                     start_node_id=m.entity_id,
                     end_node_id=m.chunk_id,
                     type="MENTIONED_IN",
+                    properties=props,
                 )
             )
         written = await self.graph_store.upsert_relationships(mention_rels)

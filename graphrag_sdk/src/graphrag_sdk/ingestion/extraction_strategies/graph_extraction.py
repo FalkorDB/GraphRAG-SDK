@@ -26,6 +26,7 @@ from graphrag_sdk.core.models import (
     reject_reserved_labels,
 )
 from graphrag_sdk.core.providers import LLMInterface
+from graphrag_sdk.ingestion.evidence import evidence_text, find_spans, flat_spans
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import CorefResolver
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
@@ -827,10 +828,11 @@ class GraphExtraction(ExtractionStrategy):
                         chunk_texts[chunk_idx],
                         chunk.uid,
                     )
-                    all_entities.extend(verified_ents)
                 else:
                     # LLM returned no entities — use step 1 entities
-                    all_entities.extend(chunk_entities[chunk_idx])
+                    verified_ents = chunk_entities[chunk_idx]
+                self._record_mentions(verified_ents, chunk_texts[chunk_idx], chunk.uid)
+                all_entities.extend(verified_ents)
                 all_relations.extend(rels)
 
         # ── Aggregate across chunks ──
@@ -841,8 +843,19 @@ class GraphExtraction(ExtractionStrategy):
         all_mentions: list[EntityMention] = []
         for ent in merged_entities:
             ent_id = compute_entity_id(ent.name, ent.type)
+            ent_spans = getattr(ent, "spans", None) or {}
+            chunk_descriptions = getattr(ent, "chunk_descriptions", None) or {}
             for chunk_id in ent.source_chunk_ids:
-                all_mentions.append(EntityMention(chunk_id=chunk_id, entity_id=ent_id))
+                all_mentions.append(
+                    EntityMention(
+                        chunk_id=chunk_id,
+                        entity_id=ent_id,
+                        spans=flat_spans(
+                            (o["start"], o["end"]) for o in ent_spans.get(chunk_id, [])
+                        ),
+                        description=chunk_descriptions.get(chunk_id, ""),
+                    )
+                )
 
         # ── Build entity type map for relationship endpoint resolution ──
         entity_type_map: dict[str, str] = {}
@@ -891,6 +904,33 @@ class GraphExtraction(ExtractionStrategy):
                 logging.WARNING,
             )
         return graph_data
+
+    @staticmethod
+    def _record_mentions(
+        entities: list[ExtractedEntity],
+        chunk_text: str,
+        chunk_id: str,
+    ) -> None:
+        """Record, per chunk, where it names each entity and what it says the
+        entity is, for that entity's mention edge.
+
+        The spans are every place the chunk names the entity (the step-1 spans
+        when its name is not found verbatim). What the chunk says it is: the
+        model's description, or the sentence around its spans when the model
+        gave none. The mention edge keeps both, so the entity's description can
+        be rebuilt from its edges after a merge or a delete.
+        """
+        for ent in entities:
+            spans = find_spans(chunk_text, ent.name)
+            if not spans:
+                spans = [
+                    (o["start"], o["end"])
+                    for o in (getattr(ent, "spans", None) or {}).get(chunk_id, [])
+                ]
+            ent.spans = {chunk_id: [{"start": s, "end": e} for s, e in spans]}  # type: ignore[attr-defined]
+            text = ent.description.strip() or evidence_text(chunk_text, spans)
+            ent.chunk_descriptions = {chunk_id: text} if text else {}  # type: ignore[attr-defined]
+            ent.description = text
 
     @staticmethod
     def _merge_step1_metadata(
@@ -1073,6 +1113,12 @@ class GraphExtraction(ExtractionStrategy):
                 for cid in ent.source_chunk_ids:
                     if cid not in existing.source_chunk_ids:
                         existing.source_chunk_ids.append(cid)
+                chunk_descriptions = getattr(ent, "chunk_descriptions", None) or {}
+                if chunk_descriptions:
+                    held = getattr(existing, "chunk_descriptions", None) or {}
+                    for chunk_id, text in chunk_descriptions.items():
+                        held.setdefault(chunk_id, text)
+                    existing.chunk_descriptions = held  # type: ignore[attr-defined]
                 # Merge spans: {chunk_id: [{start, end}, ...]}
                 ent_spans = getattr(ent, "spans", None) or {}
                 if ent_spans:
@@ -1093,6 +1139,9 @@ class GraphExtraction(ExtractionStrategy):
                     attributes=dict(ent.attributes),
                     **_optional_extras(ent),
                 )
+                chunk_descriptions = getattr(ent, "chunk_descriptions", None)
+                if chunk_descriptions:
+                    seen[key].chunk_descriptions = dict(chunk_descriptions)  # type: ignore[attr-defined]
         return list(seen.values())
 
     @staticmethod
@@ -1149,16 +1198,25 @@ class GraphExtraction(ExtractionStrategy):
             node_id = compute_entity_id(ent.name, ent.type)
             if not node_id:
                 continue
+            # One member per chunk that named it, in chunk order; the store
+            # joins them onto what the node already holds and bounds the total.
+            chunk_descriptions = getattr(ent, "chunk_descriptions", None) or {}
+            members: list[str] = []
+            for chunk_id in ent.source_chunk_ids:
+                text = chunk_descriptions.get(chunk_id, "")
+                if text and text not in members:
+                    members.append(text)
+            if not members and ent.description:
+                members = [ent.description]
             props: dict[str, Any] = {
                 "name": ent.name,
                 "type": ent.type,
-                "description": ent.description,
+                "description": " | ".join(members),
                 "source_chunk_ids": ent.source_chunk_ids,
             }
-            # Include spans if present (GLiNER2 provides character offsets)
-            spans = getattr(ent, "spans", None)
-            if spans:
-                props["spans"] = spans
+            if len(members) > 1:
+                props["descriptions"] = members
+            # Spans live on the MENTIONED_IN edges (one per chunk), not here.
             # Merge ontology-declared attributes. The ontology layer does NOT
             # validate against SDK-reserved keys (name, type, description,
             # source_chunk_ids, spans, id) — declaring an Attribute with one
