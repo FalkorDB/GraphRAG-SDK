@@ -1,5 +1,5 @@
 """Unit tests for the agent ingestion tools: root-confined file helpers, the
-rule planner, the pipeline's drop report and the toolkit's sample_docs /
+rule planner, the pipeline's drop report and the toolkit's preview_files /
 set_ontology / ingest(files=...) over a fake GraphRAG. The same flow runs
 against a real FalkorDB in test_tools_integration.py."""
 
@@ -507,13 +507,13 @@ def toolkit(rag: FakeRAG, root=None, **kw) -> GraphRAGToolkit:
 
 
 class TestToolkitConfig:
-    def test_files_root_enables_sample_docs(self, corpus):
+    def test_files_root_enables_preview_files(self, corpus):
         rag = FakeRAG()
-        assert "sample_docs" not in [s.name for s in toolkit(rag).tool_specs()]
+        assert "preview_files" not in [s.name for s in toolkit(rag).tool_specs()]
         tk = toolkit(rag, corpus)
         assert tk.files_root == corpus.resolve()
         names = [s.name for s in tk.tool_specs()]
-        assert names[-4:] == ["sample_docs", "set_ontology", "ingest", "finalize"]
+        assert names[-4:] == ["preview_files", "set_ontology", "ingest", "finalize"]
 
     def test_bad_root_and_limits_fail_at_construction(self, corpus):
         with pytest.raises(ValueError, match="not a directory"):
@@ -523,30 +523,32 @@ class TestToolkitConfig:
 
     async def test_read_only_refuses_every_ingestion_tool(self, corpus):
         tk = toolkit(FakeRAG(), corpus, read_only=True)
-        assert {"sample_docs", "set_ontology", "ingest"}.isdisjoint(s.name for s in tk.tool_specs())
+        assert {"preview_files", "set_ontology", "ingest"}.isdisjoint(
+            s.name for s in tk.tool_specs()
+        )
         for name, args in (
-            ("sample_docs", {}),
+            ("preview_files", {}),
             ("set_ontology", {"entities": [{"label": "Drug"}]}),
             ("ingest", {"files": ["*.md"]}),
         ):
             with pytest.raises(ReadOnlyViolation):
                 await tk.call(name, args)
         with pytest.raises(ReadOnlyViolation):
-            await tk.sample_docs()
+            await tk.preview_files()
 
-    async def test_sample_docs_without_a_root_says_so(self):
+    async def test_preview_files_without_a_root_says_so(self):
         tk = toolkit(FakeRAG())
         with pytest.raises(ToolError, match="not enabled") as exc:
-            await tk.call("sample_docs", {})
+            await tk.call("preview_files", {})
         assert "No files root" in (exc.value.hint or "")
         with pytest.raises(ToolError, match="needs a files root"):
             await tk.ingest(files=["a.md"])
 
 
-class TestSampleDocs:
+class TestPreviewFiles:
     async def test_pages_with_middle_samples(self, corpus):
         tk = toolkit(FakeRAG(), corpus)
-        first = await tk.call("sample_docs", {"limit": 3, "max_chars": 200})
+        first = await tk.call("preview_files", {"limit": 3, "max_chars": 200})
         assert first.total == 4 and first.next_offset == 3
         assert first.types == {"md": 2, "rst": 1, "txt": 1}
         assert [f.path for f in first.files] == ["notes/a.md", "notes/b.md", "readme.rst"]
@@ -554,7 +556,7 @@ class TestSampleDocs:
         assert a.type == "md" and a.chars > 3000 and 0 < len(a.sample) <= 200
         assert a.sample.startswith("alpha") or a.sample.startswith("words")
         assert "Keep paging" in (first.hint or "")
-        rest = await tk.sample_docs(offset=first.next_offset, limit=3)
+        rest = await tk.preview_files(offset=first.next_offset, limit=3)
         assert [f.path for f in rest.files] == ["reports/2024/q1.txt"]
         assert rest.next_offset is None and rest.hint is None
         assert len(tk.ledger) == 0  # samples are not evidence
@@ -564,18 +566,18 @@ class TestSampleDocs:
 
         monkeypatch.setattr(tk_mod, "SAMPLE_BUDGET_CHARS", 400)
         tk = toolkit(FakeRAG(), corpus)
-        result = await tk.sample_docs(limit=4, max_chars=4000)
+        result = await tk.preview_files(limit=4, max_chars=4000)
         assert all(len(f.sample) <= 100 for f in result.files)
 
     async def test_pattern_and_errors(self, corpus):
         tk = toolkit(FakeRAG(), corpus)
-        none = await tk.sample_docs("*.pdf")
+        none = await tk.preview_files("*.pdf")
         assert none.total == 0 and "No supported files" in (none.hint or "")
         (corpus / "broken.pdf").write_bytes(b"not a pdf")
-        bad = await tk.sample_docs("*.pdf")
+        bad = await tk.preview_files("*.pdf")
         assert bad.total == 1 and bad.files[0].error
         with pytest.raises(ToolError, match="outside"):
-            await tk.sample_docs("../*")
+            await tk.preview_files("../*")
 
 
 class TestSetOntology:
@@ -830,7 +832,7 @@ class TestGuide:
 
     def test_ingest_guide_asks_for_the_users_ontology_first(self):
         assert "Ask the user whether they have an ontology" in INGEST_GUIDE
-        assert INGEST_GUIDE.index("set_ontology") < INGEST_GUIDE.index("sample_docs")
+        assert INGEST_GUIDE.index("set_ontology") < INGEST_GUIDE.index("preview_files")
         for step in ("next_offset", "ONE ontology", "at most 50", "finalize once", "reextract"):
             assert step in INGEST_GUIDE
 
@@ -868,5 +870,5 @@ class TestGuide:
         server = GraphRAGMCPServer(FakeRAG(), files_root=corpus)
         assert server.toolkit.files_root == corpus.resolve()
         assert server.instructions == GUIDE + INGEST_GUIDE
-        assert "sample_docs" in [t["name"] for t in server.tool_dicts()]
+        assert "preview_files" in [t["name"] for t in server.tool_dicts()]
         assert GraphRAGMCPServer(FakeRAG(), instructions="x").instructions == "x"

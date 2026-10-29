@@ -119,7 +119,7 @@ def resolve_files(
             if not matches:
                 raise ToolError(
                     f"No supported file matches {entry!r}.",
-                    hint="Call sample_docs to see the files and their paths.",
+                    hint="Call preview_files to see the files and their paths.",
                 )
         else:
             path = root / text
@@ -128,7 +128,7 @@ def resolve_files(
             if not path.is_file() or not _inside(root, path):
                 raise ToolError(
                     f"No file {entry!r} under the files root.",
-                    hint="Call sample_docs to see the files and their paths.",
+                    hint="Call preview_files to see the files and their paths.",
                 )
             if not _supported(text):
                 raise ToolError(

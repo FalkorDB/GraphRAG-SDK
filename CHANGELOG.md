@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Agentic ingestion: an agent builds the graph from a folder (#275)
 
 - **`GraphRAGToolkit(rag, files_root=...)` lets an agent ingest files.**
-  `sample_docs` returns one sample from the middle of each file, paged, so the
+  `preview_files` returns one sample from the middle of each file, paged, so the
   agent can design one ontology for the whole corpus; `set_ontology` declares
   or extends it (adds only); `ingest(files=[...], plan=[rules])` ingests up to
   50 files per call, each with the chunker, extractor and resolver of the

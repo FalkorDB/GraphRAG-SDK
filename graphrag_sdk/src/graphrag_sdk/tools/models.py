@@ -533,7 +533,7 @@ class DocSample(BaseModel):
     error: str | None = None
 
 
-class SampleDocsResult(ToolResult):
+class PreviewFilesResult(ToolResult):
     """A page of the files under the files root, one sample each."""
 
     pattern: str

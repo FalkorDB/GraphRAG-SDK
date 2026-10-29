@@ -21,9 +21,9 @@ from graphrag_sdk.tools.specs import (
     LookupEntityInput,
     OntologyInput,
     PlanRuleInput,
+    PreviewFilesInput,
     RetrieveInput,
     RunSkillInput,
-    SampleDocsInput,
     SetOntologyInput,
     StatusInput,
     ToolDef,
@@ -44,7 +44,7 @@ ALL_NAMES = (
     "retrieve",
     "run_skill",
     "check_citations",
-    "sample_docs",
+    "preview_files",
     "set_ontology",
     "ingest",
     "finalize",
@@ -61,7 +61,7 @@ VALID_INPUTS: dict[type[BaseModel], dict] = {
     RetrieveInput: {"question": "Who?"},
     RunSkillInput: {"skill": "impact_analysis"},
     CheckCitationsInput: {"answer": "x [1]"},
-    SampleDocsInput: {},
+    PreviewFilesInput: {},
     SetOntologyInput: {"entities": [{"label": "Drug"}]},
     IngestInput: {"text": "Alice works at Acme."},
     FinalizeInput: {},
@@ -98,13 +98,13 @@ def test_write_flags():
         td.name: (td.read_only, td.destructive, td.manual_only, td.ingest_only)
         for td in TOOL_REGISTRY
     }
-    assert flags["sample_docs"] == (True, False, False, True)
+    assert flags["preview_files"] == (True, False, False, True)
     assert flags["set_ontology"] == (False, False, False, True)
     assert flags["ingest"] == (False, False, False, True)
     assert flags["finalize"] == (False, True, True, True)
     for name in READ_NAMES:
         assert flags[name] == (True, False, False, False), name
-    assert [td.name for td in TOOL_REGISTRY if td.needs_files] == ["sample_docs"]
+    assert [td.name for td in TOOL_REGISTRY if td.needs_files] == ["preview_files"]
 
 
 # ── build_tool_specs ─────────────────────────────────────────────
@@ -124,11 +124,11 @@ def test_read_only_drops_the_ingestion_tools():
     assert all(s.read_only and not s.destructive for s in specs(read_only=True))
 
 
-def test_sample_docs_needs_a_files_root():
+def test_preview_files_needs_a_files_root():
     names = [s.name for s in specs(files=False)]
-    assert "sample_docs" not in names
+    assert "preview_files" not in names
     assert {"set_ontology", "ingest", "finalize"} <= set(names)
-    sample = next(td for td in TOOL_REGISTRY if td.name == "sample_docs")
+    sample = next(td for td in TOOL_REGISTRY if td.name == "preview_files")
     assert tool_enabled(sample, read_only=False, finalize_policy="manual", include=None, files=True)
     assert not tool_enabled(
         sample, read_only=True, finalize_policy="manual", include=None, files=True
@@ -362,11 +362,11 @@ def test_plan_rule_names_match_the_planner_options():
     assert options("resolver") == set(RESOLVERS)
 
 
-def test_sample_docs_and_set_ontology_bounds():
-    SampleDocsInput(limit=100, max_chars=4000)
+def test_preview_files_and_set_ontology_bounds():
+    PreviewFilesInput(limit=100, max_chars=4000)
     for bad in ({"limit": 0}, {"limit": 101}, {"max_chars": 99}, {"offset": -1}):
         with pytest.raises(ValidationError):
-            SampleDocsInput(**bad)
+            PreviewFilesInput(**bad)
     SetOntologyInput(relations=[{"label": "TREATS", "patterns": [["Drug", "Disease"]]}])
     for bad_rel in ({"label": "R", "patterns": [["A"]]}, {"label": "", "patterns": []}):
         with pytest.raises(ValidationError):

@@ -458,7 +458,7 @@ async def test_agent_ingests_a_folder(real_falkordb_rag_factory, tmp_path):
     tk = GraphRAGToolkit(rag, files_root=tmp_path, plan_limits=OFFLINE_LIMITS)
 
     # 1. Look at the folder.
-    sampled = await tk.call("sample_docs", {})
+    sampled = await tk.call("preview_files", {})
     assert sampled.total == 2 and sampled.types == {"md": 1, "txt": 1}
     assert "Aspirin treats headache" in sampled.files[0].sample
 
@@ -536,7 +536,7 @@ async def test_agent_ingestion_respects_the_root(real_falkordb_rag_factory, tmp_
     with pytest.raises(ToolError, match="outside the files root"):
         await tk.call("ingest", {"files": ["../secret.md"]})
     with pytest.raises(ToolError, match="outside the files root"):
-        await tk.call("sample_docs", {"pattern": "../*"})
+        await tk.call("preview_files", {"pattern": "../*"})
     assert (await tk.call("status", {})).documents == 0
     with pytest.raises(ReadOnlyViolation):
         await GraphRAGToolkit(rag, files_root=root, read_only=True).call(

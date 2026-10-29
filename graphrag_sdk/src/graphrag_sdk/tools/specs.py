@@ -131,8 +131,8 @@ class CheckCitationsInput(_Input):
     answer: str = Field(max_length=50_000, description="Your draft answer with [n] citations.")
 
 
-class SampleDocsInput(_Input):
-    """Arguments for sample_docs."""
+class PreviewFilesInput(_Input):
+    """Arguments for preview_files."""
 
     pattern: str = Field(
         default="**/*",
@@ -283,7 +283,7 @@ class ToolDef:
     destructive: bool = False
     manual_only: bool = False
     #: Part of ingestion: hidden and refused on a read-only toolkit even if
-    #: it writes nothing (sample_docs reads local files).
+    #: it writes nothing (preview_files reads local files).
     ingest_only: bool = False
     #: Needs a files root (GraphRAGToolkit(files_root=...)).
     needs_files: bool = False
@@ -361,8 +361,8 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "and cited claims whose figures or names the cited evidence does not contain.",
     ),
     ToolDef(
-        "sample_docs",
-        SampleDocsInput,
+        "preview_files",
+        PreviewFilesInput,
         "Before ingesting files: list the documents under the files root (paged with "
         "offset / next_offset) with one sample from the middle of each, to see what the "
         "corpus is about and design an ontology from it. Reads files; writes nothing.",
@@ -484,7 +484,7 @@ def build_tool_specs(
 ) -> list[ToolSpec]:
     """The tool definitions a toolkit configuration advertises.
 
-    ``files`` says whether the toolkit has a files root (``sample_docs``
+    ``files`` says whether the toolkit has a files root (``preview_files``
     needs one); ``plan_limits`` names the plan options ``ingest`` allows.
     """
     return [

@@ -16,8 +16,8 @@ from graphrag_sdk.mcp import GUIDE, GraphRAGMCPServer, fit_json
 from graphrag_sdk.mcp.server import TEXT_INGEST_GUIDE, bearer_token_guard, check_sse_binding
 from graphrag_sdk.tools import TOOL_NAMES
 
-# Without a files root the server does not offer sample_docs.
-SERVED = [n for n in TOOL_NAMES if n != "sample_docs"]
+# Without a files root the server does not offer preview_files.
+SERVED = [n for n in TOOL_NAMES if n != "preview_files"]
 
 pytest.importorskip("mcp")
 

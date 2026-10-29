@@ -65,7 +65,7 @@ INGEST_GUIDE = """\
 To build or extend the graph from documents:
 1. Ask the user whether they have an ontology (the entity and relation types
    to extract). If they do, declare it with set_ontology and go to step 3.
-2. If not, design one: call sample_docs and follow next_offset until it is
+2. If not, design one: call preview_files and follow next_offset until it is
    null, so you have seen one sample from every file. Choose ONE ontology for
    the whole corpus (types that recur across files, each with a short
    description, and relations with their [source, target] patterns), and
@@ -74,7 +74,7 @@ To build or extend the graph from documents:
    with only a few broad types, extraction files facts under the wrong one.
    Give each relation every [source, target] pair it can join; a relation
    between undeclared types is dropped.
-3. Plan per file type from what sample_docs showed, e.g. structural chunking
+3. Plan per file type from what preview_files showed, e.g. structural chunking
    for Markdown with headings. Call ingest(files=[...], plan=[rules]) in
    batches of at most 50 files; a glob such as 'reports/*.pdf' is fine.
 4. Call finalize once, after the last batch.
@@ -102,7 +102,7 @@ ingest the same text and document_id with reextract=true.
 def guide_for(toolkit: GraphRAGToolkit) -> str:
     """:data:`GUIDE`, plus the ingestion steps for the tools ``toolkit`` serves."""
     names = {spec.name for spec in toolkit.tool_specs()}
-    if "sample_docs" in names and "ingest" in names:
+    if "preview_files" in names and "ingest" in names:
         return GUIDE + INGEST_GUIDE
     if "ingest" in names:
         return GUIDE + TEXT_INGEST_GUIDE
@@ -232,7 +232,7 @@ class GraphRAGMCPServer:
         read_only: Serve only the read tools (no ingestion tools).
         include: Optional subset of tool names to serve.
         finalize_policy: Passed to :class:`GraphRAGToolkit`.
-        files_root: Folder ``sample_docs`` and ``ingest(files=...)`` read
+        files_root: Folder ``preview_files`` and ``ingest(files=...)`` read
             from; ``None`` (default) serves text ingestion only.
         plan_limits: The strategies an agent's ingest plan may use; passed
             to :class:`GraphRAGToolkit`.

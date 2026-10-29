@@ -56,11 +56,11 @@ from graphrag_sdk.tools.models import (
     IngestResult,
     LookupResult,
     OntologyResult,
+    PreviewFilesResult,
     PrunedTypes,
     RelationTriple,
     RelationTypeInfo,
     RetrieveResult,
-    SampleDocsResult,
     SkillRunResult,
     StatusResult,
     TraverseNode,
@@ -76,9 +76,9 @@ from graphrag_sdk.tools.specs import (
     IngestInput,
     LookupEntityInput,
     PlanRuleInput,
+    PreviewFilesInput,
     RetrieveInput,
     RunSkillInput,
-    SampleDocsInput,
     SetOntologyInput,
     ToolSpec,
     TraverseInput,
@@ -101,9 +101,9 @@ _RESOLVE_BUDGET_SECONDS = 2.0
 _EVIDENCE_CHARS = 2000
 #: Most names listed in a hint.
 _HINT_NAMES = 30
-#: Total characters sample_docs returns in one call (split across the files).
+#: Total characters preview_files returns in one call (split across the files).
 SAMPLE_BUDGET_CHARS = 30_000
-#: Files loaded or ingested at once by sample_docs / ingest(files=...).
+#: Files loaded or ingested at once by preview_files / ingest(files=...).
 _FILE_CONCURRENCY = 3
 # Files whose last plan is remembered for reextract (oldest forgotten first).
 _PLAN_MEMORY = 10_000
@@ -201,7 +201,7 @@ class GraphRAGToolkit:
 
     Read tools: ``status``, ``get_ontology``, ``lookup_entity``,
     ``traverse``, ``graph_walk``, ``cypher_query``, ``retrieve``,
-    ``run_skill``, ``check_citations``. Ingestion tools: ``sample_docs``
+    ``run_skill``, ``check_citations``. Ingestion tools: ``preview_files``
     (with a ``files_root``), ``set_ontology``, ``ingest``, ``finalize``.
     Each is an async method; :meth:`tool_specs` describes them for an agent
     framework and :meth:`call` runs one by name with validated arguments.
@@ -223,7 +223,7 @@ class GraphRAGToolkit:
         tenant_id: Stamped into the Context of every operation.
         owns_rag: When True, :meth:`aclose` closes the wrapped GraphRAG.
         ledger_capacity: Evidence items kept per session.
-        files_root: Folder ``sample_docs`` and ``ingest(files=...)`` read
+        files_root: Folder ``preview_files`` and ``ingest(files=...)`` read
             from; nothing outside it is read. ``None`` (default) disables
             file ingestion.
         plan_limits: The strategies an agent's ingest plan may use, as
@@ -1089,7 +1089,7 @@ class GraphRAGToolkit:
             )
         return self._files_root
 
-    async def sample_docs(
+    async def preview_files(
         self,
         pattern: str = "**/*",
         *,
@@ -1097,7 +1097,7 @@ class GraphRAGToolkit:
         limit: int = 20,
         max_chars: int = 1000,
         ctx: Context | None = None,
-    ) -> SampleDocsResult:
+    ) -> PreviewFilesResult:
         """A page of the files under the files root, with a sample of each.
 
         Each sample is taken from the middle of the file's text, where the
@@ -1106,9 +1106,9 @@ class GraphRAGToolkit:
         designing an ontology. Samples are not evidence: nothing here is
         stored, and they get no ``[n]``.
         """
-        self._ensure_writable("sample_docs")
-        root = self._require_root("sample_docs")
-        inp = SampleDocsInput(pattern=pattern, offset=offset, limit=limit, max_chars=max_chars)
+        self._ensure_writable("preview_files")
+        root = self._require_root("preview_files")
+        inp = PreviewFilesInput(pattern=pattern, offset=offset, limit=limit, max_chars=max_chars)
         try:
             rels = await asyncio.to_thread(fs.list_files, root, inp.pattern)
         except ValueError as exc:
@@ -1157,7 +1157,7 @@ class GraphRAGToolkit:
             )
         elif end < len(rels):
             hint = "Keep paging until next_offset is null, then design the ontology."
-        return SampleDocsResult(
+        return PreviewFilesResult(
             pattern=inp.pattern,
             total=len(rels),
             offset=inp.offset,

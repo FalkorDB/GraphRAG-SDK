@@ -62,7 +62,7 @@ def main() -> None:
         "--files-root",
         default=os.getenv("GRAPHRAG_MCP_FILES_ROOT") or None,
         help=(
-            "Folder the agent may read and ingest files from (sample_docs, "
+            "Folder the agent may read and ingest files from (preview_files, "
             "ingest(files=...)); nothing outside it is read. Default: "
             "$GRAPHRAG_MCP_FILES_ROOT, else none (text ingestion only). The "
             "filesystem root and the home folder are refused."
