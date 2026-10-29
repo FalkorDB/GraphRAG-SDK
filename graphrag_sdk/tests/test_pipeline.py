@@ -1262,7 +1262,9 @@ class TestContentHashRequiresCompleteWrites:
                 return GraphData(
                     nodes=nodes,
                     relationships=[],
-                    mentions=[EntityMention(entity_id=n.id, chunk_id="chunk-0") for n in nodes],
+                    mentions=[
+                        EntityMention(entity_id=n.id, chunk_id=chunks.chunks[0].uid) for n in nodes
+                    ],
                 )
 
         # Like the real store: an edge to a node that was never written does not MATCH.
@@ -1274,7 +1276,9 @@ class TestContentHashRequiresCompleteWrites:
 
         def _upsert_relationships(rels):
             return sum(
-                1 for r in rels if r.type != "MENTIONED_IN" or r.start_node_id in written_ids
+                1
+                for r in rels
+                if r.type != "MENTIONED_IN" or {r.start_node_id, r.end_node_id} <= written_ids
             )
 
         mock_graph_store.upsert_nodes = AsyncMock(side_effect=_upsert_nodes)
