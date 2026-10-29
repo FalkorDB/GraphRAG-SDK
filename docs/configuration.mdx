@@ -541,12 +541,14 @@ After all documents have been ingested, run post-ingestion steps to deduplicate 
 
 ### `finalize()` -- All-In-One
 
-The recommended approach is to call `finalize()` after all ingestion is complete. It bundles four steps in order:
+The recommended approach is to call `finalize()` after all ingestion is complete. It bundles six steps in order:
 
 1. Remove NULL-name stub entities left by legacy writes (only nodes no mapping wrote).
 2. `deduplicate_entities()` -- incremental and crash-safe: the entities whose check is pending (added since the last `finalize()`, or left pending by it) get exact-name dedup, then one judge pass over their nearest names in the whole graph. Dedup also gives every entity its name embedding (its id, for an entity with no name, which is never judged). A second `finalize()` with nothing pending does no dedup work. An entity whose check did not complete stays pending and is retried; after 3 judged runs without a usable verdict it is reported in `dedup_unresolved` and no longer retried. An interrupted `finalize()` is finished by the next one. `finalize(dedup_all=True)` checks every entity.
 3. `embed_relationships()` -- embed fact text on RELATES edges.
 4. `ensure_indices()` -- create all 5 standard indexes (idempotent).
+5. Name the chunks -- a `Chunk` with no `name` gets `"<document id> · chunk <index>"`. Pass `name_chunks=False` to leave chunks as written.
+6. A consistency report over the whole graph.
 
 GraphRAG SDK requires FalkorDB 4.20 or later (see [Storage](/storage#version)). One dedup run per graph at a time: a second `finalize()` or `deduplicate_entities()` — from another process, or on the same `GraphRAG` — raises `DedupRunActiveError` when it reaches dedup, and the running one is left untouched. `update()` and deletes may run meanwhile.
 

@@ -1136,6 +1136,13 @@ class FinalizeResult(DataModel):
 
     entities_embedded: int = 0
     relationships_embedded: int = 0
+    chunks_named: int = 0
+    """Chunks that had no ``name`` and were given ``"<document id> · chunk <index>"``.
+
+    Zero on a second ``finalize()`` with nothing new, and when ``name_chunks`` is
+    ``False``.
+    """
+
     indexes: dict[str, bool] = Field(default_factory=dict)
     property_conflicts: list[str] = Field(default_factory=list)
     """One logical property supplied by more than one table, measured on the graph.
