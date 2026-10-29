@@ -26,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each table is written on its own, so one bad row cannot fail the batch.
   `ingest_sync()` mirrors the call.
 
-- **`TableMapping`, `Column` and `Link` are the whole declaration surface.** A
+- **`TableMapping`, `Column` and `Link` remain the entity-anchored declaration
+  surface.** A
   table describes one entity per record: `key=` identifies the row, `name=` is
   its display name, `properties={"age": Column("age", "INTEGER")}` types the
   columns (`STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`) and
@@ -39,6 +40,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inf`; `LIST` is parsed as a CSV row. Also exported: `CsvRecordLoader` (sniffs
   comma, semicolon, tab and pipe), `RecordLoaderStrategy` and `RecordBatch` for
   other formats, and `TextLoader`.
+
+- **`Ontology(relationship_tables=[RelationshipMapping(...)])` reads a file
+  whose every row is an edge between entities that already exist** —
+  `consumed_batch.csv` joining a `Unit` to a `Batch` — and
+  `ingest("consumed_batch.csv")` writes those edges and nothing else: no
+  entity, event, `Document` or `Chunk`. `EndpointMapping(entity=, key=,
+  column=)` finds each side by an exact label and a declared `STRING` key
+  property, normally the signed key a `TableMapping` stores (`units__unit_id`),
+  never the shared `entity_key` or a prose name. A fixed `type=` or an
+  allow-listed `type_column=` gives the relationship type, and
+  `direction="INCOMING"` swaps the ends. Typed edge properties, direction and
+  the `missing_endpoint`/`ambiguous_endpoint` policies (`"error"` by default,
+  or `"skip"`) are persisted with the ontology and round-trip through JSON. The
+  whole file is validated and every endpoint resolved before the first write,
+  each distinct key looked up once; under `"error"` a key that matches no node,
+  or several, raises `RelationshipResolutionError` with the counts and up to
+  100 samples, and nothing is written. Exact duplicate rows collapse; two rows
+  for one edge with different properties are refused, unless a skip policy
+  drops them anyway; a bad value in a row a skip policy drops does not fail
+  the file either. Writes go in batches of 500, a blank cell (or a `LIST`
+  cell with no items) clears the edge's value, and `RelationshipIngestionResult`
+  reports the counts. Relationship (vector) search does not return these edges
+  — every edge of one mapping carries the same template `fact` and no endpoint
+  names — so `finalize()` does not embed an edge only relationship tables own,
+  and they are found by graph queries, or from an entity found by name. On an
+  edge a document also supports, the document's `fact` and embedding are kept.
+
+- **A relationship table is a snapshot of its source, and an edge is shared,
+  not owned.** The table's properties are signed (`consumed_batch__consumed_on`)
+  and each edge lists the tables that wrote it in `structured_sources`. A
+  re-ingest takes this source's contribution off the edges its file no longer
+  has, a row a skip policy drops included, and deletes an edge only when no
+  other relationship table and no document chunk supports it. Deleting a
+  document keeps an edge a table still lists, and merging two nodes keeps every
+  table on the merged edge. Each run is numbered from the database clock and
+  its cleanup removes only what older runs left, which keeps most edges when
+  two workers ingest one file at once; the runs are not serialized, so ingest
+  one relationship file at a time. Cleanup waits until every batch is
+  written, so after a short write (`incomplete_writes`) or an exception a plain
+  retry converges. It reads only the table's own edges, through one range index
+  on `RELATES.structured_sources` that the first relationship-table ingest on a
+  graph creates (FalkorDB rebuilds the `RELATES` index once for it), and
+  changes at most 10,000 edges per write.
+
+- **Relationship tables in the rest of the API.** `drop_table(source)` removes
+  the mapping, its contribution to every edge (deleting the edges nothing else
+  supports) and its edge-property declarations, matching the exact stored path
+  before the basename. `apply_changes()` takes relationship tables in `added`
+  and `modified` and runs them after every other entry, so endpoints written in
+  the same batch exist whatever order a git diff lists them in.
+  `deleted=[path]` deletes a `Document` with that id when one exists, and
+  otherwise removes the table's edges and keeps its mapping, as it does for a
+  node table. `update()` refuses a relationship table, and so does
+  `ingest(document_id=...)` unless the id names the table's source, which is
+  how a renamed export finds its table. `rename_relation()` /
+  `drop_relation()` refuse a type a relationship table writes, naming it. Declaring a file the SDK
+  already proposed as a node table as a `RelationshipMapping` replaces the
+  proposal; a declared `TableMapping` is never replaced, and a relationship
+  table cannot share a property signature with any other table. While a
+  relationship table resolves an endpoint by a key, `drop_table()` of the node
+  table that signs it, `drop_attribute()` and `rename_attribute()` of it,
+  redeclaring that table with another key column (unless the same declaration
+  moves the endpoint to the new key), and declaring a proposal whose key it uses
+  as a relationship table raise `ValueError` naming the relationship table. A
+  declaration is checked as a whole at startup -- property types, endpoint
+  keys, keys a table stops signing, signatures -- before any of it is written,
+  so a failure changes nothing. A stored mapping whose key is already gone is
+  skipped with a warning when the ontology loads, so the graph still opens.
 
 - **A row and a prose mention of the same thing are one node from the first
   write.** An entity's id is derived from its name for a table row exactly as
@@ -510,6 +579,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also waited on the server for the previous build, past the client's socket
   timeout, and was re-sent. `ensure_indices()` now waits until `db.indexes()`
   reports every index built (up to 10 minutes, logging progress every 10 s).
+- **FalkorDB 6.0.2: a label's new key index could come up empty.** The range
+  indexes a write adds to a label — `id`, `entity_key` and a table's signed
+  key — were created one statement each, and sent back to back for one label
+  6.0.2 sometimes left the last one empty while reporting it `OPERATIONAL`, so
+  every lookup on that key, and any `MATCH` filtering on it, found nothing (8
+  of 450 fresh 10,000-node graphs). A label's missing fields now go in one
+  `CREATE INDEX`. The write that creates the index also waits for the build,
+  up to 60 s and then warns and continues: FalkorDB plans without an index
+  until it is built, and a 500-key lookup sent right after the `CREATE` on a
+  1M-node label scanned the label once per key and timed out.
 - `drop_chunk_vector_index()`, `drop_entity_vector_index()` and
   `drop_relates_vector_index()` called `db.idx.vector.drop`, which exists on no
   FalkorDB version, so nothing was dropped. They now use `DROP VECTOR INDEX`, and
