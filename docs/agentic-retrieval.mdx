@@ -16,8 +16,8 @@ Use the tools when questions need more than one lookup: counts and rankings, "wh
 | `get_ontology` | Declared entity types with their properties, relation types with their (source, target) patterns. |
 | `lookup_entity` | Turn (part of) a name into exact entity names and ids, exact match first. |
 | `traverse` | Walk from one entity: every neighbour breadth-first up to `max_depth`, or one exact relation path with `via` (e.g. `["WORKS_AT", "HEADQUARTERED_IN"]`). Bounded by depth, edge and time budgets; `stopped` says which ended the walk. Edges are followed both ways. |
-| `graph_walk` | Strongest paths out of an entity, ranked by relation weight and PageRank, or the strongest path to a `goal` entity. |
-| `cypher_query` | One read-only Cypher query for counts, sums, sorting and property filters. Checked by a schema-aware guard, LIMIT capped to `max_rows`, run as `GRAPH.RO_QUERY` with a timeout. |
+| `graph_walk` | Strong paths out of an entity, ranked by relation weight and PageRank, or a strong short path to a `goal` entity (`max_depth` hops in total; each side keeps its `beam_width` best entities per hop, and a search cut short by its lookup or time budget says so with `truncated`). Every relation is drawn in its stored direction: `Acme <-[WORKS_AT]- Alice`. |
+| `cypher_query` | One read-only Cypher query for counts, sums, sorting and property filters. Checked by a schema-aware guard, rows returned capped to `max_rows`, run as `GRAPH.RO_QUERY` with a timeout. |
 | `retrieve` | Hybrid search (vector + full-text + graph) for a question: entities, relations, facts and source passages. Runs every search path unless `paths` names a few: `facts` (facts on relations), `exact_names` (entities named in the question), `fuzzy_names` (full-text match on names and descriptions), `links` (relations around the entities found) and `passages` (source text). Needs the embedding model the graph was built with. |
 | `run_skill` | A built-in analysis (see [Skills](#skills)). |
 | `check_citations` | Check a draft answer: every `[n]` must be evidence a tool returned in this session. Also lists claims with no `[n]` of their own, and cited claims whose figures or names the cited evidence does not contain. |
@@ -26,7 +26,7 @@ Use the tools when questions need more than one lookup: counts and rankings, "wh
 | `ingest` | Add text, or files under the files root with a per-file plan (write). See [Building the graph from a folder](#building-the-graph-from-a-folder). |
 | `finalize` | Deduplicate, embed and index after a batch of ingests (write; listed only with `finalize_policy="manual"`). |
 
-Results never contain embedding vectors or internal `__Label__` names.
+Results never contain embedding vectors or internal `__Label__` names. On a graph that was never written, the read tools say the graph does not exist (and `status` says so in its hint) instead of answering "nothing found", and they never create it.
 
 ## Python
 
@@ -108,7 +108,7 @@ check.uncited         # sentences stating a figure or a name with no [n] of thei
 check.unsupported     # cited sentences + the figures / names their evidence lacks
 ```
 
-The claim checks are literal and use no LLM: a figure must appear as a number in the evidence the sentence cites (so "two" for "2" is reported), and a name counts as found when any of its words does. They are warnings and never change `grounded`.
+A marker can cite one item (`[3]`), a list (`[1, 4]`) or a range (`[1-3]`). The claim checks are literal and use no LLM: a figure must appear as a number in the full text of the evidence the sentence cites (so "two" for "2" is reported), and a name counts as found when at least half of its words appear there as whole words, ignoring case (either word of "Corvane Systems"; "Ann" is not found in "planning"). They are warnings and never change `grounded`.
 
 An answer that cites no real evidence is not grounded. `lookup_entity` results are not evidence: they are names to call other tools with.
 
@@ -121,7 +121,7 @@ An answer that cites no real evidence is not grounded. `lookup_entity` results a
 - semantic relation types used as edge types: they are stored as `[:RELATES {rel_type: 'WORKS_AT'}]`;
 - internal labels and embedding properties.
 
-The query then runs as `GRAPH.RO_QUERY`, so the database refuses writes too. Every `LIMIT` is capped to `max_rows`; when more rows matched, the result says `truncated: true` — aggregate with `count()` instead of counting rows.
+The query then runs as `GRAPH.RO_QUERY`, so the database refuses writes too. The rows it returns are capped to `max_rows` (a `LIMIT` inside the query, such as `WITH n LIMIT 100`, is kept as written, so `count()` and `collect()` after it stay correct); when more rows matched, the result says `truncated: true` — aggregate with `count()` instead of counting rows. Whatever the query, returned nodes and property maps of the SDK's own bookkeeping nodes are replaced by `[internal node omitted]`, and vectors by a placeholder.
 
 ## MCP server
 
@@ -148,7 +148,7 @@ Claude Code / Cursor config:
 
 Configuration comes from `FALKOR_HOST`, `FALKOR_PORT`, `FALKOR_USERNAME`, `FALKOR_PASSWORD`, `GRAPHRAG_GRAPH`, `GRAPHRAG_MODEL`, `GRAPHRAG_EMBED_MODEL`, `GRAPHRAG_EMBED_DIM`, `GRAPHRAG_MCP_READ_ONLY` and `GRAPHRAG_MCP_FILES_ROOT`. A server reads files only when given `--files-root` (or `GRAPHRAG_MCP_FILES_ROOT`); without it, `ingest` takes text only. The LLM and embedder serve `retrieve`, skills and `ingest`; the other read tools need neither.
 
-The server serves the same tools, with MCP annotations (`readOnlyHint`, `destructiveHint`), and sends the client a short guide as its instructions: call `retrieve` first with the user's question word for word (all paths unless it knows the question needs only a few), resolve names with `lookup_entity`, walk with `traverse` / `graph_walk`, use `status` for questions about the graph itself and `cypher_query` for aggregates (straight after `get_ontology`, without `retrieve`, when the question is only a count, sum or filter), answer briefly, cite `[n]`, and always run `check_citations` before replying. When it serves the write tools, the guide adds the ingestion steps above, starting with asking the user for their ontology; steps that need `set_ontology` or `finalize` are left out when those tools are not served (`include`, or a `finalize_policy` other than `"manual"`). Results over 40,000 characters are shortened (longest lists first) and marked `truncated`.
+The server serves the same tools, with MCP annotations (`readOnlyHint`, `destructiveHint`; `ingest`, `set_ontology` and `finalize` are marked destructive, so clients such as Claude Code ask the user before running them), and sends the client a short guide as its instructions: call `retrieve` first with the user's question word for word (all paths unless it knows the question needs only a few), resolve names with `lookup_entity`, walk with `traverse` / `graph_walk`, use `status` for questions about the graph itself and `cypher_query` for aggregates (straight after `get_ontology`, without `retrieve`, when the question is only a count, sum or filter), answer briefly, cite `[n]`, and always run `check_citations` before replying. When it serves the write tools, the guide adds the ingestion steps above, starting with asking the user for their ontology; steps that need `set_ontology` or `finalize` are left out when those tools are not served (`include`, or a `finalize_policy` other than `"manual"`). Results over 40,000 characters are shortened (longest lists first, at any depth, then long strings; the JSON stays valid) and marked `truncated`, with a hint naming the lists that were cut. A failure that is not a `ToolError` comes back as a short message naming the kind of failure (timeout, model provider, database, configuration) with a next step; the underlying message stays in the server log, and API keys and tokens are masked in any error text.
 
 Each client connection gets its own evidence numbering. Over SSE that holds for every client stream, including clients on the stateless MCP protocol (2026-07-28). Over stdio one process serves one client, so there is one numbering.
 
@@ -180,7 +180,7 @@ result = await rag.run_skill("entity_comparison", entity_a="Acme", entity_b="Glo
 print(result.summary, result.data["shared_neighbors"])
 ```
 
-Entities can be given by name or id. Arguments are checked against each skill's `parameters` schema; numeric arguments are capped.
+Entities can be given by name or id. Arguments are checked against each skill's `parameters` schema; numeric arguments are capped. Through `run_skill`, the evidence `[n]` holds the skill's structured `data`, so `check_citations` checks figures against the findings rather than the LLM summary. `contradiction_detection` sets `checked_by_llm` only when the LLM's reply parsed; otherwise `llm_error` says why, and the examined `facts` are returned for the agent to judge. Every built-in skill reports `truncated: true` when a cap cut its findings: `contradiction_detection` found more facts than `limit`, `gap_analysis` listed fewer isolated entities than its full `num_isolated` count, `entity_comparison` and `impact_analysis` met an entity with more neighbours than were fetched, and `timeline_reconstruction` ran a scan that may have missed earlier events. `timeline_reconstruction` reads a plain number as a year only under a year-like property name (`founded`, `start_year`), never `start_headcount`.
 
 Register your own:
 

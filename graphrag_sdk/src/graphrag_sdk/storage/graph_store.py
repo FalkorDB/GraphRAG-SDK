@@ -932,7 +932,8 @@ class GraphStore:
         node_id: str,
         *,
         limit: int = 50,
-    ) -> list[tuple[str, float, str]]:
+        with_direction: bool = False,
+    ) -> list[tuple[Any, ...]]:
         """Return weighted neighbors of an entity for dynamic graph walks.
 
         Each tuple is ``(neighbor_id, edge_weight, edge_label)``, one per
@@ -941,31 +942,38 @@ class GraphStore:
         same neighbours. Edges in both directions count; SDK bookkeeping
         edges (``SAME_AS``, ``DISTINCT_FROM``) do not. Edge weight falls back
         to ``1.0`` when the relationship has no stored ``weight`` property.
+
+        With ``with_direction=True`` each tuple gains a fourth element,
+        ``True`` when the chosen edge is stored from ``node_id`` to the
+        neighbour and ``False`` when it points the other way. Runs read-only;
+        database errors propagate.
         """
         query = (
             "MATCH (n:__Entity__ {id: $node_id})-[r]-(m:__Entity__) "
             "WHERE NOT type(r) IN ['SAME_AS', 'DISTINCT_FROM'] AND m.id IS NOT NULL "
-            "WITH m, r, coalesce(r.weight, 1.0) AS w "
+            "WITH m, r, coalesce(r.weight, 1.0) AS w, ID(startNode(r)) = ID(n) AS out "
             # The label tie-break makes the chosen label stable when parallel
             # edges have the same weight.
-            "ORDER BY w DESC, coalesce(r.rel_type, type(r)) "
-            "WITH m, collect(coalesce(r.rel_type, type(r)))[0] AS label, max(w) AS weight "
-            "RETURN m.id AS id, label, weight "
+            "ORDER BY w DESC, coalesce(r.rel_type, type(r)), out DESC "
+            "WITH m, collect([coalesce(r.rel_type, type(r)), out])[0] AS pick, "
+            "max(w) AS weight "
+            "RETURN m.id AS id, pick[0] AS label, weight, pick[1] AS out "
             f"ORDER BY weight DESC, id LIMIT {int(limit)}"
         )
-        try:
-            result = await self._conn.query(query, {"node_id": node_id})
-            neighbors: list[tuple[str, float, str]] = []
-            for row in result.result_set:
-                nbr_id = row[0]
-                label = row[1] if len(row) > 1 else ""
-                weight = float(row[2]) if len(row) > 2 and row[2] is not None else 1.0
-                if nbr_id is not None:
-                    neighbors.append((nbr_id, weight, label or ""))
-            return neighbors
-        except Exception as exc:
-            logger.warning(f"weighted_neighbors failed for {node_id}: {exc}")
-            return []
+        result = await self._conn.query(query, {"node_id": node_id}, read_only=True)
+        neighbors: list[tuple[Any, ...]] = []
+        for row in result.result_set:
+            nbr_id = row[0]
+            if nbr_id is None:
+                continue
+            label = row[1] if len(row) > 1 else ""
+            weight = float(row[2]) if len(row) > 2 and row[2] is not None else 1.0
+            if with_direction:
+                outgoing = bool(row[3]) if len(row) > 3 and row[3] is not None else True
+                neighbors.append((nbr_id, weight, label or "", outgoing))
+            else:
+                neighbors.append((nbr_id, weight, label or ""))
+        return neighbors
 
     #: Seconds a PageRank result is reused while the graph keeps its shape. A
     #: write through this store's connection that creates or deletes nodes or
@@ -1010,7 +1018,7 @@ class GraphStore:
         ):
             return dict(cached[2])
         try:
-            result = await self._conn.query(query)
+            result = await self._conn.query(query, read_only=True)
             scores: dict[str, float] = {}
             for row in result.result_set:
                 if row[0] is not None:

@@ -27,6 +27,7 @@ _DATE_WORDS = frozenset(
 #: SDK bookkeeping written at ingestion, which says nothing about the event.
 _IGNORED_KEYS = frozenset({"created_at", "updated_at", "ingested_at", "created", "updated"})
 _WORD_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
+_NUMBER_RE = re.compile(r"\s*[-+]?\d+(?:\.\d+)?\s*")
 _DATE_RE = re.compile(r"\b(1\d{3}|2\d{3})(?:-(\d{1,2}))?(?:-(\d{1,2}))?\b")
 
 
@@ -35,6 +36,25 @@ def _is_date_key(key: str) -> bool:
         return False
     words = {w.lower() for w in _WORD_RE.findall(key)}
     return bool(words & _DATE_WORDS) and not (words == {"on"})
+
+
+def _is_year_key(key: str) -> bool:
+    """Whether a plain number under ``key`` can be read as a year.
+
+    The name must say so: it contains "year" or "date", or every word of it
+    is a date word ("founded", "born", "start"). "start_headcount: 1500" is
+    a head count, not the year 1500.
+    """
+    words = {w.lower() for w in _WORD_RE.findall(key)}
+    return bool(words & {"year", "date"}) or (bool(words) and words <= _DATE_WORDS)
+
+
+def _is_number(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    return isinstance(value, str) and _NUMBER_RE.fullmatch(value) is not None
 
 
 class TimelineReconstructionSkill(Skill):
@@ -121,7 +141,19 @@ class TimelineReconstructionSkill(Skill):
             for e in events[:limit]
         ]
 
-        data = {"timeline": timeline, "num_events": len(timeline)}
+        # The scan reads dated entities in storage order and dates are only
+        # parsed here, so a full scan may have missed earlier events.
+        scan_full = len(rows) >= scan
+        data: dict[str, Any] = {
+            "timeline": timeline,
+            "num_events": len(timeline),
+            "truncated": scan_full or len(events) > limit,
+        }
+        if scan_full:
+            data["note"] = (
+                f"Only the first {scan} dated entities (in storage order) were read, "
+                "so earlier events may be missing; narrow with label."
+            )
         summary = await self._summarize(
             ctx,
             "Reconstruct the timeline from these dated events: "
@@ -143,6 +175,8 @@ def _extract_date(props: dict[str, Any]) -> tuple[tuple[int, int, int], str, str
     for key in sorted(props):
         value = props[key]
         if value is None or not _is_date_key(key):
+            continue
+        if _is_number(value) and not _is_year_key(key):
             continue
         match = _DATE_RE.search(str(value))
         if match:

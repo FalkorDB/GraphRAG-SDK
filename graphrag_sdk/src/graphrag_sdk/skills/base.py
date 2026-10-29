@@ -164,16 +164,22 @@ class Skill(ABC):
                 raise ValueError(f"'{param}' {text!r} matches several entities: {listed}")
         raise ValueError(f"'{param}': no entity is called {text!r}")
 
-    async def _summarize(self, ctx: Context | None, prompt: str) -> str:
-        """Best-effort LLM summary; returns ``""`` when no LLM is configured."""
+    async def _ask(self, ctx: Context | None, prompt: str) -> tuple[str, str | None]:
+        """Ask the LLM; returns ``(reply, None)``, or ``("", error)`` when no
+        LLM is configured or the call failed (the error names only the
+        exception type, never the provider's message)."""
         if self._llm is None:
-            return ""
+            return "", "no LLM configured"
         try:
             timeout = ctx.provider_timeout_seconds(f"skill {self.name} summary") if ctx else None
             resp = await self._llm.ainvoke(prompt, timeout=timeout)
-            return (resp.content or "").strip()
+            return (resp.content or "").strip(), None
         except LatencyBudgetExceededError:
             raise
         except Exception as exc:
-            logger.warning("Skill %s summary failed: %s", self.name, exc)
-            return ""
+            logger.warning("Skill %s LLM call failed: %s", self.name, exc)
+            return "", f"LLM call failed ({type(exc).__name__})"
+
+    async def _summarize(self, ctx: Context | None, prompt: str) -> str:
+        """Best-effort LLM summary; returns ``""`` when no LLM is configured."""
+        return (await self._ask(ctx, prompt))[0]

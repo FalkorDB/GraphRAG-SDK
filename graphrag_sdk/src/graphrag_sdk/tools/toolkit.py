@@ -75,6 +75,7 @@ from graphrag_sdk.tools.models import (
     TraverseResult,
     WalkPath,
     WalkResult,
+    path_text,
 )
 from graphrag_sdk.tools.specs import (
     RETRIEVE_PATHS,
@@ -106,8 +107,8 @@ _TENANT_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 SCHEMA_CACHE_SECONDS = 60.0
 #: Time allowed to resolve graph_walk's start / goal names.
 _RESOLVE_BUDGET_SECONDS = 2.0
-#: Longest evidence text kept for one item.
-_EVIDENCE_CHARS = 2000
+#: Wall-clock budget of graph_walk's start-to-goal search.
+_WALK_BUDGET_SECONDS = 15.0
 #: Most names listed in a hint.
 _HINT_NAMES = 30
 #: Total characters preview_files returns in one call (split across the files).
@@ -272,7 +273,7 @@ def _names_hint(names: Sequence[str]) -> str:
     return ", ".join(shown) + more if shown else "none"
 
 
-def _short(text: str, limit: int = _EVIDENCE_CHARS) -> str:
+def _short(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
@@ -542,9 +543,36 @@ class GraphRAGToolkit:
         return self._rag._graph_store
 
     def _evidence(self, tool: str, kind: str, content: str, source: str = "", **meta: Any) -> int:
+        # The full text the agent was shown, so check_citations checks the
+        # same text the agent cited from.
         return self._ledger.add(
-            tool=tool, kind=kind, content=_short(content), source=source, metadata=meta
+            tool=tool, kind=kind, content=content, source=source, metadata=meta
         ).n
+
+    @property
+    def _graph_name(self) -> str:
+        config = getattr(self._rag._conn, "config", None)
+        return str(getattr(config, "graph_name", None) or "default")
+
+    def _missing_graph(self) -> ToolError:
+        return ToolError(
+            f"Graph '{self._graph_name}' does not exist.",
+            hint=(
+                "Ingest documents (and finalize) first, or check the graph name "
+                "the server was started with."
+            ),
+        )
+
+    async def _require_graph(self) -> None:
+        """Raise a ToolError if the graph was never written. Checked
+        read-only (asking never creates it) until it is found to exist."""
+        if self._shared.get("graph_exists"):
+            return
+        exists = await ops.graph_exists(self._store)
+        if exists is False:
+            raise self._missing_graph()
+        if exists:
+            self._shared["graph_exists"] = True
 
     async def _schema(self) -> GraphSchema:
         """Live labels / relationship types / property keys plus every
@@ -587,7 +615,9 @@ class GraphRAGToolkit:
         counts = await ops.graph_counts(self._store)
         label_counts, rel_counts = await ops.schema_counts(self._store)
         hint = None
-        if counts["entities"] == 0:
+        if counts["entities"] == 0 and await ops.graph_exists(self._store) is False:
+            hint = f"{self._missing_graph()}"
+        elif counts["entities"] == 0:
             hint = "The graph is empty: ingest documents (and finalize) before querying."
         elif counts["relations"] == 0:
             hint = "The graph has entities but no relations; traverse will find nothing."
@@ -653,6 +683,7 @@ class GraphRAGToolkit:
         Not evidence: it finds names for the other tools, it does not state facts.
         """
         inp = LookupEntityInput(name=name, limit=limit)
+        await self._require_graph()
         found = await ops.find_entities(self._store, inp.name.strip(), limit=inp.limit)
         if found is None:
             raise ToolError(
@@ -690,6 +721,7 @@ class GraphRAGToolkit:
             max_expansions=max_expansions,
             timeout_ms=timeout_ms,
         )
+        await self._require_graph()
         deadline = time.monotonic() + inp.timeout_ms / 1000
 
         def remaining_ms() -> int:
@@ -821,13 +853,17 @@ class GraphRAGToolkit:
         max_depth: int = 3,
         ctx: Context | None = None,
     ) -> WalkResult:
-        """The strongest paths out of ``start`` (or from ``start`` to ``goal``).
+        """Strong paths out of ``start`` (or a strong short path from ``start``
+        to ``goal``).
 
         Paths are scored by relation weight and PageRank importance (when
-        FalkorDB provides PageRank); each path is a piece of evidence.
+        FalkorDB provides PageRank); each path is a piece of evidence and
+        draws every relation in its stored direction. With a goal,
+        ``max_depth`` bounds the whole path.
         """
         inp = GraphWalkInput(start=start, goal=goal, beam_width=beam_width, max_depth=max_depth)
         ctx = ctx or self._new_ctx()
+        await self._require_graph()
         start_id, start_name = await ops.resolve_start(
             self._store, inp.start.strip(), time.monotonic() + _RESOLVE_BUDGET_SECONDS
         )
@@ -841,14 +877,15 @@ class GraphRAGToolkit:
         except Exception:
             weights = {}
 
-        async def neighbor_fn(node_id: str) -> list[tuple[str, float, str]]:
-            return await self._store.weighted_neighbors(node_id)
+        async def neighbor_fn(node_id: str) -> list[tuple[Any, ...]]:
+            return await self._store.weighted_neighbors(node_id, with_direction=True)
 
         walk = DynamicGraphWalk(
             neighbor_fn,
             node_weights=weights,
             beam_width=inp.beam_width,
             max_depth=inp.max_depth,
+            time_budget_seconds=_WALK_BUDGET_SECONDS,
         )
         if goal_id is not None:
             found = await walk.bidirectional_search(start_id, goal_id, ctx=ctx)
@@ -862,25 +899,30 @@ class GraphRAGToolkit:
                 node_ids=list(p.nodes),
                 nodes=[names.get(n, n) for n in p.nodes],
                 edges=list(p.edges),
+                edge_forward=list(p.edge_forward),
                 score=round(float(p.score), 4),
             )
-            text = " ".join(
-                [path.nodes[0]]
-                + [
-                    f"-[{path.edges[i] if i < len(path.edges) else '?'}]-> {name}"
-                    for i, name in enumerate(path.nodes[1:])
-                ]
-            )
-            path.n = self._evidence("graph_walk", "path", text, node_ids=path.node_ids)
+            path.n = self._evidence("graph_walk", "path", path_text(path), node_ids=path.node_ids)
             paths.append(path)
+        truncated = walk.stopped != "complete"
         hint = None
-        if not paths:
+        if truncated and not paths:
+            reason = "time budget" if walk.stopped == "time_budget" else "lookup limit"
             hint = (
-                f"No path connects {start_name} and {goal_name} within {inp.max_depth} hops."
+                f"The search between {start_name} and {goal_name} hit its {reason} "
+                "before the two sides met; try a smaller max_depth or beam_width, or "
+                "traverse from one of them."
+            )
+        elif not paths:
+            hint = (
+                f"No path of at most {inp.max_depth} hop{'s' if inp.max_depth > 1 else ''} "
+                f"connects {start_name} and {goal_name}."
                 if goal_id is not None
                 else f"{start_name} has no relations to walk."
             )
-        return WalkResult(start=start_name, goal=goal_name, paths=paths, hint=hint)
+        return WalkResult(
+            start=start_name, goal=goal_name, paths=paths, truncated=truncated, hint=hint
+        )
 
     async def cypher_query(
         self,
@@ -893,8 +935,9 @@ class GraphRAGToolkit:
         """Run one read-only Cypher query, checked against the live schema.
 
         Writes and procedure calls are rejected, unknown labels, relationship
-        types and properties are rejected with the valid names, every
-        ``LIMIT`` is capped to ``max_rows`` and the query runs as
+        types and properties are rejected with the valid names, the rows
+        the final ``RETURN`` yields are capped to ``max_rows`` (an inner
+        ``LIMIT`` is kept, so aggregates after it stay correct) and the query runs as
         ``GRAPH.RO_QUERY`` with a database timeout. Each row is a piece of
         evidence; ``truncated`` means more rows matched than were returned.
         """
@@ -908,6 +951,7 @@ class GraphRAGToolkit:
                 f"The query was rejected: {'; '.join(problems)}.",
                 hint="Only read queries are allowed: MATCH ... RETURN, with no CALL.",
             )
+        await self._require_graph()
         schema = await self._schema()
         problems = validate_read_query(inp.cypher, schema, require_rel_type=False)
         if problems:
@@ -931,6 +975,9 @@ class GraphRAGToolkit:
                 f"The query failed: {exc}",
                 hint=self._schema_hint(schema),
             ) from None
+        if isinstance(result, ops.NoGraph):
+            self._shared.pop("graph_exists", None)
+            raise self._missing_graph()
         columns = [mask_internal_labels(c) for c in ops.column_names(result)]
         raw_rows = list(getattr(result, "result_set", None) or [])
         truncated = len(raw_rows) > inp.max_rows
@@ -1044,6 +1091,7 @@ class GraphRAGToolkit:
             wanted.add("exact_names")  # links walk from found entities
         plan = frozenset(_MULTIPATH_PATH[p] for p in wanted if p in _MULTIPATH_PATH)
         ctx = ctx or self._new_ctx()
+        await self._require_graph()
         store = self._store
         rr = await self._search(inp.question, inp.top_k, ctx, plan)
         prov: dict[str, Any] = rr.metadata.get("provenance") or {}
@@ -1173,6 +1221,7 @@ class GraphRAGToolkit:
                 f"Invalid arguments for skill {inp.skill!r}: {'; '.join(problems)}.",
                 hint=f"{inp.skill} accepts: {accepted}.",
             )
+        await self._require_graph()
         try:
             result = await impl.run(ctx or self._new_ctx(), **inp.params)
         except ValueError as exc:
@@ -1181,8 +1230,16 @@ class GraphRAGToolkit:
                 hint="Get exact entity names with lookup_entity, then call the skill again.",
             ) from None
         data = _mask(ops.to_jsonable(dict(result.data)))
-        content = result.summary or json.dumps(data, ensure_ascii=False, default=str)
-        n = self._evidence("run_skill", "skill", f"{inp.skill}: {content}", skill=inp.skill)
+        # The evidence is the structured findings, so check_citations checks
+        # figures against the data; the LLM summary is kept beside it.
+        content = json.dumps(data, ensure_ascii=False, default=str)
+        n = self._evidence(
+            "run_skill",
+            "skill",
+            f"{inp.skill}: {content}",
+            skill=inp.skill,
+            summary=result.summary,
+        )
         return SkillRunResult(
             skill=inp.skill,
             n=n,

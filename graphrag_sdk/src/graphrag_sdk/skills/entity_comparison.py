@@ -12,6 +12,8 @@ from graphrag_sdk.skills.base import ENTITY_PARAM, Skill, skill_parameters
 #: vectors. Comparing them only adds noise (and embeddings are huge).
 _IGNORED_PROPERTY_MARKERS = ("embedding",)
 _IGNORED_PROPERTIES = frozenset({"id", "source_chunk_ids", "chunk_ids", "mentions"})
+#: Neighbours compared per entity (the strongest first).
+MAX_NEIGHBOURS = 200
 
 
 def _comparable(props: dict[str, Any]) -> dict[str, Any]:
@@ -42,8 +44,8 @@ class EntityComparisonSkill(Skill):
 
         props_a = _comparable(await self._properties(entity_a))
         props_b = _comparable(await self._properties(entity_b))
-        nbrs_a = await self._neighbor_ids(entity_a)
-        nbrs_b = await self._neighbor_ids(entity_b)
+        nbrs_a, capped_a = await self._neighbor_ids(entity_a)
+        nbrs_b, capped_b = await self._neighbor_ids(entity_b)
 
         shared = sorted(nbrs_a & nbrs_b)
         only_a = sorted(nbrs_a - nbrs_b)
@@ -62,6 +64,10 @@ class EntityComparisonSkill(Skill):
             "neighbors_only_a": only_a,
             "neighbors_only_b": only_b,
             "differing_attributes": differing,
+            # A capped side compares only its strongest MAX_NEIGHBOURS, so
+            # shared and unique neighbour lists may be incomplete.
+            "neighbors_truncated": {"entity_a": capped_a, "entity_b": capped_b},
+            "truncated": capped_a or capped_b,
         }
         summary = await self._summarize(
             ctx,
@@ -86,6 +92,9 @@ class EntityComparisonSkill(Skill):
             return dict(rows[0][0] or {})
         return {}
 
-    async def _neighbor_ids(self, entity_id: str) -> set[str]:
-        neighbors = await self._graph.weighted_neighbors(entity_id)
-        return {n[0] for n in neighbors}
+    async def _neighbor_ids(self, entity_id: str) -> tuple[set[str], bool]:
+        try:
+            neighbors = await self._graph.weighted_neighbors(entity_id, limit=MAX_NEIGHBOURS + 1)
+        except TypeError:  # a graph store whose lookup takes no limit
+            neighbors = await self._graph.weighted_neighbors(entity_id)
+        return {n[0] for n in neighbors[:MAX_NEIGHBOURS]}, len(neighbors) > MAX_NEIGHBOURS

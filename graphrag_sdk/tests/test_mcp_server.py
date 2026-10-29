@@ -12,9 +12,18 @@ from typing import Any
 
 import pytest
 
+from graphrag_sdk.core.exceptions import (
+    ConfigError,
+    DatabaseError,
+    DatabaseUnavailableError,
+    EmbeddingError,
+    LatencyBudgetExceededError,
+    LLMError,
+    RetrieverError,
+)
 from graphrag_sdk.mcp import GUIDE, GraphRAGMCPServer, fit_json
 from graphrag_sdk.mcp.server import TEXT_INGEST_GUIDE, bearer_token_guard, check_sse_binding
-from graphrag_sdk.tools import TOOL_NAMES
+from graphrag_sdk.tools import TOOL_NAMES, ToolError
 
 # Without a files root the server does not offer preview_files.
 SERVED = [n for n in TOOL_NAMES if n != "preview_files"]
@@ -71,12 +80,10 @@ class TestToolList:
         tools = {t["name"]: t for t in server.tool_dicts()}
         assert list(tools) == SERVED
         assert tools["cypher_query"]["annotations"]["readOnlyHint"] is True
-        assert tools["ingest"]["annotations"]["readOnlyHint"] is False
-        assert tools["finalize"]["annotations"]["destructiveHint"] is True
-        # set_ontology rewrites the stored ontology: clients confirm before running it.
-        assert tools["set_ontology"]["annotations"]["destructiveHint"] is True
-        assert tools["set_ontology"]["annotations"]["readOnlyHint"] is False
-        assert tools["ingest"]["annotations"].get("destructiveHint") is not True
+        for write_tool in ("ingest", "finalize", "set_ontology"):
+            assert tools[write_tool]["annotations"]["readOnlyHint"] is False
+            assert tools[write_tool]["annotations"]["destructiveHint"] is True
+        assert tools["cypher_query"]["annotations"]["destructiveHint"] is False
         for tool in tools.values():
             assert tool["inputSchema"]["type"] == "object"
             assert tool["inputSchema"].get("additionalProperties") is False
@@ -103,9 +110,67 @@ class TestCallTool:
         text, is_error = await server.call_tool("cypher_query", {"cypher": "MATCH (n) DELETE n"})
         assert is_error and "rejected" in text and "Hint:" in text
 
-    async def test_unexpected_errors_are_reported(self, server: GraphRAGMCPServer):
-        text, is_error = await server.call_tool("ingest", {"text": "x"})
-        assert is_error and text == "Error running ingest: RuntimeError: boom"
+    async def test_unexpected_errors_are_reported(self, server: GraphRAGMCPServer, caplog):
+        with caplog.at_level("WARNING", logger="graphrag_sdk.mcp.server"):
+            text, is_error = await server.call_tool("ingest", {"text": "x"})
+        assert is_error and text.startswith("ingest failed with an internal error (RuntimeError).")
+        assert "Hint:" in text and "boom" not in text
+        assert "boom" in caplog.text  # the details go to the server log
+
+    @pytest.mark.parametrize(
+        "exc, expected",
+        [
+            (LatencyBudgetExceededError("over"), "ran out of time"),
+            (TimeoutError(), "ran out of time"),
+            (LLMError("Incorrect API key provided: sk-abcdef123456"), "model provider"),
+            (EmbeddingError("401"), "model provider"),
+            (DatabaseUnavailableError("down"), "could not be reached"),
+            (ConnectionRefusedError("refused"), "could not be reached"),
+            (DatabaseError("bad"), "rejected a query"),
+            (RetrieverError("x"), "during retrieval"),
+            (ConfigError("x"), "misconfigured"),
+            (KeyError("x"), "internal error"),
+        ],
+    )
+    async def test_error_families_get_a_next_step(self, exc, expected):
+        rag = FakeRAG()
+
+        async def fail(**kwargs: Any) -> Any:
+            raise exc
+
+        rag.ingest = fail  # type: ignore[method-assign]
+        text, is_error = await GraphRAGMCPServer(rag).call_tool("ingest", {"text": "x"})
+        assert is_error and expected in text and "Hint:" in text
+        assert type(exc).__name__ in text and "sk-" not in text and "401" not in text
+
+    async def test_provider_library_errors_are_not_echoed(self):
+        ProviderError = type(
+            "AuthenticationError", (Exception,), {"__module__": "openai._exceptions"}
+        )
+        rag = FakeRAG()
+
+        async def fail(**kwargs: Any) -> Any:
+            raise ProviderError("Incorrect API key provided: sk-fake-1234567890")
+
+        rag.ingest = fail  # type: ignore[method-assign]
+        text, _ = await GraphRAGMCPServer(rag).call_tool("ingest", {"text": "x"})
+        assert "model provider" in text and "AuthenticationError" in text
+        assert "sk-fake" not in text and "Incorrect API key" not in text
+
+    async def test_tool_error_text_is_redacted(self):
+        rag = FakeRAG()
+
+        async def fail(**kwargs: Any) -> Any:
+            raise ToolError(
+                "Call failed: Authorization: Bearer abc.def-123 key sk-proj-ABCDEF123456",
+                hint="api_key=supersecret",
+            )
+
+        rag.ingest = fail  # type: ignore[method-assign]
+        text, _ = await GraphRAGMCPServer(rag).call_tool("ingest", {"text": "x"})
+        assert "abc.def-123" not in text and "ABCDEF123456" not in text
+        assert "supersecret" not in text
+        assert "Bearer ***" in text and "sk-***" in text and "api_key=***" in text
 
     async def test_read_only_write_is_an_error(self):
         server = GraphRAGMCPServer(FakeRAG(), read_only=True)
@@ -212,7 +277,36 @@ class TestFitJson:
 
     def test_long_strings_are_shortened(self):
         out = fit_json({"text": "z" * 100_000}, max_chars=5000)
-        assert len(out) < 7000 and json.loads(out)["truncated"] is True
+        assert len(out) <= 5000 and json.loads(out)["truncated"] is True
+
+    def test_nested_big_list_gives_valid_json_within_budget(self):
+        # A run_skill result: the big list sits under data, not at the top.
+        data = {
+            "skill": "impact_analysis",
+            "n": 1,
+            "data": {
+                "entity": "acme",
+                "impacted": [
+                    {"entity": f"e{i}", "distance": 2, "score": 0.5, "via": ["acme", f"e{i}"]}
+                    for i in range(3000)
+                ],
+            },
+        }
+        for budget in (40_000, 5_000, 1_000):
+            text = fit_json(data, max_chars=budget)
+            assert len(text) <= budget
+            out = json.loads(text)
+            assert out["truncated"] is True and "data.impacted (was 3000 items)" in out["hint"]
+            assert 0 < len(out["data"]["impacted"]) < 3000
+            assert out["data"]["impacted"][0]["entity"] == "e0"
+            assert out["skill"] == "impact_analysis" and out["n"] == 1
+        assert len(data["data"]["impacted"]) == 3000  # input untouched
+
+    def test_unshrinkable_result_keeps_its_short_fields(self):
+        data = {"skill": "x", "data": {f"k{i}": i for i in range(5000)}}
+        text = fit_json(data, max_chars=1000)
+        out = json.loads(text)
+        assert len(text) <= 1000 and out["truncated"] is True and out["skill"] == "x"
 
 
 class TestProtocol:
@@ -239,7 +333,8 @@ class TestProtocol:
             assert json.loads(_text(checked))["invalid"] == [3]
 
             failed = await client.call_tool("ingest", {"text": "x"})
-            assert "RuntimeError: boom" in _text(failed)
+            assert "internal error (RuntimeError)" in _text(failed)
+            assert "boom" not in _text(failed)
 
         # One client keeps one evidence ledger across its calls.
         assert len(used) == 3 and len({id(t) for t in used}) == 1
@@ -334,3 +429,14 @@ class TestSSESecurity:
 
         # Off loopback the bearer token protects the server; clients use any name.
         assert sse_security_kwargs("0.0.0.0", 8080) == {}
+
+
+def test_the_all_extra_installs_the_mcp_server():
+    from pathlib import Path
+
+    import tomllib
+
+    extras = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())["project"][
+        "optional-dependencies"
+    ]
+    assert set(extras["mcp"]) <= set(extras["all"])

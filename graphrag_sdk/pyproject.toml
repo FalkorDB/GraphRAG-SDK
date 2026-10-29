@@ -66,6 +66,9 @@ all = [
     "sentence-transformers>=2.0",
     "pypdf>=6.15.0",
     "litellm>=1.84.0,<2.0",
+    "mcp>=1.22,<3",
+    "uvicorn>=0.23",
+    "starlette>=0.37",
 ]
 dev = [
     "pytest>=9.0.3",

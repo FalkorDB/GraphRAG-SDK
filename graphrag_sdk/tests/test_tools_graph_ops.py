@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from falkordb import Edge, Node
+from falkordb import Edge, Node, Path
 
 from graphrag_sdk.core.exceptions import GraphRAGError, LatencyBudgetExceededError
 from graphrag_sdk.tools import graph_ops as ops
@@ -162,6 +162,52 @@ class TestToJsonable:
         assert ops.to_jsonable(props) == "[internal node omitted]"
         assert ops.to_jsonable([props]) == ["[internal node omitted]"]
         assert ops.to_jsonable({"name": "Acme"}) == {"name": "Acme"}
+
+    def test_system_nodes_are_never_rendered_however_reached(self):
+        # A label built at run time ('__GraphRAG' + 'Processing__') passes the
+        # guard's text check; the result is still redacted.
+        processing = Node(
+            node_id=7,
+            labels=["__GraphRAGProcessing__"],
+            properties={"kind": "pending", "ids": ["e1"], "attempts": [1]},
+        )
+        assert ops.to_jsonable(processing) == "[internal node omitted]"
+        assert ops.to_jsonable([{"kind": "plan", "next": 0}]) == ["[internal node omitted]"]
+        # One config key is enough, as in a partial projection.
+        assert ops.to_jsonable({"id": "default", "sdk_version": "1"}) == "[internal node omitted]"
+        # Entity maps (they have a name) and ordinary "kind" values are kept.
+        assert ops.to_jsonable({"name": "Acme", "kind": "plan"}) == {"name": "Acme", "kind": "plan"}
+        assert ops.to_jsonable({"kind": "invoice"}) == {"kind": "invoice"}
+        entity = Node(node_id=1, labels=["__Entity__", "Person"], properties={"name": "A"})
+        assert ops.to_jsonable(entity) == {"labels": ["Person"], "name": "A"}
+
+    def test_paths_read_as_names_and_relation_types(self):
+        alice = Node(node_id=1, labels=["__Entity__", "Person"], properties={"name": "Alice"})
+        acme = Node(
+            node_id=2,
+            labels=["__Entity__", "Company"],
+            properties={"name": "Acme", "embedding": [0.1] * 64},
+        )
+        paris = Node(node_id=3, labels=["City"], properties={"id": "paris"})
+        works = Edge(1, "RELATES", 2, edge_id=10, properties={"rel_type": "WORKS_AT", "fact": "x"})
+        # Stored Paris -> Acme, so walking Acme to Paris goes against it.
+        hq = Edge(3, "LOCATED_IN", 2, edge_id=11, properties={})
+        path = Path([alice, acme, paris], [works, hq])
+        rendered = ops.to_jsonable(path)
+        assert rendered == "(Alice)-[WORKS_AT]->(Acme)<-[LOCATED_IN]-(paris)"
+        assert ops.to_jsonable(Path([alice], [])) == "(Alice)"
+        # A system node on a path is never named.
+        config = Node(node_id=4, labels=["__GraphRAGConfig__"], properties={"id": "default"})
+        assert "default" not in ops.to_jsonable(
+            Path([alice, config], [Edge(1, "R", 4, edge_id=12, properties={})])
+        )
+
+    def test_property_maps_never_carry_vectors(self):
+        props = {"name": "A", "embedding": [0.1] * 4, "custom_vec": [0.2] * 128}
+        assert ops.to_jsonable(props) == {
+            "name": "A",
+            "custom_vec": "[vector of 128 numbers omitted]",
+        }
 
     def test_vectors_are_never_rendered(self):
         assert ops.to_jsonable([0.1] * 64) == "[vector of 64 numbers omitted]"
@@ -350,6 +396,11 @@ class TestFindEntities:
         params = store.calls[0]["params"]
         assert params["tokens"] == ["acme"] and params["limit"] == 3
         assert store.calls[0]["timeout"] == 200
+
+    async def test_non_ascii_names_stay_whole(self):
+        store = FakeGraphStore()
+        await ops.find_entities(store, "Jürgen Müller of São-Paulo Ωmega_Labs")
+        assert store.calls[0]["params"]["tokens"] == ["jürgen", "müller", "são-paulo", "ωmega_labs"]
 
     async def test_at_most_six_tokens(self):
         store = FakeGraphStore()
@@ -548,6 +599,12 @@ class TestTypedPath:
         assert call["params"] == {"start": "alice", "t0": "WORKS_AT", "t1": "LOCATED_IN"}
         assert "WORKS_AT" not in call["cypher"] and "LOCATED_IN" not in call["cypher"]
         assert call["read_only"] and call["timeout"] == 900
+
+    async def test_the_start_entity_is_never_the_result(self):
+        # via=[A, A] can lead back to the start over a second A edge.
+        store = FakeGraphStore([("RETURN DISTINCT", lambda c, p: result([]))])
+        await ops.typed_path(store, "alice", ["WORKS_AT", "WORKS_AT"], 500)
+        assert "n1.id <> $start" in store.calls[0]["cypher"]
 
     async def test_return_limit(self):
         rows = [[f"n{i}", f"N{i}"] for i in range(ops.TRAVERSE_PATH_LIMIT + 1)]

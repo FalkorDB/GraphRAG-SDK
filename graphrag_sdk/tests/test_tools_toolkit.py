@@ -5,6 +5,7 @@ FalkorDB in test_tools_integration.py."""
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -36,7 +37,8 @@ class FakeStore:
         self.header = header or []
         self.error = error
         self.queries: list[tuple[str, dict]] = []
-        self.neighbors: dict[str, list[tuple[str, float, str]]] = {}
+        self.neighbors: Any = {}
+        self.neighbor_calls: list[tuple[str, bool]] = []
 
     async def query_raw(self, cypher: str, params: dict | None = None, **kwargs: Any):
         self.queries.append((cypher, params or {}))
@@ -47,8 +49,14 @@ class FakeStore:
     async def pagerank(self, **kwargs: Any):
         return {}
 
-    async def weighted_neighbors(self, node_id: str, *, limit: int = 50):
-        return self.neighbors.get(node_id, [])
+    async def weighted_neighbors(
+        self, node_id: str, *, limit: int = 50, with_direction: bool = False
+    ):
+        self.neighbor_calls.append((node_id, with_direction))
+        if isinstance(self.neighbors, Exception):
+            raise self.neighbors
+        found = self.neighbors.get(node_id, [])
+        return found if with_direction else [t[:3] for t in found]
 
 
 class FakeRAG:
@@ -263,7 +271,8 @@ class TestCypherQuery:
         hint = exc.value.hint or ""
         assert "Person" in hint and "WORKS_AT" in hint
         assert "Chunk" not in hint.split("Relations")[0]
-        assert store.queries == []
+        # Only the read-only existence check reached the database.
+        assert store.queries == [("RETURN 1", {})]
 
     async def test_rows_are_evidence_and_limit_is_capped(self, toolkit, store):
         store.rows = [["Alice", 3], ["Bob", 1]]
@@ -286,6 +295,27 @@ class TestCypherQuery:
         result = await toolkit.cypher_query("MATCH (p:Person) RETURN p.name", max_rows=3)
         assert result.truncated and result.row_count == 3
         assert "do not count" in (result.hint or "")
+
+    async def test_inner_limit_is_kept_so_aggregates_stay_correct(self, toolkit, store):
+        store.rows = [[100]]
+        store.header = ["c"]
+        result = await toolkit.cypher_query(
+            "MATCH (n:Person) WITH n ORDER BY n.name LIMIT 100 RETURN count(n) AS c"
+        )
+        cypher, _ = store.queries[-1]
+        assert "LIMIT 100 RETURN" in cypher and cypher.endswith("LIMIT 26")
+        assert result.rows[0].values == [100] and not result.truncated
+
+    async def test_parameter_limit_is_capped_client_side(self, toolkit, store):
+        store.rows = [[i] for i in range(50)]
+        store.header = ["i"]
+        result = await toolkit.cypher_query(
+            "MATCH (p:Person) RETURN p.name LIMIT $n", {"n": 50}, max_rows=10
+        )
+        cypher, params = store.queries[-1]
+        assert cypher.endswith("LIMIT $n") and cypher.count("LIMIT") == 1
+        assert params == {"n": 50}
+        assert result.row_count == 10 and result.truncated
 
     async def test_untyped_relates_is_allowed(self, toolkit, store):
         await toolkit.cypher_query("MATCH (a:Person)-[r:RELATES]->(b) RETURN r.rel_type, count(*)")
@@ -422,6 +452,84 @@ class TestReadTools:
         result = await toolkit.graph_walk("Alice")
         assert result.paths[0].nodes == ["Alice", "Acme"] and result.paths[0].n == 1
         assert toolkit.ledger.get(1).content == "Alice -[WORKS_AT]-> Acme"
+
+    async def test_graph_walk_draws_edges_in_their_stored_direction(
+        self, toolkit, store, monkeypatch
+    ):
+        # Stored: alice-[WORKS_AT]->acme, acme-[IN]->berlin.
+        store.neighbors = {
+            "acme": [("alice", 1.0, "WORKS_AT", False)],
+            "alice": [("acme", 1.0, "WORKS_AT", True)],
+            "berlin": [("acme", 1.0, "IN", False)],
+        }
+        store.neighbors["acme"].append(("berlin", 1.0, "IN", True))
+
+        async def resolve(store, ref, deadline):
+            return ref.lower(), ref
+
+        async def names(store, ids):
+            return {"alice": "Alice", "acme": "Acme", "berlin": "Berlin"}
+
+        monkeypatch.setattr(ops, "resolve_start", resolve)
+        monkeypatch.setattr(ops, "entity_names", names)
+        out = await toolkit.graph_walk("Acme", max_depth=1)
+        texts = {toolkit.ledger.get(p.n).content for p in out.paths}
+        assert texts == {"Acme <-[WORKS_AT]- Alice", "Acme -[IN]-> Berlin"}
+        assert all(with_dir for _, with_dir in store.neighbor_calls)
+        goal = await toolkit.graph_walk("Berlin", goal="Alice", max_depth=2)
+        assert toolkit.ledger.get(goal.paths[0].n).content == (
+            "Berlin <-[IN]- Acme <-[WORKS_AT]- Alice"
+        )
+        assert "Berlin <-[IN]- Acme <-[WORKS_AT]- Alice" in goal.to_llm_text()
+
+    async def test_graph_walk_goal_depth_is_the_whole_path(self, toolkit, store, monkeypatch):
+        store.neighbors = {
+            "a": [("b", 1.0, "R", True)],
+            "b": [("a", 1.0, "R", False), ("c", 1.0, "R", True)],
+            "c": [("b", 1.0, "R", False)],
+        }
+
+        async def resolve(store, ref, deadline):
+            return ref, ref
+
+        async def names(store, ids):
+            return {}
+
+        monkeypatch.setattr(ops, "resolve_start", resolve)
+        monkeypatch.setattr(ops, "entity_names", names)
+        out = await toolkit.graph_walk("a", goal="c", max_depth=1)
+        assert out.paths == [] and not out.truncated
+        assert "at most 1 hop " in out.hint
+        two = await toolkit.graph_walk("a", goal="c", max_depth=2)
+        assert two.paths[0].nodes == ["a", "b", "c"]
+
+    async def test_graph_walk_reports_a_search_cut_short(self, toolkit, store, monkeypatch):
+        import graphrag_sdk.tools.toolkit as tk_mod
+
+        store.neighbors = {"a": [("b", 1.0, "R", True)], "b": [("c", 1.0, "R", True)]}
+
+        async def resolve(store, ref, deadline):
+            return ref, ref
+
+        async def names(store, ids):
+            return {}
+
+        monkeypatch.setattr(ops, "resolve_start", resolve)
+        monkeypatch.setattr(ops, "entity_names", names)
+        monkeypatch.setattr(tk_mod, "_WALK_BUDGET_SECONDS", 0.0)
+        out = await toolkit.graph_walk("a", goal="z", max_depth=4)
+        assert out.truncated and out.paths == []
+        assert "time budget" in out.hint
+
+    async def test_graph_walk_database_errors_are_not_hidden(self, toolkit, store, monkeypatch):
+        store.neighbors = RuntimeError("connection refused")
+
+        async def resolve(store, ref, deadline):
+            return ref, ref
+
+        monkeypatch.setattr(ops, "resolve_start", resolve)
+        with pytest.raises(RuntimeError, match="connection refused"):
+            await toolkit.graph_walk("a")
 
     async def test_retrieve_numbers_every_item(self, toolkit, rag, monkeypatch):
         rag.retrieve_result = RetrieverResult(
@@ -623,6 +731,54 @@ class TestReadTools:
 # ── check_citations ────────────────────────────────────────────────
 
 
+class TestMissingGraph:
+    """A graph that was never written: read tools say so instead of
+    answering "nothing found", and never create it."""
+
+    @pytest.fixture
+    def missing(self) -> GraphRAGToolkit:
+        store = FakeStore(error=DatabaseError("Invalid graph operation on empty key"))
+        rag = FakeRAG(store)
+        rag._conn = SimpleNamespace(topology_version=1, config=SimpleNamespace(graph_name="nope"))
+        return GraphRAGToolkit(rag)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "tool, args",
+        [
+            ("cypher_query", {"cypher": "MATCH (n) RETURN count(n) AS c"}),
+            ("retrieve", {"question": "Who founded Acme?"}),
+            ("lookup_entity", {"name": "Alice"}),
+            ("traverse", {"start": "Alice"}),
+            ("graph_walk", {"start": "Alice"}),
+            ("run_skill", {"skill": "gap_analysis"}),
+        ],
+    )
+    async def test_read_tools_name_the_missing_graph(self, missing, tool, args):
+        with pytest.raises(ToolError) as info:
+            await missing.call(tool, args)
+        assert "Graph 'nope' does not exist" in str(info.value)
+        assert "Ingest" in info.value.hint and "graph name" in info.value.hint
+        # Only read-only queries ran.
+        assert missing._store.queries and all(
+            "CREATE" not in q and "MERGE" not in q for q, _ in missing._store.queries
+        )
+
+    async def test_status_says_the_graph_does_not_exist(self, missing):
+        status = await missing.call("status", {})
+        assert status.entities == 0 and "Graph 'nope' does not exist" in status.hint
+
+    async def test_existence_is_checked_once(self, toolkit: GraphRAGToolkit, store: FakeStore):
+        await toolkit.call("lookup_entity", {"name": "Alice"})
+        await toolkit.call("lookup_entity", {"name": "Alice"})
+        assert [q for q, _ in store.queries].count("RETURN 1") == 1
+
+    async def test_other_database_errors_are_left_to_the_tool(self, rag: FakeRAG):
+        rag._graph_store.error = DatabaseError("Unknown function 'foo'")
+        tk = GraphRAGToolkit(rag)  # type: ignore[arg-type]
+        with pytest.raises(ToolError, match="The query failed"):
+            await tk.cypher_query("MATCH (n) RETURN n.name")
+
+
 class TestCheckCitations:
     async def test_cited_invalid_and_missing(self, toolkit: GraphRAGToolkit):
         toolkit.ledger.add(tool="traverse", kind="relation", content="Alice -[WORKS_AT]-> Acme")
@@ -653,6 +809,19 @@ class TestCheckCitations:
         assert "drop it" in (result.hint or "") and "correct the claim" in (result.hint or "")
         text = result.to_llm_text()
         assert "No citation (1):" in text and "missing: Globex" in text
+
+    async def test_citations_are_checked_against_the_text_the_agent_saw(
+        self, toolkit: GraphRAGToolkit, store: FakeStore
+    ):
+        # A row longer than one evidence item used to be cut at 2,000
+        # characters, so a figure the agent read near its end was flagged.
+        store.header = ["bio", "note"]
+        store.rows = [["x" * 1500, "y" * 800 + " founded in 1987"]]
+        out = await toolkit.cypher_query("MATCH (p:Person) RETURN p.name AS bio, p.name AS note")
+        assert "1987" in json.dumps(out.rows[0].values)
+        assert "1987" in toolkit.ledger.get(out.rows[0].n).content
+        result = await toolkit.check_citations("Acme was founded in 1987 [1].")
+        assert result.grounded and result.unsupported == []
 
     async def test_sessions_do_not_share_numbers(self, toolkit: GraphRAGToolkit):
         toolkit.ledger.add(tool="t", kind="k", content="x")

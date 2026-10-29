@@ -188,6 +188,25 @@ class TestEntityComparison:
         assert set(result.data["differing_attributes"]) == {"name"}
         assert "embedding" not in llm.prompts[0]
 
+    async def test_flags_capped_neighbour_sets(self, ctx: Context):
+        from graphrag_sdk.skills.entity_comparison import MAX_NEIGHBOURS
+
+        limits: list[int] = []
+
+        class Store(FakeGraphStore):
+            async def weighted_neighbors(self, node_id, *, limit=50):
+                limits.append(limit)
+                count = MAX_NEIGHBOURS + 30 if node_id == "alice" else 3
+                return [(f"{node_id}{i}", 1.0, "R") for i in range(count)][:limit]
+
+        result = await EntityComparisonSkill(Store(entities=PEOPLE)).run(
+            ctx, entity_a="alice", entity_b="carol"
+        )
+        assert limits == [MAX_NEIGHBOURS + 1, MAX_NEIGHBOURS + 1]
+        assert len(result.data["neighbors_only_a"]) == MAX_NEIGHBOURS
+        assert result.data["neighbors_truncated"] == {"entity_a": True, "entity_b": False}
+        assert result.data["truncated"] is True
+
     async def test_requires_both_entities(self, ctx: Context):
         skill = EntityComparisonSkill(FakeGraphStore())
         with pytest.raises(ValueError):
@@ -278,6 +297,47 @@ class TestContradictionDetection:
         assert result.data["contradictions"][0]["reason"] == "two birthplaces"
         assert result.summary == "conflict found"
 
+    @pytest.mark.parametrize("reply", ["ok", "", '{"summary": "fine"}', '{"contradictions": 3}'])
+    async def test_unparsed_reply_is_not_reported_as_checked(self, ctx: Context, reply):
+        store = FakeGraphStore(
+            entities=PEOPLE, query_map={"-[r:RELATES]-(m:__Entity__)": [["KNOWS", "bob", "x"]]}
+        )
+        result = await ContradictionDetectionSkill(store, FakeLLM(reply)).run(ctx, entity="alice")
+        assert result.data["checked_by_llm"] is False
+        assert "not the requested JSON" in result.data["llm_error"]
+        assert result.data["facts"]
+
+    async def test_failed_llm_call_is_not_reported_as_checked(self, ctx: Context):
+        class BrokenLLM:
+            async def ainvoke(self, prompt: str, **kwargs: Any):
+                raise PermissionError("Incorrect API key provided: sk-secret123")
+
+        store = FakeGraphStore(
+            entities=PEOPLE, query_map={"-[r:RELATES]-(m:__Entity__)": [["KNOWS", "bob", "x"]]}
+        )
+        result = await ContradictionDetectionSkill(store, BrokenLLM()).run(ctx, entity="alice")
+        assert result.data["checked_by_llm"] is False
+        assert "PermissionError" in result.data["llm_error"]
+        assert "sk-secret" not in result.data["llm_error"]
+
+    async def test_facts_sent_to_the_llm_use_names(self, ctx: Context):
+        store = FakeGraphStore(
+            entities=PEOPLE,
+            query_map={
+                "-[r:RELATES]-(m:__Entity__)": [
+                    ["BORN_IN", "city-17", "born there", "Paris", "Alice"],
+                    ["KNOWS", "p-9", "", None, "Alice"],
+                ]
+            },
+        )
+        llm = FakeLLM('{"contradictions": [], "summary": ""}')
+        result = await ContradictionDetectionSkill(store, llm).run(ctx, entity="alice")
+        prompt = llm.prompts[0]
+        assert "entity 'Alice'" in prompt and "- BORN_IN Paris: born there" in prompt
+        assert "- KNOWS p-9" in prompt  # no name: the id stands in
+        assert result.data["facts"][0]["other"] == "city-17"
+        assert result.data["checked_by_llm"] is True and "llm_error" not in result.data
+
     async def test_no_llm_returns_facts_only(self, ctx: Context):
         store = FakeGraphStore(
             entities=PEOPLE, query_map={"-[r:RELATES]-(m:__Entity__)": [["KNOWS", "bob", ""]]}
@@ -285,12 +345,20 @@ class TestContradictionDetection:
         result = await ContradictionDetectionSkill(store, None).run(ctx, entity="alice")
         assert result.data["contradictions"] == []
         assert result.data["facts_examined"] == 1
+        assert result.data["truncated"] is False
+
+    async def test_flags_facts_past_the_limit(self, ctx: Context):
+        rows = [["KNOWS", f"p{i}", ""] for i in range(4)]
+        store = FakeGraphStore(entities=PEOPLE, query_map={"-[r:RELATES]-(m:__Entity__)": rows})
+        result = await ContradictionDetectionSkill(store, None).run(ctx, entity="alice", limit=3)
+        assert result.data["facts_examined"] == 3 and result.data["truncated"] is True
 
     async def test_limit_is_a_parameter_and_capped(self, ctx: Context):
         store = FakeGraphStore(entities=PEOPLE)
         await ContradictionDetectionSkill(store).run(ctx, entity="alice", limit=10_000)
         cypher, params = store.queries[-1]
-        assert params["limit"] == 200 and "LIMIT $limit" in cypher
+        # One row past the cap tells a full list from a cut one.
+        assert params["limit"] == 201 and "LIMIT $limit" in cypher
         with pytest.raises(ValueError, match=">= 1"):
             await ContradictionDetectionSkill(store).run(ctx, entity="alice", limit=0)
 
@@ -308,6 +376,19 @@ class TestGapAnalysis:
         labels = {s["label"] for s in result.data["sparse_labels"]}
         assert "Rare" in labels
         assert "Common" not in labels
+        assert result.data["truncated"] is False
+
+    async def test_reports_the_real_isolated_total_when_the_list_is_capped(self, ctx: Context):
+        store = FakeGraphStore(
+            query_map={
+                "RETURN count(e) AS total": [[1234]],
+                "NOT (e)-[:RELATES]-(:__Entity__)": [[f"lonely{i}"] for i in range(3)],
+            }
+        )
+        result = await GapAnalysisSkill(store).run(ctx, limit=3)
+        assert result.data["isolated_entities"] == ["lonely0", "lonely1", "lonely2"]
+        assert result.data["num_isolated"] == 1234
+        assert result.data["truncated"] is True
 
 
 class TestTimelineReconstruction:
@@ -345,10 +426,41 @@ class TestTimelineReconstruction:
     def test_date_keys_match_whole_words(self, key, expected):
         assert _is_date_key(key) is expected
 
+    @pytest.mark.parametrize(
+        ("props", "expected"),
+        [
+            ({"start_headcount": 1500}, None),
+            ({"start_headcount": "1500"}, None),
+            ({"end_balance": 2000.0}, None),
+            ({"founded": 1887}, "1887"),
+            ({"start_year": 1999}, "1999"),
+            ({"birth_date": "1950"}, "1950"),
+            ({"start_headcount": "2020-05-01"}, "2020-05-01"),
+            ({"started": True}, None),
+        ],
+    )
+    def test_numbers_are_years_only_under_a_year_like_name(self, props, expected):
+        found = _extract_date(props)
+        assert (found[1] if found else None) == expected
+
     def test_extract_date_ignores_non_years_and_bad_dates(self):
         assert _extract_date({"date": "unit 12345"}) is None
         assert _extract_date({"date": "2020-13-40"}) is None
         assert _extract_date({"year": "founded in 1887 by"})[0] == (1887, 0, 0)
+
+    async def test_reports_truncated_when_the_scan_is_full(self, ctx: Context):
+        rows = [[f"e{i}", f"E{i}", [["year", str(2000 + i)]]] for i in range(5)]
+        store = FakeGraphStore(query_map={"AS dated": rows})
+        result = await TimelineReconstructionSkill(store).run(ctx, limit=1)
+        # Five candidates is the whole scan for limit=1: entities past it were
+        # never read, so earlier events may exist.
+        assert result.data["truncated"] is True
+        assert result.data["timeline"][0]["entity"] == "e0"
+
+    async def test_not_truncated_when_every_dated_entity_was_read(self, ctx: Context):
+        store = FakeGraphStore(query_map={"AS dated": [["d", "D", [["date", "2001"]]]]})
+        result = await TimelineReconstructionSkill(store).run(ctx, limit=10)
+        assert result.data["truncated"] is False
 
     async def test_limit_applies_after_filtering(self, ctx: Context):
         store = FakeGraphStore(query_map={"AS dated": [["d", "D", [["date", "2001"]]]]})
@@ -395,6 +507,23 @@ class TestSkillAsTool:
         with pytest.raises(ToolError, match="Unknown skill"):
             await toolkit.run_skill("no_such_skill", {}, ctx=ctx)
 
+    async def test_evidence_is_the_data_not_the_llm_summary(self, ctx: Context):
+        store = FakeGraphStore(
+            entities=PEOPLE,
+            query_map={
+                "-[r:RELATES]-(m:__Entity__)": [["FOUNDED_IN", "y", "founded in 1998", "1998"]],
+            },
+        )
+        rag = _SkillRAG(store)
+        rag.llm = FakeLLM('{"contradictions": [], "summary": "It was founded in 2005."}')
+        toolkit = GraphRAGToolkit(rag)  # type: ignore[arg-type]
+        out = await toolkit.run_skill("contradiction_detection", {"entity": "alice"}, ctx=ctx)
+        item = toolkit.ledger.get(out.n)
+        assert "founded in 1998" in item.content and "2005" not in item.content
+        assert item.metadata["summary"] == "It was founded in 2005." == out.summary
+        check = await toolkit.check_citations("Alice was founded in 2005 [1].")
+        assert check.unsupported and "2005" in check.unsupported[0].missing[0]
+
 
 # ── Impact analysis: wide hubs and minimal graph stores ─────────
 
@@ -432,7 +561,44 @@ class TestImpactNeighbourLimits:
 
         result = await _impact_skill(Store()).run(Context(), entity="root", max_depth=1)
         assert result.data["num_impacted"] == 120
-        assert limits == [MAX_DIRECT_NEIGHBOURS] and MAX_DIRECT_NEIGHBOURS >= 120
+        assert limits == [MAX_DIRECT_NEIGHBOURS + 1] and MAX_DIRECT_NEIGHBOURS >= 120
+        assert result.data["truncated"] is False
+
+    async def test_flags_capped_neighbour_lookups(self):
+        from graphrag_sdk.skills.impact_analysis import MAX_DIRECT_NEIGHBOURS
+
+        class Store:
+            async def weighted_neighbors(self, node_id, *, limit=50):
+                if node_id == "root":
+                    return [(f"n{i:04d}", 1.0, "R") for i in range(MAX_DIRECT_NEIGHBOURS + 5)][
+                        :limit
+                    ]
+                return []
+
+            async def pagerank(self, **kwargs):
+                return {}
+
+        result = await _impact_skill(Store()).run(Context(), entity="root", max_depth=1)
+        assert result.data["num_impacted"] == MAX_DIRECT_NEIGHBOURS
+        assert result.data["truncated"] is True
+
+    async def test_flags_a_capped_later_hop(self):
+        from graphrag_sdk.skills.impact_analysis import HOP_NEIGHBOURS
+
+        class Store:
+            async def weighted_neighbors(self, node_id, *, limit=50):
+                if node_id == "root":
+                    return [("a", 1.0, "R")]
+                if node_id == "a":
+                    return [(f"b{i}", 1.0, "R") for i in range(HOP_NEIGHBOURS + 10)][:limit]
+                return []
+
+            async def pagerank(self, **kwargs):
+                return {}
+
+        result = await _impact_skill(Store()).run(Context(), entity="root", max_depth=2)
+        assert result.data["num_impacted"] == 1 + HOP_NEIGHBOURS
+        assert result.data["truncated"] is True
 
     async def test_works_with_a_store_without_a_limit_argument(self):
         class Store:

@@ -98,9 +98,10 @@ def test_write_flags():
         td.name: (td.read_only, td.destructive, td.manual_only, td.ingest_only)
         for td in TOOL_REGISTRY
     }
+    # The write tools are marked destructive so MCP clients ask the user first.
     assert flags["preview_files"] == (True, False, False, True)
     assert flags["set_ontology"] == (False, True, False, True)
-    assert flags["ingest"] == (False, False, False, True)
+    assert flags["ingest"] == (False, True, False, True)
     assert flags["finalize"] == (False, True, True, True)
     for name in READ_NAMES:
         assert flags[name] == (True, False, False, False), name

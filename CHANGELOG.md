@@ -91,6 +91,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GRAPHRAG_MCP_READ_ONLY=1`) hides the write tools. The server sends a usage
   guide as its instructions, keeps one evidence ledger per client connection,
   and works with `mcp` 1.x and 2.x.
+- **Tool results stay truthful when limited.** `cypher_query` caps only the
+  rows the final `RETURN` gives back, never a `LIMIT` inside the query, so
+  counts and collections stay correct; results never include internal
+  nodes or embedding vectors, and a path reads as names and relation types.
+  Skills report `truncated` when a list was capped (`gap_analysis` also
+  gives the real total). `contradiction_detection` sets `checked_by_llm` only
+  when the model's reply could be read, and gives `llm_error` otherwise.
+  A skill's evidence is its structured data, not the model's summary.
+- **`graph_walk` follows edges in their stored direction**
+  (`(Acme)<-[WORKS_AT]-(Alice)`). With a `goal`, `max_depth` is the length
+  of the whole path, each step keeps `beam_width` nodes, and the search
+  stops at an expansion and time budget with `truncated` set.
+- **Read tools on a graph that does not exist** raise an error naming it and
+  create nothing.
+- **`check_citations`** accepts `[1, 2]` and `[1-3]`, and matches names as
+  whole words, case-insensitively.
+- **`ingest` and `finalize` are marked destructive** in their MCP
+  annotations, so clients ask before running them. The MCP server keeps
+  every reply valid JSON within its size limit, and reports unexpected
+  errors with a next step and with API keys and tokens masked.
+- `pip install "graphrag-sdk[all]"` includes the MCP server.
 - New example `graphrag_sdk/examples/12_agent_toolkit.py` and docs page
   *Agentic Retrieval*.
 

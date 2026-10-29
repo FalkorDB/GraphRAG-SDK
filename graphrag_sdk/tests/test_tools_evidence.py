@@ -150,6 +150,24 @@ class TestGroundAnswer:
         g = ground_answer(answer, ledger(2))
         assert g.grounded and 2 in g.cited
 
+    def test_comma_separated_markers(self):
+        g = ground_answer("Both [1, 2].", ledger(2))
+        assert g.cited == [1, 2] and g.answer == "Both [1, 2]."
+
+    @pytest.mark.parametrize("marker", ["[1-3]", "[1 - 3]", "[1–3]"])
+    def test_range_markers_cite_every_number(self, marker):
+        g = ground_answer(f"All three {marker}.", ledger(3))
+        assert g.grounded and g.cited == [1, 2, 3] and g.answer == f"All three {marker}."
+
+    def test_a_range_past_the_ledger_keeps_only_real_numbers(self):
+        g = ground_answer("Some [2-4].", ledger(3))
+        assert g.cited == [2, 3] and g.invalid == [4] and g.answer == "Some [2, 3]."
+
+    @pytest.mark.parametrize("text", ["Rated [3-1] here [1].", "Pages [1-200] [1]."])
+    def test_backwards_or_huge_ranges_are_not_citations(self, text):
+        g = ground_answer(text, ledger(1))
+        assert g.cited == [1] and g.invalid == [] and g.answer == text
+
     def test_semicolon_separated_markers(self):
         g = ground_answer("Both [1; 2].", ledger(2))
         assert g.cited == [1, 2] and g.answer == "Both [1, 2]."
@@ -223,8 +241,28 @@ class TestClaimChecks:
         g = ground_answer("The Kestrel sensors are capped at 20% [1].", contract())
         assert [u.missing for u in g.unsupported] == [["Kestrel"]]
 
-    def test_a_name_is_found_by_any_of_its_words(self):
+    def test_a_two_word_name_is_found_by_either_word(self):
         g = ground_answer("Corvane Systems pays 2% a week [1].", contract())
+        assert g.unsupported == []
+
+    def test_a_longer_name_needs_half_of_its_words(self):
+        g = ground_answer("Sofia Marquez Rivera signed HG-2025-118 [2].", contract())
+        assert g.unsupported == []
+        g = ground_answer("Sofia Alvarez Rivera signed HG-2025-118 [2].", contract())
+        assert [u.missing for u in g.unsupported] == [["Sofia Alvarez Rivera"]]
+
+    @pytest.mark.parametrize("name", ["Ann", "Kest", "Order Kest Systems"])
+    def test_names_match_whole_words_only(self, name):
+        # "ann" is inside "planning"/"annual", "kest" inside "Kestrel": not a match.
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="passage", content="Annual planning at Kestrel; order value.")
+        g = ground_answer(f"Then {name} approved it [1].", led)
+        assert [u.missing for u in g.unsupported] == [[name]]
+
+    def test_whole_words_are_case_insensitive_and_unicode(self):
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="passage", content="JÜRGEN MÜLLER runs the Köln office.")
+        g = ground_answer("Then Jürgen Müller approved it in Köln [1].", led)
         assert g.unsupported == []
 
     @pytest.mark.parametrize("figure", ["1,200,000", "1200000"])
