@@ -54,7 +54,11 @@ class FakeGraph:
             self.metadata_refreshes.append((params["id"], params["props"]))
             return []
         assert "STARTS WITH $prefix" in cypher
-        return [[i, h] for i, h in self.documents.items() if i.startswith(params["prefix"])]
+        return [
+            [i, h, self.metadata.get(i, {}).get("source_version")]
+            for i, h in self.documents.items()
+            if i.startswith(params["prefix"])
+        ]
 
     async def update(self, source: str, *, document_id: str, loader: Any, **kwargs: Any):
         assert kwargs["if_missing"] == "ingest"
@@ -153,6 +157,62 @@ async def test_first_sync_adds_every_document_under_the_source_prefix():
     assert report.added == ["notion:p1", "notion:p2"]
     assert graph.updates == ["notion:p1", "notion:p2"]
     assert not report.updated and not report.unchanged and not report.deleted
+
+
+def _unreadable() -> str:
+    raise AssertionError("an unchanged version must not be downloaded")
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_a_matching_version_skips_the_download(dry_run):
+    graph = FakeGraph()
+    await sync_documents(graph, [SourceDocument("p1", "Alice.", version="v1")], source="notion")
+
+    report = await sync_documents(
+        graph, [SourceDocument("p1", _unreadable, version="v1")], source="notion", dry_run=dry_run
+    )
+
+    assert report.unchanged == ["notion:p1"]
+    assert graph.updates == ["notion:p1"]
+    assert graph.metadata["notion:p1"]["source_version"] == "v1"
+
+
+async def test_a_new_version_is_read_and_updated():
+    graph = FakeGraph()
+    await sync_documents(graph, [SourceDocument("p1", "Alice.", version="v1")], source="notion")
+
+    report = await sync_documents(
+        graph, [SourceDocument("p1", lambda: "Alice, edited.", version="v2")], source="notion"
+    )
+
+    assert report.updated == ["notion:p1"]
+    assert graph.metadata["notion:p1"]["source_version"] == "v2"
+
+
+async def test_a_matching_version_after_an_incomplete_write_is_retried():
+    graph = FakeGraph()
+    graph.incomplete_on.add("notion:p1")
+    await sync_documents(graph, [SourceDocument("p1", "Alice.", version="v1")], source="notion")
+    graph.incomplete_on.clear()
+
+    report = await sync_documents(
+        graph, [SourceDocument("p1", lambda: "Alice.", version="v1")], source="notion"
+    )
+
+    assert report.added == ["notion:p1"] or report.updated == ["notion:p1"]
+    assert graph.updates == ["notion:p1", "notion:p1"]
+
+
+async def test_a_failed_download_is_reported_and_not_pruned():
+    graph = FakeGraph({"notion:p1": _hash("Alice.")})
+
+    def broken() -> str:
+        raise OSError("network down")
+
+    report = await sync_documents(graph, [SourceDocument("p1", broken)], source="notion")
+
+    assert "OSError" in report.failed["notion:p1"]
+    assert "notion:p1" in graph.documents
 
 
 async def test_resync_sorts_unchanged_changed_and_removed_documents():
@@ -721,9 +781,45 @@ async def test_file_documents_reads_text_files_and_skips_the_rest(dlt, tmp_path)
     resource = file_documents(filesystem(bucket_url=tmp_path.as_uri(), file_glob="*"), name="files")
     docs = list(resource)
 
-    assert [d.text for d in docs] == ["# A\nAlice works at Acme."]
+    assert [d.load_text() for d in docs] == ["# A\nAlice works at Acme."]
     assert docs[0].id == docs[0].metadata["source_url"]
     assert docs[0].id.endswith("/a.md")
+    assert docs[0].version is not None
+
+
+async def test_an_unchanged_folder_is_resynced_without_reading_files(dlt, tmp_path, monkeypatch):
+    from dlt.sources.filesystem import filesystem
+
+    from graphrag_sdk.connectors import file_documents, sources
+
+    (tmp_path / "a.md").write_text("Alice works at Acme.")
+    (tmp_path / "b.md").write_text("Bob lives in Paris.")
+    reads: list[str] = []
+    read = sources._file_text
+    monkeypatch.setattr(
+        sources, "_file_text", lambda item: reads.append(item["file_name"]) or read(item)
+    )
+
+    def folder():
+        return file_documents(
+            filesystem(bucket_url=tmp_path.as_uri(), file_glob="*.md"), name="files"
+        )
+
+    graph = FakeGraph()
+    first = await sync(graph, folder())
+    assert sorted(reads) == ["a.md", "b.md"]
+
+    reads.clear()
+    again = await sync(graph, folder())
+    assert reads == []
+    assert len(again.documents["files"].unchanged) == 2
+
+    (tmp_path / "b.md").unlink()
+    last = await sync(graph, folder())
+    assert reads == []
+    assert last.documents["files"].deleted == [
+        d for d in first.documents["files"].added if d.endswith("/b.md")
+    ]
 
 
 def test_demo_preparation_preserves_edits_and_deletions(dlt, tmp_path):
@@ -760,7 +856,7 @@ async def test_file_documents_takes_one_file_at_a_time_too(dlt, tmp_path):
     def listing():
         yield Item(file_url=path.as_uri(), file_name="a.md")
 
-    assert [d.text for d in file_documents(listing(), name="files")] == ["Alice."]
+    assert [d.load_text() for d in file_documents(listing(), name="files")] == ["Alice."]
 
 
 def test_a_pdf_is_read_from_a_closed_temporary_file(dlt, monkeypatch, tmp_path):
@@ -982,3 +1078,40 @@ async def test_empty_persisted_table_remains_available_with_other_supplied_mappi
     result = await sync(rag, users())
     assert result.tables["users"].replaced_existing
     assert await rag.query("MATCH (p:Person) RETURN count(p)") == [[0]]
+
+
+@pytest.mark.integration
+async def test_source_version_skips_the_download_against_falkordb(
+    real_falkordb_rag_factory, scripted_llm
+):
+    from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+        EntityExtractor,
+    )
+    from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+        GraphExtraction,
+    )
+
+    class _NoLocalNER(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            return []
+
+    llm = scripted_llm([])
+    extractor = GraphExtraction(llm, entity_extractor=_NoLocalNER())
+    rag = real_falkordb_rag_factory(
+        llm=llm, resolver=None, ontology=Ontology(entities=[Entity(label="Person")])
+    )
+    page = SourceDocument("p1", "Alice works at Acme.", version="2026-10-29T10:00:00")
+    await sync_documents(rag, [page], source="notion", extractor=extractor)
+
+    stored = await rag.query("MATCH (d:Document {id: 'notion:p1'}) RETURN d.source_version")
+    assert stored == [["2026-10-29T10:00:00"]]
+
+    calls = llm._call_index
+    again = await sync_documents(
+        rag,
+        [SourceDocument("p1", _unreadable, version="2026-10-29T10:00:00")],
+        source="notion",
+        extractor=extractor,
+    )
+    assert again.unchanged == ["notion:p1"]
+    assert llm._call_index == calls

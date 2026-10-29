@@ -13,6 +13,8 @@ import logging
 import os
 import tempfile
 from collections.abc import Callable, Iterator
+from datetime import date
+from functools import partial
 from typing import Any
 
 from graphrag_sdk.connectors.sync import SourceDocument
@@ -78,7 +80,9 @@ def file_documents(files: DltResource, *, name: str) -> DltResource:
 
     Text files (``.md``, ``.txt``, ``.rst``) are decoded as UTF-8 and PDFs are
     read with the SDK's PDF loader (``graphrag-sdk[pdf]``). Other files are
-    skipped and logged.
+    skipped and logged. A file is only downloaded when its modification date
+    differs from the one stored with the graph's copy, so a re-sync of an
+    unchanged folder lists the files without reading them.
 
     Example::
 
@@ -101,22 +105,36 @@ def file_documents(files: DltResource, *, name: str) -> DltResource:
         # dlt's filesystem resource yields pages of files; a custom listing may
         # yield them one at a time.
         for item in [items] if isinstance(items, dict) else items:
-            text = _file_text(item)
-            if text is None:
+            if not _readable(item):
                 continue
             modified = item.get("modification_date")
             yield SourceDocument(
                 id=item["file_url"],
-                text=text,
+                text=partial(_file_text, item),
                 metadata={
                     "source_url": item["file_url"],
                     "file_name": item.get("file_name"),
                     "mime_type": item.get("mime_type"),
                     "modified": modified,
                 },
+                version=_version(modified),
             )
 
     return files | documents
+
+
+def _readable(item: Any) -> bool:
+    suffix = os.path.splitext(item["file_name"])[1].lower()
+    if suffix in _TEXT_SUFFIXES or suffix == ".pdf":
+        return True
+    logger.info("skipped %s: no text reader for %s files", item["file_url"], suffix or "these")
+    return False
+
+
+def _version(modified: Any) -> str | None:
+    if modified is None:
+        return None
+    return modified.isoformat() if isinstance(modified, date) else str(modified)
 
 
 def _file_text(item: Any) -> str | None:

@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Unsafe metadata keys are dropped, and document
   syncs on one SDK instance and event loop serialize by source. Cross-instance
   and multi-process synchronization remains the caller's responsibility.
+- **Unchanged files are not downloaded.** `SourceDocument` takes an optional
+  `version` (a modified time or ETag) and `text` may be a function. When the
+  version matches the one stored on the graph's `Document`, the document is
+  reported unchanged without reading its text. `file_documents()` uses each
+  file's modification date, so a re-sync of an unchanged folder only lists it.
 - **`sync_documents()` and `sync_table()`** take plain iterables, for sources
   fetched without dlt.
 - **A `record_loader` now marks a source with no table suffix as a table**, so

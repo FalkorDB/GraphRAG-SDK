@@ -30,7 +30,7 @@ The initial targets from [issue #359](https://github.com/FalkorDB/GraphRAG-SDK/i
 
 The generic adapters also accept Google Drive, GCS, Azure, SFTP, REST resources and other LlamaIndex readers with the appropriate dependencies and configuration. These are framework capabilities, not separately validated cloud integrations. Google Drive is the alternative file-store target suggested by the issue. Adding a reader does not automatically add a UI form or OAuth flow.
 
-Every run reads a complete snapshot. This version does not use a dlt destination, persist dlt pipeline cursors or provide incremental fetching. Unchanged document content avoids model calls, but it is downloaded again.
+Every run lists the complete source, which is how deletions are found. File sources download only files whose modification date changed since the last sync; app readers such as Notion's still download every page, though unchanged ones cost no model calls. This version does not use a dlt destination or persist dlt pipeline cursors.
 
 ---
 
@@ -97,6 +97,8 @@ The reader's metadata (URL, author, modified time) is stored on the `Document` n
 
 `file_documents()` reads text out of the files a dlt `filesystem` resource lists. Markdown and plain text are decoded as UTF-8; PDFs are read with the SDK's PDF loader (`graphrag-sdk[pdf]`). Other files are skipped.
 
+A file is only downloaded when its modification date differs from the one stored with the graph's copy. A re-sync of an unchanged folder lists the files and reads none of them; a deleted file is still found, since the listing covers the whole folder.
+
 | Store | `bucket_url` |
 | --- | --- |
 | Amazon S3 | `s3://bucket/path` |
@@ -115,7 +117,7 @@ Credentials are dlt's: arguments, environment variables or `.dlt/secrets.toml`. 
 | --- | --- |
 | A new document | Ingested |
 | A changed document | Updated; only its changed chunks are re-extracted |
-| An unchanged document | Skipped by content hash, with no model calls |
+| An unchanged document | Skipped with no model calls: by its source version when it has one, without downloading it; otherwise by content hash |
 | A document the source no longer has | Deleted with `delete_document()` |
 | A table | Written as a snapshot: new and changed rows written, removed rows removed, an unchanged table skipped |
 
@@ -165,11 +167,21 @@ await sync_documents(
 await sync_table(rag, rows, table="employees")
 ```
 
+To skip downloading unchanged documents, give each one a `version` (a modified time or ETag from the source's listing) and pass `text` as a function. The function is only called when the version differs from the one stored in the graph:
+
+```python
+SourceDocument(
+    id=page["id"],
+    text=lambda page=page: fetch_body(page["id"]),
+    version=page["last_edited_time"],
+)
+```
+
 ---
 
 ## Limits
 
-- **Every run reads the whole source.** Unchanged documents cost no model calls, but they are downloaded again. dlt's incremental cursors are refused, because deletions are found by comparing a full read with the graph.
+- **Every run lists the whole source.** File sources and documents with a `version` download only what changed; LlamaIndex readers download every document, though unchanged ones cost no model calls. dlt's incremental cursors are refused, because deletions are found by comparing a full listing with the graph.
 - **Every resource in a call is held in memory** until it is written, since all of them are checked first.
 - **No scheduling and no OAuth.** Run a sync from cron or your own job. Sources that need a user to sign in take a token or a service account instead.
 

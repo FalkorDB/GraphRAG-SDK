@@ -15,7 +15,7 @@ import logging
 import math
 import os
 import re
-from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
@@ -40,8 +40,18 @@ logger = logging.getLogger(__name__)
 # metadata that used one of these names would overwrite the content hash the
 # no-op check reads, the kind an update is refused on, or the marker crash
 # recovery deletes a document on.
+_VERSION_PROPERTY = "source_version"
 _RESERVED_PROPERTIES = frozenset(
-    {"id", "path", "content_hash", "kind", "table", "ready_to_commit", "pending_delete"}
+    {
+        "id",
+        "path",
+        "content_hash",
+        "kind",
+        "table",
+        "ready_to_commit",
+        "pending_delete",
+        _VERSION_PROPERTY,
+    }
 )
 _RESERVED_PREFIXES = ("cleanup_",)
 _PENDING_MARKER = "__pending__"
@@ -66,15 +76,28 @@ class SourceDocument:
         id: The source's own id for the document: a Notion page id, a Drive file
             id, an object URL. It must stay the same for as long as the document
             exists, because it is what tells a changed document from a new one.
-        text: The document's text.
+        text: The document's text, or a function that downloads it. A function
+            is only called when the document has to be read.
         metadata: Provenance such as the source URL, author or modified time.
             Stored on the Document node. Values that are not strings, numbers,
             booleans, dates or lists of those are dropped.
+        version: What the source says about the document's revision, such as
+            its modified time or ETag. When it matches the version stored with
+            the graph's copy, the document is reported unchanged without its
+            text being read, so pass ``text`` as a function to skip the download.
     """
 
     id: str
-    text: str
+    text: str | Callable[[], str]
     metadata: dict[str, Any] = field(default_factory=dict)
+    version: str | None = None
+
+    def load_text(self) -> str:
+        """The text, downloading it if ``text`` is a function."""
+        text = self.text() if callable(self.text) else self.text
+        if not isinstance(text, str):
+            raise TypeError(f"document {self.id!r} has no text ({type(text).__name__})")
+        return text
 
 
 @dataclass
@@ -233,10 +256,21 @@ async def _sync_documents(
         if _PENDING_MARKER in doc_id:
             report.failed[doc_id] = f"ids may not contain {_PENDING_MARKER!r}"
             continue
+        known_hash, known_version = existing.get(doc_id, (None, None))
+        # A missing hash means the last write was incomplete, so it is redone.
+        if known_hash is not None and doc.version is not None and doc.version == known_version:
+            report.unchanged.append(doc_id)
+            continue
+        try:
+            text = await asyncio.to_thread(doc.load_text) if callable(doc.text) else doc.load_text()
+        except Exception as exc:
+            logger.warning("reading %s failed: %s", doc_id, exc)
+            report.failed[doc_id] = f"{type(exc).__name__}: {exc}"
+            continue
         if dry_run:
             if doc_id not in existing:
                 report.added.append(doc_id)
-            elif existing[doc_id] == _text_hash(doc.text):
+            elif known_hash == _text_hash(text):
                 report.unchanged.append(doc_id)
             else:
                 report.updated.append(doc_id)
@@ -246,7 +280,7 @@ async def _sync_documents(
             result = await rag.update(
                 doc_id,
                 document_id=doc_id,
-                loader=_PrefetchedLoader(doc),
+                loader=_PrefetchedLoader(doc, text),
                 if_missing="ingest",
                 cache_unchanged_chunks=cache_unchanged_chunks,
                 chunker=chunker,
@@ -266,7 +300,7 @@ async def _sync_documents(
             # update() returns on a matching hash before writing anything, so a
             # moved page or a new author would otherwise never reach the graph.
             try:
-                await _refresh_metadata(rag, doc_id, doc.metadata)
+                await _refresh_metadata(rag, doc_id, _document_properties(doc))
             except Exception as exc:
                 logger.warning("metadata refresh of %s failed: %s", doc_id, exc)
                 report.failed[doc_id] = f"{type(exc).__name__}: {exc}"
@@ -483,16 +517,24 @@ class _PrefetchedLoader(LoaderStrategy):
     metadata onto the Document node; text mode has no way to pass it.
     """
 
-    def __init__(self, doc: SourceDocument) -> None:
+    def __init__(self, doc: SourceDocument, text: str) -> None:
         self._doc = doc
+        self._text = text
 
     async def load(self, source: str, ctx: Context) -> DocumentOutput:
         return DocumentOutput(
-            text=self._doc.text,
+            text=self._text,
             document_info=DocumentInfo(
-                uid=source, path=source, metadata=graph_safe_metadata(self._doc.metadata)
+                uid=source, path=source, metadata=_document_properties(self._doc)
             ),
         )
+
+
+def _document_properties(doc: SourceDocument) -> dict[str, Any]:
+    props = graph_safe_metadata(doc.metadata)
+    if doc.version is not None:
+        props[_VERSION_PROPERTY] = str(doc.version)
+    return props
 
 
 class _RowsLoader(RecordLoaderStrategy):
@@ -572,22 +614,23 @@ def _check_source_name(source: str) -> None:
         raise ValueError(f"'source' may not contain {_PENDING_MARKER!r}")
 
 
-async def _refresh_metadata(rag: GraphRAG, doc_id: str, metadata: dict[str, Any]) -> None:
-    props = graph_safe_metadata(metadata)
+async def _refresh_metadata(rag: GraphRAG, doc_id: str, props: dict[str, Any]) -> None:
     if props:
         await rag.query(
             "MATCH (d:Document {id: $id}) SET d += $props", {"id": doc_id, "props": props}
         )
 
 
-async def _existing_documents(rag: GraphRAG, prefix: str) -> dict[str, str | None]:
-    """``{document id: content hash}`` for the graph's documents under ``prefix``."""
+async def _existing_documents(
+    rag: GraphRAG, prefix: str
+) -> dict[str, tuple[str | None, str | None]]:
+    """``{document id: (content hash, source version)}`` for documents under ``prefix``."""
     rows = await rag.query(
         "MATCH (d:Document) WHERE d.id STARTS WITH $prefix "
-        "AND NOT d.id CONTAINS $pending RETURN d.id, d.content_hash",
+        f"AND NOT d.id CONTAINS $pending RETURN d.id, d.content_hash, d.{_VERSION_PROPERTY}",
         {"prefix": prefix, "pending": _PENDING_MARKER},
     )
-    return {row[0]: row[1] for row in rows}
+    return {row[0]: (row[1], row[2] if len(row) > 2 else None) for row in rows}
 
 
 async def _find_mapping(rag: GraphRAG, table: str) -> TableMapping | None:
