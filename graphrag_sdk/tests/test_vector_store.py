@@ -191,6 +191,12 @@ class TestVectorStoreIndexChunks:
         assert result == 0
 
 
+def _relates_row(src, rel, tgt, fact, score, description="", src_id="", tgt_id=""):
+    """A RELATES search row: src, type, tgt, fact, description, src_id,
+    tgt_id, src_description, tgt_description, score."""
+    return [src, rel, tgt, fact, description, src_id, tgt_id, "", "", score]
+
+
 class TestVectorStoreSearch:
     async def test_search_chunks(self, vector_store, mock_connection):
         result_mock = MagicMock()
@@ -230,18 +236,22 @@ class TestVectorStoreSearch:
     async def test_search_relationships_orders_by_distance(self, vector_store, mock_connection):
         result_mock = MagicMock()
         result_mock.result_set = [
-            ["Alice", "WORKS_AT", "Acme", "self-match", 1.0],
-            ["Bob", "KNOWS", "Carol", "other-match", 0.20],
+            _relates_row("Alice", "WORKS_AT", "Acme", "self-match", 1.0, "d1", "alice__person"),
+            _relates_row("Bob", "KNOWS", "Carol", "other-match", 0.20, "d2", "bob__person"),
         ]
         mock_connection.query = AsyncMock(return_value=result_mock)
 
         results = await vector_store.search_relationships(query_vector=[0.1] * 8, top_k=5)
 
         assert results[0]["fact"] == "self-match"
+        assert results[0]["description"] == "d1"
+        assert results[0]["src_id"] == "alice__person"
         assert results[0]["score"] == 1.0
         assert results[1]["score"] == 0.20
         cypher = mock_connection.query.call_args[0][0]
         assert "queryRelationships" in cypher
+        # Names come from the endpoints, which a dedup merge keeps current.
+        assert "startNode(r)" in cypher and "COALESCE(a.name, r.src_name)" in cypher
         assert "1-score" in cypher
         assert "ORDER BY score DESC" in cypher
 
@@ -249,7 +259,7 @@ class TestVectorStoreSearch:
         self, vector_store, mock_connection
     ):
         fallback_result = MagicMock()
-        fallback_result.result_set = [["Alice", "WORKS_AT", "Acme", "self-match", 1.0]]
+        fallback_result.result_set = [_relates_row("Alice", "WORKS_AT", "Acme", "self-match", 1.0)]
         mock_connection.query = AsyncMock(side_effect=[Exception("unsupported"), fallback_result])
 
         results = await vector_store.search_relationships(query_vector=[0.1] * 8, top_k=5)
@@ -266,7 +276,7 @@ class TestVectorStoreSearch:
         empty, no_index, fallback_result = MagicMock(), MagicMock(), MagicMock()
         empty.result_set = []
         no_index.result_set = []  # db.indexes(): no RELATES index
-        fallback_result.result_set = [["Alice", "WORKS_AT", "Acme", "self-match", 1.0]]
+        fallback_result.result_set = [_relates_row("Alice", "WORKS_AT", "Acme", "self-match", 1.0)]
         mock_connection.query = AsyncMock(side_effect=[empty, no_index, fallback_result])
 
         results = await vector_store.search_relationships(query_vector=[0.1] * 8, top_k=5)
@@ -297,7 +307,7 @@ class TestVectorStoreSearch:
         empty, no_index, fallback_result = MagicMock(), MagicMock(), MagicMock()
         empty.result_set = []
         no_index.result_set = []
-        fallback_result.result_set = [["Alice", "WORKS_AT", "Acme", "self-match", 1.0]]
+        fallback_result.result_set = [_relates_row("Alice", "WORKS_AT", "Acme", "self-match", 1.0)]
         mock_connection.query = AsyncMock(side_effect=[empty, no_index, fallback_result])
 
         results = await vector_store.search_relationships(query_vector=[0.1] * 8)

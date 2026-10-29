@@ -133,6 +133,61 @@ class TestLocalRetrieval:
         content = result.items[0].content
         assert "Alice" in content or "Related entities" in content
 
+    async def test_local_entity_context_leaves_out_internal_properties(
+        self, ctx, local_strategy, mock_graph_store
+    ):
+        mock_graph_store.get_connected_entities = AsyncMock(
+            return_value=[
+                {
+                    "id": "alice__person",
+                    "labels": ["Person", "__Entity__"],
+                    "properties": {
+                        "name": "Alice",
+                        "description": "An engineer at Acme.",
+                        "embedding": [0.123, 0.456],
+                        "source_chunk_ids": ["chunk-1"],
+                        "descriptions": ["An engineer at Acme.", "Works at Acme."],
+                        "merged_labels": "Person",
+                        "role__dropped": ["CTO"],
+                    },
+                }
+            ]
+        )
+        result = await local_strategy.search("test", ctx)
+        content = result.items[0].content
+        assert "Related entities: Alice (Person): An engineer at Acme." in content
+        for leaked in ("0.123", "chunk-1", "merged_labels", "__dropped", "__Entity__"):
+            assert leaked not in content
+
+    async def test_local_entity_context_keeps_application_attributes(
+        self, ctx, local_strategy, mock_graph_store
+    ):
+        mock_graph_store.get_connected_entities = AsyncMock(
+            return_value=[
+                {
+                    "id": "bob__person",
+                    "labels": ["Person", "__Entity__"],
+                    "properties": {
+                        "name": "Bob Jones",
+                        "description": "The CFO.",
+                        "age": 45,
+                        "employees__salary": 120000,
+                        "embedding": [0.123, 0.456],
+                        "source_chunk_ids": ["chunk-1"],
+                        "aliases": ["B. Jones"],
+                        "is_stub": False,
+                    },
+                }
+            ]
+        )
+        result = await local_strategy.search("test", ctx)
+        content = result.items[0].content
+        assert (
+            "Bob Jones (Person): The CFO. [age: 45, employees__salary: 120000]" in content
+        )
+        for leaked in ("0.123", "chunk-1", "is_stub", "B. Jones"):
+            assert leaked not in content
+
     async def test_local_no_entities(self, ctx, mock_graph_store, mock_vector_store, embedder):
         mock_vector_store.search_chunks = AsyncMock(
             return_value=[{"id": "c1", "text": "Chunk text", "score": 0.9}]

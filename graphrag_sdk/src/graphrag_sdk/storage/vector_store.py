@@ -65,6 +65,37 @@ def _escape_fulltext_query(text: str) -> str:
     return "".join(escaped)
 
 
+# Columns of a RELATES search hit, given the edge as ``r`` and its endpoints
+# as ``a`` and ``b``. Names come from the endpoints, falling back to the names
+# stored on the edge, which predate any dedup merge that moved it.
+_RELATES_HIT_COLUMNS = (
+    "COALESCE(a.name, r.src_name) AS src, r.rel_type AS type, "
+    "COALESCE(b.name, r.tgt_name) AS tgt, r.fact AS fact, "
+    "r.description AS description, a.id AS src_id, b.id AS tgt_id, "
+    "a.description AS src_description, b.description AS tgt_description"
+)
+
+
+def _relates_hit(row: list[Any]) -> dict[str, Any]:
+    """One row of ``_RELATES_HIT_COLUMNS`` plus a trailing score, as a dict."""
+
+    def col(i: int) -> Any:
+        return row[i] if len(row) > i and row[i] is not None else ""
+
+    return {
+        "src_name": col(0),
+        "type": col(1),
+        "tgt_name": col(2),
+        "fact": col(3),
+        "description": col(4),
+        "src_id": col(5),
+        "tgt_id": col(6),
+        "src_description": col(7),
+        "tgt_description": col(8),
+        "score": row[9] if len(row) > 9 else 0.0,
+    }
+
+
 class VectorStore:
     """Vector index management and search for FalkorDB.
 
@@ -514,16 +545,20 @@ class VectorStore:
 
         Returns:
             List of dicts with src_name, type, tgt_name, fact, and similarity
-            score (higher is closer).
+            score (higher is closer), plus the endpoints as they are now:
+            src_id / tgt_id, src_description / tgt_description, and the
+            edge's own ``description``. ``src_name`` / ``tgt_name`` are the
+            endpoints' current names: a dedup merge moves an edge onto the
+            survivor but leaves the extraction-time names stored on the edge.
         """
         # Try edge vector index query first (FalkorDB >= 4.2)
         query = (
             "CALL db.idx.vector.queryRelationships("
             "'RELATES', 'embedding', $top_k, vecf32($vector)) "
             "YIELD relationship AS r, score "
-            "RETURN r.src_name AS src, r.rel_type AS type, "
-            "r.tgt_name AS tgt, r.fact AS fact, (1-score) AS score "
-            "ORDER BY score DESC"
+            "WITH r, score, startNode(r) AS a, endNode(r) AS b "
+            f"RETURN {_RELATES_HIT_COLUMNS}, (1-score) AS score "
+            "ORDER BY score DESC, src_id, tgt_id, type"
         )
         try:
             result = await self._conn.query(
@@ -534,16 +569,7 @@ class VectorStore:
                 },
                 expected_errors=_MISSING_VECTOR_INDEX_MARKERS,
             )
-            rows = [
-                {
-                    "src_name": row[0] if row[0] else "",
-                    "type": row[1] if len(row) > 1 and row[1] else "",
-                    "tgt_name": row[2] if len(row) > 2 and row[2] else "",
-                    "fact": row[3] if len(row) > 3 and row[3] else "",
-                    "score": row[4] if len(row) > 4 else 0.0,
-                }
-                for row in result.result_set
-            ]
+            rows = [_relates_hit(row) for row in result.result_set]
             if rows:
                 return rows
             # With the index in place an empty answer is genuine: nothing to
@@ -583,9 +609,8 @@ class VectorStore:
             "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
             "WHERE r.embedding IS NOT NULL "
             "WITH a, r, b, vec.cosineDistance(r.embedding, vecf32($vector)) AS dist "
-            "RETURN r.src_name AS src, r.rel_type AS type, "
-            "r.tgt_name AS tgt, r.fact AS fact, (1-dist) AS score "
-            "ORDER BY dist ASC LIMIT $top_k"
+            f"RETURN {_RELATES_HIT_COLUMNS}, (1-dist) AS score "
+            "ORDER BY dist ASC, src_id, tgt_id, type LIMIT $top_k"
         )
         try:
             result = await self._conn.query(
@@ -595,16 +620,7 @@ class VectorStore:
                     "vector": query_vector,
                 },
             )
-            return [
-                {
-                    "src_name": row[0] if row[0] else "",
-                    "type": row[1] if len(row) > 1 and row[1] else "",
-                    "tgt_name": row[2] if len(row) > 2 and row[2] else "",
-                    "fact": row[3] if len(row) > 3 and row[3] else "",
-                    "score": row[4] if len(row) > 4 else 0.0,
-                }
-                for row in result.result_set
-            ]
+            return [_relates_hit(row) for row in result.result_set]
         except Exception as exc:
             logger.warning(f"Relationship vector search failed: {exc}")
             return []

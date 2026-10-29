@@ -77,7 +77,8 @@ class MultiPathRetrieval(RetrievalStrategy):
         vector_store: Vector data access object.
         embedder: Embedding provider.
         llm: LLM provider for keyword extraction.
-        chunk_top_k: Final chunks after reranking (default: 15).
+        chunk_top_k: Final chunks after reranking (default: 20, sized for
+            the default 384-token chunks).
         max_entities: Max entities to keep (default: 30).
         max_relationships: Max relationships to keep (default: 20).
         rel_top_k: RELATES edge vector search results (default: 15).
@@ -170,10 +171,13 @@ class MultiPathRetrieval(RetrievalStrategy):
         embedder: Embedder,
         llm: LLMInterface,
         *,
-        chunk_top_k: int = 15,  # Passage diversity without overwhelming LLM context
+        # 20 chunks of the default 384-token chunker carry the same text as the
+        # 15 chunks of 512 tokens this was tuned on; at 15 the move to 384
+        # silently cut a quarter of the passage text the answer sees.
+        chunk_top_k: int = 20,
         max_entities: int = 30,  # Upper bound before reranking; balances recall vs noise
         max_relationships: int = 20,  # Cap on RELATES edges per query
-        rel_top_k: int = 15,  # Matched to chunk_top_k for balanced fact/passage coverage
+        rel_top_k: int = 15,
         keyword_limit: int = 10,  # Fulltext search keyword budget from query decomposition
         enable_cypher: bool = False,  # Text-to-Cypher path (experimental, off by default)
         ontology: Ontology | None = None,  # forwarded to Cypher generation when enable_cypher
@@ -293,9 +297,21 @@ class MultiPathRetrieval(RetrievalStrategy):
                 )
         # 5. Relationship expansion
         entity_list = list(found_entities.items())[: self._max_entities]
-        relationship_strings = await expand_relationships(
-            self._graph, entity_list, self._max_relationships, ctx=ctx
-        )
+        # Facts and expansion often reach the same edge; a line already in
+        # the facts section would only spend a relationship slot, so ask for
+        # enough to fill the cap after dropping those.
+        fact_lines = set(fact_strings)
+        relationship_strings = [
+            line
+            for line in await expand_relationships(
+                self._graph,
+                entity_list,
+                self._max_relationships + len(fact_lines),
+                ctx=ctx,
+                query_vector=query_vector,
+            )
+            if line not in fact_lines
+        ][: self._max_relationships]
         ctx.log(f"MultiPath [5/9]: {len(relationship_strings)} relationships")
         # 6. Chunk retrieval (4 paths)
         candidate_chunks, chunk_sources, chunk_embeddings = await retrieve_chunks(
@@ -307,6 +323,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             simple_kw,
             entity_list,
             ctx=ctx,
+            vector_top_k=max(15, self._chunk_top_k),
         )
         ctx.log(
             f"MultiPath [6/9]: {len(candidate_chunks)} candidate chunks "

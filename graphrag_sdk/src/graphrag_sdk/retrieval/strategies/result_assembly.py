@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import numpy as np
@@ -14,6 +15,30 @@ from graphrag_sdk.core.models import RawSearchResult
 from graphrag_sdk.core.providers import Embedder
 
 logger = logging.getLogger(__name__)
+
+
+# Merged entities carry every member's description joined with " | "; a few
+# hundred characters say who the entity is without crowding out the passages.
+_MAX_ENTITY_DESCRIPTION_CHARS = 400
+
+# Ingestion stores ``fact`` as "(src, TYPE, tgt): description". The line
+# below already names both ends and the type, so only the text after the
+# triple is kept.
+# One level of nested parentheses is allowed: "Python (language)".
+_FACT_TRIPLE_PREFIX_RE = re.compile(r"^\((?:[^()]|\([^()]*\))*\)(?::\s*)?")
+
+
+def format_relation_line(
+    src: str, rel_type: str, tgt: str, description: str = "", fact: str = ""
+) -> str:
+    """``src —[TYPE]→ tgt: text``, the one format for every relation line.
+
+    ``description`` is the edge's evidence text; ``fact`` is used when an
+    edge has none (older graphs), with its leading "(src, TYPE, tgt)" removed.
+    """
+    text = (description or "").strip() or _FACT_TRIPLE_PREFIX_RE.sub("", (fact or "").strip())
+    line = f"{src} —[{rel_type}]→ {tgt}"
+    return f"{line}: {text}" if text else line
 
 
 def cosine_sim(a: list[float], b: list[float]) -> float:
@@ -36,8 +61,9 @@ async def rerank_chunks(
     """Rank candidates by cosine similarity, take top_k.
 
     When ``stored_embeddings`` covers >=90% of candidates, uses
-    pre-computed vectors from the graph (zero API calls).  Falls back
-    to re-embedding via the embedder when coverage is insufficient.
+    pre-computed vectors from the graph and embeds only the candidates
+    without one (one call, or none when every candidate has a vector).
+    Falls back to re-embedding all candidates when coverage is insufficient.
 
     Returns:
         Top-k chunk texts ranked by cosine similarity to query.
@@ -48,16 +74,36 @@ async def rerank_chunks(
     chunk_ids = list(candidate_chunks.keys())
     chunk_texts = list(candidate_chunks.values())
 
-    # Fast path: use stored embeddings only when coverage is near-complete
+    # Fast path: use stored embeddings when coverage is near-complete, and
+    # embed only the few candidates without one. Those are mostly
+    # structured-record chunks, which ingestion never embeds; ranking them
+    # last regardless of the question would drop a table row even when it
+    # is the answer.
     if stored_embeddings and len(stored_embeddings) >= len(chunk_ids) * 0.9:
+        missing = [i for i, cid in enumerate(chunk_ids) if not stored_embeddings.get(cid)]
+        fresh: dict[int, list[float]] = {}
+        if missing:
+            try:
+                if ctx is not None:
+                    ctx.ensure_budget("chunk reranking embedding")
+                vectors = await embedder.aembed_documents(
+                    [chunk_texts[i] for i in missing],
+                    timeout=(
+                        ctx.provider_timeout_seconds("chunk reranking embedding")
+                        if ctx is not None
+                        else None
+                    ),
+                )
+                fresh = dict(zip(missing, vectors))
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:
+                logger.debug("Embedding chunks without a stored vector failed: %s", exc)
         scored = []
         for i, cid in enumerate(chunk_ids):
-            vec = stored_embeddings.get(cid)
-            if vec:
-                scored.append((i, cosine_sim(query_vector, vec)))
-            else:
-                # No stored vector — place at end rather than penalizing
-                scored.append((i, -1.0))
+            vec = stored_embeddings.get(cid) or fresh.get(i)
+            # Still no vector (embedding failed): place at end.
+            scored.append((i, cosine_sim(query_vector, vec) if vec else -1.0))
         scored.sort(key=lambda x: x[1], reverse=True)
         return [chunk_texts[i] for i, _ in scored[:chunk_top_k]]
 
@@ -204,7 +250,9 @@ def assemble_raw_result(
         name = einfo.get("name", "")
         if name and name.lower() not in seen_names:
             seen_names.add(name.lower())
-            desc = einfo.get("description", "")
+            desc = einfo.get("description", "") or ""
+            if len(desc) > _MAX_ENTITY_DESCRIPTION_CHARS:
+                desc = desc[:_MAX_ENTITY_DESCRIPTION_CHARS].rsplit(" ", 1)[0] + " …"
             entity_lines.append(f"- {name}: {desc}" if desc else f"- {name}")
     if entity_lines:
         records.append(
@@ -239,7 +287,9 @@ def assemble_raw_result(
         records.append(
             {
                 "section": "passages",
-                "content": "## Source Document Passages\n" + "\n---\n".join(source_passages[:15]),
+                # Already cut to chunk_top_k by the reranker; a second cap here
+                # would silently override that setting.
+                "content": "## Source Document Passages\n" + "\n---\n".join(source_passages),
             }
         )
 
