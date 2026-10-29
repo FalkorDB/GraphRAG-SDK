@@ -182,18 +182,19 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "Return ONLY valid JSON, nothing else."
 )
 
+# Substituted as a ``.format()`` value, so braces are literal (not escaped).
 _DEFAULT_JSON_EXAMPLE = (
-    '{{"entities": [{{"name": "...", "type": "...", "description": "..."}}], '
-    '"relationships": [{{"source": "...", "target": "...", "type": "...", '
-    '"description": "...", "span_start": 0, "span_end": 50}}]}}'
+    '{"entities": [{"name": "...", "type": "...", "description": "..."}], '
+    '"relationships": [{"source": "...", "target": "...", "type": "...", '
+    '"description": "...", "span_start": 0, "span_end": 50}]}'
 )
 
 _JSON_EXAMPLE_WITH_ATTRS = (
-    '{{"entities": [{{"name": "...", "type": "...", "description": "...", '
-    '"attributes": {{}}}}], '
-    '"relationships": [{{"source": "...", "target": "...", "type": "...", '
+    '{"entities": [{"name": "...", "type": "...", "description": "...", '
+    '"attributes": {}}], '
+    '"relationships": [{"source": "...", "target": "...", "type": "...", '
     '"description": "...", "span_start": 0, "span_end": 50, '
-    '"attributes": {{}}}}]}}'
+    '"attributes": {}}]}'
 )
 
 
