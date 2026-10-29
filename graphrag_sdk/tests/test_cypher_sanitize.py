@@ -14,11 +14,25 @@ class TestMergeKeyValue:
     def test_dict_never_matches_a_list_of_its_pairs(self):
         assert merge_key_value({"a": 1}) != merge_key_value([[["str", "a"], 1]])
 
-    @pytest.mark.parametrize("a, b", [(5, 5.0), ("x", "x")])
+    @pytest.mark.parametrize(
+        "a, b",
+        [(5, 5.0), ("x", "x"), ([5], [5.0]), ({"a": 5}, {"a": 5.0}), ([5], (5,))],
+    )
     def test_equal_values_share_a_key(self, a, b):
         assert merge_key_value(a) == merge_key_value(b)
 
-    @pytest.mark.parametrize("a, b", [(True, 1), ("5", 5), ({1: "a"}, {"1": "a"})])
+    @pytest.mark.parametrize(
+        "a, b",
+        [
+            (True, 1),
+            ("5", 5),
+            ({1: "a"}, {"1": "a"}),
+            ([True], [1]),
+            ({"a": "5"}, {"a": 5}),
+            (None, ""),
+            ([None], ["None"]),
+        ],
+    )
     def test_different_kinds_never_share_a_key(self, a, b):
         assert merge_key_value(a) != merge_key_value(b)
 

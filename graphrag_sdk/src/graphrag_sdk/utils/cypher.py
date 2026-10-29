@@ -1,7 +1,6 @@
 # GraphRAG SDK — Utils: Cypher Sanitization
 # Prevents Cypher injection via label/type interpolation.
 
-import json
 from typing import Any
 
 
@@ -36,6 +35,8 @@ def merge_key_value(value: Any) -> Any:
     is never equal to either. Python's ``==`` and ``hash`` already treat
     numbers that way, so tagging the kind keeps ``True`` apart from ``1``
     and ``"5"`` apart from ``5`` without splitting ``5`` from ``5.0``.
+    Lists and dicts apply the same rules to every item, and dict key order
+    does not matter.
     """
     if isinstance(value, bool):
         return ("bool", value)
@@ -43,15 +44,11 @@ def merge_key_value(value: Any) -> Any:
         return ("number", value)
     if isinstance(value, str):
         return ("string", value)
-    return ("other", json.dumps(_canonical(value), default=str))
-
-
-def _canonical(value: Any) -> Any:
-    """``value`` with dict keys in a fixed order, even when key types are mixed."""
+    if value is None:
+        return ("null",)
     if isinstance(value, dict):
-        items = [((type(k).__name__, str(k)), _canonical(v)) for k, v in value.items()]
-        # A JSON object, so a dict never serializes like a list of the same pairs.
-        return {"dict": sorted(items, key=lambda item: item[0])}
+        pairs = [(merge_key_value(k), merge_key_value(v)) for k, v in value.items()]
+        return ("dict", tuple(sorted(pairs, key=lambda pair: repr(pair[0]))))
     if isinstance(value, list | tuple):
-        return [_canonical(v) for v in value]
-    return value
+        return ("list", tuple(merge_key_value(v) for v in value))
+    return ("other", str(value))
