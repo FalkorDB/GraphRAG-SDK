@@ -43,8 +43,14 @@ def merge_key_value(value: Any) -> Any:
         return ("number", value)
     if isinstance(value, str):
         return ("string", value)
-    try:
-        return ("other", json.dumps(value, sort_keys=True, default=str))
-    except TypeError:
-        # sort_keys cannot order mixed key types such as {"a": 1, 1: "b"}.
-        return ("other", json.dumps(value, default=str))
+    return ("other", json.dumps(_canonical(value), default=str))
+
+
+def _canonical(value: Any) -> Any:
+    """``value`` with dict keys in a fixed order, even when key types are mixed."""
+    if isinstance(value, dict):
+        items = [((type(k).__name__, str(k)), _canonical(v)) for k, v in value.items()]
+        return sorted(items, key=lambda item: item[0])
+    if isinstance(value, list | tuple):
+        return [_canonical(v) for v in value]
+    return value

@@ -1389,10 +1389,11 @@ class TestRelationshipMergeUnion:
         assert len(merged.relationships) == 1
         assert merged.relationships[0].properties["source_chunk_ids"] == ["c1", "c2"]
 
-    def test_rel_type_with_mixed_key_types_does_not_raise(self):
-        odd = {"label": "WORKS_AT", 1: "alt"}
+    def test_rel_type_dict_key_ignores_key_order_and_mixed_types(self):
+        odd = {"label": "WORKS_AT", 1: "alt", "nested": {2: "x", "y": 3}}
+        reordered = {"nested": {"y": 3, 2: "x"}, 1: "alt", "label": "WORKS_AT"}
         a = GraphData(nodes=[], relationships=[self._typed(odd, "x", ["c1"])])
-        b = GraphData(nodes=[], relationships=[self._typed(dict(odd), "x", ["c2"])])
+        b = GraphData(nodes=[], relationships=[self._typed(reordered, "x", ["c2"])])
 
         merged = CachedChunkExtraction._merge([a, b])
 
