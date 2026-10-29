@@ -377,16 +377,25 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
         )
     if key:
         # Provenance is unioned, not overwritten: the survivor's edge keeps the
-        # chunks that already vouched for it (``delete_stale_relationships``).
+        # chunks that already vouched for it (``delete_stale_relationships``),
+        # and the relationship tables that own it (``structured_sources``) —
+        # left to ``+=`` it kept only the duplicate's tables, so dropping one
+        # of those deleted an edge another, now forgotten, table still lists.
         # Read before the MERGE, which inside FOREACH cannot be followed by WITH.
         read_old = (
             f"OPTIONAL MATCH {existing} "
-            f"WITH {carried}, e, b, coalesce(ex.source_chunk_ids, []) AS old "
+            f"WITH {carried}, e, b, coalesce(ex.source_chunk_ids, []) AS old, "
+            "coalesce(ex.structured_sources, []) AS old_sources "
         )
         update = (
             "SET nr += properties(e) "
             "SET nr.source_chunk_ids = old + "
-            "[c IN coalesce(e.source_chunk_ids, []) WHERE NOT c IN old]"
+            "[c IN coalesce(e.source_chunk_ids, []) WHERE NOT c IN old], "
+            # Not on edges no table owns: they keep having no such property.
+            "nr.structured_sources = CASE WHEN size(old_sources) = 0 "
+            "AND size(coalesce(e.structured_sources, [])) = 0 THEN null "
+            "ELSE old_sources + [x IN coalesce(e.structured_sources, []) "
+            "WHERE NOT x IN old_sources] END"
         )
     else:
         read_old, update = "", "SET nr += properties(e)"

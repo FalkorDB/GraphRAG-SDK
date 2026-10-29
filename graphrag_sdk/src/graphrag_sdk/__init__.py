@@ -117,8 +117,10 @@ from graphrag_sdk.ingestion.loaders.record_loader import (
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
 from graphrag_sdk.ingestion.mapping import (
     Column,
+    EndpointMapping,
     Link,
     MappingError,
+    RelationshipMapping,
     TableMapping,
 )
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -128,6 +130,10 @@ from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
 )
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
+)
+from graphrag_sdk.ingestion.structured_pipeline import (
+    RelationshipIngestionResult,
+    RelationshipResolutionError,
 )
 
 # ── Retrieval Strategies ────────────────────────────────────────
@@ -245,7 +251,11 @@ __all__ = [
     "OntologyStore",
     "VectorStore",
     "Column",
+    "EndpointMapping",
     "TableMapping",
+    "RelationshipMapping",
+    "RelationshipIngestionResult",
+    "RelationshipResolutionError",
     "CsvRecordLoader",
     "MappingError",
     "RecordBatch",
