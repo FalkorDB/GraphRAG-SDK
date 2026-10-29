@@ -121,13 +121,15 @@ def list_files(
     """Supported files under ``root`` matching ``pattern``, as sorted relative paths.
 
     Hidden files and folders are skipped, folder symlinks are not followed
-    and a file symlink pointing outside the root is left out. The walk
+    and a file symlink pointing outside the root, or at a hidden or
+    unsupported file, is left out. The walk
     always starts at ``root`` (a pattern also matches at any depth) and stops
     with a ToolError after ``max_entries`` entries.
     Blocking: call it from a worker thread in async code.
     """
     pattern = _check_relative(pattern)
     found: list[str] = []
+    listings: dict[Path, list[str]] = {}
     seen = 0
     for folder, dirs, names in os.walk(root, followlinks=False):
         seen += len(dirs) + len(names)
@@ -143,8 +145,16 @@ def list_files(
                 continue
             path = base / name
             rel = path.relative_to(root).as_posix()
-            if match_path(pattern, rel) and path.is_file() and _inside(root, path):
-                found.append(rel)
+            if not (match_path(pattern, rel) and path.is_file()):
+                continue
+            real = _canonical(root, path, listings)
+            if (
+                real is None
+                or any(p.startswith(".") for p in PurePosixPath(real).parts)
+                or not _supported(real)
+            ):
+                continue
+            found.append(rel)
     return sorted(found)
 
 
@@ -302,8 +312,10 @@ def sample_file(path: Path, max_chars: int) -> tuple[str, int, bool]:
         fh.seek((size - window) // 2)
         raw = fh.read(window)
     text = raw.decode("utf-8", errors="replace")
-    # The window starts and ends mid-word (maybe mid-character): drop both ends.
-    words = text.split()[1:-1]
+    # The window starts and ends mid-word (maybe mid-character): drop both ends,
+    # unless that leaves nothing (text with no whitespace is cut by characters).
+    words = text.split()
+    words = words[1:-1] if len(words) > 2 else [w.strip("\ufffd") for w in words]
     chars = round(size * len(text) / max(len(raw), 1))
     return middle_sample(" ".join(words), max_chars), chars, True
 

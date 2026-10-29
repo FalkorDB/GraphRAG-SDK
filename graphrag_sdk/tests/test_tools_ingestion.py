@@ -193,6 +193,27 @@ class TestFiles:
         with pytest.raises(ToolError, match="at most 2"):
             fs.resolve_files(root, ["**/*"], max_files=2)
 
+    def test_links_to_hidden_or_unsupported_files_are_not_listed(self, corpus):
+        root = fs.resolve_root(corpus)
+        (root / ".private").mkdir()
+        (root / ".private" / "secret.txt").write_text("hidden text")
+        (root / "public.md").symlink_to(".private/secret.txt")
+        (root / "table.md").symlink_to("data.csv")
+        (root / "alias.md").symlink_to("notes/b.md")
+        listed = fs.list_files(root)
+        assert "public.md" not in listed and "table.md" not in listed
+        assert "alias.md" in listed
+        # One such link no longer fails the whole glob.
+        assert sorted(fs.resolve_files(root, ["*.md"])) == ["notes/a.md", "notes/b.md"]
+        with pytest.raises(ToolError, match="hidden"):
+            fs.resolve_files(root, ["public.md"])
+
+    def test_sample_of_text_without_whitespace(self, tmp_path):
+        p = tmp_path / "big.txt"
+        p.write_text("a" * 20000)
+        sample, chars, estimated = fs.sample_file(p, 1000)
+        assert sample == "a" * 1000 and estimated and chars == 20000
+
     def test_middle_sample(self):
         assert fs.middle_sample("  a \n b  ", 100) == "a b"
         text = " ".join(f"w{i}" for i in range(1000))
@@ -911,6 +932,46 @@ class TestSetOntology:
         tk._shared["schema"] = object()
         await tk.set_ontology(entities=[{"label": "Drug"}])
         assert "schema" not in tk._shared
+
+
+class TestFileErrorsAreRedacted:
+    SECRET = "Incorrect API key provided: sk-SECRET123456 (api_key=hunter2)"
+
+    async def test_ingest(self, corpus):
+        rag = FakeRAG()
+        secret = self.SECRET
+
+        async def ingest(source=None, **kw):
+            return [RuntimeError(f"Pipeline failed: {secret}") for _ in source]
+
+        rag.ingest = ingest
+        result = await toolkit(rag, corpus).ingest(files=["notes/b.md"])
+        dumped = result.model_dump_json()
+        assert "SECRET" not in dumped and "hunter2" not in dumped
+        assert result.documents[0].status == "failed"
+        assert "sk-***" in result.documents[0].error
+
+    async def test_reextract(self, corpus, fake_strategies):
+        rag = FakeRAG()
+        secret = self.SECRET
+
+        async def update(*a, **kw):
+            raise RuntimeError(secret)
+
+        rag.update = update
+        result = await toolkit(rag, corpus).ingest(files=["notes/b.md"], reextract=True)
+        assert "SECRET" not in result.model_dump_json()
+        assert result.documents[0].status == "failed"
+
+    async def test_preview(self, corpus, monkeypatch):
+        secret = self.SECRET
+
+        def broken(path, max_chars):
+            raise RuntimeError(secret)
+
+        monkeypatch.setattr(fs, "sample_file", broken)
+        result = await toolkit(FakeRAG(), corpus).preview_files("notes/b.md")
+        assert result.files[0].error and "SECRET" not in result.model_dump_json()
 
 
 class TestIngestFiles:

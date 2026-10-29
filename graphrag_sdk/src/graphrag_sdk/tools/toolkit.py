@@ -280,6 +280,13 @@ def _short(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _file_error(exc: BaseException) -> str:
+    """One file's error for a tool result, with any secret in it masked."""
+    from graphrag_sdk.mcp.server import redact  # lazy: the server imports this module
+
+    return _short(redact(str(exc)), 300)
+
+
 def _mask(value: Any) -> Any:
     """Hide SDK-internal ``__Label__`` names in a JSON-safe value."""
     if isinstance(value, str):
@@ -1366,9 +1373,7 @@ class GraphRAGToolkit:
                     size = (await asyncio.to_thread(real.stat)).st_size
                     text, chars, estimated = await asyncio.to_thread(fs.sample_file, real, per_file)
                 except Exception as exc:  # one unreadable file must not fail the page
-                    return DocSample(
-                        path=rel, type=kind, size_bytes=size, error=_short(str(exc), 300)
-                    )
+                    return DocSample(path=rel, type=kind, size_bytes=size, error=_file_error(exc))
             return DocSample(
                 path=rel,
                 type=kind,
@@ -1636,9 +1641,7 @@ class GraphRAGToolkit:
             )
             for rel, res in zip(rels, results):
                 if isinstance(res, BaseException):
-                    docs.append(
-                        IngestedDocument(path=rel, status="failed", error=_short(str(res), 300))
-                    )
+                    docs.append(IngestedDocument(path=rel, status="failed", error=_file_error(res)))
                     continue
                 meta = res.metadata or {}
                 used = (meta.get("plan") or {}).get("plan")
@@ -1692,9 +1695,7 @@ class GraphRAGToolkit:
                             ctx=ctx,
                         )
                     except Exception as exc:  # one bad file must not fail the batch
-                        return IngestedDocument(
-                            path=rel, status="failed", error=_short(str(exc), 300)
-                        )
+                        return IngestedDocument(path=rel, status="failed", error=_file_error(exc))
                 plan_info = report.get("plan")
                 if plan_info:
                     self._remember_plan(path, plan_info)

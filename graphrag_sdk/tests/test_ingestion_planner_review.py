@@ -9,8 +9,10 @@ import pytest
 
 from graphrag_sdk import GraphRAG, HeuristicIngestionPlanner
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import IngestionError
 from graphrag_sdk.core.models import DocumentInfo, DocumentOutput, DocumentRecord
 from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
 from graphrag_sdk.ingestion.ingestion_planner import (
     CHEAP_PLAN_LIMITS,
     ChunkBudget,
@@ -24,6 +26,7 @@ from graphrag_sdk.ingestion.ingestion_planner import (
     parse_plan,
     restrict_plan,
 )
+from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
 
 from .conftest import MockLLM
 from .test_facade import mock_conn  # noqa: F401 - fixture
@@ -287,9 +290,9 @@ class TestUnloadableFile:
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
         record = DocumentRecord(path=str(f), content_hash="old")
         g._graph_store.get_document_record = AsyncMock(return_value=record)
-        with pytest.raises(Exception, match="corrupt file"):
+        with pytest.raises(IngestionError, match="corrupt file"):
             await g.ingest(str(f), planner=planner)
-        assert plans == [] and len(loads) == 2  # was 3 loads and a planner call
+        assert plans == [] and len(loads) == 1  # was 3 loads and a planner call
 
     async def test_first_ingest_is_not_planned(
         self,
@@ -303,9 +306,9 @@ class TestUnloadableFile:
         f = tmp_path / "a.txt"
         f.write_text("x")
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
-        with pytest.raises(Exception, match="corrupt file"):
+        with pytest.raises(IngestionError, match="corrupt file"):
             await g.ingest(str(f), planner=planner)
-        assert plans == [] and len(loads) == 2
+        assert plans == [] and len(loads) == 1
 
 
 # ── One definition of the content hash and the entity types ─────
@@ -392,6 +395,43 @@ class TestMaxChunks:
         assert result.chunks_indexed == 1
         assert any("MERGE" in str(c.args[0]) for c in mock_conn.query.call_args_list)
         assert result.metadata["plan"]["max_chunks"] == 5
+
+    async def test_budget_holds_when_all_strategies_are_passed(
+        self,
+        mock_conn,  # noqa: F811
+        embedder,
+    ):
+        llm = MockLLM()
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        with pytest.raises(ChunkBudgetExceededError, match="over max_chunks=2"):
+            await g.ingest(
+                text=LONG_RUN.text,
+                document_id="big",
+                planner=RuleBasedIngestionPlanner(max_chunks=2),
+                chunker=build_chunker("fixed"),
+                extractor=GraphExtraction(llm=llm),
+                resolver=ExactMatchResolution(),
+            )
+        assert llm._call_index == 0
+
+    async def test_all_strategies_passed_reports_the_budget(
+        self,
+        mock_conn,  # noqa: F811
+        embedder,
+    ):
+        llm = MockLLM()
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        result = await g.ingest(
+            text="Alice works at Acme.",
+            document_id="small",
+            planner=RuleBasedIngestionPlanner(max_chunks=5),
+            chunker=build_chunker("fixed"),
+            extractor=GraphExtraction(llm=llm),
+            resolver=ExactMatchResolution(),
+        )
+        plan = result.metadata["plan"]
+        assert plan["max_chunks"] == 5 and plan["planner"] is None
+        assert set(plan["slots"].values()) == {"caller"}
 
     async def test_wraps_whatever_chunker_is_used(self):
         inner = build_chunker("fixed")

@@ -13,7 +13,7 @@ import os
 import re
 import warnings
 from collections.abc import Sequence
-from typing import Any, Literal, overload
+from typing import Any, Literal, NoReturn, overload
 from uuid import uuid4
 
 from graphrag_sdk import __version__
@@ -23,6 +23,7 @@ from graphrag_sdk.core.exceptions import (
     ConfigError,
     DatabaseError,
     DocumentNotFoundError,
+    IngestionError,
     LatencyBudgetExceededError,
 )
 from graphrag_sdk.core.models import (
@@ -185,6 +186,14 @@ _RAG_PROMPT = "<context>\n{context}\n</context>\n\nQuestion: {question}\n\nAnswe
 # tolerant) so a chunk containing the closing delimiter cannot escape the
 # context block in the default template.
 _CONTEXT_CLOSE_RE = re.compile(r"</\s*context\s*>", re.IGNORECASE)
+
+
+def _raise_load_failure(exc: Exception) -> NoReturn:
+    """Raise a load error the way ``IngestionPipeline.run`` raises it."""
+    if isinstance(exc, IngestionError):
+        raise exc
+    logger.error("Pipeline failed with unexpected error: %s", exc)
+    raise IngestionError(f"Pipeline failed: {exc}") from exc
 
 
 def _neutralize_context_close_tag(text: str) -> str:
@@ -3388,14 +3397,13 @@ class GraphRAG:
         plan_report: dict[str, Any] | None = None
         needs_plan = auto and (chunker is None or extractor is None or resolver is None)
         unchanged = False
-        load_failed = False
         if needs_plan and existing is not None and existing.content_hash:
             # Re-ingest of content the graph already holds is a no-op in the
             # pipeline (no provider calls), so check it before planning: the
             # planner would otherwise spend an LLM call on a skipped document.
             # The file is loaded here once and reused by the pipeline.
             if text is not None:
-                current_text: str | None = text
+                current_text = text
             else:
                 try:
                     preloaded_document = await (loader or TextLoader()).load(source, ctx)
@@ -3403,23 +3411,12 @@ class GraphRAG:
                 except LatencyBudgetExceededError:
                     raise
                 except Exception as exc:  # noqa: BLE001
-                    # The pipeline's own load reports the error; planning a
-                    # document that cannot be loaded would only add a load
-                    # and an LLM call before it.
-                    logger.debug("Unchanged-content pre-check load failed (%s)", exc)
-                    current_text = None
-                    load_failed = True
-            if current_text is not None:
-                unchanged = content_hash(current_text) == existing.content_hash
-        if load_failed:
-            given = {"chunker": chunker, "extractor": extractor, "resolver": resolver}
-            plan_report = {
-                "planner": None,
-                "plan": None,
-                "slots": {k: "caller" if v is not None else "default" for k, v in given.items()},
-                "notes": ["the document could not be loaded, so the planner did not run"],
-            }
-        elif needs_plan and not unchanged:
+                    # Raised as the pipeline would raise it: loading again
+                    # (or planning) a document that cannot be loaded only
+                    # repeats the failure.
+                    _raise_load_failure(exc)
+            unchanged = content_hash(current_text) == existing.content_hash
+        if needs_plan and not unchanged:
             plan_report = {}
             (
                 chunker,
@@ -3438,6 +3435,16 @@ class GraphRAG:
                 report=plan_report,
                 loaded_document=preloaded_document,
             )
+        elif auto and not needs_plan:
+            # All three strategies were passed, so the planner does not run,
+            # but its chunk budget still holds.
+            plan_report = {
+                "planner": None,
+                "plan": None,
+                "slots": {"chunker": "caller", "extractor": "caller", "resolver": "caller"},
+                "notes": ["all three strategies were passed, so the planner did not run"],
+            }
+            chunker = self._chunk_budget(planner, chunker, plan_report)
 
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),
@@ -3470,13 +3477,6 @@ class GraphRAG:
                 "plan": None,
                 "slots": {k: "caller" if v is not None else "default" for k, v in given.items()},
                 "notes": ["content unchanged, so the planner did not run"],
-            }
-        elif auto:
-            result.metadata["plan"] = {
-                "planner": None,
-                "plan": None,
-                "slots": {"chunker": "caller", "extractor": "caller", "resolver": "caller"},
-                "notes": ["all three strategies were passed, so the planner did not run"],
             }
 
         # Cross-document duplicates can only be resolved by finalize(); see
@@ -3728,12 +3728,9 @@ class GraphRAG:
             notes=[],
         )
         if load_error is not None:
-            # The pipeline loads it again and reports the error; a planner
-            # call for a document that cannot be loaded is wasted.
-            logger.debug("Planner content-sample load failed (%s); not planning", load_error)
-            info["planner"] = None
-            info["notes"].append("the document could not be loaded, so the planner did not run")
-            return chunker, extractor, resolver, None
+            # Raised as the pipeline would raise it: a planner call or a
+            # second load for a document that cannot be loaded is wasted.
+            _raise_load_failure(load_error)
         try:
             plan = await active.plan(sample_text, source=source, ctx=ctx)
             if plan is None:
