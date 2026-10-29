@@ -63,7 +63,7 @@ JUDGE_PROMPT = (
     "the sets; an entity under two types shows the attributes of both. "
     "Descriptions are partial and may miss facts; "
     "type labels are sometimes wrong, so the same entity can appear under two "
-    "labels. Below are {n} independent SETS. A set was formed automatically "
+    "labels. The SETS are listed at the end, after the types. A set was formed automatically "
     "from name similarity and identical spellings. Because of how they were "
     "formed, most members of a set are merely RELATED — same document, same "
     "topic, same family, same firm, same place — and only some, or none, are "
@@ -75,8 +75,6 @@ JUDGE_PROMPT = (
     "For each set, partition it: put two entities in one group only if they are "
     "the exact same real-world referent. Everything else stays in its own group. "
     "Sets are independent; never group across sets.\n\n"
-    "{types}"
-    "{sets}\n\n"
     "DECISION PROCEDURE — apply to every pair in a set, in this order\n"
     "1. NAME-VARIANT TEST. Are the two names two spellings of ONE name? "
     "Translation (Munich / München), transliteration (Yusuf / Joseph, Mohammed / "
@@ -127,6 +125,13 @@ JUDGE_PROMPT = (
     "  END\n"
     "Every set must have at least one line, including the last set. No other "
     "text.\n\n"
+    # Everything above is the same in every call, and is first so the
+    # provider's prompt cache serves it (it needs an identical prefix of
+    # 1,024+ tokens); what changes per call — the types and the sets — ends
+    # the prompt.
+    "{types}"
+    "THE {n} SETS\n"
+    "{sets}\n\n"
     "Answer:"
 )
 
