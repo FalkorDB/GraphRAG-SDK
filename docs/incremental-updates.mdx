@@ -146,6 +146,7 @@ DeleteDocumentResult(
 | The `Document` node itself                                                       | Removed last, after cleanup completes.                               |
 | `__Entity__` nodes that the doc referenced and have **no** remaining `MENTIONED_IN` | Scoped to candidates from this document; entities still cited elsewhere are kept. |
 | `RELATES` edges whose `source_chunk_ids` are entirely from this Document's chunks | Stale-fact cleanup. Edges with multi-document provenance survive.    |
+| What the document said about the entities it mentioned                          | Their descriptions are rebuilt from their remaining `MENTIONED_IN` edges (no LLM call). |
 
 ### Crash safety
 

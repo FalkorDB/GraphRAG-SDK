@@ -82,16 +82,16 @@ The layers are connected by `MENTIONED_IN` edges, which link entities to the chu
 |----------|------|-------------|
 | `id` | `string` | Deterministic: `"name__type"` (e.g., `"alice__person"`) |
 | `name` | `string` | Entity name as extracted |
-| `description` | `string` | Rich description from LLM extraction |
-| `source_chunk_ids` | `list[string]` | Chunks where this entity was found |
-| `spans` | `string` (JSON) | Character offsets: `{chunk_id: [{start, end}]}` |
+| `description` | `string` | What the documents say the entity is: the descriptions it holds, joined with `" \| "`, or one summary of them (see below) |
 | `embedding` | `vecf32` | Vector embedding of the entity name, written by `finalize()`'s dedup. Its absence marks a new entity pending dedup (a `pending` system record marks the rest); nothing else is written on an entity for dedup |
 | `aliases` | `list[string]` | Other names the entity was merged under |
-| `descriptions` | `list[string]` | Every merged member's description (`description` joins them with `" \| "`) |
+| `descriptions` | `list[string]` | The descriptions `description` joins, when there is more than one: a later mention or a merge adds its own rather than replacing |
 | `merged_labels` | `string` | Labels a merge added, joined with `" \| "` |
 | `<property>__dropped` | `list` | Values of `<property>` a dedup merge displaced: the two merged entities held different values, and the one that stayed is the judge's choice or the survivor's (e.g. `born__dropped: [1961]`) |
 
 **Created in:** Step 7 (Write). `__Entity__` label is automatically added. Embedding is written during `finalize()`.
+
+**An entity stays the same size however often it is mentioned.** Which chunks mention it, where, and what each says it is are on its `MENTIONED_IN` edges, one per chunk; the node holds no chunk list. Its descriptions are bounded twice: a write leaves at most 20 on the node (past that, a mention's description is kept on its edge only), and `finalize()`, after dedup, replaces the descriptions of every entity holding more than 5 with one LLM summary of them. When a document is deleted, the descriptions of the entities it mentioned are rebuilt from their remaining edges, without an LLM call, so nothing the document said stays on them. Graphs written by an earlier version keep their old `source_chunk_ids` lists on entities; nothing reads them, and a delete or a merge removes the ids it touches.
 
 **Default entity types (11):** Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method
 
@@ -123,7 +123,12 @@ No additional properties.
 
 **Purpose:** Co-occurrence — links entities to the chunks where they were extracted. This is a critical edge for retrieval: when you find an entity, you can traverse to its source chunks.
 
-No additional properties. Deduplicated by `(entity_id, chunk_id)`.
+| Property | Type | Description |
+|----------|------|-------------|
+| `spans` | `list[integer]` | Where the chunk names the entity, flat: `[start, end, start, end, ...]` (character offsets in the chunk's `text`) |
+| `description` | `string` | What this chunk says the entity is: the extraction model's description, or the sentence around the spans when it gave none |
+
+Deduplicated by `(entity_id, chunk_id)`. Written once and deleted with its chunk, so an entity's description can always be rebuilt from its edges.
 
 ### RELATES (Entity -> Entity)
 
