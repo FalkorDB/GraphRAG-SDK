@@ -37,6 +37,7 @@ from graphrag_sdk.tools.evidence import DEFAULT_LEDGER_CAPACITY, EvidenceLedger,
 from graphrag_sdk.tools.models import (
     ChunkRef,
     CitationCheckResult,
+    ClaimCheck,
     CypherResult,
     CypherRow,
     DocumentRef,
@@ -923,7 +924,10 @@ class GraphRAGToolkit:
         """Check ``answer``'s ``[n]`` citations against this session's evidence.
 
         Markers that match no evidence are removed from the returned answer.
-        Grounded means at least one real piece of evidence is cited.
+        Grounded means at least one real piece of evidence is cited. On a
+        grounded answer it also lists claims (sentences stating a figure or a
+        name) with no [n] of their own, and cited claims whose figures or names
+        the cited evidence does not contain; neither changes ``grounded``.
         """
         inp = CheckCitationsInput(answer=answer)
         checked = ground_answer(inp.answer, self._ledger)
@@ -931,21 +935,33 @@ class GraphRAGToolkit:
             EvidenceRef(n=ev.n, tool=ev.tool, kind=ev.kind, content=ev.content, source=ev.source)
             for ev in checked.citations(self._ledger)
         ]
-        hint = None
+        hints: list[str] = []
         if checked.reason == "no_citations":
-            hint = "Cite the evidence numbers [n] from tool results after each claim."
+            hints.append("Cite the evidence numbers [n] from tool results after each claim.")
         elif checked.reason == "invalid_citations":
-            hint = (
+            hints.append(
                 "None of those numbers were returned in this session; cite only [n] "
                 "from tool results."
             )
         elif checked.invalid:
-            hint = "Some numbers were not returned in this session and were removed."
+            hints.append("Some numbers were not returned in this session and were removed.")
+        if checked.uncited:
+            hints.append("Give each listed claim the [n] that states it, or drop it.")
+        if checked.unsupported:
+            hints.append(
+                "The cited evidence does not contain the missing figures or names: cite "
+                "the [n] that states them, or correct the claim."
+            )
+        hint = " ".join(hints) or None
         return CitationCheckResult(
             grounded=checked.grounded,
             reason=checked.reason,
             cited=checked.cited,
             invalid=checked.invalid,
+            uncited=checked.uncited,
+            unsupported=[
+                ClaimCheck(sentence=c.sentence, missing=c.missing) for c in checked.unsupported
+            ],
             answer=checked.answer,
             sources=sources,
             hint=hint,

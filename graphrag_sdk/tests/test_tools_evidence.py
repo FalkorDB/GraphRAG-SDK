@@ -188,3 +188,75 @@ class TestGroundAnswer:
     def test_citations_skip_numbers_missing_from_the_ledger(self):
         g = GroundedAnswer("x", True, "cited", cited=[1, 9])
         assert [e.n for e in g.citations(ledger(1))] == [1]
+
+
+# ── claim checks ─────────────────────────────────────────────────
+
+
+def contract() -> EvidenceLedger:
+    led = EvidenceLedger()
+    led.add(
+        tool="retrieve",
+        kind="passage",
+        content="Corvane pays 2% of the order value per week of delay, capped at 20%. "
+        "Total 1,200,000 EUR.",
+        source="corvane_contract.pdf",
+    )
+    led.add(tool="graph_walk", kind="path", content="Sofia Marquez -[SIGNED]-> HG-2025-118")
+    return led
+
+
+class TestClaimChecks:
+    def test_supported_answer_has_no_warnings(self):
+        g = ground_answer("The penalty is 2% per week, capped at 20% [1].", contract())
+        assert g.grounded and g.uncited == [] and g.unsupported == []
+
+    def test_figure_missing_from_the_cited_evidence(self):
+        g = ground_answer("The penalty is 2% per week, capped at 25% [1].", contract())
+        assert g.grounded and [u.missing for u in g.unsupported] == [["25"]]
+
+    def test_figure_is_checked_against_the_cited_item_only(self):
+        g = ground_answer("Sofia Marquez signed it, capped at 20% [2].", contract())
+        assert [u.missing for u in g.unsupported] == [["20"]]
+
+    def test_name_missing_from_the_cited_evidence(self):
+        g = ground_answer("The Kestrel sensors are capped at 20% [1].", contract())
+        assert [u.missing for u in g.unsupported] == [["Kestrel"]]
+
+    def test_a_name_is_found_by_any_of_its_words(self):
+        g = ground_answer("Corvane Systems pays 2% a week [1].", contract())
+        assert g.unsupported == []
+
+    @pytest.mark.parametrize("figure", ["1,200,000", "1200000"])
+    def test_thousands_separators_are_ignored(self, figure):
+        assert ground_answer(f"It is {figure} EUR in total [1].", contract()).unsupported == []
+
+    def test_a_figure_inside_a_longer_number_does_not_count(self):
+        g = ground_answer("Version 2.8 is mentioned in it [1].", contract())
+        assert [u.missing for u in g.unsupported] == [["2.8"]]
+
+    def test_claim_without_its_own_citation_is_listed(self):
+        answer = "Sofia Marquez signed HG-2025-118 [2]. Riverside lost power for 4 hours."
+        g = ground_answer(answer, contract())
+        assert g.grounded and g.uncited == ["Riverside lost power for 4 hours."]
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            "Sofia signed it.[2] Corvane pays 2% a week. [1]",
+            "- **Penalty:** 2% per week [1]\n- Cap: 20% [1]\n\nWant more detail?",
+            "The penalty is 2% per week [1]. The evidence does not say more.",
+            "Here is the code:\n```\nTotal = 99\n```\nIt is 2% per week [1].",
+        ],
+    )
+    def test_markers_lists_questions_and_plain_sentences(self, answer):
+        g = ground_answer(answer, contract())
+        assert g.uncited == [] and g.unsupported == []
+
+    def test_ungrounded_answer_skips_claim_checks(self):
+        g = ground_answer("Riverside lost power for 4 hours.", contract())
+        assert not g.grounded and g.uncited == [] and g.unsupported == []
+
+    def test_flagged_claims_are_capped(self):
+        answer = "Fact [1]. " + " ".join(f"Item {i} costs {i + 100} EUR." for i in range(30))
+        assert len(ground_answer(answer, contract()).uncited) == 10

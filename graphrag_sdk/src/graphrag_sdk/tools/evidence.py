@@ -25,6 +25,26 @@ _CODE_RE = re.compile(r"```[\s\S]*?(?:```|\Z)|~~~[\s\S]*?(?:~~~|\Z)|`[^`\n]*`")
 #: Stands in for a removed marker until the whitespace around it is tidied.
 _REMOVED = "\x00"
 
+#: Sentence ends: whitespace after ``.``, ``!`` or ``?`` (``2.8`` stays whole).
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+#: Markers that open a split piece belong to the sentence before (``x. [1]``).
+_LEADING_MARKERS_RE = re.compile(r"^(?:\s*\[\s*\d{1,3}(?:\s*[,;]\s*\d{1,3})*\s*\])+")
+#: A full stop with markers glued on (``it.[2] Next``): split after the markers.
+_GLUED_END_RE = re.compile(r"([.!?])((?:\[\s*\d{1,3}(?:\s*[,;]\s*\d{1,3})*\s*\])+)\s+")
+#: Sentence openers that are capitalised without being part of a name.
+_OPENERS = frozenset(
+    "The A An This That These Those It Its Our Their His Her Both Each All Some "
+    "After Before When While In On At For From With By As If So But And Then".split()
+)
+#: A list bullet, numbered item, quote or heading prefix on a line.
+_LINE_PREFIX_RE = re.compile(r"^\s*(?:[-*+>]|\d+[.)]|#{1,6})\s+")
+#: A figure in a claim: ``20``, ``2.8``, ``1,200``, the digits of ``INC-0314``.
+_FIGURE_RE = re.compile(r"\d+(?:[.,]\d+)*")
+#: A word; a capitalised one after the first word of a sentence is a name.
+_WORD_RE = re.compile(r"[^\W\d_][\w'’-]*")
+#: Sentences a check reports, at most, per kind.
+_MAX_FLAGGED = 10
+
 
 @dataclass
 class Evidence:
@@ -108,6 +128,19 @@ class EvidenceLedger:
 
 
 @dataclass
+class UnsupportedClaim:
+    """A cited sentence naming figures or names its cited evidence lacks.
+
+    Attributes:
+        sentence: The sentence as written, with its markers.
+        missing: The figures and names found in no evidence it cites.
+    """
+
+    sentence: str
+    missing: list[str] = field(default_factory=list)
+
+
+@dataclass
 class GroundedAnswer:
     """An answer after its citations were checked.
 
@@ -118,6 +151,10 @@ class GroundedAnswer:
             ``"empty"``.
         cited: Evidence numbers the answer cites that exist, in first-use order.
         invalid: Cited numbers that matched no evidence (removed from ``answer``).
+        uncited: Sentences stating a figure or a name with no ``[n]`` of their
+            own. Checked only on a grounded answer; does not change ``grounded``.
+        unsupported: Cited sentences whose figures or names appear in none of
+            the evidence they cite. Does not change ``grounded`` either.
     """
 
     answer: str
@@ -125,6 +162,8 @@ class GroundedAnswer:
     reason: str
     cited: list[int] = field(default_factory=list)
     invalid: list[int] = field(default_factory=list)
+    uncited: list[str] = field(default_factory=list)
+    unsupported: list[UnsupportedClaim] = field(default_factory=list)
 
     def citations(self, ledger: EvidenceLedger) -> list[Evidence]:
         return [ev for n in self.cited if (ev := ledger.get(n)) is not None]
@@ -184,6 +223,101 @@ def ground_answer(answer: str, ledger: EvidenceLedger) -> GroundedAnswer:
         return GroundedAnswer("", False, "empty")
     cleaned, cited, invalid = _clean_markers(raw, ledger)
     if cited:
-        return GroundedAnswer(cleaned, True, "cited", cited, invalid)
+        uncited, unsupported = _check_claims(cleaned, ledger)
+        return GroundedAnswer(cleaned, True, "cited", cited, invalid, uncited, unsupported)
     reason = "invalid_citations" if invalid else "no_citations"
     return GroundedAnswer(cleaned, False, reason, cited, invalid)
+
+
+def _sentences(text: str) -> list[str]:
+    """Split prose into sentences, one line (bullet, paragraph) at a time.
+
+    A marker written after the full stop (``x. [1]``) stays with its sentence.
+    Code is blanked out first: it is neither a claim nor a citation.
+    """
+    out: list[str] = []
+    for line in _CODE_RE.sub(" ", text).splitlines():
+        line = _LINE_PREFIX_RE.sub("", line).replace("**", "").replace("__", "").strip()
+        line = _GLUED_END_RE.sub(r"\1 \2 ", line)
+        pieces: list[str] = []
+        for piece in _SENTENCE_END_RE.split(line):
+            lead = _LEADING_MARKERS_RE.match(piece)
+            if lead and pieces:
+                pieces[-1] = f"{pieces[-1]} {lead.group(0).strip()}"
+                piece = piece[lead.end() :]
+            if piece.strip():
+                pieces.append(piece.strip())
+        out.extend(pieces)
+    return out
+
+
+def _claim_terms(sentence: str) -> list[str]:
+    """The figures and names a sentence states, in order, without repeats.
+
+    A name is a run of capitalised words ("Corvane Systems"). A sentence's
+    first word counts only when the next word is capitalised too and it is
+    not an opener such as "The", so "It ships" names nothing.
+    """
+    terms: list[str] = []
+    for figure in _FIGURE_RE.findall(sentence):
+        if figure not in terms:
+            terms.append(figure)
+    words = [re.sub(r"['’]s$", "", w).strip("'’-") for w in _WORD_RE.findall(sentence)]
+    run: list[str] = []
+    for i, word in enumerate(words):
+        capital = word[:1].isupper()
+        if i == 0:
+            follows = len(words) > 1 and words[1][:1].isupper()
+            capital = capital and follows and word not in _OPENERS
+        if capital:
+            run.append(word)
+            continue
+        if run and " ".join(run) not in terms and any(len(w) >= 3 for w in run):
+            terms.append(" ".join(run))
+        run = []
+    if run and " ".join(run) not in terms and any(len(w) >= 3 for w in run):
+        terms.append(" ".join(run))
+    return terms
+
+
+def _in_evidence(term: str, text: str) -> bool:
+    """A figure must appear as a number; a name, by any of its words."""
+    if term[0].isdigit():
+        figure = re.escape(term.replace(",", ""))
+        return re.search(rf"(?<![\d.]){figure}(?!\d|[.,]\d)", text) is not None
+    return any(w.lower() in text for w in term.split() if len(w) >= 3)
+
+
+def _check_claims(answer: str, ledger: EvidenceLedger) -> tuple[list[str], list[UnsupportedClaim]]:
+    """Find claims an answer does not back with what it cites.
+
+    A claim is a sentence of three or more words stating a figure or a name;
+    questions and lead-ins ending in ``:`` are not claims. A claim with no
+    marker of its own is uncited. A cited claim whose figures or names are in
+    none of the evidence it cites is unsupported. The check is literal, with
+    no LLM: a figure written as a word ("two") counts as missing.
+    """
+    uncited: list[str] = []
+    unsupported: list[UnsupportedClaim] = []
+    for sentence in _sentences(answer):
+        if sentence.endswith(("?", ":")):
+            continue
+        numbers: list[int] = []
+        for marker in _MARKER_RE.findall(sentence):
+            numbers.extend(int(part) for part in re.split(r"[,;]", marker) if part.strip())
+        bare = " ".join(_MARKER_RE.sub(" ", sentence).split())
+        terms = _claim_terms(bare)
+        if not terms or len(bare.split()) < 3:
+            continue
+        if not numbers:
+            if len(uncited) < _MAX_FLAGGED:
+                uncited.append(sentence)
+            continue
+        cited_text = " ".join(
+            f"{ev.content} {ev.source}" for n in numbers if (ev := ledger.get(n)) is not None
+        ).lower()
+        cited_text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", cited_text)
+        missing = [t for t in terms if not _in_evidence(t, cited_text)]
+        if missing and len(unsupported) < _MAX_FLAGGED:
+            unsupported.append(UnsupportedClaim(sentence, missing))
+    return uncited, unsupported
