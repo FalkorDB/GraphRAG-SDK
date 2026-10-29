@@ -240,7 +240,7 @@ These two steps run simultaneously since they're independent:
 
 After all documents are ingested, call `finalize()` to prepare the graph for querying. This is a separate step because some operations (like deduplication) work best when run globally across all documents, not per-document.
 
-**`finalize()` runs 4 steps in order:**
+**`finalize()` runs 6 steps in order:**
 
 | Step | What it does | Why |
 |------|-------------|-----|
@@ -248,6 +248,8 @@ After all documents are ingested, call `finalize()` to prepare the graph for que
 | 2. Deduplicate | The pending entities: exact-name match, then one judge pass over nearest names; also writes each entity's name embedding | "Alice" from doc 1 and "Alice Smith" from doc 5 become one node; the name vectors power entity vector search |
 | 3. Relationship embeddings | Embeds fact text on RELATES edges | Powers RELATES edge vector search during retrieval |
 | 4. Ensure indexes | Creates all 5 standard indexes | Vector + fulltext indexes for search |
+| 5. Name chunks | Gives each unnamed chunk the name `<document id> · chunk <index>`; pass `name_chunks=False` to skip it | A chunk reads as `note.txt · chunk 0` in a graph browser instead of a UUID |
+| 6. Consistency report | Checks the whole graph and reports what it finds | Shows what is left to fix before querying |
 
 ```python
 # After ingesting ALL documents:
