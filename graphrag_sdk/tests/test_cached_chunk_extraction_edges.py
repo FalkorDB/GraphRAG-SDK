@@ -400,7 +400,7 @@ class TestChunkCacheEdges:
         assert r.result_set[0][0] == 2, "each duplicate chunk needs its own mention"
 
         r = await rag._graph_store.query_raw(
-            "MATCH (e:__Entity__ {name:'Alice'}) RETURN e.source_chunk_ids"
+            "MATCH (:__Entity__ {name:'Alice'})-[:MENTIONED_IN]->(c:Chunk) RETURN collect(c.id)"
         )
         srcs = set(r.result_set[0][0] or [])
         live = await _live_chunk_ids(rag, "doc")
@@ -439,7 +439,7 @@ class TestChunkCacheEdges:
         )
 
         r = await rag._graph_store.query_raw(
-            "MATCH (e:__Entity__ {name:'Acme'}) RETURN e.source_chunk_ids"
+            "MATCH (:__Entity__ {name:'Acme'})-[:MENTIONED_IN]->(c:Chunk) RETURN collect(c.id)"
         )
         srcs = set(r.result_set[0][0] or [])
         assert b_ids and b_ids <= srcs, (

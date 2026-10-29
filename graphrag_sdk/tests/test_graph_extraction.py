@@ -543,8 +543,9 @@ class TestSpansMerging:
         assert "chunk-0" in merged[0].source_chunk_ids
         assert "chunk-1" in merged[0].source_chunk_ids
 
-    def test_spans_propagated_to_node_properties(self):
-        """Nodes with spans should include them in properties."""
+    def test_spans_stay_off_the_node(self):
+        """Spans go on the MENTIONED_IN edge (one per chunk), never on the
+        node, where they would grow with every mention."""
         ent = ExtractedEntity(
             name="Alice",
             type="Person",
@@ -554,8 +555,21 @@ class TestSpansMerging:
         )
         nodes = GraphExtraction._entities_to_nodes([ent])
         assert len(nodes) == 1
-        assert "spans" in nodes[0].properties
-        assert nodes[0].properties["spans"]["chunk-0"] == [{"start": 0, "end": 5}]
+        assert "spans" not in nodes[0].properties
+
+    def test_each_chunk_records_its_spans_and_what_it_says(self):
+        text = "Northstar builds cabinets. Alice, CEO of Acme, announced results. Acme grew."
+        alice = ExtractedEntity(
+            name="Alice", type="Person", description="CEO of Acme.", source_chunk_ids=["c0"]
+        )
+        acme = ExtractedEntity(name="Acme", type="Organization", source_chunk_ids=["c0"])
+        GraphExtraction._record_mentions([alice, acme], text, "c0")
+        # The model's description is what the chunk says; the spans are every mention.
+        assert alice.chunk_descriptions == {"c0": "CEO of Acme."}
+        assert alice.spans == {"c0": [{"start": 27, "end": 32}]}
+        # Without one, the sentences around the spans stand in.
+        assert acme.chunk_descriptions == {"c0": "Alice, CEO of Acme, announced results. … Acme grew."}
+        assert len(acme.spans["c0"]) == 2
 
     def test_no_spans_not_in_node_properties(self):
         """Nodes without spans should not have spans key."""

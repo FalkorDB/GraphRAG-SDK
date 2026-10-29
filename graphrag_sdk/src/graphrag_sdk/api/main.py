@@ -4449,6 +4449,10 @@ class GraphRAG:
         # call resumes via _resume_pending_delete.
         chunks_deleted = await self._graph_store.delete_document_chunks(document_id)
         _, entities_deleted = await self._run_post_cutover_cleanup(document_id, ctx)
+        # The document's mention edges went with its chunks; the description
+        # of each entity it mentioned is rebuilt from the edges that remain,
+        # so nothing the document said stays on them.
+        await self._graph_store.rebuild_entity_descriptions(candidate_ids)
         await self._graph_store.delete_document_node(document_id)
 
         logger.info(
@@ -5413,8 +5417,14 @@ class GraphRAG:
         if null_cleaned:
             ctx_log(f"finalize: removed {null_cleaned} NULL-name stub entities")
 
-        # Step 2: Incremental dedup (exact, then judged)
+        # Step 2: Incremental dedup (exact, then judged), then the description
+        # pass: entities holding more than SUMMARISE_OVER_MEMBERS descriptions
+        # get one. After dedup, not alongside it: a merge joins two nodes'
+        # descriptions, so its survivor is bounded in this run, and nothing
+        # writes a node while dedup reads and merges it.
         dedup_count = await self.deduplicate_entities(judge=judge, dedup_all=dedup_all)
+        summarised = await self._graph_store.summarise_long_descriptions(self.llm)
+        ctx_log(f"finalize: summarised {summarised} long descriptions")
         dedup_report = getattr(self._deduplicator, "last_report", None) or DedupReport()
         judge_stats = dict(getattr(self._deduplicator, "last_judge_stats", {}) or {})
         ctx_log(f"finalize: deduplicated {dedup_count} entities; judge={judge_stats}")

@@ -887,10 +887,19 @@ class ExtractedRelation(DataModel):
 
 
 class EntityMention(DataModel):
-    """A mention of an entity in a specific chunk."""
+    """A mention of an entity in a specific chunk.
+
+    ``spans`` are where the chunk names the entity, flat
+    (``[start, end, start, end, ...]``); ``description`` is what that chunk
+    says the entity is. Both are written on the ``MENTIONED_IN`` edge, so they
+    go when the chunk goes, and the entity's own description can always be
+    rebuilt from its edges.
+    """
 
     chunk_id: str
     entity_id: str
+    spans: list[int] = Field(default_factory=list)
+    description: str = ""
 
 
 class ExtractionOutput(DataModel):
