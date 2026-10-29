@@ -377,6 +377,11 @@ class IngestionPipeline(LexicalGraphWriter):
             # Step 5: Prune against ontology
             ctx.log("Step 5/9: Pruning against ontology")
             graph_data = self._prune(graph_data, self.ontology)
+            # Mentions of dropped nodes would be counted as failed MENTIONED_IN writes.
+            kept = {n.id for n in graph_data.nodes}
+            graph_data = graph_data.model_copy(
+                update={"mentions": [m for m in graph_data.mentions if m.entity_id in kept]}
+            )
 
             # Step 6: Resolve duplicate entities
             ctx.log("Step 6/9: Resolving duplicates")
