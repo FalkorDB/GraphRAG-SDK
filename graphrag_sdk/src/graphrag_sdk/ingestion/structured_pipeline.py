@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 
 from graphrag_sdk.core.context import Context
@@ -19,7 +20,7 @@ from graphrag_sdk.core.models import (
     TextChunk,
     TextChunks,
 )
-from graphrag_sdk.core.tables import unclaimed_property_name
+from graphrag_sdk.core.tables import RelationshipMapping, unclaimed_property_name
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import compute_entity_id
 from graphrag_sdk.ingestion.lexical_graph import LexicalGraphWriter, _reported_short
 from graphrag_sdk.ingestion.loaders.record_loader import (
@@ -375,6 +376,381 @@ class StructuredIngestionResult:
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"StructuredIngestionResult({self.as_dict()})"
+
+
+class RelationshipIngestionResult:
+    """Structured outcome for an edge-only table."""
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+        self.rows = 0
+        self.relationships = 0
+        self.relationships_written = 0
+        self.relationships_deleted = 0
+        self.duplicate_rows = 0
+        self.rows_skipped = 0
+        self.missing_start = 0
+        self.missing_end = 0
+        self.ambiguous_start = 0
+        self.ambiguous_end = 0
+        self.endpoint_errors: list[dict[str, Any]] = []
+        self.incomplete_writes: list[str] = []
+        self._failed_rows: set[int] = set()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "rows": self.rows,
+            "relationships": self.relationships,
+            "relationships_written": self.relationships_written,
+            "relationships_deleted": self.relationships_deleted,
+            "duplicate_rows": self.duplicate_rows,
+            "rows_skipped": self.rows_skipped,
+            "missing_start": self.missing_start,
+            "missing_end": self.missing_end,
+            "ambiguous_start": self.ambiguous_start,
+            "ambiguous_end": self.ambiguous_end,
+            "endpoint_errors": list(self.endpoint_errors),
+            "incomplete_writes": list(self.incomplete_writes),
+        }
+
+
+class RelationshipResolutionError(MappingError):
+    """Endpoint resolution failed before any relationship was written."""
+
+    def __init__(self, result: RelationshipIngestionResult) -> None:
+        self.result = result
+        super().__init__(
+            f"{result.source}: relationship endpoints did not resolve uniquely "
+            f"(missing start={result.missing_start}, missing end={result.missing_end}, "
+            f"ambiguous start={result.ambiguous_start}, "
+            f"ambiguous end={result.ambiguous_end}); no relationships were written"
+        )
+
+
+@dataclass(frozen=True)
+class _PreparedRelationship:
+    row: int
+    start_key: str
+    end_key: str
+    relationship_type: str
+    properties: dict[str, Any]
+    # A cell that could not be read (a bad type or value). Raised only if the
+    # row would be written: a row a skip policy drops cannot fail the file.
+    error: str | None = None
+
+    @property
+    def identity(self) -> tuple[str, str, str]:
+        return self.start_key, self.end_key, self.relationship_type
+
+
+class RelationshipIngestionPipeline:
+    """Resolve and write relationship-only records without creating nodes."""
+
+    def __init__(self, loader: RecordLoaderStrategy, graph_store: Any) -> None:
+        self.loader = loader
+        self.graph_store = graph_store
+
+    async def run(
+        self,
+        source: str,
+        mapping: RelationshipMapping,
+        ctx: Context | None = None,
+        *,
+        strict: bool = False,
+        stale_properties: list[str] | None = None,
+    ) -> RelationshipIngestionResult:
+        ctx = ctx or Context()
+        batch = await self.loader.load_records(source, ctx)
+        problems = mapping.validate_against(batch.columns, strict=strict)
+        if problems:
+            raise MappingError(f"mapping does not fit {source}:\n  " + "\n  ".join(problems))
+
+        result = RelationshipIngestionResult(source)
+        seen: dict[tuple[str, str, str], tuple[tuple[str, str], ...]] = {}
+        # Rows of one identity with different properties, by the identity's
+        # first row. Refused only once resolution shows they would be written:
+        # rows a skip policy drops cannot make the result order-dependent, and
+        # the error policy reports them as RelationshipResolutionError with its
+        # diagnostics.
+        conflicts: dict[tuple[str, str, str], int] = {}
+        first_rows: dict[tuple[str, str, str], int] = {}
+        # Every distinct key, so each is looked up once per ingest rather than
+        # once per row batch in each of the two passes below.
+        start_keys: dict[str, None] = {}
+        end_keys: dict[str, None] = {}
+        errored: list[_PreparedRelationship] = []
+        for prepared in self._prepared(batch, mapping):
+            result.rows += 1
+            if prepared.error is not None:
+                errored.append(prepared)
+            fingerprint = tuple(
+                (name, repr(value)) for name, value in sorted(prepared.properties.items())
+            )
+            prior = seen.get(prepared.identity)
+            if prior is not None:
+                if prior != fingerprint:
+                    conflicts.setdefault(prepared.identity, first_rows[prepared.identity])
+                result.duplicate_rows += 1
+                continue
+            seen[prepared.identity] = fingerprint
+            first_rows[prepared.identity] = prepared.row
+            if prepared.start_key:
+                start_keys[prepared.start_key] = None
+            if prepared.end_key:
+                end_keys[prepared.end_key] = None
+        # A fresh generation marks this attempt, not just the file's bytes.
+        # Unchanged rows can resolve differently (e.g. newly ambiguous keys).
+        # It is a number from the server clock, not a random token: cleanup
+        # removes only rows an older run left, so two runs of this file at
+        # once cannot delete each other's edges.
+        marker = f"relationship_mapping_{mapping.signature}"
+        snapshot_token = await self.graph_store.next_relationship_snapshot(
+            marker, mapping.signature
+        )
+
+        batch_size = int(getattr(self.graph_store, "_BATCH_SIZE", 500))
+        # The write pass reuses these answers, so it writes exactly the rows
+        # this check approved.
+        starts, ends = await self._resolve_keys(mapping, start_keys, end_keys, batch_size)
+        for prepared_batch in self._prepared_batches(batch, mapping, batch_size, unique=True):
+            self._resolve_batch(mapping, prepared_batch, result, starts, ends, collect_issues=True)
+        result.rows_skipped = len(result._failed_rows)
+
+        has_fatal_missing = mapping.missing_endpoint == "error" and (
+            result.missing_start or result.missing_end
+        )
+        has_fatal_ambiguous = mapping.ambiguous_endpoint == "error" and (
+            result.ambiguous_start or result.ambiguous_end
+        )
+        if has_fatal_missing or has_fatal_ambiguous:
+            raise RelationshipResolutionError(result)
+        # A bad cell fails the file only on a row that would be written; the
+        # resolution pass read each identity's first row.
+        for prepared in errored:
+            if first_rows.get(prepared.identity, prepared.row) not in result._failed_rows:
+                raise MappingError(prepared.error)
+        # The resolution pass reads each identity's first row, and every row of
+        # an identity resolves alike, so that row says whether any is written.
+        for identity, first_row in conflicts.items():
+            if first_row not in result._failed_rows:
+                raise MappingError(
+                    f"{source}: rows resolving to {identity!r} declare "
+                    f"different relationship properties; refusing an order-dependent update"
+                )
+
+        seen.clear()
+        for prepared_batch in self._prepared_batches(batch, mapping, batch_size):
+            unique_batch: list[_PreparedRelationship] = []
+            for prepared in prepared_batch:
+                if prepared.identity in seen:
+                    continue
+                seen[prepared.identity] = ()
+                unique_batch.append(prepared)
+            relationships = self._resolve_batch(
+                mapping,
+                unique_batch,
+                result,
+                starts,
+                ends,
+                collect_issues=False,
+                snapshot_token=snapshot_token,
+            )
+            result.relationships += len(relationships)
+            written = await self.graph_store.upsert_relationships(
+                relationships, snapshot_property=marker
+            )
+            result.relationships_written += written
+            if _reported_short(written, len(relationships)):
+                result.incomplete_writes.append(
+                    f"relationships {written}/{len(relationships)} in row batch "
+                    f"{unique_batch[0].row}-{unique_batch[-1].row}"
+                )
+
+        if not result.incomplete_writes:
+            result.relationships_deleted = await self.graph_store.finalize_relationship_snapshot(
+                mapping.signature,
+                marker,
+                snapshot_token,
+                stale_properties
+                or [mapping.signed_name(prop) for prop in mapping.typed_properties],
+            )
+        ctx.log(
+            f"Relationship ingest of {source}: {result.rows} rows, "
+            f"{result.relationships_written} relationships written, "
+            f"{result.rows_skipped} endpoint failures"
+        )
+        return result
+
+    @staticmethod
+    def _prepared(
+        batch: RecordBatch, mapping: RelationshipMapping
+    ) -> Iterator[_PreparedRelationship]:
+        columns = mapping.typed_properties
+        for index, record in enumerate(batch, start=1):
+            start = cell_text(record, mapping.start.column)
+            end = cell_text(record, mapping.end.column)
+            relationship_type = ""
+            try:
+                relationship_type = mapping.type_for(record)
+                properties = {
+                    mapping.signed_name(prop): column.cast(record.get(column.name))
+                    for prop, column in columns.items()
+                }
+            except MappingError as exc:
+                yield _PreparedRelationship(
+                    index,
+                    start,
+                    end,
+                    relationship_type,
+                    {},
+                    error=f"{mapping.source}: row {index}: {exc}",
+                )
+                continue
+            yield _PreparedRelationship(index, start, end, relationship_type, properties)
+
+    @classmethod
+    def _prepared_batches(
+        cls,
+        batch: RecordBatch,
+        mapping: RelationshipMapping,
+        batch_size: int,
+        *,
+        unique: bool = False,
+    ) -> Iterator[list[_PreparedRelationship]]:
+        pending: list[_PreparedRelationship] = []
+        identities: set[tuple[str, str, str]] = set()
+        for prepared in cls._prepared(batch, mapping):
+            if unique and prepared.identity in identities:
+                continue
+            if unique:
+                identities.add(prepared.identity)
+            pending.append(prepared)
+            if len(pending) == batch_size:
+                yield pending
+                pending = []
+        if pending:
+            yield pending
+
+    async def _resolve_keys(
+        self,
+        mapping: RelationshipMapping,
+        start_keys: dict[str, None],
+        end_keys: dict[str, None],
+        batch_size: int,
+    ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        """``key -> node ids`` for each endpoint, one lookup per ``batch_size`` keys."""
+
+        async def lookup(entity: str, key: str, keys: list[str]) -> dict[str, list[str]]:
+            resolved: dict[str, list[str]] = {}
+            for start in range(0, len(keys), batch_size):
+                resolved.update(
+                    await self.graph_store.resolve_by_property(
+                        entity, key, keys[start : start + batch_size]
+                    )
+                )
+            return resolved
+
+        if mapping.start.entity == mapping.end.entity and mapping.start.key == mapping.end.key:
+            combined = await lookup(
+                mapping.start.entity, mapping.start.key, list({**start_keys, **end_keys})
+            )
+            return combined, combined
+        starts = await lookup(mapping.start.entity, mapping.start.key, list(start_keys))
+        ends = await lookup(mapping.end.entity, mapping.end.key, list(end_keys))
+        return starts, ends
+
+    def _resolve_batch(
+        self,
+        mapping: RelationshipMapping,
+        prepared_batch: list[_PreparedRelationship],
+        result: RelationshipIngestionResult,
+        starts: dict[str, list[str]],
+        ends: dict[str, list[str]],
+        *,
+        collect_issues: bool,
+        snapshot_token: int | None = None,
+    ) -> list[GraphRelationship]:
+        relationships: list[GraphRelationship] = []
+        for item in prepared_batch:
+            start_candidates = starts.get(item.start_key, []) if item.start_key else []
+            end_candidates = ends.get(item.end_key, []) if item.end_key else []
+            invalid = False
+            invalid |= self._record_endpoint_issue(
+                mapping,
+                result,
+                item,
+                "start",
+                item.start_key,
+                start_candidates,
+                collect_issues,
+            )
+            invalid |= self._record_endpoint_issue(
+                mapping,
+                result,
+                item,
+                "end",
+                item.end_key,
+                end_candidates,
+                collect_issues,
+            )
+            if invalid or collect_issues:
+                continue
+            start_id, end_id = start_candidates[0], end_candidates[0]
+            start_entity, end_entity = mapping.start.entity, mapping.end.entity
+            if mapping.direction == "INCOMING":
+                start_id, end_id = end_id, start_id
+                start_entity, end_entity = end_entity, start_entity
+            properties = {
+                "rel_type": item.relationship_type,
+                "fact": f"({start_entity}, {item.relationship_type}, {end_entity})",
+                "structured_sources": [mapping.signature],
+                f"relationship_mapping_{mapping.signature}": snapshot_token,
+                **item.properties,
+            }
+            relationships.append(
+                GraphRelationship(
+                    start_node_id=start_id,
+                    end_node_id=end_id,
+                    type="RELATES",
+                    properties=properties,
+                )
+            )
+        return relationships
+
+    @staticmethod
+    def _record_endpoint_issue(
+        mapping: RelationshipMapping,
+        result: RelationshipIngestionResult,
+        item: _PreparedRelationship,
+        endpoint_name: str,
+        key_value: str,
+        candidates: list[str],
+        collect: bool,
+    ) -> bool:
+        if len(candidates) == 1:
+            return False
+        if not collect:
+            return True
+        status = "missing" if not candidates else "ambiguous"
+        counter = f"{status}_{endpoint_name}"
+        setattr(result, counter, int(getattr(result, counter)) + 1)
+        result._failed_rows.add(item.row)
+        if len(result.endpoint_errors) < 100:
+            endpoint = mapping.start if endpoint_name == "start" else mapping.end
+            result.endpoint_errors.append(
+                {
+                    "row": item.row,
+                    "endpoint": endpoint_name,
+                    "status": status,
+                    "entity": endpoint.entity,
+                    "key_property": endpoint.key,
+                    "key_value": key_value,
+                    "candidate_count": len(candidates),
+                    "candidate_ids": list(candidates[:20]),
+                }
+            )
+        return True
 
 
 def _warn_about_a_column_typed_narrower_than_declared(

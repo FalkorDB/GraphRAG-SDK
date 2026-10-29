@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -81,6 +82,13 @@ _UNION_NODE_PROVENANCE = (
     "ELSE old + [c IN contrib WHERE NOT c IN old] END"
 )
 
+# How long a write waits for an index it just created to finish building before
+# it gives up with a warning and runs anyway. ``CREATE INDEX`` returns at once
+# and FalkorDB plans queries without the index until it is built: the first
+# 500-key lookup on a 1M-node label scanned the label once per key and timed
+# out. A 1M-node range index builds in about 1.5 s.
+_INDEX_READY_WAIT_S = 60.0
+
 
 class GraphStore:
     """Unified graph data access layer for FalkorDB.
@@ -146,25 +154,85 @@ class GraphStore:
         creates nothing rather than failing a CREATE per label. Failure is not
         fatal, it only costs speed. ``extra`` names further properties a caller
         is about to look nodes up by, such as a table's signed key.
+
+        Every missing field goes into one ``CREATE INDEX``: on FalkorDB 6.0.2 the
+        last of several statements sent back to back for one label sometimes
+        stayed empty while reporting OPERATIONAL, so every lookup on it, and
+        any plain ``MATCH`` filtering on it, found nothing. It then waits for
+        the build, so the caller's first query can use the index.
         """
         if self._indexed is None:
             self._indexed = await self._read_range_indexes()
         safe_label = sanitize_cypher_label(label)
-        for prop in (*self._LABEL_INDEXED_PROPERTIES, *extra):
-            if (label, prop) in self._indexed:
-                continue
-            target = prop if prop in self._LABEL_INDEXED_PROPERTIES else f"`{prop}`"
+        wanted = list(dict.fromkeys((*self._LABEL_INDEXED_PROPERTIES, *extra)))
+        sent = False
+        for _ in range(3):
+            missing = [prop for prop in wanted if (label, prop) not in self._indexed]
+            if not missing:
+                break
+            fields = ", ".join(
+                f"n.{prop}"
+                if prop in self._LABEL_INDEXED_PROPERTIES
+                else f"n.`{sanitize_cypher_label(prop)}`"
+                for prop in missing
+            )
             try:
-                await self._conn.query(f"CREATE INDEX FOR (n:`{safe_label}`) ON (n.{target})")
-                logger.debug("Created range index on %s.%s", safe_label, prop)
+                await self._conn.query(
+                    f"CREATE INDEX FOR (n:`{safe_label}`) ON ({fields})",
+                    expected_errors=("already indexed",),
+                )
             except Exception as exc:
                 if "already indexed" not in str(exc).lower():
                     # The graph refused, or the connection blipped: not
                     # remembered, so the next write tries again.
-                    logger.debug("Range index on %s.%s not created: %s", safe_label, prop, exc)
-                    continue
-                # Another instance got there first; the index exists.
-            self._indexed.add((label, prop))
+                    logger.debug("Range index on %s %s not created: %s", safe_label, missing, exc)
+                    break
+                # Another instance indexed one of these first, and FalkorDB
+                # then creates none of them. Read which, and ask for the rest.
+                sent = True
+                self._indexed |= await self._read_range_indexes()
+                continue
+            logger.debug("Created range index on %s %s", safe_label, missing)
+            self._indexed.update((label, prop) for prop in missing)
+            sent = True
+            break
+        if sent:
+            await self._wait_for_index(label, "NODE")
+
+    async def _wait_for_index(self, label: str, entity_type: str) -> None:
+        """Wait, up to ``_INDEX_READY_WAIT_S``, until ``label``'s index is built.
+
+        Both 4.x and 6.0.x report ``"[Indexing] x/y: UNDER CONSTRUCTION"`` while
+        building and exactly ``"OPERATIONAL"`` after. Giving up only costs
+        speed: until the build ends FalkorDB plans without the index.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _INDEX_READY_WAIT_S
+        delay = 0.1
+        while True:
+            try:
+                result = await self._conn.query(
+                    "CALL db.indexes() YIELD label, status, entitytype "
+                    "WHERE label = $label AND entitytype = $entity_type RETURN status",
+                    {"label": label, "entity_type": entity_type},
+                )
+            except Exception:
+                logger.debug("Could not read index status for %s", label, exc_info=True)
+                return
+            statuses = [row[0] for row in getattr(result, "result_set", None) or [] if row]
+            if all(status == "OPERATIONAL" for status in statuses):
+                return
+            if loop.time() >= deadline:
+                logger.warning(
+                    "Index on %s still building after %.0fs (%s); queries on it run "
+                    "without the index until it finishes",
+                    label,
+                    _INDEX_READY_WAIT_S,
+                    "; ".join(str(status) for status in statuses),
+                )
+                return
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 1.0)
 
     async def _read_range_indexes(self) -> set[tuple[str, str]]:
         """Every ``(label, property)`` the graph already indexes; empty if unreadable."""
@@ -412,6 +480,34 @@ class GraphStore:
             for row in getattr(found, "result_set", None) or []
             if row[1]
         }
+
+    async def resolve_by_property(
+        self, label: str, property_name: str, keys: Sequence[str]
+    ) -> dict[str, list[str]]:
+        """Resolve exact endpoint keys without crossing declared key spaces."""
+        if not keys:
+            return {}
+        await self._ensure_label_id_index(label, property_name)
+        safe_label = sanitize_cypher_label(label)
+        safe_property = sanitize_cypher_label(property_name)
+        resolved: dict[str, list[str]] = {}
+        unique = list(dict.fromkeys(keys))
+        for start in range(0, len(unique), self._BATCH_SIZE):
+            batch = unique[start : start + self._BATCH_SIZE]
+            found = await self.query_raw(
+                f"UNWIND $keys AS k "
+                f"MATCH (n:__Entity__:`{safe_label}` {{`{safe_property}`: k}}) "
+                # Not DISTINCT: two nodes sharing one id (nothing makes ids
+                # unique) are two matches, refused as ambiguous, rather than
+                # one candidate the write then MATCHes twice.
+                "RETURN k, collect(n.id)",
+                {"keys": batch},
+            )
+            for row in getattr(found, "result_set", None) or []:
+                if not (isinstance(row, list) and len(row) >= 2 and row[0]):
+                    continue
+                resolved[str(row[0])] = [node_id for node_id in row[1] if node_id]
+        return resolved
 
     async def reconcile_keyed_identity(
         self, label: str, signed_key: str, rows: Sequence[tuple[str, str]]
@@ -682,11 +778,21 @@ class GraphStore:
         logger.debug(f"Upserted {count} reference nodes")
         return count
 
-    async def upsert_relationships(self, relationships: list[GraphRelationship]) -> int:
+    async def upsert_relationships(
+        self,
+        relationships: list[GraphRelationship],
+        *,
+        snapshot_property: str | None = None,
+    ) -> int:
         """Batch upsert relationships using UNWIND, grouped by type.
 
         Args:
             relationships: List of relationships to upsert.
+            snapshot_property: A RELATES property holding a relationship-table
+                run's snapshot number (see :meth:`next_relationship_snapshot`).
+                An edge keeps the larger of its stored and incoming number, so a
+                run that started earlier and writes later cannot make a newer
+                run's edges look stale to that run's cleanup.
 
         Returns:
             Number of relationships upserted.
@@ -698,6 +804,27 @@ class GraphStore:
         by_type: dict[str, list[GraphRelationship]] = {}
         for rel in relationships:
             by_type.setdefault(rel.type, []).append(rel)
+
+        # A snapshot number is read before ``SET r += ...`` overwrites it and
+        # the larger of the stored and incoming one is kept.
+        #
+        # A relationship-table write also keeps the ``fact`` of an edge a
+        # document supports: the table's is one template per mapping, and
+        # replacing the document's left the embedding of the document's text
+        # on an edge whose fact no longer said it (finalize() does not
+        # re-embed an edge that has an embedding).
+        old_snapshot = batch_snapshot = item_snapshot = ""
+        if snapshot_property:
+            safe_snapshot = sanitize_cypher_label(snapshot_property)
+            old_snapshot = f", r.`{safe_snapshot}` AS old_snapshot, r.fact AS old_fact"
+            batch_snapshot, item_snapshot = (
+                f" SET r.`{safe_snapshot}` = CASE WHEN old_snapshot > "
+                f"{incoming}.`{safe_snapshot}` THEN old_snapshot "
+                f"ELSE {incoming}.`{safe_snapshot}` END, "
+                "r.fact = CASE WHEN size(old) > 0 AND old_fact IS NOT NULL "
+                "THEN old_fact ELSE r.fact END"
+                for incoming in ("item.properties", "$properties")
+            )
 
         count = 0
         for rel_type, group in by_type.items():
@@ -737,6 +864,23 @@ class GraphStore:
             ] = {}
             for rel, sid, eid in cleaned_group:
                 props = self._clean_properties(rel.properties)
+                # A blank signed property (a relationship table's empty cell,
+                # or a LIST cell with no items, which ``_clean_properties``
+                # drops) is sent as null, which ``SET r += ...`` removes;
+                # left out, the edge kept the value an earlier run wrote. A
+                # REMOVE clause per combination of blank cells split each
+                # batch into up to one query per row.
+                # Relationship-table writes only: a node table's link edges keep
+                # leaving a blank property out, as before, so a later blank row
+                # in one batch cannot clear what an earlier row wrote.
+                if snapshot_property:
+                    props.update(
+                        (name, None)
+                        for name, value in rel.properties.items()
+                        if "__" in name
+                        and name not in props
+                        and (value is None or isinstance(value, list))
+                    )
                 rel_key = self._merge_key_value(props.get("rel_type", "")) if is_relates else ""
                 key = (sid, eid, rel_key)
                 if key in folded:
@@ -787,9 +931,15 @@ class GraphStore:
                         f"{{rel_type: coalesce(item.properties.rel_type, '')}}]->(b) "
                         f"WITH r, item, "
                         f"     coalesce(r.source_chunk_ids, []) AS old, "
-                        f"     coalesce(item.properties.source_chunk_ids, []) AS contrib "
+                        f"     coalesce(item.properties.source_chunk_ids, []) AS contrib, "
+                        f"     coalesce(r.structured_sources, []) AS old_sources, "
+                        f"     coalesce(item.properties.structured_sources, []) AS sources"
+                        f"{old_snapshot} "
                         f"SET r += item.properties "
-                        f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]"
+                        f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old], "
+                        f"    r.structured_sources = old_sources + "
+                        f"[s IN sources WHERE NOT s IN old_sources]"
+                        f"{batch_snapshot}"
                     )
                 else:
                     query = (
@@ -828,9 +978,16 @@ class GraphStore:
                                 f"{{rel_type: coalesce($properties.rel_type, '')}}]->(b) "
                                 f"WITH r, $properties AS props, "
                                 f"     coalesce(r.source_chunk_ids, []) AS old, "
-                                f"     coalesce($properties.source_chunk_ids, []) AS contrib "
+                                f"     coalesce($properties.source_chunk_ids, []) AS contrib, "
+                                f"     coalesce(r.structured_sources, []) AS old_sources, "
+                                f"     coalesce($properties.structured_sources, []) AS sources"
+                                f"{old_snapshot} "
                                 f"SET r += props "
-                                f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]"
+                                f"SET r.source_chunk_ids = old + "
+                                f"[c IN contrib WHERE NOT c IN old], "
+                                f"    r.structured_sources = old_sources + "
+                                f"[s IN sources WHERE NOT s IN old_sources]"
+                                f"{item_snapshot}"
                             )
                         else:
                             q = (
@@ -852,6 +1009,208 @@ class GraphStore:
 
         logger.debug(f"Upserted {count} relationships")
         return count
+
+    # Rows one cleanup query strips or deletes, so dropping a large table is a
+    # series of short writes rather than one that holds the graph for seconds.
+    _RELATIONSHIP_CLEANUP_BATCH = 10_000
+
+    async def _ensure_relationship_source_index(self) -> None:
+        """Range-index ``RELATES.structured_sources``, once for every relationship table.
+
+        A table's snapshot and cleanup queries then read only the edges that
+        list it, through ``$signature IN r.structured_sources`` -- without the
+        index each one read every RELATES edge in the graph, document edges
+        included. One index for all tables: adding a field to RELATES makes
+        FalkorDB rebuild the whole RELATES index, embeddings included, so a
+        per-table index would rebuild it for every new table. Created here
+        rather than with the other indexes, so a graph that never ingests a
+        relationship table never pays that rebuild.
+        """
+        if self._indexed is None:
+            self._indexed = await self._read_range_indexes()
+        if ("RELATES", "structured_sources") in self._indexed:
+            return
+        # Not while the RELATES embedding index is still building: on FalkorDB
+        # 6.0.2 a field added while another one builds could come up empty.
+        await self._wait_for_index("RELATES", "RELATIONSHIP")
+        try:
+            await self._conn.query(
+                "CREATE INDEX FOR ()-[r:RELATES]-() ON (r.structured_sources)",
+                expected_errors=("already indexed",),
+            )
+        except Exception as exc:
+            if "already indexed" not in str(exc).lower():
+                logger.debug("Range index on RELATES.structured_sources not created: %s", exc)
+                return
+        self._indexed.add(("RELATES", "structured_sources"))
+        await self._wait_for_index("RELATES", "RELATIONSHIP")
+
+    async def next_relationship_snapshot(self, marker_property: str, signature: str) -> int:
+        """Return the snapshot number for a new relationship-table run.
+
+        It is the server clock in milliseconds, so a run that starts later
+        outranks one already running, and that run's cleanup leaves the later
+        run's edges alone. When one of the source's edges already holds that
+        number or a larger one (two runs in one millisecond, or a clock set
+        back) it is one more than the largest, so a re-ingest always outranks
+        the run before it.
+
+        The ``structured_sources`` index this reads through is created by the
+        run's cleanup, after its endpoint lookups: FalkorDB builds one index at
+        a time, and on a graph with many embedded edges the endpoint key index
+        those lookups need waited behind the RELATES rebuild. Without the index
+        this query reads every RELATES edge, once.
+        """
+        marker = sanitize_cypher_label(marker_property)
+        result = await self._conn.query(
+            "MATCH ()-[r:RELATES]->() "
+            # Not wrapped in coalesce(): FalkorDB 4.x then skips the index.
+            "WHERE $signature IN r.structured_sources "
+            f"AND r.`{marker}` IS NOT NULL "
+            f"WITH max(r.`{marker}`) AS newest "
+            "WITH newest, timestamp() AS now "
+            "RETURN CASE WHEN newest IS NULL OR now > newest THEN now ELSE newest + 1 END",
+            {"signature": signature},
+        )
+        return int(result.result_set[0][0])
+
+    async def finalize_relationship_snapshot(
+        self,
+        signature: str,
+        marker_property: str,
+        snapshot_token: int,
+        signed_properties: Sequence[str],
+    ) -> int:
+        """Remove stale contributions after a complete relationship-table write.
+
+        Current rows carry ``marker_property`` set to this run's
+        ``snapshot_token`` or a newer run's (:meth:`upsert_relationships` never
+        lowers it). Rows whose number is older than this run's lose only this
+        mapping's signed properties and source marker; a newer run's rows are
+        left alone, so two runs of one source at once cannot delete each
+        other's edges. The physical edge is deleted only when no structured
+        table and no document chunk still supports it.
+
+        Stale edges are found through the ``structured_sources`` index, so only
+        this source's edges are read, and changed ``_RELATIONSHIP_CLEANUP_BATCH``
+        at a time. Finding and changing them are two queries: FalkorDB 6.0.2
+        crashed (a RediSearch lock assertion) when one query set
+        ``structured_sources`` on edges while its LIMIT left the scan of that
+        index open. The change finds each edge again by the ids of both its
+        nodes and checks it is still stale: matching only the start node made
+        every row walk all of that node's RELATES edges, so cleanup took time
+        rows x out-degree (38 s for 20,000 edges from one node).
+        """
+        await self._ensure_relationship_source_index()
+        marker = sanitize_cypher_label(marker_property)
+        removed = ", ".join(
+            f"r.`{sanitize_cypher_label(name)}`"
+            for name in dict.fromkeys((marker_property, *signed_properties))
+        )
+        params: dict[str, Any] = {"signature": signature, "snapshot": snapshot_token}
+        find = (
+            "MATCH (a)-[r:RELATES]->(b) "
+            # Not wrapped in coalesce(): FalkorDB 4.x then skips the index.
+            "WHERE $signature IN r.structured_sources "
+            f"AND coalesce(r.`{marker}`, 0) < $snapshot "
+            "RETURN id(a), id(r), id(b) LIMIT $limit"
+        )
+        strip = (
+            "UNWIND $edges AS edge "
+            "MATCH (a) WHERE id(a) = edge.a "
+            # WITH between the MATCHes: FalkorDB 6.0.2 loses ``edge`` without it.
+            "WITH a, edge "
+            "MATCH (b) WHERE id(b) = edge.b "
+            "WITH a, b, edge "
+            # Both ends bound: the engine checks the edges between a and b only,
+            # instead of every edge leaving a.
+            "MATCH (a)-[r:RELATES]->(b) WHERE id(r) = edge.r "
+            # any() rather than IN, so this query never reads that index.
+            "AND any(s IN r.structured_sources WHERE s = $signature) "
+            f"AND coalesce(r.`{marker}`, 0) < $snapshot "
+            "WITH r, [s IN r.structured_sources WHERE s <> $signature] AS rest "
+            "SET r.structured_sources = rest "
+            f"REMOVE {removed} "
+            "WITH collect(r) AS stale, collect(CASE WHEN size(rest) = 0 "
+            "AND size(coalesce(r.source_chunk_ids, [])) = 0 THEN r END) AS unsupported "
+            "FOREACH (x IN unsupported | DELETE x) "
+            "RETURN size(stale)"
+        )
+        total = 0
+        while True:
+            found = await self._conn.query(
+                find, {**params, "limit": self._RELATIONSHIP_CLEANUP_BATCH}
+            )
+            edges = [
+                {"a": row[0], "r": row[1], "b": row[2]}
+                for row in getattr(found, "result_set", None) or []
+            ]
+            if not edges:
+                return total
+            result = await self._conn.query(strip, {**params, "edges": edges})
+            rows = getattr(result, "result_set", None) or []
+            stripped = int(rows[0][0]) if rows and rows[0] else 0
+            total += stripped
+            # A stripped edge no longer lists the source, so the next read starts
+            # on the ones left; one that could not be stripped would come back.
+            if not stripped:
+                return total
+
+    async def clear_relationship_source_property(
+        self, signature: str, relationship_type: str, property_name: str
+    ) -> None:
+        """Retract a removed mapping property from surviving source-owned edges.
+
+        In ``_RELATIONSHIP_CLEANUP_BATCH`` edges per write, found and changed
+        by two queries as in :meth:`finalize_relationship_snapshot`: one write
+        over every edge of a large source could hold the graph or time out.
+        An edge drops out of the next read once the property is gone.
+        """
+        await self._ensure_relationship_source_index()
+        safe_property = sanitize_cypher_label(property_name)
+        params: dict[str, Any] = {"signature": signature, "type": relationship_type}
+        find = (
+            "MATCH (a)-[r:RELATES]->(b) "
+            "WHERE $signature IN r.structured_sources AND r.rel_type = $type "
+            f"AND r.`{safe_property}` IS NOT NULL "
+            "RETURN id(a), id(r), id(b) LIMIT $limit"
+        )
+        clear = (
+            "UNWIND $edges AS edge "
+            "MATCH (a) WHERE id(a) = edge.a "
+            "WITH a, edge "
+            "MATCH (b) WHERE id(b) = edge.b "
+            "WITH a, b, edge "
+            "MATCH (a)-[r:RELATES]->(b) WHERE id(r) = edge.r "
+            f"REMOVE r.`{safe_property}` "
+            "RETURN count(r)"
+        )
+        while True:
+            found = await self._conn.query(
+                find, {**params, "limit": self._RELATIONSHIP_CLEANUP_BATCH}
+            )
+            edges = [
+                {"a": row[0], "r": row[1], "b": row[2]}
+                for row in getattr(found, "result_set", None) or []
+            ]
+            if not edges:
+                return
+            result = await self._conn.query(clear, {**params, "edges": edges})
+            rows = getattr(result, "result_set", None) or []
+            if not (rows and rows[0] and rows[0][0]):
+                return
+
+    async def drop_relationship_source(
+        self, signature: str, signed_properties: Sequence[str]
+    ) -> int:
+        """Remove one relationship table's contribution without touching peers."""
+        return await self.finalize_relationship_snapshot(
+            signature,
+            f"relationship_mapping_{signature}",
+            # Newer than any run's number, so every row of the source is stale.
+            2**63 - 1,
+            signed_properties,
+        )
 
     # ── Read Operations ──────────────────────────────────────────
 
@@ -1721,9 +2080,24 @@ class GraphStore:
                 "MATCH (e:__Entity__ {id: eid})-[r:RELATES]-(:__Entity__) "
                 "WHERE r.source_chunk_ids IS NOT NULL "
                 "AND size(r.source_chunk_ids) = 0 "
+                "AND size(coalesce(r.structured_sources, [])) = 0 "
                 "WITH DISTINCT r "
                 "DELETE r "
                 "RETURN count(r) AS n",
+                {"ids": batch},
+            )
+            # An edge a relationship table still owns survives without its
+            # last chunk; it is no longer embedded (see embed_relationships),
+            # so its old vector goes too rather than keep taking search slots.
+            await self._conn.query(
+                "UNWIND $ids AS eid "
+                "MATCH (e:__Entity__ {id: eid})-[r:RELATES]-(:__Entity__) "
+                "WHERE r.source_chunk_ids IS NOT NULL "
+                "AND size(r.source_chunk_ids) = 0 "
+                "AND size(coalesce(r.structured_sources, [])) > 0 "
+                "AND r.embedding IS NOT NULL "
+                "WITH DISTINCT r "
+                "REMOVE r.embedding",
                 {"ids": batch},
             )
             deleted += r.result_set[0][0] if r.result_set else 0
@@ -2431,6 +2805,12 @@ class GraphStore:
         is extended in place; it is the fresh copy ``_clean_properties`` made.
         """
         merged = {**acc, **props}
+        # Relationship-table ownership is unioned like provenance, so two
+        # tables' writes of one edge in a call keep both owners.
+        owners = acc.get("structured_sources")
+        new_owners = props.get("structured_sources")
+        if union_provenance and isinstance(owners, list) and isinstance(new_owners, list):
+            merged["structured_sources"] = owners + [x for x in new_owners if x not in owners]
         old = acc.get("source_chunk_ids")
         contrib = props.get("source_chunk_ids")
         if union_provenance and isinstance(old, list):
