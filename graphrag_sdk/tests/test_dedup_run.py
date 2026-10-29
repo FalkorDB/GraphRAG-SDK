@@ -372,9 +372,9 @@ async def test_a_pending_record_whose_lists_lost_their_entries_is_still_checked(
     """FalkorDB 4.22.2 was seen to change a stored pending record no query
     wrote: ``ids`` kept 28 entries while ``reasons``, and later ``attempts``,
     read back empty. Every later finalize() then crashed with IndexError, in
-    the claim (``reasons``) or in the move to unresolved (``attempts``). The
-    record is read aligned to its ids instead: a lost count is 0, a lost
-    reason empty, and the entity is checked."""
+    the claim (``reasons``) or in the move to unresolved (``attempts``). A list
+    that lost entries is reset instead — counts 0, reasons empty — and the
+    entity is checked."""
     await checked_graph(graph)
     await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([APPLE], fail={"Timothy Cook"})))
     await graph.query_raw(f"MATCH (p:__GraphRAGProcessing__ {{kind: 'pending'}}) SET {emptied}")

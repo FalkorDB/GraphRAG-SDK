@@ -364,24 +364,27 @@ class SystemStore:
     # ── pending and unresolved ───────────────────────────────────
 
     async def pending_pages(self) -> list[PendingPage]:
-        """Every ``pending`` record, by page, its lists aligned to its ids.
+        """Every ``pending`` record, by page.
 
         Every write stores the three lists together, but FalkorDB 4.22.2 was
         seen to change a stored record no query wrote: ``reasons``, then
         ``attempts``, read back empty while ``ids`` kept every entry, and each
-        reader that indexes them by position failed. A count lost that way
-        reads 0 and a reason empty: the entity is judged again, never given up
-        early; the record's next write stores the lists aligned."""
+        reader that indexes them by position failed. A list that lost entries
+        cannot say which ones, so it is reset whole — every count 0, every
+        reason empty: its entities are judged again, never given up early.
+        While this store holds the lock the reset record is written back, so
+        it is reported once."""
         result = await self._graph.query_raw(
             f"MATCH (p:{PROCESSING_LABEL} {{kind: '{PENDING}'}}) "
             "RETURN p.page, p.ids, p.attempts, p.reasons, p.claimed_run ORDER BY p.page"
         )
         pages: list[PendingPage] = []
+        reset: list[PendingPage] = []
         for page, ids, attempts, reasons, claimed in result.result_set or []:
             rec = PendingPage(
                 page=int(page),
                 ids=list(ids or []),
-                attempts=[int(a) for a in (attempts or [])],
+                attempts=[int(a or 0) for a in (attempts or [])],
                 reasons=list(reasons or []),
                 claimed_run=claimed,
             )
@@ -389,15 +392,23 @@ class SystemStore:
             if len(rec.attempts) != n or len(rec.reasons) != n:
                 logger.warning(
                     "Pending record %d lists %d ids, %d attempts and %d reasons; "
-                    "read with each list aligned to its ids",
+                    "the lists that do not match its ids are reset",
                     rec.page,
                     n,
                     len(rec.attempts),
                     len(rec.reasons),
                 )
-                rec.attempts = (rec.attempts + [0] * n)[:n]
-                rec.reasons = (rec.reasons + [""] * n)[:n]
+                if len(rec.attempts) != n:
+                    rec.attempts = [0] * n
+                if len(rec.reasons) != n:
+                    rec.reasons = [""] * n
+                reset.append(rec)
             pages.append(rec)
+        if reset and self.run_id is not None:
+            await self.write_pending(reset)
+            # The write deletes a record left without ids: a hand-off must not
+            # go onto it.
+            pages = [rec for rec in pages if rec.ids or rec not in reset]
         return pages
 
     async def add_pending(self, ids: list[str]) -> None:
