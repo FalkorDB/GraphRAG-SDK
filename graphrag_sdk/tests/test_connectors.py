@@ -52,10 +52,11 @@ class FakeGraph:
     async def query(self, cypher: str, params: dict[str, Any]) -> list[list[Any]]:
         if "SET d += $props" in cypher:
             self.metadata_refreshes.append((params["id"], params["props"]))
+            self.metadata.setdefault(params["id"], {}).update(params["props"])
             return []
         assert "STARTS WITH $prefix" in cypher
         return [
-            [i, h, self.metadata.get(i, {}).get("source_version")]
+            [i, h, self.metadata.get(i, {}).get("source_version"), dict(self.metadata.get(i, {}))]
             for i, h in self.documents.items()
             if i.startswith(params["prefix"])
         ]
@@ -175,6 +176,45 @@ async def test_a_matching_version_skips_the_download(dry_run):
     assert report.unchanged == ["notion:p1"]
     assert graph.updates == ["notion:p1"]
     assert graph.metadata["notion:p1"]["source_version"] == "v1"
+    assert graph.metadata_refreshes == []
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_a_matching_version_still_refreshes_changed_metadata(dry_run):
+    graph = FakeGraph()
+    first = SourceDocument("p1", "Alice.", metadata={"url": "https://a"}, version="v1")
+    await sync_documents(graph, [first], source="notion")
+
+    moved = SourceDocument("p1", _unreadable, metadata={"url": "https://b"}, version="v1")
+    report = await sync_documents(graph, [moved], source="notion", dry_run=dry_run)
+
+    assert report.unchanged == ["notion:p1"]
+    assert graph.metadata_refreshes == ([] if dry_run else [("notion:p1", {"url": "https://b"})])
+
+
+async def test_a_failed_metadata_refresh_on_a_matching_version_is_reported():
+    graph = FakeGraph()
+    await sync_documents(
+        graph,
+        [SourceDocument("p1", "Alice.", metadata={"url": "a"}, version="v1")],
+        source="notion",
+    )
+    query = graph.query
+
+    async def broken(cypher, params):
+        if "SET d += $props" in cypher:
+            raise RuntimeError("graph down")
+        return await query(cypher, params)
+
+    graph.query = broken
+    report = await sync_documents(
+        graph,
+        [SourceDocument("p1", _unreadable, metadata={"url": "b"}, version="v1")],
+        source="notion",
+    )
+
+    assert "RuntimeError" in report.failed["notion:p1"]
+    assert not report.unchanged
 
 
 async def test_a_new_version_is_read_and_updated():
@@ -822,6 +862,42 @@ async def test_an_unchanged_folder_is_resynced_without_reading_files(dlt, tmp_pa
     ]
 
 
+async def test_an_edited_file_is_the_only_one_read_again(dlt, tmp_path, monkeypatch):
+    import os
+
+    from dlt.sources.filesystem import filesystem
+
+    from graphrag_sdk.connectors import file_documents, sources
+
+    (tmp_path / "a.md").write_text("Alice works at Acme.")
+    (tmp_path / "b.md").write_text("Bob lives in Paris.")
+    reads: list[str] = []
+    read = sources._file_text
+    monkeypatch.setattr(
+        sources, "_file_text", lambda item: reads.append(item["file_name"]) or read(item)
+    )
+
+    def folder():
+        return file_documents(
+            filesystem(bucket_url=tmp_path.as_uri(), file_glob="*.md"), name="files"
+        )
+
+    graph = FakeGraph()
+    await sync(graph, folder())
+    reads.clear()
+
+    edited = tmp_path / "b.md"
+    edited.write_text("Bob moved to Berlin.")
+    later = edited.stat().st_mtime + 60
+    os.utime(edited, (later, later))
+    again = await sync(graph, folder())
+
+    assert reads == ["b.md"]
+    report = again.documents["files"]
+    assert [d.rsplit("/", 1)[1] for d in report.updated] == ["b.md"]
+    assert [d.rsplit("/", 1)[1] for d in report.unchanged] == ["a.md"]
+
+
 def test_demo_preparation_preserves_edits_and_deletions(dlt, tmp_path):
     import runpy
     import sqlite3
@@ -857,6 +933,13 @@ async def test_file_documents_takes_one_file_at_a_time_too(dlt, tmp_path):
         yield Item(file_url=path.as_uri(), file_name="a.md")
 
     assert [d.load_text() for d in file_documents(listing(), name="files")] == ["Alice."]
+
+
+def test_reading_a_file_without_a_text_reader_raises(dlt):
+    from graphrag_sdk.connectors import sources
+
+    with pytest.raises(ValueError, match="no text reader"):
+        sources._file_text({"file_url": "s3://b/a.bin", "file_name": "a.bin"})
 
 
 def test_a_pdf_is_read_from_a_closed_temporary_file(dlt, monkeypatch, tmp_path):

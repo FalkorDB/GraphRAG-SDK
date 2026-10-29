@@ -82,7 +82,8 @@ def file_documents(files: DltResource, *, name: str) -> DltResource:
     read with the SDK's PDF loader (``graphrag-sdk[pdf]``). Other files are
     skipped and logged. A file is only downloaded when its modification date
     differs from the one stored with the graph's copy, so a re-sync of an
-    unchanged folder lists the files without reading them.
+    unchanged folder lists the files without reading them. A listing without
+    ``modification_date`` downloads every file and compares content hashes.
 
     Example::
 
@@ -137,7 +138,7 @@ def _version(modified: Any) -> str | None:
     return modified.isoformat() if isinstance(modified, date) else str(modified)
 
 
-def _file_text(item: Any) -> str | None:
+def _file_text(item: Any) -> str:
     suffix = os.path.splitext(item["file_name"])[1].lower()
     if suffix in _TEXT_SUFFIXES:
         data: bytes = item.read_bytes()
@@ -156,5 +157,4 @@ def _file_text(item: Any) -> str | None:
             return PdfLoader()._load_sync(path).text
         finally:
             os.unlink(path)
-    logger.info("skipped %s: no text reader for %s files", item["file_url"], suffix or "these")
-    return None
+    raise ValueError(f"no text reader for {item['file_url']}")

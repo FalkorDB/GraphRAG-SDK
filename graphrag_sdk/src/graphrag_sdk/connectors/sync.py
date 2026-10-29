@@ -256,9 +256,21 @@ async def _sync_documents(
         if _PENDING_MARKER in doc_id:
             report.failed[doc_id] = f"ids may not contain {_PENDING_MARKER!r}"
             continue
-        known_hash, known_version = existing.get(doc_id, (None, None))
+        known_hash, known_version, known_props = existing.get(doc_id, (None, None, {}))
         # A missing hash means the last write was incomplete, so it is redone.
         if known_hash is not None and doc.version is not None and doc.version == known_version:
+            changed = {
+                key: value
+                for key, value in _document_properties(doc).items()
+                if known_props.get(key) != value
+            }
+            if changed and not dry_run:
+                try:
+                    await _refresh_metadata(rag, doc_id, changed)
+                except Exception as exc:
+                    logger.warning("metadata refresh of %s failed: %s", doc_id, exc)
+                    report.failed[doc_id] = f"{type(exc).__name__}: {exc}"
+                    continue
             report.unchanged.append(doc_id)
             continue
         try:
@@ -623,14 +635,15 @@ async def _refresh_metadata(rag: GraphRAG, doc_id: str, props: dict[str, Any]) -
 
 async def _existing_documents(
     rag: GraphRAG, prefix: str
-) -> dict[str, tuple[str | None, str | None]]:
-    """``{document id: (content hash, source version)}`` for documents under ``prefix``."""
+) -> dict[str, tuple[str | None, str | None, dict[str, Any]]]:
+    """``{document id: (content hash, source version, properties)}`` under ``prefix``."""
     rows = await rag.query(
         "MATCH (d:Document) WHERE d.id STARTS WITH $prefix "
-        f"AND NOT d.id CONTAINS $pending RETURN d.id, d.content_hash, d.{_VERSION_PROPERTY}",
+        "AND NOT d.id CONTAINS $pending "
+        f"RETURN d.id, d.content_hash, d.{_VERSION_PROPERTY}, properties(d)",
         {"prefix": prefix, "pending": _PENDING_MARKER},
     )
-    return {row[0]: (row[1], row[2] if len(row) > 2 else None) for row in rows}
+    return {row[0]: (row[1], row[2], row[3] or {}) for row in rows}
 
 
 async def _find_mapping(rag: GraphRAG, table: str) -> TableMapping | None:
