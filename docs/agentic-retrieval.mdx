@@ -20,7 +20,7 @@ Use the tools when questions need more than one lookup: counts and rankings, "wh
 | `cypher_query` | One read-only Cypher query for counts, sums, sorting and property filters. Checked by a schema-aware guard, LIMIT capped to `max_rows`, run as `GRAPH.RO_QUERY` with a timeout. |
 | `retrieve` | Hybrid search (vector + full-text + graph) for a question: entities, relations, facts and source passages. Needs the embedding model the graph was built with. |
 | `run_skill` | A built-in analysis (see [Skills](#skills)). |
-| `check_citations` | Check a draft answer: every `[n]` must be evidence a tool returned in this session. |
+| `check_citations` | Check a draft answer: every `[n]` must be evidence a tool returned in this session. Also lists claims with no `[n]` of their own, and cited claims whose figures or names the cited evidence does not contain. |
 | `sample_docs` | One sample from the middle of each file under the files root, paged with `next_offset`, to design an ontology from (write side; listed only with a files root). |
 | `set_ontology` | Declare or extend the entity and relation types extraction uses (write). Only adds: new types, descriptions and relation patterns. |
 | `ingest` | Add text, or files under the files root with a per-file plan (write). See [Building the graph from a folder](#building-the-graph-from-a-folder). |
@@ -103,7 +103,11 @@ check.grounded        # True
 check.cited           # the valid numbers the answer cites
 check.invalid         # numbers that point at nothing; removed from check.answer
 check.sources         # the cited evidence: tool, kind, content
+check.uncited         # sentences stating a figure or a name with no [n] of their own
+check.unsupported     # cited sentences + the figures / names their evidence lacks
 ```
+
+The claim checks are literal and use no LLM: a figure must appear as a number in the evidence the sentence cites (so "two" for "2" is reported), and a name counts as found when any of its words does. They are warnings and never change `grounded`.
 
 An answer that cites no real evidence is not grounded. `lookup_entity` results are not evidence: they are names to call other tools with.
 

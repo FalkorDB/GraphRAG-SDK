@@ -357,7 +357,8 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         CheckCitationsInput,
         "Check your draft answer before you reply: every [n] must be evidence a tool "
         "returned in this session. Returns the answer with invalid markers removed, "
-        "whether it is grounded, and the cited evidence.",
+        "whether it is grounded, the cited evidence, claims with no [n] of their own, "
+        "and cited claims whose figures or names the cited evidence does not contain.",
     ),
     ToolDef(
         "sample_docs",

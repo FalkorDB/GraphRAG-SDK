@@ -470,13 +470,28 @@ class EvidenceRef(BaseModel):
     source: str = ""
 
 
+class ClaimCheck(BaseModel):
+    """A cited sentence naming figures or names its cited evidence lacks."""
+
+    model_config = ConfigDict(extra="forbid")
+    sentence: str
+    missing: list[str] = Field(default_factory=list)
+
+
 class CitationCheckResult(ToolResult):
-    """An answer's citations checked against the session's evidence."""
+    """An answer's citations checked against the session's evidence.
+
+    ``uncited`` and ``unsupported`` are warnings on a grounded answer: claims
+    with no ``[n]`` of their own, and cited claims whose figures or names the
+    cited evidence does not contain. They do not change ``grounded``.
+    """
 
     grounded: bool
     reason: str
     cited: list[int] = Field(default_factory=list)
     invalid: list[int] = Field(default_factory=list)
+    uncited: list[str] = Field(default_factory=list)
+    unsupported: list[ClaimCheck] = Field(default_factory=list)
     answer: str = ""
     sources: list[EvidenceRef] = Field(default_factory=list)
     hint: str | None = None
@@ -491,10 +506,18 @@ class CitationCheckResult(ToolResult):
 
     def _sections(self) -> list[tuple[str, list[str]]]:
         return [
+            ("No citation", [f"- {_snippet(c, 200)}" for c in self.uncited]),
+            (
+                "Not in the cited evidence",
+                [
+                    f"- {_snippet(c.sentence, 200)} (missing: {_clean(', '.join(c.missing))})"
+                    for c in self.unsupported
+                ],
+            ),
             (
                 "Sources",
                 [f"- [{s.n}] ({_clean(s.tool)}) {_snippet(s.content, 200)}" for s in self.sources],
-            )
+            ),
         ]
 
 

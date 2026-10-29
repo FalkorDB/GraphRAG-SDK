@@ -571,6 +571,20 @@ class TestCheckCitations:
         none = await toolkit.check_citations("Alice works at Acme.")
         assert not none.grounded and none.reason == "no_citations" and "[n]" in (none.hint or "")
 
+    async def test_uncited_and_unsupported_claims(self, toolkit: GraphRAGToolkit):
+        toolkit.ledger.add(tool="traverse", kind="relation", content="Alice -[WORKS_AT]-> Acme")
+        result = await toolkit.check_citations(
+            "Alice works at Globex [1]. Alice joined Acme in 2019."
+        )
+        assert result.grounded and result.reason == "cited"
+        assert result.uncited == ["Alice joined Acme in 2019."]
+        assert [(c.sentence, c.missing) for c in result.unsupported] == [
+            ("Alice works at Globex [1].", ["Globex"])
+        ]
+        assert "drop it" in (result.hint or "") and "correct the claim" in (result.hint or "")
+        text = result.to_llm_text()
+        assert "No citation (1):" in text and "missing: Globex" in text
+
     async def test_sessions_do_not_share_numbers(self, toolkit: GraphRAGToolkit):
         toolkit.ledger.add(tool="t", kind="k", content="x")
         other = toolkit.new_session()
