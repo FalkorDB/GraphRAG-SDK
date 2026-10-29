@@ -5655,11 +5655,13 @@ class GraphRAG:
 
         if ctx is None:
             ctx = Context()
+        ctx.ensure_budget(f"skill '{skill}' ontology initialization")
         await self._ensure_ontology_initialized()
         skill_impl = build_skill(skill, self._graph_store, self.llm)
         problems = check_arguments(skill_impl.parameters, params)
         if problems:
             raise ValueError(f"Invalid arguments for skill '{skill}': {'; '.join(problems)}")
+        ctx.ensure_budget(f"skill '{skill}'")
         return await skill_impl.run(ctx, **params)
 
     def retrieve_sync(

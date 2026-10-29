@@ -285,7 +285,7 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "ingest",
         IngestInput,
         "Add text (a note, fact or document) to the graph: entities and relations are "
-        "extracted and stored. Call finalize after a batch of ingests.",
+        "extracted and stored.",
         read_only=False,
         destructive=True,
     ),
@@ -318,7 +318,10 @@ def skill_catalog() -> str:
     return "\n".join(lines)
 
 
-def _description(td: ToolDef) -> str:
+def _description(td: ToolDef, finalize_policy: str) -> str:
+    if td.name == "ingest" and finalize_policy == "manual":
+        # Only an agent that has the finalize tool is told to call it.
+        return f"{td.description} Call finalize after a batch of ingests."
     if td.name == "run_skill":
         return (
             f"{td.description} Pass the skill's arguments in params. Skills:\n"
@@ -345,7 +348,7 @@ def build_tool_specs(
         specs.append(
             ToolSpec(
                 name=td.name,
-                description=_description(td),
+                description=_description(td, finalize_policy),
                 input_schema=td.input_model.model_json_schema(),
                 read_only=td.read_only,
                 destructive=td.destructive,

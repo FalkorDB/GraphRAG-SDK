@@ -283,6 +283,11 @@ class TestCypherQuery:
         assert not result.truncated and result.row_count == 2
         cypher, _ = store.queries[-1]
         assert "LIMIT 6" in cypher and "500" not in cypher
+        await toolkit.cypher_query(
+            "MATCH (p:Person) RETURN p.name AS name LIMIT $k", {"k": 100000}, max_rows=5
+        )
+        cypher, params = store.queries[-1]
+        assert cypher.endswith("LIMIT 6") and params == {"k": 100000}
         assert toolkit.ledger.get(1).tool == "cypher_query"
         assert '"name": "Alice"' in toolkit.ledger.get(1).content
 
@@ -303,14 +308,14 @@ class TestCypherQuery:
         assert "LIMIT 100 RETURN" in cypher and cypher.endswith("LIMIT 26")
         assert result.rows[0].values == [100] and not result.truncated
 
-    async def test_parameter_limit_is_capped_client_side(self, toolkit, store):
+    async def test_parameter_limit_above_the_cap_is_clamped(self, toolkit, store):
         store.rows = [[i] for i in range(50)]
         store.header = ["i"]
         result = await toolkit.cypher_query(
             "MATCH (p:Person) RETURN p.name LIMIT $n", {"n": 50}, max_rows=10
         )
         cypher, params = store.queries[-1]
-        assert cypher.endswith("LIMIT $n") and cypher.count("LIMIT") == 1
+        assert cypher.endswith("LIMIT 11") and cypher.count("LIMIT") == 1
         assert params == {"n": 50}
         assert result.row_count == 10 and result.truncated
 
@@ -441,7 +446,11 @@ class TestReadTools:
             return {"alice": "Alice", "acme": "Acme"}
 
         async def beam(self, start, goal=None, ctx=None):
-            return [ScoredPath(nodes=["alice", "acme"], edges=["WORKS_AT"], score=0.75)]
+            return [
+                ScoredPath(
+                    nodes=["alice", "acme"], edges=["WORKS_AT"], edge_forward=[True], score=0.75
+                )
+            ]
 
         monkeypatch.setattr(ops, "resolve_start", resolve)
         monkeypatch.setattr(ops, "entity_names", names)
@@ -517,6 +526,67 @@ class TestReadTools:
         out = await toolkit.graph_walk("a", goal="z", max_depth=4)
         assert out.truncated and out.paths == []
         assert "time budget" in out.hint
+
+    async def test_traverse_via_with_no_time_left_sends_no_query(self, toolkit, monkeypatch):
+        import graphrag_sdk.tools.toolkit as tk_mod
+
+        calls = []
+        clock = iter([100.0, 200.0, 200.0, 200.0])
+
+        async def resolve(store, ref, deadline):
+            return "a", "Alice"
+
+        async def typed_path(store, sid, path, ms):
+            calls.append(ms)
+            return [], "complete"
+
+        monkeypatch.setattr(ops, "resolve_start", resolve)
+        monkeypatch.setattr(ops, "typed_path", typed_path)
+        monkeypatch.setattr(tk_mod.time, "monotonic", lambda: next(clock, 200.0))
+        result = await toolkit.traverse("Alice", via=["WORKS_AT"], timeout_ms=1000)
+        assert calls == [] and result.stopped == "time_budget" and result.truncated
+        assert "timed out" in (result.hint or "")
+
+    async def test_graph_walk_slow_beam_search_is_a_tool_error(self, toolkit, monkeypatch):
+        import graphrag_sdk.tools.toolkit as tk_mod
+
+        async def resolve(store, ref, deadline):
+            return ref, ref
+
+        async def beam(self, start, goal=None, ctx=None):
+            await asyncio.sleep(5)
+            return []
+
+        monkeypatch.setattr(ops, "resolve_start", resolve)
+        monkeypatch.setattr("graphrag_sdk.tools.toolkit.DynamicGraphWalk.beam_search", beam)
+        monkeypatch.setattr(tk_mod, "_WALK_BUDGET_SECONDS", 0.05)
+        with pytest.raises(ToolError, match="time budget") as exc:
+            await toolkit.graph_walk("a")
+        assert "beam_width" in (exc.value.hint or "")
+
+    async def test_graph_walk_slow_pagerank_falls_back_to_no_weights(
+        self, toolkit, store, monkeypatch
+    ):
+        import graphrag_sdk.tools.toolkit as tk_mod
+
+        store.neighbors = {"a": [("b", 1.0, "R", True)]}
+
+        async def resolve(store, ref, deadline):
+            return ref, ref
+
+        async def names(store, ids):
+            return {}
+
+        async def slow_pagerank(**kwargs):
+            await asyncio.sleep(5)
+            return {"a": 1.0}
+
+        monkeypatch.setattr(ops, "resolve_start", resolve)
+        monkeypatch.setattr(ops, "entity_names", names)
+        monkeypatch.setattr(store, "pagerank", slow_pagerank)
+        monkeypatch.setattr(tk_mod, "_WALK_BUDGET_SECONDS", 0.05)
+        out = await asyncio.wait_for(toolkit.graph_walk("a", max_depth=1), 2)
+        assert [p.nodes for p in out.paths] == [["a", "b"]]
 
     async def test_graph_walk_database_errors_are_not_hidden(self, toolkit, store, monkeypatch):
         store.neighbors = RuntimeError("connection refused")

@@ -440,7 +440,13 @@ class FalkorDBConnection:
             )
             if hasattr(rx, name)
         )
-        return isinstance(exc, rx.ResponseError) and not isinstance(exc, transient)
+        return (
+            isinstance(exc, rx.ResponseError)
+            and not isinstance(exc, transient)
+            # An overloaded server ("max pending queries", BUSY, ...) did not
+            # reject the query; it is retried and counted against the breaker.
+            and not str(exc).strip().lower().startswith(cls._TRANSIENT_REPLY_PREFIXES)
+        )
 
     @classmethod
     def _is_non_transient(cls, exc: Exception) -> bool:

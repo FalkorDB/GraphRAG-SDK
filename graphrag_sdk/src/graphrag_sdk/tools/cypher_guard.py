@@ -18,11 +18,11 @@ from graphrag_sdk.storage.system_store import CONFIG_LABEL, PROCESSING_LABEL
 logger = logging.getLogger(__name__)
 
 #: Write clauses and procedure calls. A keyword used as a name — after a
-#: ``.`` (``n.delete``), inside backticks, as a ``$parameter`` or as a map
-#: key (``{set: 1}``) — is not a clause; the database also runs these
-#: queries read-only (``GRAPH.RO_QUERY``).
+#: ``.`` (``n.delete``), inside backticks, as a ``$parameter``, as a label
+#: (``(n:Set)``) or as a map key (``{set: 1}``) — is not a clause; the
+#: database also runs these queries read-only (``GRAPH.RO_QUERY``).
 _WRITE_RE = re.compile(
-    r"(?<![.\w`$])\b(create|merge|delete|detach|set|remove|drop|foreach|call|load\s+csv)\b"
+    r"(?<![.\w`$:])\b(create|merge|delete|detach|set|remove|drop|foreach|call|load\s+csv)\b"
     r"(?![\w`]|\s*:)",
     re.IGNORECASE,
 )
@@ -288,7 +288,10 @@ def validate_read_query(
         return list(dict.fromkeys(errors))
 
     scan = _strip_maps(blank)
-    allowed = schema.allowed_names()
+    # Backticked names are read with punctuation as ``_`` (``Non-Profit`` ->
+    # ``Non_Profit``); schema names are compared the same way.
+    allowed = {_name_key(n) for n in schema.allowed_names()}
+    semantic = {_name_key(n) for n in schema.semantic_relations}
     if schema.labels or schema.relationship_types:
         # With strings and map literals gone, every remaining ``:Name`` is a
         # node label or a relationship type (``(n:A:B)``, ``[r:T|U]``, ``n:A``).
@@ -296,10 +299,13 @@ def validate_read_query(
             for name in [first, *_ALT_NAME_RE.findall(rest)]:
                 # A declared relation used as an edge type gets the more
                 # useful "stored as RELATES" hint below instead.
-                if name not in allowed and name not in schema.semantic_relations:
+                if name not in allowed and name not in semantic:
                     errors.append(f"unknown label or relationship type '{name}'")
     if schema.property_keys:
-        known = set(schema.property_keys) | _SYSTEM_NODE_PROPERTIES | _SYSTEM_EDGE_PROPERTIES
+        known = {
+            _name_key(k)
+            for k in (*schema.property_keys, *_SYSTEM_NODE_PROPERTIES, *_SYSTEM_EDGE_PROPERTIES)
+        }
         for prop in sorted(set(re.findall(r"\b[A-Za-z_]\w*\s*\.\s*`?([A-Za-z_]\w*)`?", scan))):
             if prop not in known:
                 errors.append(f"unknown property '{prop}'")
@@ -307,18 +313,26 @@ def validate_read_query(
         declared = set(schema.semantic_relations)
         # ``[r:RELATES {rel_type: 'X'}]`` constrains the edge as well as a WHERE does.
         in_map: dict[str, list[str]] = {}
+        # Anonymous edges are told apart by count: each one typed in its map
+        # covers one ``[:RELATES]`` in the pattern, not all of them.
+        anonymous_typed = 0
         for variable, props in re.findall(
             r"\[\s*([A-Za-z_]\w*)?\s*:\s*`?RELATES`?\s*\{([^}]*)\}", code
         ):
-            for rel in re.findall(r"\brel_type\s*:\s*['\"]([^'\"]*)['\"]", props):
+            rels = re.findall(r"\brel_type\s*:\s*['\"]([^'\"]*)['\"]", props)
+            if rels and not variable:
+                anonymous_typed += 1
+            for rel in rels:
                 in_map.setdefault(variable, []).append(rel)
                 if rel not in declared:
                     errors.append(f"unknown relation '{rel}' in rel_type")
         for variable in re.findall(r"\[\s*([A-Za-z_]\w*)?\s*:\s*`?RELATES`?", scan):
-            if variable in in_map:
+            if variable and variable in in_map:
                 continue
             if not variable:
-                if require_rel_type:
+                if anonymous_typed:
+                    anonymous_typed -= 1
+                elif require_rel_type:
                     errors.append(
                         "every RELATES edge must bind a variable and constrain its rel_type"
                     )
@@ -337,8 +351,9 @@ def validate_read_query(
                 for rel in re.findall(r"['\"]([^'\"]+)['\"]", value):
                     if rel not in declared:
                         errors.append(f"unknown relation '{rel}' in rel_type")
+        stored_types = {_name_key(t) for t in schema.relationship_types}
         for rel in re.findall(r"\[\s*(?:[A-Za-z_]\w*)?\s*:\s*`?([A-Za-z_]\w*)`?", scan):
-            if rel in declared and rel not in schema.relationship_types:
+            if rel in semantic and rel not in stored_types:
                 errors.append(
                     f"'{rel}' is stored as RELATES; match [r:RELATES] with r.rel_type = '{rel}'"
                 )
@@ -346,7 +361,12 @@ def validate_read_query(
     return list(dict.fromkeys(errors))
 
 
-def enforce_row_cap(cypher: str, cap: int) -> str:
+def _name_key(name: str) -> str:
+    """A label, type or property name as the scanner reads it in backticks."""
+    return re.sub(r"\W", "_", name)
+
+
+def enforce_row_cap(cypher: str, cap: int, params: dict[str, Any] | None = None) -> str:
     """Return the query without comments, its final ``RETURN`` bounded to ``cap`` rows.
 
     Only the rows the query returns are capped: the final ``RETURN`` of the
@@ -355,8 +375,10 @@ def enforce_row_cap(cypher: str, cap: int) -> str:
     ``LIMIT cap``. A ``LIMIT`` inside the query (``WITH n LIMIT 100``) is
     left alone: lowering it would change what ``count()`` or ``collect()``
     after it computes. The work before the final ``RETURN`` is bounded by
-    the database timeout instead. A final ``LIMIT $n`` (or any other
-    non-literal limit) is kept as written; the caller caps the rows it reads.
+    the database timeout instead. A final ``LIMIT $n`` whose value in
+    ``params`` is an integer above ``cap`` becomes ``LIMIT cap``; any other
+    ``LIMIT $n`` (or non-literal limit) is kept as written, and the caller
+    caps the rows it reads.
     ``LIMIT`` inside a string or a comment is not a clause (comments are
     dropped).
     """
@@ -383,11 +405,22 @@ def enforce_row_cap(cypher: str, cap: int) -> str:
                 part = f"{stripped}\nLIMIT {cap}"
             else:
                 part = f"{stripped} LIMIT {cap}{part[len(stripped) :]}"
-        elif limit.group(1).isdigit() and int(limit.group(1)) > cap:
+        elif _limit_value(limit.group(1), params) > cap:
             at = offset + limit.start(1)
             part = f"{part[:at]}{cap}{part[offset + limit.end(1) :]}"
         out.append(part)
     return "".join(out)
+
+
+def _limit_value(token: str, params: dict[str, Any] | None) -> int:
+    """The row count a ``LIMIT`` token asks for; 0 when it cannot be read."""
+    if token.isdigit():
+        return int(token)
+    if token.startswith("$") and params:
+        value = params.get(token[1:])
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return 0
 
 
 def _final_limit(tail: str) -> re.Match[str] | None:

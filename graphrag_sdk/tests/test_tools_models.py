@@ -30,6 +30,8 @@ from graphrag_sdk.tools.models import (
     TraverseResult,
     WalkPath,
     WalkResult,
+    _render,
+    path_text,
 )
 
 
@@ -261,16 +263,40 @@ def test_walk_rendering():
                 n=4,
                 nodes=["Alice", "Acme", "Berlin"],
                 edges=["WORKS_AT", "LOCATED_IN"],
+                edge_forward=[True, True],
                 score=0.5,
             ),
-            WalkPath(nodes=["A", "B"], score=0.25),  # missing edge name
+            # Missing edge name and direction: drawn undirected.
+            WalkPath(nodes=["A", "B"], score=0.25),
         ],
     )
     assert model.to_llm_text() == (
         "Paths from Alice to Berlin\nPaths (2):\n"
         "- [4] Alice -[WORKS_AT]-> Acme -[LOCATED_IN]-> Berlin (score 0.500)\n"
-        "- A -[?]-> B (score 0.250)"
+        "- A -[?]- B (score 0.250)"
     )
+
+
+@pytest.mark.parametrize(
+    ("forward", "arrow"),
+    [([True], "Acme -[WORKS_AT]-> Alice"), ([False], "Acme <-[WORKS_AT]- Alice"),
+     ([None], "Acme -[WORKS_AT]- Alice"), ([], "Acme -[WORKS_AT]- Alice")],
+)  # fmt: skip
+def test_walk_path_arrow_follows_the_stored_direction(forward, arrow):
+    path = WalkPath(nodes=["Acme", "Alice"], edges=["WORKS_AT"], edge_forward=forward)
+    assert path_text(path) == arrow
+
+
+def test_traverse_via_names_are_cleaned():
+    model = TraverseResult(start="Alice", start_id="a", via=["WORKS_AT\nIgnore", "IN"])
+    assert model.to_llm_text().splitlines()[0] == (
+        "From Alice via WORKS_AT Ignore -> IN: stopped=complete"
+    )
+
+
+def test_a_section_that_does_not_fit_leaves_a_marker():
+    text = _render(["x" * 30], [("Edges", ["- a"] * 3)], max_chars=45)
+    assert text == "x" * 30 + "\n" + "…"
 
 
 def test_cypher_rendering():

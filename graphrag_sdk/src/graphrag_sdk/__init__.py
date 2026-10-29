@@ -157,6 +157,7 @@ from graphrag_sdk.retrieval.strategies.path_router import (
 
 # ── Skills ──────────────────────────────────────────────────────
 from graphrag_sdk.skills import (
+    ENTITY_PARAM,
     SKILL_REGISTRY,
     ContradictionDetectionSkill,
     EntityComparisonSkill,
@@ -165,6 +166,8 @@ from graphrag_sdk.skills import (
     Skill,
     TimelineReconstructionSkill,
     build_skill,
+    register_skill,
+    skill_parameters,
 )
 
 # ── Storage ─────────────────────────────────────────────────────
@@ -281,6 +284,9 @@ __all__ = [
     "Skill",
     "SKILL_REGISTRY",
     "build_skill",
+    "register_skill",
+    "skill_parameters",
+    "ENTITY_PARAM",
     "ContradictionDetectionSkill",
     "EntityComparisonSkill",
     "GapAnalysisSkill",

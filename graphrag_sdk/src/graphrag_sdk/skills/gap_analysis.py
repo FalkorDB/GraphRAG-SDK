@@ -54,11 +54,11 @@ class GapAnalysisSkill(Skill):
             try:
                 num_isolated = max(num_isolated, int(count_rows[0][0]))
             except (IndexError, TypeError, ValueError):
-                pass
+                pass  # no usable count: report the listed ones (num_isolated stays a floor)
 
         label_rows = await self._rows(
             "MATCH (e:__Entity__) "
-            "WITH [l IN labels(e) WHERE l <> '__Entity__'][0] AS label "
+            "UNWIND [l IN labels(e) WHERE l <> '__Entity__'] AS label "
             "RETURN label, count(*) AS n ORDER BY n ASC"
         )
         sparse_labels = [

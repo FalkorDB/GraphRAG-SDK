@@ -44,7 +44,8 @@ class ContradictionDetectionSkill(Skill):
             "MATCH (e:__Entity__ {id: $id})-[r:RELATES]-(m:__Entity__) "
             "RETURN coalesce(r.rel_type, type(r)) AS rel, m.id AS other, "
             "coalesce(r.fact, r.description, '') AS desc, "
-            "coalesce(m.name, m.id) AS other_name, coalesce(e.name, e.id) AS entity_name "
+            "coalesce(m.name, m.id) AS other_name, coalesce(e.name, e.id) AS entity_name, "
+            "startNode(r) = e AS outgoing "
             "ORDER BY rel, other LIMIT $limit",
             {"id": entity, "limit": limit + 1},
         )
@@ -56,11 +57,19 @@ class ContradictionDetectionSkill(Skill):
                 "other": r[1],
                 "other_name": r[3] if len(r) > 3 and r[3] is not None else r[1],
                 "description": r[2] if len(r) > 2 else "",
+                # True: stored entity -> other; False: other -> entity; None: unknown.
+                "outgoing": r[5] if len(r) > 5 else None,
             }
             for r in rows
             if r
         ]
-        entity_name = next((r[4] for r in rows if r and len(r) > 4 and r[4]), entity)
+        entity_name = next((r[4] for r in rows if r and len(r) > 4 and r[4]), None)
+        if entity_name is None:
+            named = await self._rows(
+                "MATCH (e:__Entity__ {id: $id}) RETURN coalesce(e.name, e.id) AS name",
+                {"id": entity},
+            )
+            entity_name = next((r[0] for r in named if r and r[0]), entity)
 
         contradictions: list[dict[str, Any]] = []
         summary = ""
@@ -69,9 +78,7 @@ class ContradictionDetectionSkill(Skill):
         if self._llm is not None and facts:
             prompt = (
                 f"Here are facts about entity '{entity_name}':\n"
-                + "\n".join(
-                    f"- {f['relation']} {f['other_name']}: {f['description']}" for f in facts
-                )
+                + "\n".join(_fact_line(entity_name, f) for f in facts)
                 + "\n\nIdentify any pairs of facts that contradict each other. "
                 'Respond as JSON: {"contradictions": [{"a": "...", "b": "...", '
                 '"reason": "..."}], "summary": "..."}'
@@ -98,6 +105,17 @@ class ContradictionDetectionSkill(Skill):
         if llm_error is not None:
             data["llm_error"] = f"{llm_error}; judge the facts yourself."
         return SkillResult(skill=self.name, summary=summary, data=data, sources=[entity])
+
+
+def _fact_line(entity_name: Any, fact: dict[str, Any]) -> str:
+    rel, other = fact["relation"], fact["other_name"]
+    if fact["outgoing"] is True:
+        line = f"- {entity_name} -[{rel}]-> {other}"
+    elif fact["outgoing"] is False:
+        line = f"- {other} -[{rel}]-> {entity_name}"
+    else:
+        line = f"- {rel} {other}"
+    return f"{line}: {fact['description']}"
 
 
 def _safe_json(text: str) -> Any:

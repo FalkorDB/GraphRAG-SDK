@@ -15,12 +15,12 @@ from typing import Any
 DEFAULT_LEDGER_CAPACITY = 2000
 
 #: One cited number or range (``3``, ``1-3``, ``1–3``).
-_CITE = r"\d{1,3}(?:\s*[-–]\s*\d{1,3})?"
+_CITE = r"\d{1,6}(?:\s*[-–]\s*\d{1,6})?"
 #: A citation marker: ``[3]``, ``[1, 4]``, ``[1-3]``, also glued to a word or a
-#: figure (``plant[1]``, ``1998[2]``) or chained (``[1][2]``). Not when a number
-#: has four or more digits (``[2024]`` is a year), or for ``[0]`` (evidence is
-#: numbered from 1, so ``items[0]`` is code). Markers inside inline code or a
-#: fenced code block are code and never touched.
+#: figure (``plant[1]``, ``1998[2]``) or chained (``[1][2]``). Not for ``[0]``
+#: (evidence is numbered from 1, so ``items[0]`` is code), nor when a number of
+#: four or more digits is not in the ledger (``[2024]`` is a year). Markers
+#: inside inline code or a fenced code block are code and never touched.
 _MARKER_RE = re.compile(rf"\[(\s*{_CITE}(?:\s*[,;]\s*{_CITE})*\s*)\]")
 #: Longest range read as citations; ``[1-200]`` is a page span, not 200 cites.
 _MAX_RANGE = 50
@@ -31,6 +31,12 @@ _REMOVED = "\x00"
 
 #: Sentence ends: whitespace after ``.``, ``!`` or ``?`` (``2.8`` stays whole).
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+#: A full stop that ends an abbreviation (``Inc.``, ``Mr.``, ``e.g.``,
+#: ``U.S.``), not a sentence.
+_ABBREVIATION_END_RE = re.compile(
+    r"(?:\b(?:Inc|Corp|Co|Ltd|LLC|Dr|Mr|Mrs|Ms|Prof|St|Jr|Sr|Mt)"
+    r"|(?i:\be\.g|\bi\.e|\bvs)|(?:\b[A-Z]\.)+[A-Z])\.$"
+)
 #: Markers that open a split piece belong to the sentence before (``x. [1]``).
 _LEADING_MARKERS_RE = re.compile(rf"^(?:\s*\[\s*{_CITE}(?:\s*[,;]\s*{_CITE})*\s*\])+")
 #: A full stop with markers glued on (``it.[2] Next``): split after the markers.
@@ -173,15 +179,18 @@ class GroundedAnswer:
         return [ev for n in self.cited if (ev := ledger.get(n)) is not None]
 
 
-def _marker_numbers(body: str) -> list[int] | None:
+def _marker_numbers(body: str, valid: set[int] | EvidenceLedger | None = None) -> list[int] | None:
     """The numbers a marker cites, ranges expanded; ``None`` when it is not a
-    citation (``[0]``, a backwards range, or one longer than ``_MAX_RANGE``)."""
+    citation (``[0]``, a backwards range, one longer than ``_MAX_RANGE``, or a
+    number of four or more digits that is not in ``valid``, such as a year)."""
     numbers: list[int] = []
     for part in re.split(r"[,;]", body):
         ends = [int(x) for x in re.split(r"[-–]", part)]
         if len(ends) == 2 and not 0 < ends[1] - ends[0] < _MAX_RANGE:
             return None
         numbers.extend(range(ends[0], ends[-1] + 1))
+    if any(n >= 1000 and (valid is None or n not in valid) for n in numbers):
+        return None
     return None if numbers == [0] else numbers
 
 
@@ -190,7 +199,7 @@ def _clean_markers(text: str, valid: set[int] | EvidenceLedger) -> tuple[str, li
     invalid: list[int] = []
 
     def replace(match: re.Match[str]) -> str:
-        numbers = _marker_numbers(match.group(1))
+        numbers = _marker_numbers(match.group(1), valid)
         if numbers is None:
             return match.group(0)
         keep: list[int] = []
@@ -258,7 +267,7 @@ def _sentences(text: str) -> list[str]:
         line = _LINE_PREFIX_RE.sub("", line).replace("**", "").replace("__", "").strip()
         line = _GLUED_END_RE.sub(r"\1 \2 ", line)
         pieces: list[str] = []
-        for piece in _SENTENCE_END_RE.split(line):
+        for piece in _merge_abbreviations(_SENTENCE_END_RE.split(line)):
             lead = _LEADING_MARKERS_RE.match(piece)
             if lead and pieces:
                 pieces[-1] = f"{pieces[-1]} {lead.group(0).strip()}"
@@ -266,6 +275,17 @@ def _sentences(text: str) -> list[str]:
             if piece.strip():
                 pieces.append(piece.strip())
         out.extend(pieces)
+    return out
+
+
+def _merge_abbreviations(pieces: list[str]) -> list[str]:
+    """Join a piece that ends with an abbreviation to the piece after it."""
+    out: list[str] = []
+    for piece in pieces:
+        if out and _ABBREVIATION_END_RE.search(out[-1]):
+            out[-1] = f"{out[-1]} {piece}"
+        else:
+            out.append(piece)
     return out
 
 
@@ -327,8 +347,11 @@ def _check_claims(answer: str, ledger: EvidenceLedger) -> tuple[list[str], list[
             continue
         numbers: list[int] = []
         for marker in _MARKER_RE.findall(sentence):
-            numbers.extend(_marker_numbers(marker) or [])
-        bare = " ".join(_MARKER_RE.sub(" ", sentence).split())
+            numbers.extend(_marker_numbers(marker, ledger) or [])
+        bare = _MARKER_RE.sub(
+            lambda m: m.group(0) if _marker_numbers(m.group(1), ledger) is None else " ", sentence
+        )
+        bare = " ".join(bare.split())
         terms = _claim_terms(bare)
         if not terms or len(bare.split()) < 3:
             continue

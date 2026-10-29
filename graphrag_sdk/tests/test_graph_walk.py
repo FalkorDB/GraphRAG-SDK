@@ -245,14 +245,28 @@ class TestBoundedBidirectionalSearch:
         with pytest.raises(RuntimeError, match="db down"):
             await walk.bidirectional_search("a", "b")
 
+    async def test_lookup_timeout_is_not_reported_as_the_time_budget(self):
+        import asyncio
+
+        async def timed_out(node: str):
+            raise asyncio.TimeoutError("db")
+
+        walk = DynamicGraphWalk(timed_out, max_depth=2)
+        with pytest.raises(asyncio.TimeoutError, match="db"):
+            await walk.bidirectional_search("a", "b")
+        assert walk.stopped == "complete"
+
 
 class FakeWalkStore:
     def __init__(self, adj: dict[str, list[tuple[str, float, str]]], weights=None):
         self._adj = adj
         self._weights = weights or {}
 
-    async def weighted_neighbors(self, node_id: str, *, limit: int = 50):
-        return self._adj.get(node_id, [])
+    async def weighted_neighbors(
+        self, node_id: str, *, limit: int = 50, with_direction: bool = False
+    ):
+        items = self._adj.get(node_id, [])
+        return items if with_direction else [tuple(item[:3]) for item in items]
 
     async def pagerank(self, **kwargs: Any):
         return self._weights
@@ -280,6 +294,62 @@ class TestGraphWalkRetrieval:
         strat = GraphWalkRetrieval(store, seed_fn)
         result = await strat.search("q", ctx)
         assert result.items == []
+
+    def test_negative_max_paths_rejected(self):
+        async def seed_fn(query: str, ctx: Context) -> list[str]:
+            return []
+
+        with pytest.raises(ValueError, match="max_paths"):
+            GraphWalkRetrieval(FakeWalkStore({}), seed_fn, max_paths=-1)
+
+    @pytest.mark.parametrize(
+        "outgoing, expected",
+        [
+            (True, "alice -[WORKS_AT]-> acme"),
+            (False, "alice <-[WORKS_AT]- acme"),
+            (None, "alice -[WORKS_AT]- acme"),
+        ],
+    )
+    async def test_content_shows_relation_labels_and_direction(
+        self, ctx: Context, outgoing, expected
+    ):
+        store = FakeWalkStore({"alice": [("acme", 1.0, "WORKS_AT", outgoing)]})
+
+        async def seed_fn(query: str, ctx: Context) -> list[str]:
+            return ["alice"]
+
+        strat = GraphWalkRetrieval(store, seed_fn, max_depth=1, use_pagerank=False)
+        result = await strat.search("q", ctx)
+        assert [item.content for item in result.items] == [expected]
+
+    async def test_pagerank_weights_rank_paths(self, ctx: Context):
+        adj = {"s": [("a", 1.0, "R"), ("b", 1.0, "R")]}
+        store = FakeWalkStore(adj, weights={"b": 1.0})
+
+        async def seed_fn(query: str, ctx: Context) -> list[str]:
+            return ["s"]
+
+        strat = GraphWalkRetrieval(store, seed_fn, max_depth=1, use_pagerank=True)
+        result = await strat.search("q", ctx)
+        assert result.items[0].content.endswith(" b")
+        # Without PageRank the equal-weight neighbours keep store order.
+        plain = GraphWalkRetrieval(store, seed_fn, max_depth=1, use_pagerank=False)
+        assert (await plain.search("q", ctx)).items[0].content.endswith(" a")
+
+    async def test_paths_from_every_seed_are_truncated_to_max_paths(self, ctx: Context):
+        adj = {
+            "s1": [(f"a{i}", 1.0, "R") for i in range(3)],
+            "s2": [(f"b{i}", 1.0, "R") for i in range(3)],
+        }
+        store = FakeWalkStore(adj, weights={"b2": 5.0, "a1": 4.0})
+
+        async def seed_fn(query: str, ctx: Context) -> list[str]:
+            return ["s1", "s2"]
+
+        strat = GraphWalkRetrieval(store, seed_fn, max_depth=1, max_paths=2)
+        result = await strat.search("q", ctx)
+        assert [item.content for item in result.items] == ["s2 -[R]- b2", "s1 -[R]- a1"]
+        assert result.metadata["num_paths"] == 2
 
 
 class TestWeightedNeighborsQuery:

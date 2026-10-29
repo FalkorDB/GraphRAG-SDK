@@ -344,16 +344,23 @@ class TestLoad:
     async def test_load_only_reads(self, store_factory, fake_graph):
         """GRAPH.QUERY on a missing key creates it; load() uses RO_QUERY."""
         store = store_factory()
+        write_calls: list[str] = []
+        ro_calls: list[str] = []
 
+        # load() swallows exceptions, so record calls and assert afterwards.
         async def no_write_query(cypher, params=None):
-            raise AssertionError(f"load() used GRAPH.QUERY: {cypher}")
+            write_calls.append(cypher)
+            return _FakeQueryResult([])
 
         async def missing(cypher, params=None):
+            ro_calls.append(cypher)
             raise RuntimeError("Invalid graph operation on empty key")
 
         fake_graph.query = no_write_query
         fake_graph.ro_query = missing
         result = await store.load()
+        assert write_calls == []
+        assert ro_calls
         assert result.entities == [] and result.relations == []
 
     @pytest.mark.asyncio
