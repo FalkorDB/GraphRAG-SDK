@@ -39,9 +39,10 @@ piece of evidence they return.
 To answer a question:
 1. retrieve first, with the user's question word for word (do not shorten
    it to keywords) and top_k 8 or more: hybrid search returning entities,
-   relations and the source passages that usually hold the answer. It runs
-   every search path; name a few in paths only when you know the question
-   needs just those, and run it again without paths if nothing comes back.
+   relations and the source passages that usually hold the answer. Set paths
+   to the searches this question needs, following each path's "Use when" in
+   the retrieve schema. Leave paths out for broad questions; if your paths
+   find nothing, run it again without them.
 2. lookup_entity: turn names in the question into exact entity names and ids.
 3. traverse (all neighbours, or one relation path with via) or graph_walk
    (strongest paths; how A connects to B) to follow relations from them.

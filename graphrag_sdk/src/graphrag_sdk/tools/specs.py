@@ -121,12 +121,34 @@ class RetrieveInput(_Input):
         default=None,
         min_length=1,
         description=(
-            "Search paths to run; leave out to run them all (the safe default). "
-            "facts: relation facts close in meaning to the question. "
-            "exact_names: entities whose name appears in the question. "
-            "fuzzy_names: entities with partly matching or misspelt names. "
-            "links: the relations around the entities found. "
-            "passages: the source text that holds the answer."
+            "The searches to run. Read the question, pick every path it needs "
+            "(usually two or three), and leave paths out only for broad questions or "
+            "when you cannot tell.\n"
+            "- passages. Finds: the source text. Use when: the answer is a detail, a "
+            "number, a reason, a description or a summary. Example: 'Why was the "
+            "project cancelled?' Skip when: the question is only about who is "
+            "connected to whom.\n"
+            "- exact_names. Finds: entities whose name appears in the question as "
+            "written. Use when: the question names a person, place, organisation, "
+            "product or event. Example: 'What does Acme make?' Skip when: nothing is "
+            "named.\n"
+            "- fuzzy_names. Finds: entities by part of a name, a misspelling or words "
+            "in their descriptions. Use when: a name is partial or uncertain, or the "
+            "question describes something without naming it. Example: 'Which "
+            "company did the old founder start?' Skip when: every name is given "
+            "in full.\n"
+            "- links. Finds: the relations around the entities the other paths found "
+            "(adds exact_names if you pick no entity path). Use when: the question "
+            "asks who or what is connected to something, or goes from one entity to "
+            "another. Example: 'Who works at Acme?' Skip when: the answer is in one "
+            "passage.\n"
+            "- facts. Finds: stored statements about relations, matched by meaning. "
+            "Use when: the question asks how things relate, what caused or affected "
+            "what, or what depends on what. Example: 'How did the merger affect the "
+            "staff?' Skip when: the question asks for a single detail.\n"
+            "Examples: 'What is Alice's role at Acme?' -> exact_names, passages. "
+            "'Who reports to Alice?' -> exact_names, links. 'Summarise why sales "
+            "fell' -> passages, facts."
         ),
     )
 
@@ -237,10 +259,9 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "Hybrid search (vector + full-text + graph) for a question: the most relevant "
         "entities, relations, facts and source passages. Use it for open questions or "
         "when you do not know which entity to start from. Pass the user's question word "
-        "for word; keywords find less. Runs every search path unless paths names a "
-        "few: pick them only when you know what the question needs, and run it again "
-        "without paths if nothing comes back. Needs the embedding model the graph was "
-        "built with." + _CITE,
+        "for word; keywords find less. Choose paths for the question (see paths); if "
+        "the paths you chose find nothing, run it again without paths. Needs the "
+        "embedding model the graph was built with." + _CITE,
     ),
     ToolDef(
         "run_skill",
