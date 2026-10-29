@@ -129,11 +129,11 @@ Credentials are dlt's: arguments, environment variables or `.dlt/secrets.toml`. 
 
 **A source name is a namespace.** `notion:` documents are only ever pruned by a sync named `notion`. Two folders need two names, and a name may not contain `:`.
 
-**Run one sync of a source at a time.** Document syncs on the same `GraphRAG` instance and event loop are serialized per source. Across SDK instances, event loops or server processes, the job runner must serialize them: conflicting syncs can prune valid documents from each other's snapshots. Table syncs must also be serialized by the caller.
+**Run one sync of a source at a time.** Syncs on the same `GraphRAG` instance and event loop are serialized per source or table name, from the first read of the source through the last write, so overlapping calls apply their snapshots in the order they were made. Across SDK instances, event loops or server processes, the job runner must serialize them: conflicting syncs can prune valid documents or rows from each other's snapshots.
 
 **Failed writes are reported, not hidden.** A document whose extraction failed for some chunks is listed in `failed` with the reason. Its content hash is not recorded, so the next sync retries it.
 
-**Metadata stays current.** When a document's text is unchanged but its metadata changed (a new URL or author), the metadata is updated without re-extracting.
+**Metadata stays current.** When a document's text is unchanged but its metadata changed (a new URL or author), the metadata is updated without re-extracting, and keys the source no longer sends are removed.
 
 ---
 

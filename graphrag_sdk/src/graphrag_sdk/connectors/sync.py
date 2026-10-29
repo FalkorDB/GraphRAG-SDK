@@ -16,6 +16,7 @@ import math
 import os
 import re
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
@@ -198,32 +199,49 @@ async def sync_documents(
         A :class:`SyncReport`.
     """
     _check_source_name(source)
+    async with _source_locks(rag, [source]):
+        return await _sync_documents(
+            rag,
+            documents,
+            source=source,
+            prune=prune,
+            dry_run=dry_run,
+            cache_unchanged_chunks=cache_unchanged_chunks,
+            chunker=chunker,
+            extractor=extractor,
+            ctx=ctx,
+        )
+
+
+@asynccontextmanager
+async def _source_locks(rag: GraphRAG, names: Iterable[str]) -> AsyncIterator[None]:
+    """Hold the per-source locks for ``names`` on this instance and event loop.
+
+    Taken in sorted order, so two calls over overlapping sources cannot deadlock.
+    """
     loop = asyncio.get_running_loop()
     loops = _SOURCE_LOCKS.setdefault(rag, WeakKeyDictionary())
     locks = loops.setdefault(loop, {})
-    entry = locks.setdefault(source, _SourceLock())
-    entry.users += 1
+    entries = [(name, locks.setdefault(name, _SourceLock())) for name in sorted(set(names))]
+    for _, entry in entries:
+        entry.users += 1
+    held: list[_SourceLock] = []
     try:
-        async with entry.lock:
-            return await _sync_documents(
-                rag,
-                documents,
-                source=source,
-                prune=prune,
-                dry_run=dry_run,
-                cache_unchanged_chunks=cache_unchanged_chunks,
-                chunker=chunker,
-                extractor=extractor,
-                ctx=ctx,
-            )
+        for _, entry in entries:
+            await entry.lock.acquire()
+            held.append(entry)
+        yield
     finally:
-        entry.users -= 1
-        if not entry.users:
-            del locks[source]
-            if not locks:
-                del loops[loop]
-            if not loops:
-                del _SOURCE_LOCKS[rag]
+        for entry in reversed(held):
+            entry.lock.release()
+        for name, entry in entries:
+            entry.users -= 1
+            if not entry.users:
+                del locks[name]
+        if not locks:
+            loops.pop(loop, None)
+        if not loops:
+            _SOURCE_LOCKS.pop(rag, None)
 
 
 async def _sync_documents(
@@ -257,16 +275,17 @@ async def _sync_documents(
             report.failed[doc_id] = f"ids may not contain {_PENDING_MARKER!r}"
             continue
         known_hash, known_version, known_props = existing.get(doc_id, (None, None, {}))
-        # A missing hash means the last write was incomplete, so it is redone.
-        if known_hash is not None and doc.version is not None and doc.version == known_version:
-            changed = {
-                key: value
-                for key, value in _document_properties(doc).items()
-                if known_props.get(key) != value
-            }
-            if changed and not dry_run:
+        # A missing hash means the last write was incomplete, and a recovery marker
+        # an interrupted delete or cleanup; update() repairs both, so neither skips.
+        if (
+            known_hash is not None
+            and doc.version is not None
+            and doc.version == known_version
+            and not _needs_recovery(known_props)
+        ):
+            if not dry_run:
                 try:
-                    await _refresh_metadata(rag, doc_id, changed)
+                    await _refresh_metadata(rag, doc_id, doc, known_props)
                 except Exception as exc:
                     logger.warning("metadata refresh of %s failed: %s", doc_id, exc)
                     report.failed[doc_id] = f"{type(exc).__name__}: {exc}"
@@ -312,7 +331,7 @@ async def _sync_documents(
             # update() returns on a matching hash before writing anything, so a
             # moved page or a new author would otherwise never reach the graph.
             try:
-                await _refresh_metadata(rag, doc_id, _document_properties(doc))
+                await _refresh_metadata(rag, doc_id, doc, known_props)
             except Exception as exc:
                 logger.warning("metadata refresh of %s failed: %s", doc_id, exc)
                 report.failed[doc_id] = f"{type(exc).__name__}: {exc}"
@@ -362,7 +381,8 @@ async def sync_table(
     that are new or changed are written, and rows that disappeared from the
     source are removed. ``rows`` must therefore be the whole table, not only the
     rows changed since the last run. An unchanged table is a no-op. No model is
-    called. An empty ``rows`` removes every row the table had.
+    called. An empty ``rows`` removes every row the table had. Calls on the same
+    GraphRAG instance and event loop are serialized per table.
 
     The table needs a :class:`~graphrag_sdk.core.tables.TableMapping` in the
     ontology whose ``source`` is the table's name (``users`` or ``users.csv``).
@@ -379,6 +399,17 @@ async def sync_table(
     Raises:
         ValueError: No mapping in the ontology names ``table``.
     """
+    async with _source_locks(rag, [table]):
+        return await _sync_table(rag, rows, table=table, ctx=ctx)
+
+
+async def _sync_table(
+    rag: GraphRAG,
+    rows: Iterable[dict[str, Any]] | AsyncIterable[dict[str, Any]],
+    *,
+    table: str,
+    ctx: Context | None,
+) -> StructuredIngestionResult:
     mapping = await _mapping_named(rag, table)
     records = [row async for row in _aiter(rows)]
     # An empty table still has a header. Without one the mapping's key and name
@@ -419,6 +450,10 @@ async def sync(
     before anything is written, so those problems fail the whole call rather
     than leaving it half applied. A cell that does not parse as its declared
     type is only found while its table is written.
+
+    Calls on the same GraphRAG instance and event loop are serialized per
+    resource name, from the first read to the last write, so overlapping calls
+    apply their snapshots in the order they were made.
 
     dlt's incremental cursors are not supported. ``sync()`` keeps no dlt state,
     so a cursor would not advance between runs, and a partial read is wrong for
@@ -472,6 +507,31 @@ async def sync(
                 "advance between runs, and its partial read would delete the documents "
                 "or table rows it skipped. Remove the cursor."
             )
+    # Locked before reading, so overlapping calls apply their snapshots in order.
+    async with _source_locks(rag, [r.name for r in resources]):
+        return await _sync_resources(
+            rag,
+            resources,
+            prune=prune,
+            dry_run=dry_run,
+            cache_unchanged_chunks=cache_unchanged_chunks,
+            chunker=chunker,
+            extractor=extractor,
+            ctx=ctx,
+        )
+
+
+async def _sync_resources(
+    rag: GraphRAG,
+    resources: list[Any],
+    *,
+    prune: bool,
+    dry_run: bool,
+    cache_unchanged_chunks: bool,
+    chunker: ChunkingStrategy | None,
+    extractor: ExtractionStrategy | None,
+    ctx: Context | None,
+) -> SyncResult:
     table_names = {
         name for name in (r.name for r in resources) if await _find_mapping(rag, name) is not None
     }
@@ -501,7 +561,7 @@ async def sync(
 
     result = SyncResult()
     for name, docs in documents.items():
-        result.documents[name] = await sync_documents(
+        result.documents[name] = await _sync_documents(
             rag,
             docs,
             source=name,
@@ -515,7 +575,7 @@ async def sync(
     for name, rows in tables.items():
         result.table_rows[name] = len(rows)
         if not dry_run:
-            result.tables[name] = await sync_table(rag, rows, table=name, ctx=ctx)
+            result.tables[name] = await _sync_table(rag, rows, table=name, ctx=ctx)
     return result
 
 
@@ -626,11 +686,34 @@ def _check_source_name(source: str) -> None:
         raise ValueError(f"'source' may not contain {_PENDING_MARKER!r}")
 
 
-async def _refresh_metadata(rag: GraphRAG, doc_id: str, props: dict[str, Any]) -> None:
-    if props:
-        await rag.query(
-            "MATCH (d:Document {id: $id}) SET d += $props", {"id": doc_id, "props": props}
-        )
+async def _refresh_metadata(
+    rag: GraphRAG, doc_id: str, doc: SourceDocument, stored: dict[str, Any]
+) -> None:
+    """Write what changed in ``doc``'s metadata, and remove keys the source dropped."""
+    current = _document_properties(doc)
+    changed = {key: value for key, value in current.items() if stored.get(key) != value}
+    # Keys are bare identifiers (checked here), so they are safe to name in Cypher.
+    removed = sorted(key for key in stored if key not in current and _is_source_key(key))
+    if not changed and not removed:
+        return
+    cypher = "MATCH (d:Document {id: $id}) SET d += $props"
+    if removed:
+        cypher += " REMOVE " + ", ".join(f"d.`{key}`" for key in removed)
+    await rag.query(cypher, {"id": doc_id, "props": changed})
+
+
+def _is_source_key(key: str) -> bool:
+    return (
+        re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is not None
+        and key not in _RESERVED_PROPERTIES
+        and not key.startswith(_RESERVED_PREFIXES)
+    )
+
+
+def _needs_recovery(stored: dict[str, Any]) -> bool:
+    return bool(stored.get("pending_delete")) or any(
+        key.startswith(_RESERVED_PREFIXES) for key in stored
+    )
 
 
 async def _existing_documents(

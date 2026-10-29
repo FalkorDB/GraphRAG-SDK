@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -47,12 +49,20 @@ class FakeGraph:
         self.fail_on: set[str] = set()
         self.incomplete_on: set[str] = set()
         self.metadata_refreshes: list[tuple[str, dict[str, Any]]] = []
+        self.metadata_removals: list[tuple[str, list[str]]] = []
         self.ontology = Ontology(entities=[Entity(label="Person")], tables=tables or [])
 
     async def query(self, cypher: str, params: dict[str, Any]) -> list[list[Any]]:
         if "SET d += $props" in cypher:
-            self.metadata_refreshes.append((params["id"], params["props"]))
-            self.metadata.setdefault(params["id"], {}).update(params["props"])
+            stored = self.metadata.setdefault(params["id"], {})
+            removed = re.findall(r"d\.`(\w+)`", cypher)
+            if params["props"]:
+                self.metadata_refreshes.append((params["id"], params["props"]))
+            if removed:
+                self.metadata_removals.append((params["id"], removed))
+            stored.update(params["props"])
+            for key in removed:
+                stored.pop(key, None)
             return []
         assert "STARTS WITH $prefix" in cypher
         return [
@@ -177,6 +187,54 @@ async def test_a_matching_version_skips_the_download(dry_run):
     assert graph.updates == ["notion:p1"]
     assert graph.metadata["notion:p1"]["source_version"] == "v1"
     assert graph.metadata_refreshes == []
+
+
+@pytest.mark.parametrize("version", ["v1", None])
+async def test_metadata_the_source_dropped_is_removed(version):
+    graph = FakeGraph()
+    first = SourceDocument("p1", "Alice.", metadata={"url": "a", "author": "Ada"}, version=version)
+    await sync_documents(graph, [first], source="notion")
+
+    again = SourceDocument("p1", "Alice.", metadata={"url": "a"}, version=version)
+    await sync_documents(graph, [again], source="notion")
+
+    assert graph.metadata_removals == [("notion:p1", ["author"])]
+    assert "author" not in graph.metadata["notion:p1"]
+    assert graph.metadata["notion:p1"].get("source_version") == version
+
+
+@pytest.mark.parametrize("marker", [{"pending_delete": True}, {"cleanup_candidates": ["e1"]}])
+async def test_a_recovery_marker_sends_a_matching_version_through_update(marker):
+    graph = FakeGraph()
+    await sync_documents(graph, [SourceDocument("p1", "Alice.", version="v1")], source="notion")
+    graph.metadata["notion:p1"].update(marker)
+
+    report = await sync_documents(
+        graph, [SourceDocument("p1", lambda: "Alice.", version="v1")], source="notion"
+    )
+
+    assert graph.updates == ["notion:p1", "notion:p1"]
+    assert report.unchanged == ["notion:p1"]
+
+
+async def test_overlapping_syncs_apply_their_snapshots_in_call_order(dlt):
+    graph = FakeGraph()
+
+    def snapshot(ids: list[str], delay: float):
+        @dlt.resource(name="wiki")
+        def wiki():
+            time.sleep(delay)
+            yield from (SourceDocument(i, f"Page {i}.") for i in ids)
+
+        return wiki()
+
+    async def newer():
+        await asyncio.sleep(0.05)
+        return await sync(graph, snapshot(["a", "c"], 0))
+
+    await asyncio.gather(sync(graph, snapshot(["a", "b"], 0.3)), newer())
+
+    assert sorted(graph.documents) == ["wiki:a", "wiki:c"]
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -1183,7 +1241,12 @@ async def test_source_version_skips_the_download_against_falkordb(
     rag = real_falkordb_rag_factory(
         llm=llm, resolver=None, ontology=Ontology(entities=[Entity(label="Person")])
     )
-    page = SourceDocument("p1", "Alice works at Acme.", version="2026-10-29T10:00:00")
+    page = SourceDocument(
+        "p1",
+        "Alice works at Acme.",
+        metadata={"url": "https://a", "author": "Ada"},
+        version="2026-10-29T10:00:00",
+    )
     await sync_documents(rag, [page], source="notion", extractor=extractor)
 
     stored = await rag.query("MATCH (d:Document {id: 'notion:p1'}) RETURN d.source_version")
@@ -1192,9 +1255,16 @@ async def test_source_version_skips_the_download_against_falkordb(
     calls = llm._call_index
     again = await sync_documents(
         rag,
-        [SourceDocument("p1", _unreadable, version="2026-10-29T10:00:00")],
+        [
+            SourceDocument(
+                "p1", _unreadable, metadata={"url": "https://b"}, version="2026-10-29T10:00:00"
+            )
+        ],
         source="notion",
         extractor=extractor,
     )
     assert again.unchanged == ["notion:p1"]
     assert llm._call_index == calls
+    assert await rag.query(
+        "MATCH (d:Document {id: 'notion:p1'}) RETURN d.url, d.author, d.source_version"
+    ) == [["https://b", None, "2026-10-29T10:00:00"]]
