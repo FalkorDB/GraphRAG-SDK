@@ -1378,10 +1378,11 @@ class TestRelationshipMergeUnion:
         assert props["fact"] == "new"
         assert props["source_chunk_ids"] == ["newA", "newB"]
 
-    def test_none_and_missing_rel_type_are_one_key(self):
+    @pytest.mark.parametrize("rel_type", [None, ""])
+    def test_none_empty_and_missing_rel_type_are_one_key(self, rel_type):
         a = GraphData(nodes=[], relationships=[self._typed(None, "x", ["c1"])])
         b = GraphData(nodes=[], relationships=[self._typed("", "x", ["c2"])])
-        b.relationships[0].properties["rel_type"] = None
+        b.relationships[0].properties["rel_type"] = rel_type
 
         merged = CachedChunkExtraction._merge([a, b])
 

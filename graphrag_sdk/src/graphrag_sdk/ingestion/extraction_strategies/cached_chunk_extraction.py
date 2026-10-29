@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import DatabaseUnavailableError, LatencyBudgetExceededError
@@ -68,7 +68,10 @@ from graphrag_sdk.core.models import (
     TextChunks,
 )
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
-from graphrag_sdk.storage.graph_store import GraphStore
+from graphrag_sdk.utils.cypher import merge_key_value
+
+if TYPE_CHECKING:
+    from graphrag_sdk.storage.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +88,7 @@ def _rel_type_key(value: Any) -> Any:
     FOUNDED Acme`` into one edge. The store drops ``None`` properties and
     MERGEs on ``coalesce(rel_type, '')``, so ``None`` and missing are ``""``.
     """
-    return GraphStore._merge_key_value("" if value is None else value)
+    return merge_key_value("" if value is None else value)
 
 
 class CachedChunkExtraction(ExtractionStrategy):
