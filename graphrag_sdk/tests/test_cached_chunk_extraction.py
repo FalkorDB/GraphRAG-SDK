@@ -9,6 +9,7 @@ the scripted LLM is strict, so any unexpected extraction raises loudly.
 from __future__ import annotations
 
 import hashlib
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -1004,6 +1005,81 @@ class TestCachedUpdateIntegration:
             extractor=extractor,
         )
         assert result.no_op is True
+
+    async def test_cached_update_keeps_every_fact_between_one_pair(self, real_falkordb_rag_factory):
+        """Two facts between Alice and Acme in the unchanged chunk both
+        survive a cached update instead of one being swept as stale (#361)."""
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            EntityExtractor,
+        )
+        from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+            GraphExtraction,
+        )
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+            ExactMatchResolution,
+        )
+
+        from .conftest import MockLLM
+
+        class _NoLocalNER(EntityExtractor):
+            async def extract_entities(self, text, entity_types, source_chunk_id):
+                return []
+
+        def step2(entities, relationships):
+            return json.dumps(
+                {
+                    "entities": [{"name": n, "type": t, "description": d} for n, t, d in entities],
+                    "relationships": [
+                        {"source": s, "target": o, "type": r, "description": f"{s} {r} {o}"}
+                        for s, r, o in relationships
+                    ],
+                }
+            )
+
+        alice_acme = [
+            ("Alice", "Person", "Engineer"),
+            ("Acme Corporation", "Organization", "Tech company"),
+        ]
+        llm = MockLLM(
+            responses=[
+                step2(
+                    alice_acme,
+                    [
+                        ("Alice", "WORKS_AT", "Acme Corporation"),
+                        ("Alice", "FOUNDED", "Acme Corporation"),
+                    ],
+                ),
+                step2([("Carol", "Person", "Manager")], []),
+                step2([("Dave", "Person", "Manager")], []),
+            ],
+            strict=True,
+        )
+        extractor = GraphExtraction(llm, entity_extractor=_NoLocalNER())
+        rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution())
+        v1, v2 = self._texts()
+
+        async def facts():
+            r = await rag._graph_store.query_raw(
+                "MATCH (:__Entity__ {name: 'Alice'})-[r:RELATES]->"
+                "(:__Entity__ {name: 'Acme Corporation'}) RETURN r.rel_type ORDER BY r.rel_type"
+            )
+            return [row[0] for row in r.result_set]
+
+        await rag.ingest(
+            text=v1, document_id="doc-facts", chunker=self._chunker(), extractor=extractor
+        )
+        assert await facts() == ["FOUNDED", "WORKS_AT"]
+
+        result = await rag.update(
+            text=v2,
+            document_id="doc-facts",
+            chunker=self._chunker(),
+            cache_unchanged_chunks=True,
+            extractor=extractor,
+        )
+
+        assert result.metadata["cache_stats"]["cached_chunks"] == 1
+        assert await facts() == ["FOUNDED", "WORKS_AT"]
 
 
 class TestSelfMappingGuard:
