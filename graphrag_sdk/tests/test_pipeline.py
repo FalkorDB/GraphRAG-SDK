@@ -1244,6 +1244,60 @@ class TestContentHashRequiresCompleteWrites:
         assert not self._hash_written(mock_graph_store)
         assert result.metadata["incomplete_writes"] == ["mentions 2/3"]
 
+    @pytest.mark.parametrize(
+        "dropped",
+        [
+            GraphNode(id="", label="Person"),  # removed by the quality filter
+            GraphNode(id="acme", label="Company"),  # pruned: not in the ontology
+        ],
+    )
+    async def test_mentions_of_dropped_nodes_are_not_written(
+        self, ctx, mock_graph_store, mock_vector_store, dropped
+    ):
+        from graphrag_sdk.core.models import EntityMention
+
+        class MentionExtractor(StubExtractor):
+            async def extract(self, chunks, ontology, ctx):
+                nodes = [GraphNode(id="alice", label="Person"), dropped]
+                return GraphData(
+                    nodes=nodes,
+                    relationships=[],
+                    mentions=[
+                        EntityMention(entity_id=n.id, chunk_id=chunks.chunks[0].uid) for n in nodes
+                    ],
+                )
+
+        # Like the real store: an edge to a node that was never written does not MATCH.
+        written_ids: set[str] = set()
+
+        def _upsert_nodes(nodes):
+            written_ids.update(n.id for n in nodes)
+            return len(nodes)
+
+        def _upsert_relationships(rels):
+            return sum(
+                1
+                for r in rels
+                if r.type != "MENTIONED_IN" or {r.start_node_id, r.end_node_id} <= written_ids
+            )
+
+        mock_graph_store.upsert_nodes = AsyncMock(side_effect=_upsert_nodes)
+        mock_graph_store.upsert_relationships = AsyncMock(side_effect=_upsert_relationships)
+        pipeline = self._pipeline(mock_graph_store, mock_vector_store, extractor=MentionExtractor())
+        pipeline.ontology = Ontology(entities=[Entity(label="Person")])
+        result = await pipeline.run("r.txt", ctx)
+
+        mentioned = [
+            r.start_node_id
+            for call in mock_graph_store.upsert_relationships.call_args_list
+            for r in call[0][0]
+            if r.type == "MENTIONED_IN"
+        ]
+        assert mentioned == ["alice"]
+        assert result.metadata["mention_edges_created"] == 1
+        assert "incomplete_writes" not in result.metadata
+        assert self._hash_written(mock_graph_store)
+
     async def test_unembedded_chunks_withhold_the_hash(
         self, ctx, mock_graph_store, mock_vector_store
     ):
