@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Connectors — sync databases, file stores and apps through dlt and LlamaIndex readers
+
+- **`graphrag_sdk.connectors.sync(rag, data)`** keeps the graph in step with
+  external sources without the SDK writing an API client for any of them
+  ([#359](https://github.com/FalkorDB/GraphRAG-SDK/issues/359)). `data` is any
+  dlt source or resource: `sql_database`, `filesystem` (S3, GCS, Azure, SFTP,
+  Google Drive), `rest_api` or your own. A resource that yields row dicts is
+  written as a table through its `TableMapping`, found by the resource's name;
+  one that yields `SourceDocument` items is synced as documents under
+  `<resource name>:<id>`. Installed with `graphrag-sdk[dlt]`.
+- **A re-sync costs only what changed.** New documents are ingested, changed
+  ones go through `update(cache_unchanged_chunks=True)`, unchanged ones are
+  skipped on their content hash with no model calls, and documents the source
+  no longer has are deleted. Pruning is scoped to the source's id prefix (a
+  source name may not contain `:`) and skipped when a document source returns
+  nothing at all, which is more often a revoked token than an emptied source.
+  A resource given a dlt incremental cursor with `apply_hints(incremental=...)`
+  is refused, since `sync()` keeps no dlt state and a partial read would delete
+  what it skipped; a cursor declared as a resource function's default argument
+  is not detected. Every resource is read and checked before anything is
+  written. Documents with incomplete writes are reported as failed, and metadata
+  changes on unchanged text are applied without re-extraction. `dry_run=True`
+  reports added, updated, unchanged and deleted documents before any model call.
+- **`llamaindex_documents(reader, name=..., id_from=...)`** wraps a LlamaIndex reader as a
+  dlt resource, for apps dlt has no document source for (Notion, Confluence,
+  SharePoint). **`file_documents(filesystem(...), name=...)`** reads Markdown,
+  text and PDF out of a dlt filesystem listing. Source metadata such as URL and
+  modified time is stored on the `Document` node.
+- **Connector safety:** mapping previews use `get_ontology(initialize=False)`
+  without schema registration or data reconciliation. The LlamaIndex adapter
+  requires an explicit stable-ID callback; file adapters use the file URL.
+  Unsafe metadata keys are dropped, and document
+  syncs on one SDK instance and event loop serialize by source. Cross-instance
+  and multi-process synchronization remains the caller's responsibility.
+- **Unchanged files are not downloaded.** `SourceDocument` takes an optional
+  `version` (a modified time or ETag) and `text` may be a function. When the
+  version matches the one stored on the graph's `Document`, the document is
+  reported unchanged without reading its text. `file_documents()` uses each
+  file's modification date, so a re-sync of an unchanged folder only lists it.
+- **`sync_documents()` and `sync_table()`** take plain iterables, for sources
+  fetched without dlt.
+- **A `record_loader` now marks a source with no table suffix as a table**, so
+  `ingest("employees", record_loader=...)` takes the structured path. Before,
+  only `.csv`, `.tsv`, `.psv` and `.tab` did, which left database tables no way
+  in.
+
 #### Structured ingestion — tables declared on the ontology, one node for a row and its mention
 
 - **`Ontology(tables=[TableMapping(...)])`** declares what a table's columns mean,

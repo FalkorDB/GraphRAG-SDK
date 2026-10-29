@@ -61,6 +61,7 @@
                 "pages": [
                   "ingestion",
                   "structured-ingestion",
+                  "connectors",
                   "extraction",
                   "retrieval",
                   "storage",
