@@ -37,7 +37,7 @@ from graphrag_sdk.storage.system_store import (
     deleted_record_clause,
     is_system_label,
 )
-from graphrag_sdk.utils.cypher import sanitize_cypher_label
+from graphrag_sdk.utils.cypher import merge_key_value, sanitize_cypher_label
 
 
 class ReferenceNode(NamedTuple):
@@ -877,7 +877,7 @@ class GraphStore:
                         and name not in props
                         and (value is None or isinstance(value, list))
                     )
-                rel_key = self._merge_key_value(props.get("rel_type", "")) if is_relates else ""
+                rel_key = merge_key_value(props.get("rel_type", "")) if is_relates else ""
                 key = (sid, eid, rel_key)
                 if key in folded:
                     first, acc, weight, seen = folded[key]
@@ -2634,24 +2634,6 @@ class GraphStore:
     def _clean_identifier(cls, value: Any) -> str:
         """Normalise IDs used in Cypher params."""
         return cls._sanitize_string(str(value))
-
-    @staticmethod
-    def _merge_key_value(value: Any) -> Any:
-        """A MERGE key value, compared the way FalkorDB compares it.
-
-        Numbers are equal by value (``5`` and ``5.0`` are one key, as are
-        ``0`` and ``-0.0``), a boolean is never equal to a number, and a string
-        is never equal to either. Python's ``==`` and ``hash`` already treat
-        numbers that way, so tagging the kind keeps ``True`` apart from ``1``
-        and ``"5"`` apart from ``5`` without splitting ``5`` from ``5.0``.
-        """
-        if isinstance(value, bool):
-            return ("bool", value)
-        if isinstance(value, int | float):
-            return ("number", value)
-        if isinstance(value, str):
-            return ("string", value)
-        return ("other", json.dumps(value, sort_keys=True, default=str))
 
     @staticmethod
     def _fold_properties(
