@@ -80,10 +80,12 @@ class GraphWalkInput(_Input):
     goal: str | None = Field(
         default=None,
         max_length=500,
-        description="Optional second entity: find the strongest path from start to it.",
+        description="Optional second entity: find a strong short path from start to it.",
     )
     beam_width: int = Field(default=5, ge=1, le=20, description="Paths kept per round.")
-    max_depth: int = Field(default=3, ge=1, le=5, description="Most hops per path.")
+    max_depth: int = Field(
+        default=3, ge=1, le=5, description="Most hops per path (start to goal in total)."
+    )
 
 
 class CypherQueryInput(_Input):
@@ -94,7 +96,10 @@ class CypherQueryInput(_Input):
         default=None, description="Query parameters ($name); prefer them to inlined values."
     )
     max_rows: int = Field(
-        default=25, ge=1, le=100, description="Most rows to return; every LIMIT is capped to it."
+        default=25,
+        ge=1,
+        le=100,
+        description="Most rows to return; the final RETURN is capped to it.",
     )
     timeout_ms: int = Field(
         default=5000, ge=100, le=10000, description="Database timeout in milliseconds."
@@ -239,8 +244,8 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
     ToolDef(
         "graph_walk",
         GraphWalkInput,
-        "Find the strongest paths out of an entity, ranked by relation weight and "
-        "PageRank importance, or (with goal) the strongest path connecting two entities. "
+        "Find strong paths out of an entity, ranked by relation weight and "
+        "PageRank importance, or (with goal) a strong short path connecting two entities. "
         "Use it for 'how is A connected to B' and 'what matters most around A'." + _CITE,
     ),
     ToolDef(
@@ -249,9 +254,9 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "Run one read-only Cypher query for what the other tools cannot express: "
         "counts, sums, sorting, property filters. Entities are (:__Entity__:<Label>) "
         "nodes with name/description; semantic relations are stored as "
-        "[:RELATES {rel_type: '<TYPE>', fact: '...'}]. Writes are rejected, every LIMIT "
-        "is capped to max_rows; if 'truncated' is true, aggregate with count() instead "
-        "of reading rows. Use names from status/get_ontology." + _CITE,
+        "[:RELATES {rel_type: '<TYPE>', fact: '...'}]. Writes are rejected and the "
+        "rows returned are capped to max_rows; if 'truncated' is true, aggregate with "
+        "count() instead of reading rows. Use names from status/get_ontology." + _CITE,
     ),
     ToolDef(
         "retrieve",
@@ -282,6 +287,7 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "Add text (a note, fact or document) to the graph: entities and relations are "
         "extracted and stored. Call finalize after a batch of ingests.",
         read_only=False,
+        destructive=True,
     ),
     ToolDef(
         "finalize",

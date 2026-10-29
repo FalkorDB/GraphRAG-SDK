@@ -43,40 +43,60 @@ class ContradictionDetectionSkill(Skill):
         rows = await self._rows(
             "MATCH (e:__Entity__ {id: $id})-[r:RELATES]-(m:__Entity__) "
             "RETURN coalesce(r.rel_type, type(r)) AS rel, m.id AS other, "
-            "coalesce(r.fact, r.description, '') AS desc "
+            "coalesce(r.fact, r.description, '') AS desc, "
+            "coalesce(m.name, m.id) AS other_name, coalesce(e.name, e.id) AS entity_name "
             "ORDER BY rel, other LIMIT $limit",
-            {"id": entity, "limit": limit},
+            {"id": entity, "limit": limit + 1},
         )
+        truncated = len(rows) > limit
+        rows = rows[:limit]
         facts = [
-            {"relation": r[0], "other": r[1], "description": r[2] if len(r) > 2 else ""}
+            {
+                "relation": r[0],
+                "other": r[1],
+                "other_name": r[3] if len(r) > 3 and r[3] is not None else r[1],
+                "description": r[2] if len(r) > 2 else "",
+            }
             for r in rows
             if r
         ]
+        entity_name = next((r[4] for r in rows if r and len(r) > 4 and r[4]), entity)
 
         contradictions: list[dict[str, Any]] = []
         summary = ""
+        llm_error: str | None = None
+        checked = False
         if self._llm is not None and facts:
             prompt = (
-                f"Here are facts about entity '{entity}':\n"
-                + "\n".join(f"- {f['relation']} {f['other']}: {f['description']}" for f in facts)
+                f"Here are facts about entity '{entity_name}':\n"
+                + "\n".join(
+                    f"- {f['relation']} {f['other_name']}: {f['description']}" for f in facts
+                )
                 + "\n\nIdentify any pairs of facts that contradict each other. "
                 'Respond as JSON: {"contradictions": [{"a": "...", "b": "...", '
                 '"reason": "..."}], "summary": "..."}'
             )
-            raw = await self._summarize(ctx, prompt)
-            parsed = _safe_json(raw)
-            if isinstance(parsed, dict):
-                found = parsed.get("contradictions", []) or []
+            raw, llm_error = await self._ask(ctx, prompt)
+            parsed = _safe_json(raw) if llm_error is None else None
+            found = parsed.get("contradictions") if isinstance(parsed, dict) else None
+            if isinstance(found, list):
                 contradictions = [c for c in found if isinstance(c, dict)]
                 summary = str(parsed.get("summary", "") or "")
+                checked = True
+            elif llm_error is None:
+                llm_error = "LLM reply was not the requested JSON"
 
-        data = {
+        data: dict[str, Any] = {
             "entity": entity,
+            "entity_name": entity_name,
             "facts_examined": len(facts),
             "facts": facts,
             "contradictions": contradictions,
-            "checked_by_llm": self._llm is not None and bool(facts),
+            "checked_by_llm": checked,
+            "truncated": truncated,
         }
+        if llm_error is not None:
+            data["llm_error"] = f"{llm_error}; judge the facts yourself."
         return SkillResult(skill=self.name, summary=summary, data=data, sources=[entity])
 
 

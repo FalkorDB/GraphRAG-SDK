@@ -14,12 +14,16 @@ from typing import Any
 #: dropped number reports it as invalid rather than matching something else.
 DEFAULT_LEDGER_CAPACITY = 2000
 
-#: A citation marker: ``[3]``, ``[1, 4]``, also glued to a word or a figure
-#: (``plant[1]``, ``1998[2]``) or chained (``[1][2]``). Not when a number has
-#: four or more digits (``[2024]`` is a year), or for ``[0]`` (evidence is
+#: One cited number or range (``3``, ``1-3``, ``1–3``).
+_CITE = r"\d{1,3}(?:\s*[-–]\s*\d{1,3})?"
+#: A citation marker: ``[3]``, ``[1, 4]``, ``[1-3]``, also glued to a word or a
+#: figure (``plant[1]``, ``1998[2]``) or chained (``[1][2]``). Not when a number
+#: has four or more digits (``[2024]`` is a year), or for ``[0]`` (evidence is
 #: numbered from 1, so ``items[0]`` is code). Markers inside inline code or a
 #: fenced code block are code and never touched.
-_MARKER_RE = re.compile(r"\[(\s*\d{1,3}(?:\s*[,;]\s*\d{1,3})*\s*)\]")
+_MARKER_RE = re.compile(rf"\[(\s*{_CITE}(?:\s*[,;]\s*{_CITE})*\s*)\]")
+#: Longest range read as citations; ``[1-200]`` is a page span, not 200 cites.
+_MAX_RANGE = 50
 #: Fenced code blocks (an unclosed fence runs to the end) and inline code.
 _CODE_RE = re.compile(r"```[\s\S]*?(?:```|\Z)|~~~[\s\S]*?(?:~~~|\Z)|`[^`\n]*`")
 #: Stands in for a removed marker until the whitespace around it is tidied.
@@ -28,9 +32,9 @@ _REMOVED = "\x00"
 #: Sentence ends: whitespace after ``.``, ``!`` or ``?`` (``2.8`` stays whole).
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
 #: Markers that open a split piece belong to the sentence before (``x. [1]``).
-_LEADING_MARKERS_RE = re.compile(r"^(?:\s*\[\s*\d{1,3}(?:\s*[,;]\s*\d{1,3})*\s*\])+")
+_LEADING_MARKERS_RE = re.compile(rf"^(?:\s*\[\s*{_CITE}(?:\s*[,;]\s*{_CITE})*\s*\])+")
 #: A full stop with markers glued on (``it.[2] Next``): split after the markers.
-_GLUED_END_RE = re.compile(r"([.!?])((?:\[\s*\d{1,3}(?:\s*[,;]\s*\d{1,3})*\s*\])+)\s+")
+_GLUED_END_RE = re.compile(rf"([.!?])((?:\[\s*{_CITE}(?:\s*[,;]\s*{_CITE})*\s*\])+)\s+")
 #: Sentence openers that are capitalised without being part of a name.
 _OPENERS = frozenset(
     "The A An This That These Those It Its Our Their His Her Both Each All Some "
@@ -169,13 +173,25 @@ class GroundedAnswer:
         return [ev for n in self.cited if (ev := ledger.get(n)) is not None]
 
 
+def _marker_numbers(body: str) -> list[int] | None:
+    """The numbers a marker cites, ranges expanded; ``None`` when it is not a
+    citation (``[0]``, a backwards range, or one longer than ``_MAX_RANGE``)."""
+    numbers: list[int] = []
+    for part in re.split(r"[,;]", body):
+        ends = [int(x) for x in re.split(r"[-–]", part)]
+        if len(ends) == 2 and not 0 < ends[1] - ends[0] < _MAX_RANGE:
+            return None
+        numbers.extend(range(ends[0], ends[-1] + 1))
+    return None if numbers == [0] else numbers
+
+
 def _clean_markers(text: str, valid: set[int] | EvidenceLedger) -> tuple[str, list[int], list[int]]:
     cited: list[int] = []
     invalid: list[int] = []
 
     def replace(match: re.Match[str]) -> str:
-        numbers = [int(part.strip()) for part in re.split(r"[,;]", match.group(1))]
-        if numbers == [0]:
+        numbers = _marker_numbers(match.group(1))
+        if numbers is None:
             return match.group(0)
         keep: list[int] = []
         for n in numbers:
@@ -185,6 +201,8 @@ def _clean_markers(text: str, valid: set[int] | EvidenceLedger) -> tuple[str, li
                     cited.append(n)
             elif n not in invalid:
                 invalid.append(n)
+        if keep == numbers and re.search(r"[-–]", match.group(1)):
+            return match.group(0)  # a range that is all valid stays as written
         return f"[{', '.join(str(n) for n in keep)}]" if keep else _REMOVED
 
     # Code (fenced blocks, inline spans) is kept verbatim: odd pieces of the
@@ -281,11 +299,16 @@ def _claim_terms(sentence: str) -> list[str]:
 
 
 def _in_evidence(term: str, text: str) -> bool:
-    """A figure must appear as a number; a name, by any of its words."""
+    """A figure must appear as a number. A name must have at least half of
+    its words of three or more letters in the text as whole words (either
+    word of "Corvane Systems", two of "Sofia Marquez Rivera"); case is
+    ignored, ``text`` is already lower-case."""
     if term[0].isdigit():
         figure = re.escape(term.replace(",", ""))
         return re.search(rf"(?<![\d.]){figure}(?!\d|[.,]\d)", text) is not None
-    return any(w.lower() in text for w in term.split() if len(w) >= 3)
+    words = [w.lower() for w in term.split() if len(w) >= 3]
+    found = sum(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", text) is not None for w in words)
+    return found * 2 >= len(words)
 
 
 def _check_claims(answer: str, ledger: EvidenceLedger) -> tuple[list[str], list[UnsupportedClaim]]:
@@ -304,7 +327,7 @@ def _check_claims(answer: str, ledger: EvidenceLedger) -> tuple[list[str], list[
             continue
         numbers: list[int] = []
         for marker in _MARKER_RE.findall(sentence):
-            numbers.extend(int(part) for part in re.split(r"[,;]", marker) if part.strip())
+            numbers.extend(_marker_numbers(marker) or [])
         bare = " ".join(_MARKER_RE.sub(" ", sentence).split())
         terms = _claim_terms(bare)
         if not terms or len(bare.split()) < 3:

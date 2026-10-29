@@ -13,6 +13,7 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import (
     ConfigError,
+    DatabaseError,
     DocumentNotFoundError,
     LatencyBudgetExceededError,
 )
@@ -1323,6 +1324,29 @@ class TestGraphRAGConfigNode:
 
         result = await g.retrieve("test?")
         assert isinstance(result, RetrieverResult)
+
+    async def test_config_check_is_read_only(self, mock_conn, embedder):
+        """Checking the config must not create a graph that was never written."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
+
+        await g._validate_graph_config()
+
+        assert g._graph_store.query_raw.await_args.kwargs.get("read_only") is True
+        assert g._config_validated is True
+
+    async def test_missing_graph_still_probes_the_embedder(self, mock_conn, embedder):
+        """A graph that was never written has no stored config; the embedder
+        probe still runs and its dimension check still applies."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=4)
+        g._graph_store.query_raw = AsyncMock(
+            side_effect=DatabaseError("Invalid graph operation on empty key")
+        )
+
+        with pytest.raises(ConfigError, match="dimension"):
+            await g._validate_graph_config()
 
 
 class TestSameEmbeddingModel:
@@ -2821,7 +2845,52 @@ class TestRetrievalEdges:
         strategy._ontology = None
         strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
         await rag.retrieve("q", strategy=strategy)
-        strategy.set_ontology.assert_called_once_with(rag._global_ontology)
+        # Lent for the call, then taken back.
+        assert strategy.set_ontology.call_args_list == [
+            ((rag._global_ontology,),),
+            ((None,),),
+        ]
+
+    async def test_the_lent_ontology_is_taken_back(self, rag):
+        from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+
+        strategy = MultiPathRetrieval(
+            graph_store=rag._graph_store,
+            vector_store=rag._vector_store,
+            embedder=rag.embedder,
+            llm=rag.llm,
+        )
+        seen = []
+
+        async def search(question, ctx, **kwargs):
+            seen.append(strategy._ontology)
+            return RetrieverResult(items=[])
+
+        strategy.search = search
+        await rag.retrieve("q", strategy=strategy)
+        assert seen == [rag._global_ontology]
+        assert strategy._ontology is None  # the caller's strategy is left as it was
+
+    async def test_concurrent_calls_share_the_lent_ontology(self, rag):
+        import asyncio
+
+        strategy = MagicMock()
+        strategy._ontology = None
+        strategy.set_ontology = lambda o: setattr(strategy, "_ontology", o)
+        gate = asyncio.Event()
+        seen = []
+
+        async def search(question, ctx, **kwargs):
+            await gate.wait()
+            seen.append(strategy._ontology)
+            return RetrieverResult(items=[])
+
+        strategy.search = search
+        calls = [asyncio.create_task(rag.retrieve(q, strategy=strategy)) for q in "ab"]
+        await asyncio.sleep(0)
+        gate.set()
+        await asyncio.gather(*calls)
+        assert seen == [rag._global_ontology] * 2 and strategy._ontology is None
 
     async def test_run_skill_checks_arguments(self, rag):
         with pytest.raises(ValueError, match="unknown argument"):

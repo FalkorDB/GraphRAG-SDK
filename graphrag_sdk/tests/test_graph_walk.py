@@ -116,6 +116,136 @@ class TestBidirectionalSearch:
         assert path is None
 
 
+class TestEdgeDirection:
+    """Direction travels with every hop: True when the edge is stored from the
+    node before it to the node after it on the path."""
+
+    async def test_beam_search_carries_each_edges_direction(self):
+        # Stored: alice-[WORKS_AT]->acme, acme-[IN]->berlin; walk from acme.
+        adj = {
+            "acme": [("alice", 1.0, "WORKS_AT", False), ("berlin", 1.0, "IN", True)],
+        }
+        paths = await DynamicGraphWalk(make_neighbor_fn(adj), max_depth=1).beam_search("acme")
+        by_end = {p.nodes[-1]: p.edge_forward for p in paths}
+        assert by_end == {"alice": [False], "berlin": [True]}
+
+    async def test_three_tuples_leave_the_direction_unknown(self):
+        adj = {"a": [("b", 1.0, "R")]}
+        paths = await DynamicGraphWalk(make_neighbor_fn(adj), max_depth=1).beam_search("a")
+        assert paths[0].edge_forward == [None]
+
+    async def test_goal_side_edges_are_flipped_into_path_order(self):
+        # Stored: alice-[WORKS_AT]->acme, acme-[IN]->berlin. Searched from
+        # berlin to alice, both hops point against the path.
+        adj = {
+            "berlin": [("acme", 1.0, "IN", False)],
+            "acme": [("berlin", 1.0, "IN", True), ("alice", 1.0, "WORKS_AT", False)],
+            "alice": [("acme", 1.0, "WORKS_AT", True)],
+        }
+        walk = DynamicGraphWalk(make_neighbor_fn(adj), max_depth=2)
+        path = await walk.bidirectional_search("berlin", "alice")
+        assert path.nodes == ["berlin", "acme", "alice"]
+        assert path.edges == ["IN", "WORKS_AT"] and path.edge_forward == [False, False]
+        back = await walk.bidirectional_search("alice", "berlin")
+        assert back.nodes == ["alice", "acme", "berlin"] and back.edge_forward == [True, True]
+
+
+def _star(fanout: int, depth: int) -> dict[str, list[tuple[str, float, str]]]:
+    """Every node below ``depth`` has ``fanout`` children (and its parent)."""
+    adj: dict[str, list[tuple[str, float, str]]] = {}
+    level = ["root"]
+    for _ in range(depth):
+        nxt = []
+        for node in level:
+            kids = [f"{node}.{i}" for i in range(fanout)]
+            adj.setdefault(node, []).extend((k, 1.0, "R") for k in kids)
+            for k in kids:
+                adj.setdefault(k, []).append((node, 1.0, "R"))
+            nxt.extend(kids)
+        level = nxt
+    return adj
+
+
+class TestBoundedBidirectionalSearch:
+    async def test_beam_bounds_lookups(self):
+        adj = _star(50, 3)
+        calls: list[str] = []
+
+        async def neighbours(node: str):
+            calls.append(node)
+            return adj.get(node, [])
+
+        walk = DynamicGraphWalk(neighbours, beam_width=5, max_depth=5)
+        assert await walk.bidirectional_search("root", "nowhere") is None
+        # ceil(5/2)=3 levels from start (1 + 5 + 5 nodes), 2 from the goal
+        # (1 node, no neighbours): 12 lookups, not thousands.
+        assert len(calls) == 12 and walk.stopped == "complete"
+
+    async def test_expansion_cap_stops_the_search(self):
+        adj = _star(50, 3)
+        walk = DynamicGraphWalk(make_neighbor_fn(adj), beam_width=20, max_depth=5, max_expansions=7)
+        assert await walk.bidirectional_search("root", "nowhere") is None
+        assert walk.stopped == "expansion_limit"
+
+    async def test_time_budget_stops_the_search(self):
+        import asyncio
+
+        async def slow(node: str):
+            await asyncio.sleep(0.05)
+            return [(node + "x", 1.0, "R")]
+
+        walk = DynamicGraphWalk(slow, max_depth=5, time_budget_seconds=0.08)
+        assert await walk.bidirectional_search("a", "z") is None
+        assert walk.stopped == "time_budget"
+
+    @pytest.mark.parametrize("max_depth, found", [(1, False), (2, True), (3, True)])
+    async def test_max_depth_bounds_the_whole_path(self, max_depth, found):
+        # a - b - c: the only path has 2 hops.
+        adj = {
+            "a": [("b", 1.0, "R")],
+            "b": [("a", 1.0, "R"), ("c", 1.0, "R")],
+            "c": [("b", 1.0, "R")],
+        }
+        walk = DynamicGraphWalk(make_neighbor_fn(adj), max_depth=max_depth)
+        path = await walk.bidirectional_search("a", "c")
+        assert (path is not None) == found
+        if path is not None:
+            assert path.length <= max_depth
+
+    @pytest.mark.parametrize("max_depth", [1, 2, 3, 4, 5])
+    async def test_no_path_exceeds_max_depth(self, max_depth):
+        chain = [f"n{i}" for i in range(8)]
+        adj: dict[str, list[tuple[str, float, str]]] = {}
+        for x, y in zip(chain, chain[1:]):
+            adj.setdefault(x, []).append((y, 1.0, "R"))
+            adj.setdefault(y, []).append((x, 1.0, "R"))
+        walk = DynamicGraphWalk(make_neighbor_fn(adj), max_depth=max_depth)
+        for hops in range(1, 8):
+            path = await walk.bidirectional_search("n0", chain[hops])
+            assert (path is not None) == (hops <= max_depth)
+
+    async def test_best_scoring_meeting_path_wins(self):
+        # Two 2-hop routes a-?-c; the one through "strong" has heavier edges
+        # but is listed second.
+        adj = {
+            "a": [("weak", 0.1, "R"), ("strong", 1.0, "R")],
+            "weak": [("a", 0.1, "R"), ("c", 0.1, "R")],
+            "strong": [("a", 1.0, "R"), ("c", 1.0, "R")],
+            "c": [("weak", 0.1, "R"), ("strong", 1.0, "R")],
+        }
+        walk = DynamicGraphWalk(make_neighbor_fn(adj), max_depth=2)
+        path = await walk.bidirectional_search("a", "c")
+        assert path.nodes == ["a", "strong", "c"]
+
+    async def test_lookup_errors_propagate(self):
+        async def broken(node: str):
+            raise RuntimeError("db down")
+
+        walk = DynamicGraphWalk(broken, max_depth=2)
+        with pytest.raises(RuntimeError, match="db down"):
+            await walk.bidirectional_search("a", "b")
+
+
 class FakeWalkStore:
     def __init__(self, adj: dict[str, list[tuple[str, float, str]]], weights=None):
         self._adj = adj
@@ -165,12 +295,39 @@ class TestWeightedNeighborsQuery:
         )
         out = await GraphStore(conn).weighted_neighbors("alice", limit=7)
         cypher = conn.query.await_args.args[0]
+        assert conn.query.await_args.kwargs.get("read_only") is True
         assert "NOT type(r) IN ['SAME_AS', 'DISTINCT_FROM']" in cypher
         assert "ORDER BY weight DESC, id LIMIT 7" in cypher
         assert "max(w) AS weight" in cypher
         # Equal-weight parallel edges always yield the same label.
         assert "ORDER BY w DESC, coalesce(r.rel_type, type(r))" in cypher
         assert out == [("acme", 2.0, "WORKS_AT")]
+
+    async def test_with_direction_reports_the_stored_direction(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.storage.graph_store import GraphStore
+
+        conn = MagicMock()
+        conn.query = AsyncMock(
+            return_value=SimpleNamespace(
+                result_set=[["acme", "WORKS_AT", 2.0, True], ["bob", "KNOWS", 1.0, False]]
+            )
+        )
+        out = await GraphStore(conn).weighted_neighbors("alice", with_direction=True)
+        assert "ID(startNode(r)) = ID(n)" in conn.query.await_args.args[0]
+        assert out == [("acme", 2.0, "WORKS_AT", True), ("bob", 1.0, "KNOWS", False)]
+
+    async def test_database_errors_propagate(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.storage.graph_store import GraphStore
+
+        conn = MagicMock()
+        conn.query = AsyncMock(side_effect=RuntimeError("connection refused"))
+        with pytest.raises(RuntimeError, match="connection refused"):
+            await GraphStore(conn).weighted_neighbors("alice")
 
 
 # ── Concurrent neighbour lookups ─────────────────────────────────

@@ -152,6 +152,7 @@ def test_bypasses_are_rejected(cypher):
         ("MATCH (n) RETURN n.embedding", "embedding"),
         ("MATCH (n) RETURN n.description_embedding", "embedding"),
         ("MATCH (c:__GraphRAGConfig__) RETURN c", "internal"),
+        ("MATCH (c:__GraphRAGProcessing__) RETURN c.ids", "internal"),
         ("MATCH (c:Chunk) RETURN c['embedding']", "computed name"),
         ("MATCH (n) RETURN 'x", "unterminated string"),
         ("MATCH (n) RETURN `x", "unterminated identifier"),
@@ -332,9 +333,29 @@ class TestRequireRelType:
 
 
 class TestRowCap:
-    def test_every_limit_is_capped(self):
-        assert enforce_row_cap("MATCH (n) WITH n LIMIT 100000 RETURN n LIMIT 5", 25) == (
-            "MATCH (n) WITH n LIMIT 25 RETURN n LIMIT 5"
+    def test_only_the_final_limit_is_capped(self):
+        assert enforce_row_cap("MATCH (n) WITH n LIMIT 100000 RETURN n LIMIT 500", 25) == (
+            "MATCH (n) WITH n LIMIT 100000 RETURN n LIMIT 25"
+        )
+
+    def test_inner_limit_is_never_lowered(self):
+        """Lowering an inner LIMIT changes what count() / collect() after it compute."""
+        counted = "MATCH (n:Person) WITH n ORDER BY n.name LIMIT 100 RETURN count(n)"
+        assert enforce_row_cap(counted, 26) == f"{counted}\nLIMIT 26"
+        collected = "MATCH (n:Person) WITH n LIMIT 100 RETURN collect(n.name) AS names"
+        assert enforce_row_cap(collected, 26) == f"{collected}\nLIMIT 26"
+
+    def test_parameter_limit_is_kept_and_not_doubled(self):
+        assert enforce_row_cap("MATCH (n) RETURN n.name LIMIT $n", 26) == (
+            "MATCH (n) RETURN n.name LIMIT $n"
+        )
+        assert enforce_row_cap("MATCH (n) RETURN n.name ORDER BY n.name SKIP 2 LIMIT $k;", 5) == (
+            "MATCH (n) RETURN n.name ORDER BY n.name SKIP 2 LIMIT $k"
+        )
+
+    def test_column_named_limit_is_not_a_clause(self):
+        assert enforce_row_cap("MATCH (n) RETURN n.x AS limit", 5) == (
+            "MATCH (n) RETURN n.x AS limit\nLIMIT 5"
         )
 
     def test_missing_limit_is_added_and_semicolon_dropped(self):
@@ -428,7 +449,7 @@ def test_mask_internal_labels():
 
 
 def test_constants():
-    assert "__GraphRAGConfig__" in INTERNAL_NODE_DENYLIST
+    assert {"__GraphRAGConfig__", "__GraphRAGProcessing__"} <= set(INTERNAL_NODE_DENYLIST)
     assert {"MENTIONED_IN", "PART_OF", "SAME_AS"} <= STRUCTURAL_RELATIONSHIPS
     assert "RELATES" not in STRUCTURAL_RELATIONSHIPS
 

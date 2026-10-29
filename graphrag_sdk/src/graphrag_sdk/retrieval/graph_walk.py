@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -23,8 +24,32 @@ from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 
 logger = logging.getLogger(__name__)
 
-# An async function: node_id -> list of (neighbor_id, edge_weight, edge_label).
-NeighborFn = Callable[[str], Awaitable[list[tuple[str, float, str]]]]
+# An async function: node_id -> list of (neighbor_id, edge_weight, edge_label),
+# optionally with a fourth element ``outgoing``: True when the edge is stored
+# from node_id to the neighbour, False when it points at node_id.
+NeighborFn = Callable[[str], Awaitable[list[tuple[Any, ...]]]]
+
+#: Most neighbour lookups one bidirectional search runs.
+DEFAULT_MAX_EXPANSIONS = 200
+#: Wall-clock seconds one bidirectional search may take.
+DEFAULT_TIME_BUDGET_SECONDS = 20.0
+
+# A side of a bidirectional search: node -> (parent, edge label, edge weight,
+# edge stored from parent to node (None if unknown), hops from the root).
+_Side = dict[str, tuple[str | None, str, float, "bool | None", int]]
+# A beam-search partial path: (nodes, edge labels, edge weights, directions).
+_Entry = tuple[list[str], list[str], list[float], list["bool | None"]]
+
+
+def _edge(item: tuple[Any, ...]) -> tuple[str, float, str, bool | None]:
+    """Unpack a neighbour tuple; the direction is ``None`` when not reported."""
+    outgoing = item[3] if len(item) > 3 and item[3] is not None else None
+    return item[0], float(item[1]), item[2], None if outgoing is None else bool(outgoing)
+
+
+def _flip(forward: bool | None) -> bool | None:
+    return None if forward is None else not forward
+
 
 #: Neighbour lookups a walk runs at once. Below the connection pool's default
 #: size (16), so a wide beam waits for a free connection instead of failing.
@@ -76,6 +101,11 @@ class DynamicGraphWalk:
         max_depth: Max traversal depth (hops).
         length_penalty: Per-hop penalty applied during path scoring.
         max_concurrency: Neighbour lookups run at once within a round.
+        max_expansions: Most neighbour lookups one bidirectional search runs.
+        time_budget_seconds: Wall-clock budget of one bidirectional search.
+
+    After :meth:`bidirectional_search`, :attr:`stopped` says why it ended:
+    ``"complete"``, ``"expansion_limit"`` or ``"time_budget"``.
     """
 
     def __init__(
@@ -87,6 +117,8 @@ class DynamicGraphWalk:
         max_depth: int = 4,
         length_penalty: float = 0.1,
         max_concurrency: int = DEFAULT_MAX_CONCURRENT_LOOKUPS,
+        max_expansions: int = DEFAULT_MAX_EXPANSIONS,
+        time_budget_seconds: float = DEFAULT_TIME_BUDGET_SECONDS,
     ) -> None:
         if beam_width < 1:
             raise ValueError("beam_width must be >= 1")
@@ -98,6 +130,9 @@ class DynamicGraphWalk:
         self._max_depth = max_depth
         self._length_penalty = length_penalty
         self._max_concurrency = max(1, int(max_concurrency))
+        self._max_expansions = max(1, int(max_expansions))
+        self._time_budget = float(time_budget_seconds)
+        self.stopped = "complete"
 
     async def beam_search(
         self,
@@ -111,8 +146,9 @@ class DynamicGraphWalk:
         If ``goal`` is given, paths reaching it are returned as soon as
         found; otherwise the highest-scoring frontier paths are returned.
         """
-        # Each beam entry: (path_nodes, path_edge_labels, path_edge_weights).
-        beam: list[tuple[list[str], list[str], list[float]]] = [([start], [], [])]
+        # Each beam entry: (path_nodes, path_edge_labels, path_edge_weights,
+        # path_edge_directions).
+        beam: list[_Entry] = [([start], [], [], [])]
         completed: list[ScoredPath] = []
         # Paths whose tail cannot be extended (leaf / all neighbors already on
         # the path). Kept so short terminal branches — e.g. a direct leaf
@@ -123,59 +159,42 @@ class DynamicGraphWalk:
         for depth in range(self._max_depth):
             if ctx is not None:
                 ctx.ensure_budget(f"graph walk depth {depth}")
-            candidates: list[tuple[list[str], list[str], list[float]]] = []
-            dead_ends: list[tuple[list[str], list[str], list[float]]] = []
+            candidates: list[_Entry] = []
+            dead_ends: list[_Entry] = []
             # One round's neighbour lookups run concurrently (they are
             # independent reads), at most ``max_concurrency`` at a time;
             # results are consumed in beam order, so the outcome is the same
             # as fetching them one by one.
             to_expand = [entry for entry in beam if goal is None or entry[0][-1] != goal]
             fetched = await gather_limited(
-                [(lambda tail=nodes[-1]: self._neighbor_fn(tail)) for nodes, _, _ in to_expand],
+                [(lambda tail=entry[0][-1]: self._neighbor_fn(tail)) for entry in to_expand],
                 self._max_concurrency,
             )
             neighbours = {id(entry): nbrs for entry, nbrs in zip(to_expand, fetched)}
             for entry in beam:
-                nodes, edges, e_weights = entry
+                nodes, edges, e_weights, dirs = entry
                 tail = nodes[-1]
                 if goal is not None and tail == goal:
-                    completed.append(
-                        ScoredPath(
-                            nodes=list(nodes),
-                            edges=list(edges),
-                            score=score_path(
-                                nodes,
-                                self._weights,
-                                e_weights,
-                                length_penalty=self._length_penalty,
-                            ),
-                        )
-                    )
+                    completed.append(self._scored(entry))
                     continue
                 extended = False
-                for nbr, weight, label in neighbours[id(entry)]:
+                for item in neighbours[id(entry)]:
+                    nbr, weight, label, forward = _edge(item)
                     if nbr in nodes:
                         continue  # no cycles within a single path
-                    candidates.append((nodes + [nbr], edges + [label], e_weights + [weight]))
+                    candidates.append(
+                        (nodes + [nbr], edges + [label], e_weights + [weight], dirs + [forward])
+                    )
                     extended = True
                 if not extended and len(nodes) > 1:
-                    dead_ends.append((nodes, edges, e_weights))
+                    dead_ends.append(entry)
 
             if not candidates:
                 # Entire beam is unextendable; it already represents these
                 # paths in the final results, so don't double-count dead ends.
                 break
 
-            terminal.extend(
-                ScoredPath(
-                    nodes=list(nodes),
-                    edges=list(edges),
-                    score=score_path(
-                        nodes, self._weights, e_weights, length_penalty=self._length_penalty
-                    ),
-                )
-                for nodes, edges, e_weights in dead_ends
-            )
+            terminal.extend(self._scored(entry) for entry in dead_ends)
 
             # Keep the top-k candidates by current path score.
             candidates.sort(
@@ -192,37 +211,21 @@ class DynamicGraphWalk:
 
             if goal_hits:
                 # Promote goal-reaching paths immediately.
-                for nodes, edges, e_weights in goal_hits:
-                    completed.append(
-                        ScoredPath(
-                            nodes=list(nodes),
-                            edges=list(edges),
-                            score=score_path(
-                                nodes,
-                                self._weights,
-                                e_weights,
-                                length_penalty=self._length_penalty,
-                            ),
-                        )
-                    )
+                completed.extend(self._scored(entry) for entry in goal_hits)
                 break
 
-        results = (
-            completed
-            or [
-                ScoredPath(
-                    nodes=nodes,
-                    edges=edges,
-                    score=score_path(
-                        nodes, self._weights, e_weights, length_penalty=self._length_penalty
-                    ),
-                )
-                for nodes, edges, e_weights in beam
-            ]
-            + terminal
-        )
+        results = completed or [self._scored(entry) for entry in beam] + terminal
         results.sort(key=lambda p: p.score, reverse=True)
         return results[: self._beam_width]
+
+    def _scored(self, entry: _Entry) -> ScoredPath:
+        nodes, edges, e_weights, dirs = entry
+        return ScoredPath(
+            nodes=list(nodes),
+            edges=list(edges),
+            edge_forward=list(dirs),
+            score=score_path(nodes, self._weights, e_weights, length_penalty=self._length_penalty),
+        )
 
     async def bidirectional_search(
         self,
@@ -231,92 +234,135 @@ class DynamicGraphWalk:
         *,
         ctx: Context | None = None,
     ) -> ScoredPath | None:
-        """Search from both ``start`` and ``goal``, meeting in the middle.
+        """Search from both ``start`` and ``goal`` until the two sides meet.
 
-        Returns the connecting path (oriented start→goal) or ``None`` if
-        the two frontiers never meet within ``max_depth`` hops on each side.
+        ``max_depth`` bounds the whole path: the start side walks
+        ``ceil(max_depth / 2)`` hops and the goal side ``floor(max_depth / 2)``.
+        Each side expands only its ``beam_width`` best-scoring nodes per hop.
+        When the sides meet, the best-scoring path found at that hop is
+        returned (oriented start→goal): a strong short path, not a proven
+        optimum. At most ``max_expansions`` neighbour lookups run, within
+        ``time_budget_seconds``; when either runs out the search returns what
+        it found so far (usually ``None``) and :attr:`stopped` says which.
         """
+        self.stopped = "complete"
         if start == goal:
             return ScoredPath(nodes=[start], edges=[], score=score_path([start], self._weights))
 
-        # parent maps: node -> (predecessor, edge_label, edge_weight)
-        fwd: dict[str, tuple[str | None, str, float]] = {start: (None, "", 0.0)}
-        bwd: dict[str, tuple[str | None, str, float]] = {goal: (None, "", 0.0)}
-        fwd_frontier = [start]
-        bwd_frontier = [goal]
+        sides: dict[bool, _Side] = {
+            True: {start: (None, "", 0.0, None, 0)},
+            False: {goal: (None, "", 0.0, None, 0)},
+        }
+        frontiers: dict[bool, list[str]] = {True: [start], False: [goal]}
+        hops = {True: (self._max_depth + 1) // 2, False: self._max_depth // 2}
+        deadline = time.monotonic() + self._time_budget
+        expansions = 0
 
-        for depth in range(self._max_depth):
-            if ctx is not None:
-                ctx.ensure_budget(f"bidirectional walk depth {depth}")
-            meet = await self._expand_frontier(fwd_frontier, fwd, bwd)
-            if meet is not None:
-                return self._stitch(meet, fwd, bwd)
+        for level in range(hops[True]):
+            for forward in (True, False):
+                frontier = frontiers[forward]
+                if level >= hops[forward] or not frontier:
+                    continue
+                if ctx is not None:
+                    ctx.ensure_budget(f"bidirectional walk depth {level}")
+                room = self._max_expansions - expansions
+                if room < len(frontier):
+                    self.stopped = "expansion_limit"
+                    frontier = frontier[: max(room, 0)]
+                    if not frontier:
+                        return None
+                left = deadline - time.monotonic()
+                try:
+                    if left <= 0:
+                        raise asyncio.TimeoutError
+                    fetched = await asyncio.wait_for(
+                        gather_limited(
+                            [(lambda n=n: self._neighbor_fn(n)) for n in frontier],
+                            self._max_concurrency,
+                        ),
+                        timeout=left,
+                    )
+                except asyncio.TimeoutError:
+                    self.stopped = "time_budget"
+                    return None
+                expansions += len(frontier)
 
-            meet = await self._expand_frontier(bwd_frontier, bwd, fwd)
-            if meet is not None:
-                return self._stitch(meet, fwd, bwd)
-
+                side, other = sides[forward], sides[not forward]
+                meets: list[ScoredPath] = []
+                next_layer: list[str] = []
+                for node, items in zip(frontier, fetched):
+                    for item in items:
+                        nbr, weight, label, out = _edge(item)
+                        if nbr in other:
+                            joined = self._join(forward, node, (nbr, weight, label, out), sides)
+                            if joined is not None:
+                                meets.append(joined)
+                        if nbr not in side:
+                            side[nbr] = (node, label, weight, out, level + 1)
+                            next_layer.append(nbr)
+                if meets:
+                    # Highest score wins; ties go to the first found, so the
+                    # result is deterministic for a deterministic neighbour source.
+                    return max(meets, key=lambda p: p.score)
+                if self.stopped != "complete":
+                    return None
+                next_layer.sort(key=lambda n: self._chain_score(side, n), reverse=True)
+                frontiers[forward] = next_layer[: self._beam_width]
         return None
 
-    async def _expand_frontier(
+    @staticmethod
+    def _chain(
+        side: _Side, node: str
+    ) -> tuple[list[str], list[str], list[float], list[bool | None]]:
+        """The root→``node`` path of one search side, with each edge's
+        direction relative to that order."""
+        nodes, labels, weights, dirs = [node], [], [], []
+        cur = node
+        while True:
+            parent, label, weight, forward, _ = side[cur]
+            if parent is None:
+                break
+            nodes.append(parent)
+            labels.append(label)
+            weights.append(weight)
+            dirs.append(forward)
+            cur = parent
+        nodes.reverse()
+        labels.reverse()
+        weights.reverse()
+        dirs.reverse()
+        return nodes, labels, weights, dirs
+
+    def _chain_score(self, side: _Side, node: str) -> float:
+        nodes, _, weights, _ = self._chain(side, node)
+        return score_path(nodes, self._weights, weights, length_penalty=self._length_penalty)
+
+    def _join(
         self,
-        frontier: list[str],
-        side: dict[str, tuple[str | None, str, float]],
-        other: dict[str, tuple[str | None, str, float]],
-    ) -> str | None:
-        next_layer: list[str] = []
-        for node in frontier:
-            for nbr, weight, label in await self._neighbor_fn(node):
-                if nbr not in side:
-                    side[nbr] = (node, label, weight)
-                    next_layer.append(nbr)
-                if nbr in other:
-                    return nbr
-        frontier[:] = next_layer
-        return None
-
-    def _stitch(
-        self,
-        meet: str,
-        fwd: dict[str, tuple[str | None, str, float]],
-        bwd: dict[str, tuple[str | None, str, float]],
-    ) -> ScoredPath:
-        # Walk back from meet to start via fwd parents.
-        left_nodes: list[str] = []
-        left_edges: list[str] = []
-        left_weights: list[float] = []
-        node: str | None = meet
-        while node is not None:
-            left_nodes.append(node)
-            pred, label, weight = fwd.get(node, (None, "", 0.0))
-            if pred is not None:
-                left_edges.append(label)
-                left_weights.append(weight)
-            node = pred
-        left_nodes.reverse()
-        left_edges.reverse()
-        left_weights.reverse()
-
-        # Walk forward from meet to goal via bwd parents.
-        right_nodes: list[str] = []
-        right_edges: list[str] = []
-        right_weights: list[float] = []
-        node = bwd.get(meet, (None, "", 0.0))[0]
-        cur = meet
-        while node is not None:
-            _, label, weight = bwd.get(cur, (None, "", 0.0))
-            right_nodes.append(node)
-            right_edges.append(label)
-            right_weights.append(weight)
-            cur = node
-            node = bwd.get(cur, (None, "", 0.0))[0]
-
-        nodes = left_nodes + right_nodes
-        edges = left_edges + right_edges
-        weights = left_weights + right_weights
+        forward: bool,
+        node: str,
+        edge: tuple[str, float, str, bool | None],
+        sides: dict[bool, _Side],
+    ) -> ScoredPath | None:
+        """Stitch the start→goal path through the edge ``node``—``nbr`` the
+        ``forward`` side just found; ``None`` if it would revisit a node."""
+        nbr, weight, label, out = edge
+        if forward:
+            near, far, mid_forward = node, nbr, out
+        else:
+            near, far, mid_forward = nbr, node, _flip(out)
+        l_nodes, l_labels, l_weights, l_dirs = self._chain(sides[True], near)
+        r_nodes, r_labels, r_weights, r_dirs = self._chain(sides[False], far)
+        nodes = l_nodes + r_nodes[::-1]
+        if len(set(nodes)) != len(nodes):
+            return None
+        labels = l_labels + [label] + r_labels[::-1]
+        weights = l_weights + [weight] + r_weights[::-1]
+        dirs = l_dirs + [mid_forward] + [_flip(d) for d in r_dirs[::-1]]
         return ScoredPath(
             nodes=nodes,
-            edges=edges,
+            edges=labels,
+            edge_forward=dirs,
             score=score_path(nodes, self._weights, weights, length_penalty=self._length_penalty),
         )
 
@@ -366,7 +412,7 @@ class GraphWalkRetrieval(RetrievalStrategy):
             except Exception as exc:  # pragma: no cover - defensive
                 ctx.log(f"PageRank unavailable, walking unweighted: {exc}")
 
-        async def neighbor_fn(node_id: str) -> list[tuple[str, float, str]]:
+        async def neighbor_fn(node_id: str) -> list[tuple[Any, ...]]:
             return await self._graph.weighted_neighbors(node_id)
 
         walk = DynamicGraphWalk(

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from graphrag_sdk.core.models import RESERVED_NODE_LABELS, Ontology
+from graphrag_sdk.storage.system_store import CONFIG_LABEL, PROCESSING_LABEL
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,6 @@ _WRITE_RE = re.compile(
     re.IGNORECASE,
 )
 _READ_START = ("MATCH", "OPTIONAL MATCH", "UNWIND", "WITH", "RETURN")
-_LIMIT_RE = re.compile(r"(?i)\bLIMIT\s+(\d+)")
 # Clause keywords. FalkorDB accepts keywords as names too (``p.union``,
 # ``{match: 1}``, ``AS limit``), so a keyword after a ``.``, inside a
 # backtick name or used as a map key is not a clause.
@@ -37,6 +37,8 @@ _UNION_RE = re.compile(
     _KW + r"UNION(?:\s+ALL)?(?=\s+(?:OPTIONAL\s+MATCH|MATCH|WITH|UNWIND|RETURN|CALL)\b)"
 )
 _RETURN_RE = re.compile(_KW + r"RETURN" + _NOT_KEY)
+#: A ``LIMIT`` clause and its value: a number, a ``$parameter`` or an expression.
+_LIMIT_CLAUSE_RE = re.compile(_KW + r"LIMIT\s+(\d+(?![\w.])|\$\w+|\S+)")
 #: The clause keyword that a position belongs to (the last one before it).
 _CLAUSE_RE = re.compile(
     _KW + r"(OPTIONAL\s+MATCH|MATCH|WITH|RETURN|WHERE|UNWIND|ORDER\s+BY)" + _NOT_KEY
@@ -50,7 +52,9 @@ _ALT_NAME_RE = re.compile(r"\|\s*:?\s*`?([A-Za-z_]\w*)`?")
 _SHORTEST_PATH_RE = re.compile(r"\bshortestPath\s*\(", re.IGNORECASE)
 
 #: Labels that are never a legitimate analytical target (SDK bookkeeping).
-INTERNAL_NODE_DENYLIST = ("__GraphRAGConfig__",)
+#: A query can still build the name at run time; result values from these
+#: nodes are dropped after the query (``graph_ops.to_jsonable``).
+INTERNAL_NODE_DENYLIST = (CONFIG_LABEL, PROCESSING_LABEL)
 
 #: Edge types that record SDK bookkeeping rather than a fact between entities.
 STRUCTURAL_RELATIONSHIPS = frozenset(
@@ -343,48 +347,59 @@ def validate_read_query(
 
 
 def enforce_row_cap(cypher: str, cap: int) -> str:
-    """Return the query without comments, every ``LIMIT`` bounded to ``cap``.
+    """Return the query without comments, its final ``RETURN`` bounded to ``cap`` rows.
 
-    Every real ``LIMIT n`` clause is rewritten to ``min(n, cap)``, not just
-    the last, so an inner ``WITH ... LIMIT 100000`` cannot build a huge
-    intermediate set; ``LIMIT`` inside a string or a comment is not a
-    clause and is left alone (comments are dropped). The final ``RETURN``
-    of the query, and of each ``UNION`` part, gets a ``LIMIT`` when it has
-    none, so an inner ``WITH ... LIMIT 5`` cannot stand in for the cap.
+    Only the rows the query returns are capped: the final ``RETURN`` of the
+    query, and of each ``UNION`` part, gets ``LIMIT cap`` when it has no
+    ``LIMIT``, and a literal ``LIMIT n`` larger than ``cap`` there becomes
+    ``LIMIT cap``. A ``LIMIT`` inside the query (``WITH n LIMIT 100``) is
+    left alone: lowering it would change what ``count()`` or ``collect()``
+    after it computes. The work before the final ``RETURN`` is bounded by
+    the database timeout instead. A final ``LIMIT $n`` (or any other
+    non-literal limit) is kept as written; the caller caps the rows it reads.
+    ``LIMIT`` inside a string or a comment is not a clause (comments are
+    dropped).
     """
     if cap < 1:
         raise ValueError("cap must be >= 1")
     scanned = _scan(cypher.strip())
     if scanned.error:
         raise ValueError(scanned.error)
-    code, blank = scanned.code, scanned.blank
-    pieces: list[str] = []
-    last = 0
-    for match in _LIMIT_RE.finditer(blank):
-        pieces.append(code[last : match.start()])
-        pieces.append(f"LIMIT {min(int(match.group(1)), cap)}")
-        last = match.end()
-    pieces.append(code[last:])
-    capped = "".join(pieces).strip().rstrip(";").rstrip()
-    # Each part's final RETURN gets its own LIMIT when it has none.
-    rescanned = _scan(capped)
-    if rescanned.error:  # cannot happen for a query that scanned once
-        raise ValueError(rescanned.error)
-    blank = rescanned.blank
+    end = len(scanned.code.rstrip().rstrip(";").rstrip())
+    code, blank = scanned.code[:end], scanned.blank[:end]
     bounds = [0, *(m.start() for m in _UNION_RE.finditer(blank)), len(blank)]
     out: list[str] = []
-    for start, end in zip(bounds, bounds[1:]):
-        part, part_blank = capped[start:end], blank[start:end]
+    for start, stop in zip(bounds, bounds[1:]):
+        part, part_blank = code[start:stop], blank[start:stop]
         returns = list(_RETURN_RE.finditer(part_blank))
-        tail = part_blank[returns[-1].end() :] if returns else ""
-        if returns and not _LIMIT_RE.search(tail):
+        if not returns:
+            out.append(part)
+            continue
+        offset = returns[-1].end()
+        limit = _final_limit(part_blank[offset:])
+        if limit is None:
             stripped = part.rstrip()
-            if end == len(blank):
+            if stop == len(blank):
                 part = f"{stripped}\nLIMIT {cap}"
             else:
                 part = f"{stripped} LIMIT {cap}{part[len(stripped) :]}"
+        elif limit.group(1).isdigit() and int(limit.group(1)) > cap:
+            at = offset + limit.start(1)
+            part = f"{part[:at]}{cap}{part[offset + limit.end(1) :]}"
         out.append(part)
     return "".join(out)
+
+
+def _final_limit(tail: str) -> re.Match[str] | None:
+    """The ``LIMIT`` clause in the text after a final ``RETURN``, if any.
+
+    ``RETURN x AS limit`` names a column, it is not a clause.
+    """
+    found = None
+    for match in _LIMIT_CLAUSE_RE.finditer(tail):
+        if not re.search(r"(?i)\bAS\s*$", tail[: match.start()]):
+            found = match
+    return found
 
 
 def mask_internal_labels(text: str) -> str:

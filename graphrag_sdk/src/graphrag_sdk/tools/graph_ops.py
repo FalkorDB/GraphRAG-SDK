@@ -12,8 +12,9 @@ from collections.abc import Callable
 from typing import Any
 
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+from graphrag_sdk.storage import system_store
 from graphrag_sdk.storage.graph_store import GraphStore
-from graphrag_sdk.tools.cypher_guard import INTERNAL_NODE_DENYLIST, STRUCTURAL_RELATIONSHIPS
+from graphrag_sdk.tools.cypher_guard import STRUCTURAL_RELATIONSHIPS
 from graphrag_sdk.tools.errors import ToolError
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,18 @@ TIMEOUTS = (TimeoutError, asyncio.TimeoutError)
 _BULKY_PROPS = frozenset({"source_chunk_ids", "spans"})
 #: Keys of the SDK's ``__GraphRAGConfig__`` node (never shown).
 _CONFIG_KEYS = frozenset({"sdk_version", "embedding_dimension"})
+#: ``kind`` values of the SDK's ``__GraphRAGProcessing__`` records.
+_PROCESSING_KINDS = frozenset(
+    {
+        system_store.RUN,
+        system_store.PENDING,
+        system_store.UNRESOLVED,
+        system_store.DELETED,
+        system_store.PLAN_HEADER,
+        system_store.PLAN,
+        system_store.PLAN_IDS,
+    }
+)
 #: A list of at least this many numbers is treated as a vector and omitted.
 VECTOR_MIN_LENGTH = 64
 #: Longest string returned in one cell.
@@ -39,7 +52,8 @@ TRAVERSE_PATH_LIMIT = 200
 
 LOOKUP_DEFAULT_LIMIT, LOOKUP_MAX_LIMIT = 5, 25
 LOOKUP_TIMEOUT_MS = 1000
-_CANDIDATE_TOKEN_RE = re.compile(r"[a-z0-9]+(?:[-_./][a-z0-9]+)*")
+#: A name word: Unicode letters and digits ("müller"), joined by - _ . or /.
+_CANDIDATE_TOKEN_RE = re.compile(r"[^\W_]+(?:[-_./][^\W_]+)*")
 _CANDIDATE_STOP = frozenset(
     {"the", "and", "for", "with", "from", "into", "that", "this", "what", "which", "entity"}
 )
@@ -54,7 +68,7 @@ def clamp_int(value: Any, default: int, low: int, high: int) -> int:
     return max(low, min(high, number))
 
 
-class _NoGraph:
+class NoGraph:
     """The result of reading a graph that does not exist yet: no rows."""
 
     header: list[Any] = []
@@ -65,6 +79,17 @@ def _is_missing_graph(exc: Exception) -> bool:
     # FalkorDB answers any query on a graph key that was never written with
     # "Invalid graph operation on empty key"; for a read that is just no rows.
     return "empty key" in str(exc)
+
+
+async def graph_exists(store: Any) -> bool | None:
+    """Whether the graph key exists: ``False`` only when FalkorDB says it was
+    never written, ``None`` when another error leaves it unknown. Read-only,
+    so asking never creates the graph."""
+    try:
+        await store.query_raw("RETURN 1", {}, read_only=True)
+    except Exception as exc:
+        return False if _is_missing_graph(exc) else None
+    return True
 
 
 def _is_server_timeout(exc: BaseException) -> bool:
@@ -89,7 +114,7 @@ async def bounded_query(
         raise
     except Exception as exc:
         if _is_missing_graph(exc):
-            return _NoGraph()
+            return NoGraph()
         if _is_server_timeout(exc):
             raise TimeoutError(str(exc)) from exc
         raise
@@ -100,7 +125,7 @@ async def _read(store: Any, cypher: str, params: dict[str, Any] | None = None) -
         return await store.query_raw(cypher, params or {}, read_only=True)
     except Exception as exc:
         if _is_missing_graph(exc):
-            return _NoGraph()
+            return NoGraph()
         raise
 
 
@@ -119,8 +144,50 @@ def _is_vector(value: Any) -> bool:
     )
 
 
+def _is_system_map(value: dict) -> bool:
+    """Whether a property map (``properties(n)``, ``n {.*}``) is a system node's.
+
+    The guard rejects system labels named in the query, but a label built at
+    run time slips past it, so their maps are recognised by shape: no entity
+    ``name``, and the config node's keys or a processing record's ``kind``.
+    """
+    if "name" in value:
+        return False
+    if _CONFIG_KEYS & set(value):
+        return True
+    kind = value.get("kind")
+    return isinstance(kind, str) and kind in _PROCESSING_KINDS
+
+
 def _public_labels(labels: Any) -> list[str]:
     return [str(lbl) for lbl in labels or [] if not str(lbl).startswith("__")]
+
+
+def _path_text(path: Any, max_chars: int) -> str:
+    """A path as ``(Alice)-[WORKS_AT]->(Acme)``: node names and relation
+    types, each edge drawn in its stored direction, no properties."""
+    nodes, edges = list(path.nodes()), list(path.edges())
+
+    def name(node: Any) -> str:
+        labels = getattr(node, "labels", None) or []
+        if any(system_store.is_system_label(lbl) for lbl in labels):
+            return "internal node"
+        props = getattr(node, "properties", None) or {}
+        label = (_public_labels(labels) or [""])[0]
+        return str(props.get("name") or props.get("id") or label or "?")
+
+    def node_id(end: Any) -> Any:
+        return getattr(end, "id", end)
+
+    text = f"({name(nodes[0])})" if nodes else ""
+    for i, edge in enumerate(edges):
+        rel = (getattr(edge, "properties", None) or {}).get("rel_type") or edge.relation
+        here = nodes[i] if i < len(nodes) else None
+        nxt = nodes[i + 1] if i + 1 < len(nodes) else None
+        forward = here is None or node_id(edge.src_node) == node_id(here)
+        arrow = f"-[{rel}]->" if forward else f"<-[{rel}]-"
+        text += arrow + (f"({name(nxt)})" if nxt is not None else "()")
+    return to_jsonable(text, max_chars=max_chars)
 
 
 def to_jsonable(value: Any, *, max_chars: int = MAX_CELL_CHARS) -> Any:
@@ -139,8 +206,10 @@ def to_jsonable(value: Any, *, max_chars: int = MAX_CELL_CHARS) -> Any:
         return f"[vector of {len(value)} numbers omitted]"
     if isinstance(value, list | tuple):
         return [to_jsonable(v, max_chars=max_chars) for v in value]
+    if callable(getattr(value, "nodes", None)) and callable(getattr(value, "edges", None)):
+        return _path_text(value, max_chars)
     if isinstance(value, dict):
-        if _CONFIG_KEYS <= set(value):
+        if _is_system_map(value):
             return "[internal node omitted]"
         return {
             str(k): to_jsonable(v, max_chars=max_chars)
@@ -150,7 +219,7 @@ def to_jsonable(value: Any, *, max_chars: int = MAX_CELL_CHARS) -> Any:
     props = getattr(value, "properties", None)
     if isinstance(props, dict):
         labels = getattr(value, "labels", None)
-        if labels is not None and any(lbl in INTERNAL_NODE_DENYLIST for lbl in labels):
+        if labels is not None and any(system_store.is_system_label(lbl) for lbl in labels):
             return "[internal node omitted]"
         clean = {
             k: to_jsonable(v, max_chars=max_chars)
@@ -560,7 +629,8 @@ async def typed_path(
     via: list[str],
     timeout_ms: int,
 ) -> tuple[list[dict[str, Any]], str]:
-    """Entities at the end of ``start -via[0]-> ... -via[-1]->`` (either direction per hop).
+    """Entities at the end of ``start -via[0]-> ... -via[-1]->`` (either direction per hop),
+    never the start itself.
 
     Returns ``(nodes, stopped)``; ``stopped`` is ``"return_limit"`` when more
     than :data:`TRAVERSE_PATH_LIMIT` entities matched.
@@ -571,6 +641,7 @@ async def typed_path(
     last = f"n{len(via) - 1}"
     cypher = (
         f"MATCH (s:__Entity__){pattern} WHERE s.id = $start AND {conditions} "
+        f"AND {last}.id <> $start "
         f"RETURN DISTINCT {last}.id, {last}.name LIMIT {TRAVERSE_PATH_LIMIT + 1}"
     )
     params: dict[str, Any] = {"start": start_id, **{f"t{i}": t for i, t in enumerate(via)}}

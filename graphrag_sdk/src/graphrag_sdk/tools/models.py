@@ -327,23 +327,30 @@ class WalkPath(BaseModel):
     nodes: list[str] = Field(default_factory=list)
     node_ids: list[str] = Field(default_factory=list)
     edges: list[str] = Field(default_factory=list)
+    #: Per edge: True when stored from the node before it to the node after
+    #: it, False when stored the other way, None when unknown.
+    edge_forward: list[bool | None] = Field(default_factory=list)
     score: float = 0.0
 
 
-def _path_text(p: WalkPath) -> str:
+def path_text(p: WalkPath) -> str:
+    """``A -[R]-> B <-[S]- C``: each edge drawn in its stored direction."""
     parts = [_clean(p.nodes[0])] if p.nodes else []
     for i, name in enumerate(p.nodes[1:]):
-        rel = p.edges[i] if i < len(p.edges) else "?"
-        parts.append(f"-[{_clean(rel)}]-> {_clean(name)}")
+        rel = _clean(p.edges[i]) if i < len(p.edges) else "?"
+        forward = p.edge_forward[i] if i < len(p.edge_forward) else True
+        arrow = {True: f"-[{rel}]->", False: f"<-[{rel}]-", None: f"-[{rel}]-"}[forward]
+        parts.append(f"{arrow} {_clean(name)}")
     return " ".join(parts)
 
 
 class WalkResult(ToolResult):
-    """The strongest paths a weighted walk found."""
+    """Strong paths a weighted walk found."""
 
     start: str
     goal: str | None = None
     paths: list[WalkPath] = Field(default_factory=list)
+    truncated: bool = False
     hint: str | None = None
 
     def _preamble(self) -> list[str]:
@@ -357,7 +364,7 @@ class WalkResult(ToolResult):
         return [
             (
                 "Paths",
-                [f"- {_n(p.n)}{_path_text(p)} (score {p.score:.3f})" for p in self.paths],
+                [f"- {_n(p.n)}{path_text(p)} (score {p.score:.3f})" for p in self.paths],
             )
         ]
 

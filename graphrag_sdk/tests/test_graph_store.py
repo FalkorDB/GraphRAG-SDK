@@ -1593,6 +1593,12 @@ class TestPageRankCache:
         await store.pagerank(max_age_seconds=10)
         assert state["calls"] == 2
 
+    async def test_pagerank_runs_read_only(self):
+        conn = MagicMock()
+        conn.query = AsyncMock(return_value=MagicMock(result_set=[["a", 0.5]]))
+        await GraphStore(conn).pagerank()
+        assert conn.query.await_args.kwargs.get("read_only") is True
+
     async def test_pagerank_failure_is_not_cached(self):
         conn, _ = self.counting_conn(
             results=[Exception("procedure missing"), MagicMock(result_set=[["a", 1.0]])]

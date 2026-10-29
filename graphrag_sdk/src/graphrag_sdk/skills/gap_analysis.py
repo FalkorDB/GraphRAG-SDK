@@ -41,12 +41,20 @@ class GapAnalysisSkill(Skill):
         min_instances = self._int_param(params, "min_instances", 2, 1, 10**6)
         limit = self._int_param(params, "limit", 50, 1, MAX_ISOLATED)
 
+        isolated_match = "MATCH (e:__Entity__) WHERE NOT (e)-[:RELATES]-(:__Entity__) "
         isolated_rows = await self._rows(
-            "MATCH (e:__Entity__) WHERE NOT (e)-[:RELATES]-(:__Entity__) "
-            "RETURN e.id AS id ORDER BY id LIMIT $limit",
+            isolated_match + "RETURN e.id AS id ORDER BY id LIMIT $limit",
             {"limit": limit},
         )
         isolated = [r[0] for r in isolated_rows if r and r[0] is not None]
+        num_isolated = len(isolated)
+        if len(isolated_rows) >= limit:
+            # The list is capped: count them all.
+            count_rows = await self._rows(isolated_match + "RETURN count(e) AS total")
+            try:
+                num_isolated = max(num_isolated, int(count_rows[0][0]))
+            except (IndexError, TypeError, ValueError):
+                pass
 
         label_rows = await self._rows(
             "MATCH (e:__Entity__) "
@@ -61,12 +69,13 @@ class GapAnalysisSkill(Skill):
 
         data = {
             "isolated_entities": isolated,
-            "num_isolated": len(isolated),
+            "num_isolated": num_isolated,
+            "truncated": num_isolated > len(isolated),
             "sparse_labels": sparse_labels,
         }
         summary = await self._summarize(
             ctx,
-            f"The graph has {len(isolated)} isolated entities and these "
+            f"The graph has {num_isolated} isolated entities and these "
             f"sparse types: {sparse_labels}. Suggest where to focus ingestion.",
         )
         return SkillResult(skill=self.name, summary=summary, data=data, sources=isolated[:10])

@@ -1327,6 +1327,10 @@ class ScoredPath(DataModel):
     nodes: list[str] = Field(default_factory=list)
     score: float = 0.0
     edges: list[str] = Field(default_factory=list)
+    #: Per edge, ``True`` when it is stored from ``nodes[i]`` to
+    #: ``nodes[i + 1]``, ``False`` when it points back and ``None`` when the
+    #: neighbour source reports no direction.
+    edge_forward: list[bool | None] = Field(default_factory=list)
 
     @property
     def length(self) -> int:

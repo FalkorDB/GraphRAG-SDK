@@ -84,7 +84,8 @@ def test_every_tool_has_its_own_input_model():
 
 def test_write_flags():
     flags = {td.name: (td.read_only, td.destructive, td.manual_only) for td in TOOL_REGISTRY}
-    assert flags["ingest"] == (False, False, False)
+    # Both write tools are marked destructive so MCP clients ask the user first.
+    assert flags["ingest"] == (False, True, False)
     assert flags["finalize"] == (False, True, True)
     for name in ALL_NAMES[:-2]:
         assert flags[name] == (True, False, False), name

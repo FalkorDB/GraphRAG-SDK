@@ -6,11 +6,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import hmac
 import inspect
 import json
 import logging
+import re
 import weakref
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterator, Sequence
@@ -18,7 +20,18 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Literal
 
-from graphrag_sdk.core.exceptions import ReadOnlyViolation
+from graphrag_sdk.core.exceptions import (
+    ConfigError,
+    DatabaseError,
+    DatabaseUnavailableError,
+    EmbeddingError,
+    LatencyBudgetExceededError,
+    LLMError,
+    LLMTimeoutError,
+    ReadOnlyViolation,
+    RetrieverError,
+    SchemaValidationError,
+)
 from graphrag_sdk.tools.errors import ToolError
 from graphrag_sdk.tools.toolkit import FinalizePolicy, GraphRAGToolkit
 
@@ -45,7 +58,7 @@ To answer a question:
    find nothing, run it again without them.
 2. lookup_entity: turn names in the question into exact entity names and ids.
 3. traverse (all neighbours, or one relation path with via) or graph_walk
-   (strongest paths; how A connects to B) to follow relations from them.
+   (strong paths; how A connects to B) to follow relations from them.
 4. status or get_ontology: what the graph holds (entity labels, relation
    types, counts), for questions about the graph itself.
 5. run_skill: built-in analyses (compare entities, impact, contradictions,
@@ -70,40 +83,174 @@ MAX_SESSIONS = 1024
 _LONG_STRING_CHARS = 1000
 
 
-def fit_json(data: dict[str, Any], max_chars: int = MAX_RESULT_CHARS) -> str:
-    """``data`` as JSON of at most about ``max_chars`` characters.
+def _dumps(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False, default=str)
 
-    An oversized result loses the back half of its longest list until it
-    fits (then long strings are shortened), and says so with
-    ``truncated: true`` and a hint.
+
+def _largest_list(value: Any, path: str = "") -> tuple[int, Any, Any, str] | None:
+    """The longest-serialised list (2+ items) anywhere in ``value``:
+    ``(size, parent, key, path)``; ``None`` when there is none."""
+    best: tuple[int, Any, Any, str] | None = None
+    items = value.items() if isinstance(value, dict) else enumerate(value)
+    for key, child in items:
+        if not isinstance(child, (dict, list)):
+            continue
+        child_path = f"{path}.{key}" if isinstance(value, dict) else f"{path}[{key}]"
+        child_path = child_path.lstrip(".")
+        if isinstance(child, list) and len(child) > 1:
+            size = len(_dumps(child))
+            if best is None or size > best[0]:
+                best = (size, value, key, child_path)
+        inner = _largest_list(child, child_path)
+        if inner is not None and (best is None or inner[0] > best[0]):
+            best = inner
+    return best
+
+
+def _shorten_strings(value: Any, limit: int) -> Any:
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit] + "…"
+    if isinstance(value, list):
+        return [_shorten_strings(v, limit) for v in value]
+    if isinstance(value, dict):
+        return {k: _shorten_strings(v, limit) for k, v in value.items()}
+    return value
+
+
+def fit_json(data: dict[str, Any], max_chars: int = MAX_RESULT_CHARS) -> str:
+    """``data`` as valid JSON of at most ``max_chars`` characters.
+
+    An oversized result loses the back half of its longest list, at any
+    depth, until it fits; then long strings are shortened. The output says
+    so with ``truncated: true`` and a hint naming the lists that were cut.
+    Serialised JSON is never sliced, so the output always parses; a result
+    that cannot be shrunk enough keeps only its short top-level fields.
     """
-    text = json.dumps(data, ensure_ascii=False, default=str)
+    text = _dumps(data)
     if len(text) <= max_chars:
         return text
     data = copy.deepcopy(data)
-    while len(text) > max_chars:
-        lists = [k for k, v in data.items() if isinstance(v, list) and len(v) > 1]
-        if not lists:
-            break
-        key = max(lists, key=lambda k: len(json.dumps(data[k], ensure_ascii=False, default=str)))
-        data[key] = data[key][: len(data[key]) // 2]
-        text = json.dumps(data, ensure_ascii=False, default=str)
-    if len(text) > max_chars:
-
-        def shorten(value: Any) -> Any:
-            if isinstance(value, str) and len(value) > _LONG_STRING_CHARS:
-                return value[:_LONG_STRING_CHARS] + "…"
-            if isinstance(value, list):
-                return [shorten(v) for v in value]
-            if isinstance(value, dict):
-                return {k: shorten(v) for k, v in value.items()}
-            return value
-
-        data = shorten(data)
-    data["truncated"] = True
     note = "The result was too large and was cut; narrow the call (fewer rows, smaller top_k)."
-    data["hint"] = f"{data['hint']} {note}" if data.get("hint") else note
-    return json.dumps(data, ensure_ascii=False, default=str)[: max_chars + 2000]
+    base_hint = data.get("hint")
+    cut: dict[str, int] = {}
+
+    def render() -> str:
+        data["truncated"] = True
+        detail = (
+            f" Cut: {', '.join(f'{p} (was {n} items)' for p, n in cut.items())}." if cut else ""
+        )
+        data["hint"] = f"{base_hint} {note}{detail}" if base_hint else f"{note}{detail}"
+        return _dumps(data)
+
+    text = render()
+    while len(text) > max_chars:
+        found = _largest_list(data)
+        if found is None:
+            break
+        _, parent, key, path = found
+        cut.setdefault(path, len(parent[key]))
+        parent[key] = parent[key][: len(parent[key]) // 2]
+        text = render()
+    limit = _LONG_STRING_CHARS
+    while len(text) > max_chars and limit >= 20:
+        hint = data.pop("hint", None)
+        data = _shorten_strings(data, limit)
+        if hint is not None:
+            data["hint"] = hint
+        text = render()
+        limit //= 2
+    if len(text) > max_chars:
+        keep = {
+            k: v
+            for k, v in data.items()
+            if k not in ("hint", "truncated")
+            and not isinstance(v, (dict, list))
+            and len(_dumps(v)) <= 200
+        }
+        data = keep
+        cut = {}
+        base_hint = None
+        text = render()
+    return text
+
+
+_SECRET_PATTERNS = (
+    (re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}"), "sk-***"),
+    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=\-]+"), "Bearer ***"),
+    (
+        re.compile(r"(?i)\b(api[_-]?key|token|secret|password)(\s*[=:]\s*)[^\s,;'\"]+"),
+        r"\1\2***",
+    ),
+)
+
+#: Modules whose exceptions come from a model provider's client library.
+_PROVIDER_MODULES = (
+    "openai",
+    "anthropic",
+    "litellm",
+    "google",
+    "cohere",
+    "mistralai",
+    "groq",
+    "voyageai",
+    "boto",
+    "botocore",
+    "azure",
+    "ollama",
+)
+_DATABASE_MODULES = ("redis", "falkordb")
+
+
+def redact(text: str) -> str:
+    """Mask API keys (``sk-…``), bearer tokens and ``key=value`` secrets."""
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def describe_error(name: str, exc: BaseException) -> str:
+    """A tool-error message with a next step for an unexpected exception.
+
+    Known families (timeouts, model provider, database, retrieval,
+    configuration) get their own advice. The exception's own message is
+    never included (a provider's error can quote an API key); the server
+    log has it.
+    """
+    kind = type(exc).__name__
+    root = (type(exc).__module__ or "").split(".")[0]
+    if isinstance(
+        exc, (LatencyBudgetExceededError, LLMTimeoutError, TimeoutError, asyncio.TimeoutError)
+    ):
+        message = f"{name} ran out of time ({kind})."
+        hint = "Narrow the call (smaller top_k, max_depth or max_rows, fewer paths) and retry."
+    elif isinstance(exc, (LLMError, EmbeddingError)) or root in _PROVIDER_MODULES:
+        message = f"{name} failed: the model provider returned an error ({kind})."
+        hint = (
+            "The server's LLM or embedding setup needs attention (API key, model, quota; "
+            "details are in the server log). lookup_entity, traverse, graph_walk, "
+            "cypher_query and status need no model and still work."
+        )
+    elif isinstance(exc, (DatabaseUnavailableError, ConnectionError)) or root in _DATABASE_MODULES:
+        message = f"{name} failed: the graph database could not be reached ({kind})."
+        hint = "Check that FalkorDB is running and the server can reach it, then retry."
+    elif isinstance(exc, DatabaseError):
+        message = f"{name} failed: the graph database rejected a query ({kind})."
+        hint = "Retry once; if it fails again, use another tool (details are in the server log)."
+    elif isinstance(exc, RetrieverError):
+        message = f"{name} failed during retrieval ({kind})."
+        hint = "Retry with fewer paths, or use lookup_entity and traverse instead."
+    elif isinstance(exc, (ConfigError, SchemaValidationError)):
+        message = f"{name} failed: the server is misconfigured ({kind})."
+        hint = (
+            "Tell the user the GraphRAG server needs configuring (details are in the server log)."
+        )
+    else:
+        message = f"{name} failed with an internal error ({kind})."
+        hint = (
+            "Retry once; if it fails again, use another tool and tell the user "
+            f"{name} is failing (details are in the server log)."
+        )
+    return f"{message} Hint: {hint}"
 
 
 class _ToolFailed(Exception):
@@ -306,10 +453,10 @@ class GraphRAGMCPServer:
         try:
             result = await toolkit.call(name, arguments or {})
         except (ToolError, ReadOnlyViolation) as exc:
-            return str(exc), True
+            return redact(str(exc)), True
         except Exception as exc:  # noqa: BLE001 - surface as a tool-level error
-            logger.warning("MCP tool %s failed: %s", name, exc, exc_info=True)
-            return f"Error running {name}: {type(exc).__name__}: {exc}", True
+            logger.warning("MCP tool %s failed: %s", name, redact(str(exc)), exc_info=True)
+            return describe_error(name, exc), True
         return fit_json(result.model_dump(mode="json", exclude_none=True)), False
 
     def _build_server(self) -> Any:

@@ -11,9 +11,10 @@ from graphrag_sdk.skills.base import ENTITY_PARAM, Skill, skill_parameters
 
 MAX_DEPTH = 5
 MAX_BEAM_WIDTH = 20
-#: Direct neighbours fetched for the entity itself (later hops keep the
-#: lookup's own default of the 50 strongest per entity).
+#: Direct neighbours fetched for the entity itself.
 MAX_DIRECT_NEIGHBOURS = 1000
+#: Neighbours fetched per entity at later hops (the strongest first).
+HOP_NEIGHBOURS = 50
 
 
 class ImpactAnalysisSkill(Skill):
@@ -45,13 +46,13 @@ class ImpactAnalysisSkill(Skill):
         ["entity"],
     )
 
-    async def _neighbours(self, node: str, limit: int | None) -> list[tuple[str, float, str]]:
-        if limit is None:
-            return await self._graph.weighted_neighbors(node)
+    async def _neighbours(self, node: str, limit: int) -> tuple[list[tuple[Any, ...]], bool]:
+        """The ``limit`` strongest neighbours, and whether there were more."""
         try:
-            return await self._graph.weighted_neighbors(node, limit=limit)
+            found = await self._graph.weighted_neighbors(node, limit=limit + 1)
         except TypeError:  # a graph store whose lookup takes no limit
-            return await self._graph.weighted_neighbors(node)
+            found = await self._graph.weighted_neighbors(node)
+        return found[:limit], len(found) > limit
 
     async def run(self, ctx: Context | None = None, **params: Any) -> SkillResult:
         if not params.get("entity"):
@@ -71,6 +72,7 @@ class ImpactAnalysisSkill(Skill):
         # hop's entities, best path score first, are expanded to the next
         # hop. Each hop's neighbour lookups run concurrently.
         impacted: dict[str, dict[str, Any]] = {}
+        capped = False
         seen = {entity}
         frontier: list[tuple[list[str], list[float]]] = [([entity], [])]
         for hop in range(1, max_depth + 1):
@@ -81,13 +83,14 @@ class ImpactAnalysisSkill(Skill):
             # The entity's own neighbours are fetched in full (up to
             # MAX_DIRECT_NEIGHBOURS): they are the most directly impacted.
             # Lookups run at most a few at a time (the connection pool).
-            limit = MAX_DIRECT_NEIGHBOURS if hop == 1 else None
+            limit = MAX_DIRECT_NEIGHBOURS if hop == 1 else HOP_NEIGHBOURS
             fetched = await gather_limited(
                 [(lambda node=nodes[-1]: self._neighbours(node, limit)) for nodes, _ in frontier]
             )
+            capped = capped or any(more for _, more in fetched)
             best: dict[str, tuple[float, list[str], list[float]]] = {}
-            for (nodes, edge_weights), neighbours in zip(frontier, fetched):
-                for nbr, weight, _label in neighbours:
+            for (nodes, edge_weights), (neighbours, _) in zip(frontier, fetched):
+                for nbr, weight, *_rest in neighbours:
                     if nbr in seen:
                         continue
                     path = nodes + [nbr]
@@ -105,7 +108,14 @@ class ImpactAnalysisSkill(Skill):
             key=lambda d: (d["distance"], -d["score"], d["entity"]),
         )
 
-        data = {"entity": entity, "impacted": ranked, "num_impacted": len(ranked)}
+        # ``truncated``: some entity had more neighbours than were fetched, so
+        # entities past those caps were not reached.
+        data = {
+            "entity": entity,
+            "impacted": ranked,
+            "num_impacted": len(ranked),
+            "truncated": capped,
+        }
         summary = await self._summarize(
             ctx,
             f"Changing entity '{entity}' may affect these connected entities "
