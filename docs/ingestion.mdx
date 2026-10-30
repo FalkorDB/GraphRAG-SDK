@@ -162,6 +162,8 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 
 ---
 
+**What was pruned.** `IngestionResult.metadata["pruned"]` says what this step removed, so you can see what the ontology misses: `entities` (undeclared label → count), `relations` (undeclared type → count), `pattern_mismatches` (type → `"Source->Target"` → count), `dangling` (relations whose endpoint was dropped) and `unknown` (entities kept as `Unknown`, which is how extraction stores a type outside the declared ones). Only non-empty keys appear; `{}` means nothing was pruned.
+
 ### Step 6 — Resolve Duplicates
 
 **What it does:** Merges entities that refer to the same real-world thing. When the LLM extracts "Alice" from chunk 1 and "Alice" from chunk 5, this step recognizes they're the same entity and merges them.
@@ -262,6 +264,97 @@ stats.indexes                 # {"vector_Chunk": True, "vector___Entity__": True
 
 ---
 
+## Agentic Strategy Selection (`auto=True`)
+
+By default `ingest()` uses fixed strategies (see [Configuration Quick Reference](#configuration-quick-reference)). Pass `auto=True` to let a **planner** inspect a sample of each document and pick the chunker, entity-extraction backend, and resolver *per document* — the ingestion-side analogue of retrieval-side routing.
+
+```python
+# LLM planner (default): one small call decides the strategies per document
+await rag.ingest(source="handbook.md", auto=True)
+
+# Zero-cost heuristic planner instead of an LLM call (passing a planner turns auto on)
+from graphrag_sdk import HeuristicIngestionPlanner
+await rag.ingest(source="handbook.md", planner=HeuristicIngestionPlanner())
+
+# Explicit strategies always win — the planner only fills the rest
+from graphrag_sdk import ExactMatchResolution
+await rag.ingest(source="handbook.md", auto=True, resolver=ExactMatchResolution())
+```
+
+**What the planner may pick:**
+
+| Component | Options |
+|-----------|---------|
+| Chunker | `sentence` (default), `fixed`, `structural`, `contextual` |
+| Extractor backend | `gliner` (default), `llm` |
+| Resolver | `exact` (default), `llm_verified` |
+
+The planner may also tune parameters inside the chosen strategy (e.g. `max_tokens`, the `llm` extractor's `threshold`; GLiNER's threshold is model-specific and is not tuned); all values are coerced and clamped to safe ranges, so the model can never produce an unsafe config. The ranges also bound cost: every chunk costs an extraction LLM call, so chunk sizes have floors (256 tokens for the sentence-based chunkers, with at most 4 sentences of overlap; 500 characters for `fixed`, with overlap at most a quarter of the size), and `llm_verified`'s `hard_threshold` stays at 0.8 or above, so candidate pairs between `unified_threshold` (0.65 by default) and `hard_threshold` are still checked by the LLM (pairs below `unified_threshold` are not candidates at all).
+
+`structural` needs the document's structure: `.md` files carry it, and Markdown-looking text (headings and lists in a `.txt`, or text mode) is parsed for it when the planner picks `structural`. Anything else falls back to `sentence`, and a note says so.
+
+**Safety guarantees:**
+
+- **Explicit wins** — any `chunker` / `extractor` / `resolver` you pass is kept as-is; the planner only fills the ones left unset.
+- **Never silently broken** — an empty/invalid plan or any planner error falls back to the default strategies (`sentence` / `gliner` / `exact`), reproducing today's behavior. The one exception is an exhausted latency budget (`LatencyBudgetExceededError`), which is raised like everywhere else in the SDK.
+- **Opt-in** — `auto=False` is the default; nothing changes unless you enable it.
+- **Bounded blast radius on malicious content** — the `LLMIngestionPlanner` prompt includes a sample of the document itself, so adversarial document content could in principle try to steer the planner's choice. The worst case is still one of the options you allow (below) with clamped parameters (see `PARAM_SPECS`) — never an arbitrary strategy or an out-of-range value.
+
+**Cost ceiling.** By default the LLM planner may pick any option above, and the `llm_verified` pair budget it sets is capped at 500 (the resolver's default). To keep document text from choosing the strategies that add LLM calls, allow only the cheap options, pass `tune_params=False` so chunk sizes stay at their defaults, and set `max_chunks` to bound the extraction calls per document:
+
+```python
+from graphrag_sdk import LLMIngestionPlanner
+
+cheap = LLMIngestionPlanner(
+    rag.llm,
+    chunkers=("sentence", "fixed", "structural"),
+    extractors=("gliner",),
+    resolvers=("exact",),
+    tune_params=False,
+    max_chunks=1000,
+)
+await rag.ingest(source="upload.pdf", planner=cheap)
+```
+
+What the ceiling covers, per document:
+
+- **The planner call.** `LLMIngestionPlanner` makes one LLM call per document; `HeuristicIngestionPlanner` and `RuleBasedIngestionPlanner` make none.
+- **Extraction.** Each chunk costs one extraction LLM call, so the chunk count sets the cost. `max_chunks=N` refuses a document that splits into more than `N` chunks before anything of it is written or extracted (`ChunkBudgetExceededError` from `graphrag_sdk.ingestion.ingestion_planner`, a `ChunkingError`; in a batch, that file fails and the others go on). It wraps whatever chunker is used — the planner's, yours or the default — and `IngestionResult.metadata["plan"]["max_chunks"]` records it. The default, `None`, sets no limit. Chunking itself runs first, so `contextual` chunking's own LLM calls are not covered; leave it out of `chunkers=` to avoid them.
+- **Resolution.** A choice outside the allowed options falls back to the default (or the first allowed option) and is never built; the prompt only lists the allowed options. `max_llm_pairs=` caps the `llm_verified` pair budget, also with `tune_params=False`, and `max_llm_pairs=0` disallows `llm_verified`. The cap applies **per label group**: `LLMVerifiedResolution` verifies up to that many pairs within each entity type, plus up to 200 cross-label pairs (`cross_label_max_pairs`) and its description-summary calls. With `resolvers=("exact",)` resolution makes no LLM calls.
+
+The ceiling does not cover `finalize()` (embedding, and the LLM judge it uses for deduplication) or the questions you ask afterwards.
+
+Three planners ship in the SDK:
+
+| Planner | Cost | How it decides |
+|---------|------|----------------|
+| `LLMIngestionPlanner` (default when `auto=True`) | One small LLM call per document | Guided prompt over a document sample |
+| `HeuristicIngestionPlanner` | Zero (no LLM call) | Cheap document features (file extension, headings, lists) |
+| `RuleBasedIngestionPlanner` | Zero (no LLM call) | Your rules: the first `{"match": "*.md", "chunker": ...}` whose glob matches the file path (relative to `root=`, when given) |
+
+`RuleBasedIngestionPlanner` is what the agent tools use for `ingest(files=..., plan=[...])` (see [Agentic retrieval](/agentic-retrieval#building-the-graph-from-a-folder)). It takes the same `chunkers` / `extractors` / `resolvers` / `max_llm_pairs` / `max_chunks` limits; `CHEAP_PLAN_LIMITS` holds the cheap ones, with `max_chunks=1000` (about 380,000 tokens at the default chunk size).
+
+**What was chosen.** With `auto=True`, each `IngestionResult` records the decision in `metadata["plan"]`:
+
+```python
+result = await rag.ingest(source="handbook.md", auto=True)
+result.metadata["plan"]
+# {"planner": "LLMIngestionPlanner",
+#  "plan": {"chunker": "structural", "extractor": "gliner", "resolver": "exact",
+#           "chunker_params": {}, "extractor_params": {}, "resolver_params": {},
+#           "reason": "Markdown with headings"},
+#  "slots": {"chunker": "planner", "extractor": "planner", "resolver": "planner"},
+#  "notes": []}
+```
+
+`slots` says where each strategy came from: `"caller"` (you passed it), `"planner"` (built from the returned plan) or `"default"` (the planner raised or returned no plan, or that strategy could not be built — the other slots still follow the plan). `LLMIngestionPlanner` does not raise when its LLM call fails or its reply is not a plan: it returns the default plan, so the slots read `"planner"` and `plan.reason` starts with `default:`. Re-ingesting unchanged content skips the planner as well (a note says so). `notes` explains any fallback or adjustment, e.g. `structural` becoming `sentence` when the document has no structural elements (text mode). Planner failures are also logged at WARNING. Structured sources (`.csv`, `.tsv`, …) never run the planner: no chunker, extractor or resolver applies to them. A document that cannot be loaded is not planned either; its load error is raised as usual.
+
+**Limitation: `update()` does not re-plan.** The chosen strategies are recorded only in the ingest result's `metadata["plan"]`; they are not stored on the Document. `update()` has no `auto` and re-ingests changed content with the strategies you pass (or the defaults), so a document ingested as `structural` + `llm` is re-chunked with `sentence` + `gliner` unless you pass those strategies to `update()` yourself.
+
+**Code:** [`ingestion_planner.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/ingestion_planner.py) · wired into `GraphRAG.ingest()` in [`api/main.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/api/main.py).
+
+---
+
 ## Configuration Quick Reference
 
 ### Chunking
@@ -304,6 +397,7 @@ stats.indexes                 # {"vector_Chunk": True, "vector___Entity__": True
 |------|-----------------|
 | [`pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py) | The 9-step pipeline orchestrator |
 | [`api/main.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/api/main.py) | `GraphRAG.ingest()` and `finalize()` — user-facing API |
+| [`ingestion_planner.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/ingestion_planner.py) | Agentic strategy selection (`auto=True`) — LLM/heuristic planners |
 | [`loaders/text_loader.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/loaders/text_loader.py) | TextLoader implementation |
 | [`loaders/pdf_loader.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/loaders/pdf_loader.py) | PdfLoader implementation |
 | [`chunking_strategies/fixed_size.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/chunking_strategies/fixed_size.py) | FixedSizeChunking implementation |

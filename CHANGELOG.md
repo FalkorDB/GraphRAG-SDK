@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Agentic ingestion: an agent builds the graph from a folder (#275)
+
+- **`GraphRAGToolkit(rag, files_root=...)` lets an agent ingest files.**
+  `preview_files` returns one sample from the middle of each file, paged, so the
+  agent can design one ontology for the whole corpus; `set_ontology` declares
+  or extends it (adds only); `ingest(files=[...], plan=[rules])` ingests up to
+  50 files per call, each with the chunker, extractor and resolver of the
+  first rule matching its path. Paths stay inside the root, are checked again
+  as each file is opened, and are read under their real on-disk spelling
+  (symlinks resolved), so two spellings of one file, or a link and its target,
+  ingest as one document. `preview_files` reads only a window around the middle
+  of each file (a few pages of a PDF) and marks estimated lengths
+  (`chars_estimated`); `ingest` refuses files over `max_file_bytes` (default
+  50 MiB).
+- **Agent plans stay cheap.** Plan choices are limited by `plan_limits`
+  (default `CHEAP_PLAN_LIMITS`: sentence, fixed or structural chunking, GLiNER
+  extraction, exact resolution, and at most 1,000 chunks per file); anything
+  else is replaced and the plan's `reason` says so.
+- **`max_chunks` bounds extraction calls per document.** `LLMIngestionPlanner`
+  and `RuleBasedIngestionPlanner` take `max_chunks=`: a document that splits
+  into more chunks is refused with `ChunkBudgetExceededError` before anything
+  of it is written or extracted (one extraction LLM call per chunk). The
+  default `None` sets no limit. `max_llm_pairs` caps `llm_verified` pairs per
+  label group (cross-label pairs and summary calls come on top), and is now
+  kept with `tune_params=False` too.
+- **Each ingest says what the ontology misses.** `IngestionResult.metadata
+  ["pruned"]` and the tool's `pruned` count dropped entity and relation types,
+  undeclared relation patterns, dangling relations and entities stored as
+  `Unknown`. Relations dropped because an end is `Unknown` are counted in
+  `unknown_endpoints`, with a hint to declare the missing entity type, not in
+  `pattern_mismatches`. `ingest(files=..., reextract=true)` extracts those
+  files again after the ontology is extended, planned and chunked like a first
+  ingest (`ingest(text=..., document_id=..., reextract=true)` for text). The
+  plan a file was last ingested with is remembered in memory only; after a
+  restart the plan's `reason` says none was remembered.
+- **`set_ontology` is annotated destructive over MCP** and refuses labels with
+  `:`, line breaks or other control characters, `__X__` names, and the SDK's
+  own `Chunk`, `Document` and `Unknown`, each with a hint.
+- **`finalize_policy="on_write"` skips finalize when nothing changed** (every
+  document unchanged).
+- **`RuleBasedIngestionPlanner`** maps glob rules to strategies with no LLM
+  call, for `rag.ingest(paths, planner=...)` too.
+- **`graphrag-mcp --files-root`** (or `GRAPHRAG_MCP_FILES_ROOT`) serves the
+  file tools; without it no files are read. The filesystem root and the home
+  folder are refused. The server's guide tells the agent to ask the user for
+  their ontology first, and names `set_ontology` and `finalize` only when they
+  are served.
+
 #### Graph tools for your own agent, and an MCP server (#274)
 
 - **`GraphRAGToolkit` gives an agent you already run read-only tools on the
@@ -570,6 +618,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves more concurrent questions.
 
 ### Fixed
+- **A rejected `GraphRAG.set_ontology()` no longer sticks.** When the new
+  ontology was refused (a contradiction with the stored one, a reserved
+  label), it stayed on the instance and every later ingest failed on it. The
+  previous ontology is now restored before the error is raised.
 - **Reading the ontology no longer creates its graph.** `OntologyStore.load()`
   read with `GRAPH.QUERY`, which on a graph nothing was declared on yet left an
   empty `<graph>__ontology` key behind. It now reads with `GRAPH.RO_QUERY` and

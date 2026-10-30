@@ -844,6 +844,78 @@ class TestPruneMethod:
         assert len(result.relationships) == 1
         assert result.relationships[0].start_node_id == "p"
 
+    def test_prune_reports_one_example_per_mismatched_pair(self):
+        pipeline = IngestionPipeline(
+            loader=StubLoader(),
+            chunker=StubChunker(),
+            extractor=StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=MagicMock(),
+            vector_store=MagicMock(),
+        )
+        ontology = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Company")],
+            relations=[Relation(label="WORKS_AT", patterns=[("Person", "Company")])],
+        )
+        rels = [
+            GraphRelationship(
+                start_node_id="c",
+                end_node_id=end,
+                type="RELATES",
+                properties={"rel_type": "WORKS_AT", "description": desc},
+            )
+            for end, desc in [("p", "Acme employs Ann. " * 20), ("p2", "second")]
+        ]
+        data = GraphData(
+            nodes=[
+                GraphNode(id="p", label="Person", properties={"name": "Ann"}),
+                GraphNode(id="p2", label="Person"),
+                GraphNode(id="c", label="Company", properties={"name": "Acme"}),
+            ],
+            relationships=rels,
+        )
+        _, report = pipeline._prune_with_report(data, ontology)
+        assert report["pattern_mismatches"] == {"WORKS_AT": {"Company->Person": 2}}
+        example = report["pattern_examples"]["WORKS_AT"]["Company->Person"]
+        assert example.startswith("Acme -> Ann: Acme employs Ann.")
+        assert len(example) == 160 and example.endswith("…")
+
+    def test_prune_reports_unknown_endpoints_apart_from_pattern_mismatches(self):
+        pipeline = IngestionPipeline(
+            loader=StubLoader(),
+            chunker=StubChunker(),
+            extractor=StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=MagicMock(),
+            vector_store=MagicMock(),
+        )
+        ontology = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Company")],
+            relations=[Relation(label="WORKS_AT", patterns=[("Person", "Company")])],
+        )
+        data = GraphData(
+            nodes=[
+                GraphNode(id="p", label="Person"),
+                GraphNode(id="c", label="Company"),
+                GraphNode(id="u", label="Unknown"),
+            ],
+            relationships=[
+                GraphRelationship(
+                    start_node_id=start,
+                    end_node_id=end,
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT"},
+                )
+                for start, end in [("p", "u"), ("u", "c"), ("c", "p")]
+            ],
+        )
+        pruned, report = pipeline._prune_with_report(data, ontology)
+        assert pruned.relationships == []
+        assert report["unknown_endpoints"] == {"WORKS_AT": 2}
+        assert report["pattern_mismatches"] == {"WORKS_AT": {"Company->Person": 1}}
+        assert set(report["pattern_examples"]["WORKS_AT"]) == {"Company->Person"}
+        assert report["unknown"] == 1
+
     def test_prune_open_relation_patterns(self):
         """Relation with empty patterns allows any direction."""
         pipeline = IngestionPipeline(

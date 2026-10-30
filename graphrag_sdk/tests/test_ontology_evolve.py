@@ -10,6 +10,7 @@ FalkorDB.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -509,3 +510,41 @@ class TestRetypeRemoved:
 
     def test_retype_attribute_does_not_exist(self, graphrag_evolving):
         assert not hasattr(graphrag_evolving, "retype_attribute")
+
+
+class TestSetOntologyRestoresOnFailure:
+    async def test_rejected_ontology_does_not_stick(self, graphrag_evolving):
+        rag = graphrag_evolving
+        previous = rag.ontology
+        rag._ontology_store.register = AsyncMock(side_effect=ValueError("contradiction"))
+        with pytest.raises(ValueError, match="contradiction"):
+            await rag.set_ontology(Ontology(entities=[Entity(label="Gene")]))
+        assert rag.ontology is previous
+        assert rag._ontology_initialized is True
+
+    async def test_a_rejected_call_does_not_undo_a_concurrent_one(self, graphrag_evolving):
+        # The rollback restored the init flag while another call waited, which
+        # then returned without registering its ontology.
+        rag = graphrag_evolving
+        registered: list[set[str]] = []
+
+        async def register(ontology):
+            labels = {e.label for e in ontology.entities}
+            if "Gene" in labels:
+                for _ in range(5):
+                    await asyncio.sleep(0)  # the other call arrives meanwhile
+                raise ValueError("contradiction")
+            registered.append(labels)
+            return ontology
+
+        rag._ontology_store.register = AsyncMock(side_effect=register)
+        drug = Ontology(entities=[Entity(label="Drug")])
+        bad, good = await asyncio.gather(
+            rag.set_ontology(Ontology(entities=[Entity(label="Gene")])),
+            rag.set_ontology(drug),
+            return_exceptions=True,
+        )
+        assert isinstance(bad, ValueError)
+        assert registered == [{"Drug"}]
+        assert rag.ontology is drug and rag._ontology_initialized is True
+        assert rag._ontology_init_task is None

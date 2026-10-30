@@ -11,9 +11,12 @@ import copy
 import dataclasses
 import json
 import logging
+import os
 import re
 import time
-from collections.abc import Sequence
+import unicodedata
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -21,11 +24,24 @@ from pydantic import BaseModel, ValidationError
 
 from graphrag_sdk.core.connection import ConnectionConfig
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import ConfigError, DatabaseError, ReadOnlyViolation
-from graphrag_sdk.core.models import Ontology
+from graphrag_sdk.core.exceptions import (
+    ConfigError,
+    DatabaseError,
+    LoaderError,
+    ReadOnlyViolation,
+)
+from graphrag_sdk.core.models import (
+    RESERVED_NODE_LABELS,
+    DocumentOutput,
+    Entity,
+    Ontology,
+    Relation,
+)
 from graphrag_sdk.core.providers import Embedder, LLMInterface
+from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.retrieval.graph_walk import DynamicGraphWalk
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+from graphrag_sdk.tools import files as fs
 from graphrag_sdk.tools import graph_ops as ops
 from graphrag_sdk.tools.cypher_guard import (
     GraphSchema,
@@ -42,6 +58,7 @@ from graphrag_sdk.tools.models import (
     ClaimCheck,
     CypherResult,
     CypherRow,
+    DocSample,
     DocumentRef,
     EntityCard,
     EntityMatch,
@@ -49,9 +66,12 @@ from graphrag_sdk.tools.models import (
     EvidenceRef,
     Fact,
     FinalizeReport,
+    IngestedDocument,
     IngestResult,
     LookupResult,
     OntologyResult,
+    PreviewFilesResult,
+    PrunedTypes,
     RelationTriple,
     RelationTypeInfo,
     RetrieveResult,
@@ -71,12 +91,17 @@ from graphrag_sdk.tools.specs import (
     GraphWalkInput,
     IngestInput,
     LookupEntityInput,
+    PlanRuleInput,
+    PreviewFilesInput,
     RetrieveInput,
     RunSkillInput,
+    SetOntologyInput,
     ToolSpec,
     TraverseInput,
     build_tool_specs,
+    tool_enabled,
 )
+from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 if TYPE_CHECKING:
     from graphrag_sdk.api.main import GraphRAG
@@ -94,6 +119,16 @@ _RESOLVE_BUDGET_SECONDS = 2.0
 _WALK_BUDGET_SECONDS = 15.0
 #: Most names listed in a hint.
 _HINT_NAMES = 30
+#: Total characters preview_files returns in one call (split across the files).
+SAMPLE_BUDGET_CHARS = 30_000
+#: Files loaded or ingested at once by preview_files / ingest(files=...).
+_FILE_CONCURRENCY = 3
+# Files whose last plan is remembered for reextract (oldest forgotten first).
+_PLAN_MEMORY = 10_000
+_NO_PLAN = (
+    " (no plan remembered for this file: plans are kept in memory only, so after"
+    " a restart pass plan=[...] to repeat a custom plan)"
+)
 #: retrieve's search paths and the MultiPath path behind each. ``links`` has
 #: none: retrieve walks the relations itself, so MultiPath's own expansion,
 #: whose output it never reads, is not run.
@@ -118,6 +153,80 @@ class _FixedPlan:
         return list(self._paths)
 
 
+class _ConfinedLoader(LoaderStrategy):
+    """The default loader for a file, after checking again that it is inside the root.
+
+    Paths are validated when an ingest call starts; this repeats the check
+    (and the size cap) right before the file is read, and reads the resolved
+    path, so a symlink swapped in meanwhile cannot lead outside the root.
+    """
+
+    def __init__(self, root: Path, max_bytes: int | None) -> None:
+        self._root = root
+        self._max_bytes = max_bytes
+
+    async def load(self, source: str, ctx: Context) -> DocumentOutput:
+        from graphrag_sdk.api.main import GraphRAG  # local import: avoid cycle
+
+        real = await asyncio.to_thread(fs.confined, self._root, source, self._max_bytes)
+        # The loader follows the name the agent gave (a.md -> Markdown).
+        doc = await GraphRAG._default_loader_for(source).load(str(real), ctx)
+        info = doc.document_info.model_copy(update={"path": source})
+        return doc.model_copy(update={"document_info": info})
+
+
+class _Loaded(LoaderStrategy):
+    """Hands back a document already loaded (and planned from), so it is not read twice."""
+
+    def __init__(self, document: DocumentOutput) -> None:
+        self._document = document
+
+    async def load(self, source: str, ctx: Context) -> DocumentOutput:
+        return self._document
+
+
+class _SamePlan:
+    """An ingestion planner that returns one fixed plan, under another planner's limits."""
+
+    def __init__(self, plan: Any, max_chunks: int | None) -> None:
+        self._plan = plan
+        self.max_chunks = max_chunks
+
+    async def plan(self, text: str | None, *, source: str | None = None, ctx: Any = None) -> Any:
+        return self._plan
+
+
+#: Entity types the SDK writes itself: Unknown holds entities of no declared type.
+_RESERVED_ENTITY_TYPES = RESERVED_NODE_LABELS | {"Unknown"}
+_LABEL_HINT = (
+    "Use letters, digits, spaces, '-' or '_'; no '|', ':', backticks, line breaks "
+    "or other control characters, and no __X__ names (the SDK's own)."
+)
+
+
+def _label_error(label: str, *, entity: bool) -> ToolError | None:
+    """Why ``label`` cannot be a type name, as a ToolError, or ``None``."""
+    try:
+        clean = sanitize_cypher_label(label) == label
+    except ValueError:  # blank
+        clean = False
+    if (
+        not clean
+        or "|" in label
+        or ":" in label
+        or any(unicodedata.category(c).startswith("C") for c in label)
+        or (len(label) > 4 and label.startswith("__") and label.endswith("__"))
+    ):
+        return ToolError(f"{label!r} is not a usable type name.", hint=_LABEL_HINT)
+    if entity and label in _RESERVED_ENTITY_TYPES:
+        return ToolError(
+            f"{label!r} is reserved by the SDK.",
+            hint=f"{label!r} is reserved by the SDK; choose another name "
+            "(e.g. 'Publication' for Document, 'Passage' for Chunk).",
+        )
+    return None
+
+
 _FACT_RE = re.compile(r"^(.+?) —\[([^\]]+)\]→ (.+?)(?:: (.*))?$", re.S)
 
 
@@ -137,10 +246,64 @@ def _short_fact(raw: str) -> tuple[str, tuple[str, str, str] | None]:
     return text, (src.lower(), rel_type, tgt.lower())
 
 
+_PATTERN_HINT_RELATIONS = 6
+_PATTERN_HINT_EXAMPLES = 8
+
+
+def _pattern_hint(pruned: PrunedTypes, redo: str) -> str:
+    """Say how many relations an undeclared pattern dropped, and how to keep them."""
+    mismatches = pruned.pattern_mismatches
+    dropped = sum(n for pairs in mismatches.values() for n in pairs.values())
+    ranked = sorted(mismatches.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))
+    add = []
+    examples = []
+    for rel, pairs in ranked[:_PATTERN_HINT_RELATIONS]:
+        ordered = sorted(pairs, key=lambda p: (-pairs[p], p))
+        ends = [pair.split("->", 1) for pair in ordered]
+        add.append({"label": rel, "patterns": [e for e in ends if len(e) == 2]})
+        for pair in ordered:
+            example = pruned.pattern_examples.get(rel, {}).get(pair)
+            if example and len(examples) < _PATTERN_HINT_EXAMPLES:
+                examples.append(f"{rel} {pair}: {example}")
+    more = " (and more, see pruned)" if len(ranked) > _PATTERN_HINT_RELATIONS else ""
+    seen = f" Dropped, e.g.: {'; '.join(examples)}." if examples else ""
+    return (
+        f"{dropped} extracted relation(s) were dropped only because their [source, target] "
+        f"pair is not declared.{seen} Keep only the pairs whose facts the relation's meaning "
+        "fits; for the others, declare a better relation type. To keep them all: "
+        f"set_ontology(relations={json.dumps(add)}){more}, then {redo}, then finalize."
+    )
+
+
 def _names_hint(names: Sequence[str]) -> str:
     shown = list(names)[:_HINT_NAMES]
     more = f" (+{len(names) - len(shown)} more)" if len(names) > len(shown) else ""
     return ", ".join(shown) + more if shown else "none"
+
+
+def _short(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _file_error(exc: BaseException) -> str:
+    """One file's error for a tool result.
+
+    Only messages the SDK writes about the file itself are forwarded (masked):
+    a ToolError, a loader's read failure and the chunk budget's refusal. Any
+    other exception (a model provider's, say) is named by type only, as the
+    MCP server does, because its message can quote a secret that ``redact``
+    does not recognise; the log has it.
+    """
+    from graphrag_sdk.ingestion.ingestion_planner import ChunkBudgetExceededError
+    from graphrag_sdk.mcp.server import redact  # lazy: the server imports this module
+
+    if isinstance(exc, (ToolError, LoaderError, ChunkBudgetExceededError)):
+        return _short(redact(str(exc)), 300)
+    logger.warning("A file failed (%s): %s", type(exc).__name__, redact(str(exc)))
+    return (
+        f"Failed with {type(exc).__name__}; the message is withheld "
+        "(details are in the server log)."
+    )
 
 
 def _mask(value: Any) -> Any:
@@ -154,15 +317,33 @@ def _mask(value: Any) -> Any:
     return value
 
 
+def _as_dict(value: Any) -> Any:
+    return value.model_dump() if isinstance(value, BaseModel) else value
+
+
+def _ingested(path: str, res: Any, status: str, plan: dict[str, Any] | None) -> IngestedDocument:
+    meta = getattr(res, "metadata", None) or {}
+    return IngestedDocument(
+        path=path,
+        document_id=res.document_info.uid,
+        status=status,
+        chunks_indexed=res.chunks_indexed,
+        nodes_created=res.nodes_created,
+        relationships_created=res.relationships_created,
+        plan=plan,
+        pruned=PrunedTypes.from_report(meta.get("pruned")),
+    )
+
+
 class GraphRAGToolkit:
     """The graph tools for an outside agent, over one :class:`GraphRAG`.
 
     Read tools: ``status``, ``get_ontology``, ``lookup_entity``,
     ``traverse``, ``graph_walk``, ``cypher_query``, ``retrieve``,
-    ``run_skill``, ``check_citations``. Write tools: ``ingest``,
-    ``finalize``. Each is an async method; :meth:`tool_specs` describes them
-    for an agent framework and :meth:`call` runs one by name with validated
-    arguments.
+    ``run_skill``, ``check_citations``. Ingestion tools: ``preview_files``
+    (with a ``files_root``), ``set_ontology``, ``ingest``, ``finalize``.
+    Each is an async method; :meth:`tool_specs` describes them for an agent
+    framework and :meth:`call` runs one by name with validated arguments.
 
     Every tool result an answer may rely on carries an evidence number
     ``[n]``. Numbers run across all calls of one session (one toolkit, or one
@@ -175,12 +356,24 @@ class GraphRAGToolkit:
             yourself after a batch of ingests), ``"on_write"`` (finalize
             after every ingest; for demos, finalize cost grows with the
             graph) or ``"never"`` (you call ``rag.finalize()``).
-        read_only: Drop ``ingest`` / ``finalize`` and refuse them.
+        read_only: Drop the ingestion tools and refuse them.
         include: Optional subset of tool names to advertise and accept in
             :meth:`call`. Direct method calls are not affected.
         tenant_id: Stamped into the Context of every operation.
         owns_rag: When True, :meth:`aclose` closes the wrapped GraphRAG.
         ledger_capacity: Evidence items kept per session.
+        files_root: Folder ``preview_files`` and ``ingest(files=...)`` read
+            from; nothing outside it is read. ``None`` (default) disables
+            file ingestion.
+        plan_limits: The strategies an agent's ingest plan may use, as
+            :class:`~graphrag_sdk.ingestion.ingestion_planner.RuleBasedIngestionPlanner`
+            keyword arguments (``chunkers``, ``extractors``, ``resolvers``,
+            ``max_llm_pairs``, ``tune_params``). Default
+            :data:`~graphrag_sdk.ingestion.ingestion_planner.CHEAP_PLAN_LIMITS`:
+            no strategy that adds LLM calls.
+        max_file_bytes: Largest file ``ingest(files=...)`` reads (default
+            50 MiB); a larger one is refused with a hint. ``None``: no cap.
+            ``preview_files`` reads only part of each file, whatever its size.
     """
 
     def __init__(
@@ -193,7 +386,15 @@ class GraphRAGToolkit:
         tenant_id: str = "default",
         owns_rag: bool = False,
         ledger_capacity: int = DEFAULT_LEDGER_CAPACITY,
+        files_root: str | os.PathLike[str] | None = None,
+        plan_limits: Mapping[str, Any] | None = None,
+        max_file_bytes: int | None = fs.MAX_FILE_BYTES,
     ) -> None:
+        from graphrag_sdk.ingestion.ingestion_planner import (
+            CHEAP_PLAN_LIMITS,
+            RuleBasedIngestionPlanner,
+        )
+
         if finalize_policy not in _POLICIES:
             raise ValueError(f"finalize_policy must be one of {_POLICIES}, got {finalize_policy!r}")
         valid = {td.name for td in TOOL_REGISTRY}
@@ -209,6 +410,19 @@ class GraphRAGToolkit:
         self._owns_rag = owns_rag
         self._ledger_capacity = ledger_capacity
         self._ledger = EvidenceLedger(ledger_capacity)
+        self._files_root: Path | None = (
+            fs.resolve_root(files_root) if files_root is not None else None
+        )
+        if max_file_bytes is not None and (
+            isinstance(max_file_bytes, bool)
+            or not isinstance(max_file_bytes, int)
+            or max_file_bytes <= 0
+        ):
+            raise ValueError("max_file_bytes must be a positive int or None")
+        self._max_file_bytes = max_file_bytes
+        limits = dict(CHEAP_PLAN_LIMITS if plan_limits is None else plan_limits)
+        RuleBasedIngestionPlanner((), **limits)  # validate now, not at the first ingest
+        self._plan_limits: dict[str, Any] = limits
         # Shared by every session copy of this toolkit.
         self._shared: dict[str, Any] = {}
 
@@ -218,6 +432,11 @@ class GraphRAGToolkit:
     def rag(self) -> GraphRAG:
         """The wrapped GraphRAG instance."""
         return self._rag
+
+    @property
+    def files_root(self) -> Path | None:
+        """The folder file ingestion reads from (``None``: disabled)."""
+        return self._files_root
 
     @property
     def ledger(self) -> EvidenceLedger:
@@ -297,6 +516,8 @@ class GraphRAGToolkit:
             read_only=self._read_only,
             finalize_policy=self._finalize_policy,
             include=self._include,
+            files=self._files_root is not None,
+            plan_limits=self._plan_limits,
         )
 
     async def call(self, name: str, arguments: dict[str, Any] | None = None) -> BaseModel:
@@ -310,13 +531,17 @@ class GraphRAGToolkit:
         """
         by_name = {td.name: td for td in TOOL_REGISTRY}
         td = by_name.get(name)
-        enabled = [s.name for s in self.tool_specs()]
         if td is None:
+            enabled = [t.name for t in TOOL_REGISTRY if self._enabled(t)]
             raise ToolError(f"Unknown tool {name!r}.", hint=f"Tools: {', '.join(enabled)}.")
-        if self._read_only and not td.read_only:
+        if self._read_only and (not td.read_only or td.ingest_only):
             raise ReadOnlyViolation(f"{name} is disabled: the toolkit is read-only.")
-        if name not in enabled:
-            raise ToolError(f"Tool {name!r} is not enabled.", hint=f"Tools: {', '.join(enabled)}.")
+        if not self._enabled(td):
+            enabled = [t.name for t in TOOL_REGISTRY if self._enabled(t)]
+            hint = f"Tools: {', '.join(enabled)}."
+            if td.needs_files and self._files_root is None:
+                hint = "No files root is configured; ingest text instead. " + hint
+            raise ToolError(f"Tool {name!r} is not enabled.", hint=hint)
         try:
             model = td.input_model(**(arguments or {}))
         except ValidationError as exc:
@@ -329,6 +554,15 @@ class GraphRAGToolkit:
                 hint="Fix the arguments to match the tool's input schema.",
             ) from None
         return await getattr(self, name)(**model.model_dump())
+
+    def _enabled(self, td: Any) -> bool:
+        return tool_enabled(
+            td,
+            read_only=self._read_only,
+            finalize_policy=self._finalize_policy,
+            include=self._include,
+            files=self._files_root is not None,
+        )
 
     def _new_ctx(self) -> Context:
         return Context(tenant_id=self._tenant_id)
@@ -1108,38 +1342,467 @@ class GraphRAGToolkit:
         if self._read_only:
             raise ReadOnlyViolation(f"{tool} is disabled: the toolkit is read-only.")
 
-    async def ingest(
-        self,
-        text: str,
-        *,
-        document_id: str | None = None,
-        ctx: Context | None = None,
-    ) -> IngestResult:
-        """Extract ``text`` into the graph.
+    def _require_root(self, tool: str) -> Path:
+        if self._files_root is None:
+            raise ToolError(
+                f"{tool} needs a files root, and none is configured.",
+                hint="Ingest text instead, or start the toolkit with files_root=...",
+            )
+        return self._files_root
 
-        Under ``finalize_policy="on_write"`` this also finalizes, whose cost
-        grows with the graph; prefer "manual" and one :meth:`finalize` per batch.
+    async def preview_files(
+        self,
+        pattern: str = "**/*",
+        *,
+        offset: int = 0,
+        limit: int = 20,
+        max_chars: int = 1000,
+        ctx: Context | None = None,
+    ) -> PreviewFilesResult:
+        """A page of the files under the files root, with a sample of each.
+
+        Each sample is taken from the middle of the file's text, where the
+        subject matter is rather than the title page or the references. Page
+        through every file (``next_offset``) to see the whole corpus before
+        designing an ontology. Samples are not evidence: nothing here is
+        stored, and they get no ``[n]``.
         """
-        self._ensure_writable("ingest")
-        inp = IngestInput(text=text, document_id=document_id)
-        result = await self._rag.ingest(
-            text=inp.text, document_id=inp.document_id, ctx=ctx or self._new_ctx()
-        )
-        finalized = False
-        if self._finalize_policy == "on_write":
-            await self._rag.finalize()
-            finalized = True
+        self._ensure_writable("preview_files")
+        root = self._require_root("preview_files")
+        inp = PreviewFilesInput(pattern=pattern, offset=offset, limit=limit, max_chars=max_chars)
+        try:
+            rels = await asyncio.to_thread(fs.list_files, root, inp.pattern)
+        except ValueError as exc:
+            raise ToolError(str(exc), hint="Use a glob relative to the files root.") from None
+        types: dict[str, int] = {}
+        for rel in rels:
+            kind = Path(rel).suffix.lower().lstrip(".")
+            types[kind] = types.get(kind, 0) + 1
+        page = rels[inp.offset : inp.offset + inp.limit]
+        per_file = min(inp.max_chars, SAMPLE_BUDGET_CHARS // max(len(page), 1))
+        gate = asyncio.Semaphore(_FILE_CONCURRENCY)
+
+        async def sample(rel: str) -> DocSample:
+            path = root / rel
+            kind = path.suffix.lower().lstrip(".")
+            size = 0
+            async with gate:
+                try:
+                    real = await asyncio.to_thread(fs.confined, root, path)
+                    size = (await asyncio.to_thread(real.stat)).st_size
+                    text, chars, estimated = await asyncio.to_thread(fs.sample_file, real, per_file)
+                except Exception as exc:  # one unreadable file must not fail the page
+                    return DocSample(path=rel, type=kind, size_bytes=size, error=_file_error(exc))
+            return DocSample(
+                path=rel,
+                type=kind,
+                size_bytes=size,
+                chars=chars,
+                chars_estimated=estimated,
+                sample=text,
+            )
+
+        samples = list(await asyncio.gather(*(sample(rel) for rel in page)))
+        end = inp.offset + len(page)
         hint = None
-        if self._finalize_policy == "manual":
-            hint = "Call finalize once after this batch of ingests."
-        return IngestResult(
-            document_id=result.document_info.uid,
-            chunks_indexed=result.chunks_indexed,
-            nodes_created=result.nodes_created,
-            relationships_created=result.relationships_created,
-            finalized=finalized,
+        if not rels:
+            hint = (
+                f"No supported files match {inp.pattern!r} "
+                f"({', '.join(fs.SUPPORTED_SUFFIXES)}). Try pattern='**/*'."
+            )
+        elif end < len(rels):
+            hint = "Keep paging until next_offset is null, then design the ontology."
+        return PreviewFilesResult(
+            pattern=inp.pattern,
+            total=len(rels),
+            offset=inp.offset,
+            next_offset=end if end < len(rels) else None,
+            types=types,
+            files=samples,
             hint=hint,
         )
+
+    async def set_ontology(
+        self,
+        entities: Sequence[Mapping[str, Any] | BaseModel] = (),
+        relations: Sequence[Mapping[str, Any] | BaseModel] = (),
+    ) -> OntologyResult:
+        """Declare entity and relation types; extraction keeps only these.
+
+        Adds to what is declared: new types are added, a given description
+        replaces the old one, and new ``[source, target]`` patterns are added
+        to a relation. Nothing is removed or renamed. Call it before the first
+        ingest; types added later apply to files ingested (or re-extracted)
+        afterwards.
+        """
+        self._ensure_writable("set_ontology")
+        inp = SetOntologyInput(
+            entities=[_as_dict(e) for e in entities],
+            relations=[_as_dict(r) for r in relations],
+        )
+        if not inp.entities and not inp.relations:
+            raise ToolError(
+                "set_ontology needs at least one entity or relation type.",
+                hint="Pass entities=[{label, description}] and/or relations=[...].",
+            )
+        labels = [(e.label, True) for e in inp.entities] + [(r.label, False) for r in inp.relations]
+        for label, entity in labels:
+            error = _label_error(label, entity=entity)
+            if error is not None:
+                raise error
+
+        store = self._rag._ontology_store
+        stored = await store.load()
+        persisted = bool(stored.entities or stored.relations)
+        base = stored if persisted else (getattr(self._rag, "ontology", None) or Ontology())
+        entities_by = {e.label: e for e in base.entities}
+        relations_by = {r.label: r for r in base.relations}
+        known = set(entities_by) | {e.label for e in inp.entities}
+        undeclared = sorted(
+            {end for r in inp.relations for pair in r.patterns for end in pair} - known
+        )
+        if undeclared:
+            raise ToolError(
+                f"Relation patterns use undeclared entity types: {', '.join(undeclared)}.",
+                hint="Declare them in entities (in this call or an earlier one).",
+            )
+
+        new_entities: list[Entity] = []
+        new_relations: list[Relation] = []
+        descriptions: list[tuple[str, str, str]] = []  # (kind, label, description)
+        patterns: list[tuple[str, str, str]] = []  # (relation, source, target)
+        for e in inp.entities:
+            old = entities_by.get(e.label)
+            if old is None:
+                entity = Entity(label=e.label, description=e.description)
+                entities_by[e.label] = entity
+                new_entities.append(entity)
+            elif e.description and e.description != old.description:
+                descriptions.append(("entity", e.label, e.description))
+        for r in inp.relations:
+            pairs = list(dict.fromkeys((src, tgt) for src, tgt in r.patterns))
+            old_rel = relations_by.get(r.label)
+            if old_rel is None:
+                relation = Relation(label=r.label, description=r.description, patterns=pairs)
+                relations_by[r.label] = relation
+                new_relations.append(relation)
+                continue
+            if r.description and r.description != old_rel.description:
+                descriptions.append(("relation", r.label, r.description))
+            have = {tuple(p) for p in old_rel.patterns}
+            patterns.extend((r.label, s, t) for s, t in pairs if (s, t) not in have)
+
+        if not persisted:
+            # Nothing stored yet: fold every change into one declaration.
+            for kind, label, text in descriptions:
+                if kind == "entity":
+                    entities_by[label] = entities_by[label].model_copy(update={"description": text})
+                else:
+                    relations_by[label] = relations_by[label].model_copy(
+                        update={"description": text}
+                    )
+            for rel, src, tgt in patterns:
+                old_rel = relations_by[rel]
+                relations_by[rel] = old_rel.model_copy(
+                    update={"patterns": [*old_rel.patterns, (src, tgt)]}
+                )
+            descriptions, patterns = [], []
+        try:
+            if new_entities or new_relations or not persisted:
+                merged = base.model_copy(
+                    update={
+                        "entities": list(entities_by.values()),
+                        "relations": list(relations_by.values()),
+                    }
+                )
+                await self._rag.set_ontology(merged)
+            for kind, label, text in descriptions:
+                if kind == "entity":
+                    await self._rag.set_entity_description(label, text)
+                else:
+                    await self._rag.set_relation_description(label, text)
+            for rel, src, tgt in patterns:
+                await self._rag.add_relation_pattern(rel, src, tgt)
+        except ValueError as exc:
+            raise ToolError(
+                f"The ontology was not accepted: {_short(str(exc), 500)}",
+                hint="Existing types cannot change their properties; add new types instead.",
+            ) from None
+        self._shared.pop("schema", None)
+        return await self.get_ontology()
+
+    async def ingest(
+        self,
+        text: str | None = None,
+        *,
+        document_id: str | None = None,
+        files: Sequence[str] | None = None,
+        plan: Sequence[Mapping[str, Any] | BaseModel] | None = None,
+        reextract: bool = False,
+        ctx: Context | None = None,
+    ) -> IngestResult:
+        """Extract ``text``, or ``files`` under the files root, into the graph.
+
+        ``files`` takes paths and globs relative to the files root (at most
+        50 files per call). ``plan`` is a list of rules, each a glob
+        (``match``) with the chunker / extractor / resolver for the files it
+        matches; the first matching rule wins, and the allowed options are
+        those of ``plan_limits``. A file whose content is unchanged is
+        skipped unless ``reextract`` is set, which re-extracts it in place
+        (after the ontology has grown, for instance); without a ``plan``, a
+        file re-extracted this way keeps the plan of its last ingest by
+        this toolkit. That memory is not persisted: after a restart the
+        planner plans the file afresh, so pass ``plan`` to repeat a custom one.
+
+        Under ``finalize_policy="on_write"`` this also finalizes (unless
+        nothing changed), whose cost grows with the graph; prefer "manual"
+        and one :meth:`finalize` per batch.
+        """
+        self._ensure_writable("ingest")
+        inp = IngestInput(
+            text=text,
+            document_id=document_id,
+            files=list(files) if files is not None else None,
+            plan=[_as_dict(r) for r in plan] if plan is not None else None,
+            reextract=reextract,
+        )
+        ctx = ctx or self._new_ctx()
+        if inp.text is not None:
+            if inp.reextract:
+                result = await self._rag.update(
+                    text=inp.text,
+                    document_id=inp.document_id,
+                    force=True,
+                    if_missing="ingest",
+                    ctx=ctx,
+                )
+                status = "reextracted" if result.replaced_existing else "ingested"
+            else:
+                result = await self._rag.ingest(text=inp.text, document_id=inp.document_id, ctx=ctx)
+                unchanged = (result.metadata or {}).get("skipped_unchanged")
+                status = "unchanged" if unchanged else "ingested"
+            out = IngestResult(
+                document_id=result.document_info.uid,
+                status=status,
+                chunks_indexed=result.chunks_indexed,
+                nodes_created=result.nodes_created,
+                relationships_created=result.relationships_created,
+                pruned=PrunedTypes.from_report(result.metadata.get("pruned")),
+            )
+        else:
+            out = await self._ingest_files(inp.files or [], inp.plan or [], inp.reextract, ctx)
+        # Only a document actually written needs a finalize; a failed file
+        # (refused before writing, say) or an unchanged one does not.
+        written = ("ingested", "reextracted")
+        wrote = out.status in written or any(d.status in written for d in out.documents)
+        if self._finalize_policy == "on_write" and wrote:
+            await self._rag.finalize()
+            out.finalized = True
+        out.hint = self._ingest_hint(out)
+        return out
+
+    def _remember_plan(self, path: str, plan: Mapping[str, Any]) -> None:
+        plans: dict[str, dict[str, Any]] = self._shared.setdefault("file_plans", {})
+        plans.pop(path, None)
+        plans[path] = dict(plan)
+        while len(plans) > _PLAN_MEMORY:
+            del plans[next(iter(plans))]
+
+    def _last_plan(self, path: str) -> Any:
+        """The plan ``path`` was last ingested with by this toolkit, or ``None``."""
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+
+        used = self._shared.get("file_plans", {}).get(path)
+        if not used:
+            return None
+        try:
+            return IngestionPlan(
+                chunker=used["chunker"],
+                extractor=used["extractor"],
+                resolver=used["resolver"],
+                chunker_params=dict(used.get("chunker_params") or {}),
+                extractor_params=dict(used.get("extractor_params") or {}),
+                resolver_params=dict(used.get("resolver_params") or {}),
+                reason="the plan of this file's last ingest",
+            )
+        except (KeyError, ValueError):
+            return None
+
+    async def _ingest_files(
+        self,
+        entries: list[str],
+        rules: list[PlanRuleInput],
+        reextract: bool,
+        ctx: Context,
+    ) -> IngestResult:
+        from graphrag_sdk.ingestion.ingestion_planner import (
+            PlanRule,
+            RuleBasedIngestionPlanner,
+        )
+
+        root = self._require_root("ingest(files=...)")
+        try:
+            rels = await asyncio.to_thread(fs.resolve_files, root, entries)
+            planner = RuleBasedIngestionPlanner(
+                [PlanRule.from_dict(r.model_dump(exclude_none=True)) for r in rules],
+                root=root,
+                **self._plan_limits,
+            )
+        except ValueError as exc:
+            raise ToolError(str(exc), hint="Fix the plan rules.") from None
+        await asyncio.to_thread(fs.check_sizes, root, rels, self._max_file_bytes)
+        loader = _ConfinedLoader(root, self._max_file_bytes)
+        paths = [str(root / rel) for rel in rels]
+        docs: list[IngestedDocument] = []
+        if not reextract:
+            results = await self._rag.ingest(
+                paths,
+                planner=planner,
+                loader=loader,
+                max_concurrency=_FILE_CONCURRENCY,
+                ctx=ctx,
+            )
+            for rel, res in zip(rels, results):
+                if isinstance(res, BaseException):
+                    docs.append(IngestedDocument(path=rel, status="failed", error=_file_error(res)))
+                    continue
+                meta = res.metadata or {}
+                used = (meta.get("plan") or {}).get("plan")
+                if used:
+                    self._remember_plan(str(root / rel), used)
+                docs.append(
+                    _ingested(
+                        rel,
+                        res,
+                        "unchanged" if meta.get("skipped_unchanged") else "ingested",
+                        used,
+                    )
+                )
+        else:
+            gate = asyncio.Semaphore(_FILE_CONCURRENCY)
+
+            async def redo(rel: str, path: str) -> IngestedDocument:
+                async with gate:
+                    try:
+                        # Planned like a first ingest (the same Markdown parsing
+                        # of a .txt, per-slot fallback and chunk budget), with
+                        # the file's last plan unless rules were passed.
+                        document = await loader.load(path, ctx)
+                        last = None if rules else self._last_plan(path)
+                        active = planner if last is None else _SamePlan(last, planner.max_chunks)
+                        report: dict[str, Any] = {}
+                        (
+                            chunker,
+                            extractor,
+                            resolver,
+                            document,
+                        ) = await self._rag._plan_ingestion_strategies(
+                            text=None,
+                            source=path,
+                            chunker=None,
+                            extractor=None,
+                            resolver=None,
+                            planner=active,
+                            ctx=ctx,
+                            report=report,
+                            loaded_document=document,
+                        )
+                        res = await self._rag.update(
+                            path,
+                            force=True,
+                            if_missing="ingest",
+                            loader=_Loaded(document) if document is not None else loader,
+                            chunker=chunker,
+                            extractor=extractor,
+                            resolver=resolver,
+                            ctx=ctx,
+                        )
+                    except Exception as exc:  # one bad file must not fail the batch
+                        return IngestedDocument(path=rel, status="failed", error=_file_error(exc))
+                plan_info = report.get("plan")
+                if plan_info:
+                    self._remember_plan(path, plan_info)
+                    if last is None and not rules:
+                        plan_info = {**plan_info, "reason": f"{plan_info['reason']}{_NO_PLAN}"}
+                status = "reextracted" if res.replaced_existing else "ingested"
+                return _ingested(rel, res, status, plan_info)
+
+            docs = list(await asyncio.gather(*(redo(r, p) for r, p in zip(rels, paths))))
+
+        total = PrunedTypes()
+        for doc in docs:
+            if doc.pruned is not None:
+                total.add(doc.pruned)
+        return IngestResult(
+            chunks_indexed=sum(d.chunks_indexed for d in docs),
+            nodes_created=sum(d.nodes_created for d in docs),
+            relationships_created=sum(d.relationships_created for d in docs),
+            documents=docs,
+            failed=sum(d.status == "failed" for d in docs),
+            pruned=total if (total.missing_types or total.dangling) else None,
+        )
+
+    def _ingest_hint(self, out: IngestResult) -> str | None:
+        hints: list[str] = []
+        if out.failed:
+            hints.append(f"{out.failed} file(s) failed; see each document's error.")
+        if out.pruned is not None and out.pruned.missing_types:
+            affected = [
+                d.path for d in out.documents if d.pruned is not None and d.pruned.missing_types
+            ]
+            redo = (
+                f"ingest(files={affected[:10]}{' ...' if len(affected) > 10 else ''}, "
+                "reextract=true)"
+                if affected
+                else f"ingest(text=..., document_id={out.document_id!r}, reextract=true)"
+            )
+            look = (
+                " To see the Unknown entities: cypher_query MATCH (n:Unknown) "
+                "RETURN n.name, n.description LIMIT 25."
+                if out.pruned.unknown
+                else ""
+            )
+            pruned = out.pruned
+            if pruned.pattern_mismatches:
+                hints.append(_pattern_hint(pruned, redo))
+            if pruned.unknown_endpoints:
+                n = sum(pruned.unknown_endpoints.values())
+                hints.append(
+                    f"{n} relation(s) ({_names_hint(sorted(pruned.unknown_endpoints))}) were "
+                    "dropped because an endpoint's type was not resolved (stored as Unknown); "
+                    "a pattern cannot name Unknown. Unknown can also be a declared type the "
+                    "extractor classified with low confidence, so check those entities "
+                    "first. Only if they are of a type the ontology lacks, declare it with "
+                    "set_ontology(entities=[...]) and add it to the relation's patterns, "
+                    f"then {redo}."
+                )
+            if pruned.entities or pruned.relations or pruned.unknown:
+                found = (
+                    "Extraction found types the ontology does not declare (see pruned). "
+                    if pruned.entities or pruned.relations
+                    else ""
+                )
+                unresolved = (
+                    f"{pruned.unknown} entities have an unresolved type (stored as Unknown); "
+                    "a declared type classified with low confidence ends up there too, so "
+                    f"check them before adding types.{look} "
+                    if pruned.unknown
+                    else ""
+                )
+                hints.append(
+                    f"{found}{unresolved}If new types matter, add them with set_ontology, "
+                    f"then {redo}."
+                )
+        if out.documents and all(d.status == "unchanged" for d in out.documents):
+            hints.append("Every file was unchanged; pass reextract=true to extract them again.")
+        if out.status == "unchanged":
+            hints.append(
+                "This text is already stored; to extract it again, pass "
+                f"document_id={out.document_id!r} and reextract=true."
+            )
+        if self._finalize_policy == "manual" and not out.finalized:
+            hints.append("Call finalize once after this batch of ingests.")
+        return " ".join(hints) or None
 
     async def finalize(self) -> FinalizeReport:
         """Run ``GraphRAG.finalize()`` (dedup, embeddings, indexes).

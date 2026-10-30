@@ -20,14 +20,18 @@ from graphrag_sdk.tools.specs import (
     IngestInput,
     LookupEntityInput,
     OntologyInput,
+    PlanRuleInput,
+    PreviewFilesInput,
     RetrieveInput,
     RunSkillInput,
+    SetOntologyInput,
     StatusInput,
     ToolDef,
     ToolSpec,
     TraverseInput,
     build_tool_specs,
     skill_catalog,
+    tool_enabled,
 )
 
 ALL_NAMES = (
@@ -40,9 +44,12 @@ ALL_NAMES = (
     "retrieve",
     "run_skill",
     "check_citations",
+    "preview_files",
+    "set_ontology",
     "ingest",
     "finalize",
 )
+READ_NAMES = ALL_NAMES[:9]
 
 VALID_INPUTS: dict[type[BaseModel], dict] = {
     StatusInput: {},
@@ -54,6 +61,8 @@ VALID_INPUTS: dict[type[BaseModel], dict] = {
     RetrieveInput: {"question": "Who?"},
     RunSkillInput: {"skill": "impact_analysis"},
     CheckCitationsInput: {"answer": "x [1]"},
+    PreviewFilesInput: {},
+    SetOntologyInput: {"entities": [{"label": "Drug"}]},
     IngestInput: {"text": "Alice works at Acme."},
     FinalizeInput: {},
 }
@@ -64,13 +73,15 @@ def specs(**kwargs) -> list[ToolSpec]:
         read_only=kwargs.get("read_only", False),
         finalize_policy=kwargs.get("finalize_policy", "manual"),
         include=kwargs.get("include"),
+        files=kwargs.get("files", True),
+        plan_limits=kwargs.get("plan_limits"),
     )
 
 
 # ── Registry ─────────────────────────────────────────────────────
 
 
-def test_registry_has_eleven_tools_in_order():
+def test_registry_has_thirteen_tools_in_order():
     assert TOOL_NAMES == ALL_NAMES
     assert [td.name for td in TOOL_REGISTRY] == list(ALL_NAMES)
     assert all(isinstance(td, ToolDef) for td in TOOL_REGISTRY)
@@ -83,12 +94,18 @@ def test_every_tool_has_its_own_input_model():
 
 
 def test_write_flags():
-    flags = {td.name: (td.read_only, td.destructive, td.manual_only) for td in TOOL_REGISTRY}
-    # Both write tools are marked destructive so MCP clients ask the user first.
-    assert flags["ingest"] == (False, True, False)
-    assert flags["finalize"] == (False, True, True)
-    for name in ALL_NAMES[:-2]:
-        assert flags[name] == (True, False, False), name
+    flags = {
+        td.name: (td.read_only, td.destructive, td.manual_only, td.ingest_only)
+        for td in TOOL_REGISTRY
+    }
+    # The write tools are marked destructive so MCP clients ask the user first.
+    assert flags["preview_files"] == (True, False, False, True)
+    assert flags["set_ontology"] == (False, True, False, True)
+    assert flags["ingest"] == (False, True, False, True)
+    assert flags["finalize"] == (False, True, True, True)
+    for name in READ_NAMES:
+        assert flags[name] == (True, False, False, False), name
+    assert [td.name for td in TOOL_REGISTRY if td.needs_files] == ["preview_files"]
 
 
 # ── build_tool_specs ─────────────────────────────────────────────
@@ -102,10 +119,36 @@ def test_default_build_lists_every_tool():
     assert all(isinstance(s, ToolSpec) for s in built)
 
 
-def test_read_only_drops_writing_tools():
+def test_read_only_drops_the_ingestion_tools():
     names = [s.name for s in specs(read_only=True)]
-    assert names == list(ALL_NAMES[:-2])
+    assert names == list(READ_NAMES)
     assert all(s.read_only and not s.destructive for s in specs(read_only=True))
+
+
+def test_preview_files_needs_a_files_root():
+    names = [s.name for s in specs(files=False)]
+    assert "preview_files" not in names
+    assert {"set_ontology", "ingest", "finalize"} <= set(names)
+    sample = next(td for td in TOOL_REGISTRY if td.name == "preview_files")
+    assert tool_enabled(sample, read_only=False, finalize_policy="manual", include=None, files=True)
+    assert not tool_enabled(
+        sample, read_only=True, finalize_policy="manual", include=None, files=True
+    )
+
+
+def test_ingest_description_lists_the_allowed_plan_options():
+    ingest = next(s for s in specs() if s.name == "ingest")
+    assert "Allowed plan options" in ingest.description
+    assert (
+        "gliner" in ingest.description
+        and "llm_verified" not in ingest.description.split("Allowed plan options")[1]
+    )
+    wide = next(
+        s
+        for s in specs(plan_limits={"extractors": ("gliner", "llm"), "resolvers": ("exact",)})
+        if s.name == "ingest"
+    )
+    assert "llm" in wide.description.split("Allowed plan options")[1]
 
 
 @pytest.mark.parametrize("policy", ["on_write", "never"])
@@ -294,6 +337,49 @@ def test_string_length_limits(model, field, limit):
     model(**{field: "x" * limit})
     with pytest.raises(ValidationError):
         model(**{field: "x" * (limit + 1)})
+
+
+def test_ingest_input_modes():
+    IngestInput(files=["*.md"])
+    IngestInput(files=["a.md"], plan=[{"match": "*.md", "chunker": "structural"}], reextract=True)
+    IngestInput(text="x", document_id="doc")
+    bad = [
+        {},
+        {"text": "x", "files": ["a.md"]},
+        {"text": "x", "plan": [{"match": "*"}]},
+        {"text": "x", "reextract": True},
+        {"files": ["a.md"], "document_id": "d"},
+        {"files": []},
+        {"files": ["a.md"], "plan": [{"chunker": "semantic"}]},
+        {"files": ["a.md"], "plan": [{"match": "*", "nope": 1}]},
+    ]
+    for args in bad:
+        with pytest.raises(ValidationError):
+            IngestInput(**args)
+
+
+def test_plan_rule_names_match_the_planner_options():
+    from graphrag_sdk.ingestion.ingestion_planner import CHUNKERS, EXTRACTORS, RESOLVERS
+
+    schema = PlanRuleInput.model_json_schema()["properties"]
+
+    def options(field: str) -> set[str]:
+        return {v for alt in schema[field]["anyOf"] for v in alt.get("enum", [])}
+
+    assert options("chunker") == set(CHUNKERS)
+    assert options("extractor") == set(EXTRACTORS)
+    assert options("resolver") == set(RESOLVERS)
+
+
+def test_preview_files_and_set_ontology_bounds():
+    PreviewFilesInput(limit=100, max_chars=4000)
+    for bad in ({"limit": 0}, {"limit": 101}, {"max_chars": 99}, {"offset": -1}):
+        with pytest.raises(ValidationError):
+            PreviewFilesInput(**bad)
+    SetOntologyInput(relations=[{"label": "TREATS", "patterns": [["Drug", "Disease"]]}])
+    for bad_rel in ({"label": "R", "patterns": [["A"]]}, {"label": "", "patterns": []}):
+        with pytest.raises(ValidationError):
+            SetOntologyInput(relations=[bad_rel])
 
 
 def test_empty_answer_may_be_checked_but_empty_text_not_ingested():

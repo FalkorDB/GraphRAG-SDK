@@ -22,8 +22,11 @@ from graphrag_sdk.core.exceptions import (
     RetrieverError,
 )
 from graphrag_sdk.mcp import GUIDE, GraphRAGMCPServer, fit_json
-from graphrag_sdk.mcp.server import bearer_token_guard, check_sse_binding
+from graphrag_sdk.mcp.server import TEXT_INGEST_GUIDE, bearer_token_guard, check_sse_binding
 from graphrag_sdk.tools import TOOL_NAMES, ToolError
+
+# Without a files root the server does not offer preview_files.
+SERVED = [n for n in TOOL_NAMES if n != "preview_files"]
 
 pytest.importorskip("mcp")
 
@@ -75,9 +78,9 @@ def _text(result: Any) -> str:
 class TestToolList:
     def test_names_and_annotations(self, server: GraphRAGMCPServer):
         tools = {t["name"]: t for t in server.tool_dicts()}
-        assert list(tools) == list(TOOL_NAMES)
+        assert list(tools) == SERVED
         assert tools["cypher_query"]["annotations"]["readOnlyHint"] is True
-        for write_tool in ("ingest", "finalize"):
+        for write_tool in ("ingest", "finalize", "set_ontology"):
             assert tools[write_tool]["annotations"]["readOnlyHint"] is False
             assert tools[write_tool]["annotations"]["destructiveHint"] is True
         assert tools["cypher_query"]["annotations"]["destructiveHint"] is False
@@ -92,7 +95,7 @@ class TestToolList:
         assert [t["name"] for t in only.tool_dicts()] == ["status", "cypher_query"]
 
     def test_guide_is_the_default_instructions(self, server: GraphRAGMCPServer):
-        assert server.instructions == GUIDE
+        assert server.instructions == GUIDE + TEXT_INGEST_GUIDE
         for word in ("lookup_entity", "cypher_query", "truncated", "check_citations", "[n]"):
             assert word in GUIDE
         assert GraphRAGMCPServer(FakeRAG(), instructions="x").instructions == "x"
@@ -335,9 +338,9 @@ class TestProtocol:
         monkeypatch.setattr(server, "_session_toolkit", spy)
         async with connect(server) as (client, instructions):
             listed = await client.list_tools()
-            assert [t.name for t in listed.tools] == list(TOOL_NAMES)
+            assert [t.name for t in listed.tools] == SERVED
             if instructions is not None:
-                assert instructions == GUIDE
+                assert instructions == GUIDE + TEXT_INGEST_GUIDE
 
             rejected = await client.call_tool("cypher_query", {"cypher": "CREATE (n) RETURN n"})
             assert rejected.is_error if hasattr(rejected, "is_error") else rejected.isError
@@ -488,7 +491,7 @@ class TestCLI:
         seen: dict[str, Any] = {}
 
         class FakeServer:
-            def __init__(self, rag: Any, *, auth_token: Any, read_only: bool) -> None:
+            def __init__(self, rag: Any, *, auth_token: Any, read_only: bool, **_: Any) -> None:
                 seen["read_only"] = read_only
 
         def fake_run(coro: Any) -> None:

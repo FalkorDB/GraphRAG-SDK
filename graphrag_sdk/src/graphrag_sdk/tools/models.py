@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -534,26 +534,253 @@ class CitationCheckResult(ToolResult):
         ]
 
 
-class IngestResult(ToolResult):
-    """Outcome of adding text to the graph."""
+class DocSample(BaseModel):
+    """One file under the files root, with a sample of its text."""
 
-    document_id: str
-    chunks_indexed: int = 0
-    nodes_created: int = 0
-    relationships_created: int = 0
-    finalized: bool = False
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    type: str
+    size_bytes: int = 0
+    chars: int = Field(
+        default=0, description="Text length; estimated from the part read when chars_estimated."
+    )
+    chars_estimated: bool = False
+    sample: str = ""
+    error: str | None = None
+
+
+class PreviewFilesResult(ToolResult):
+    """A page of the files under the files root, one sample each."""
+
+    pattern: str
+    total: int
+    offset: int = 0
+    next_offset: int | None = None
+    types: dict[str, int] = Field(default_factory=dict)
+    files: list[DocSample] = Field(default_factory=list)
     hint: str | None = None
 
     def _preamble(self) -> list[str]:
+        kinds = ", ".join(f"{k} {v}" for k, v in sorted(self.types.items())) or "none"
         lines = [
-            f"Stored document '{_clean(self.document_id)}' "
-            f"({self.chunks_indexed} chunks, {self.nodes_created} nodes, "
-            f"{self.relationships_created} relations)."
+            f"{self.total} files match '{_clean(self.pattern)}' ({kinds}); "
+            f"showing {self.offset + 1 if self.files else 0}-{self.offset + len(self.files)}."
         ]
-        lines.append("Finalized." if self.finalized else "Not finalized yet.")
+        if self.next_offset is not None:
+            lines.append(f"More: offset={self.next_offset}.")
         if self.hint:
             lines.append(f"Hint: {_clean(self.hint)}")
         return lines
+
+    def _sections(self) -> list[tuple[str, list[str]]]:
+        items = []
+        for f in self.files:
+            body = f"error: {_clean(f.error)}" if f.error else _snippet(f.sample, 600)
+            chars = f"~{f.chars}" if f.chars_estimated else str(f.chars)
+            items.append(f"- {_clean(f.path)} ({chars} chars): {body}")
+        return [("Files", items)]
+
+
+class PrunedTypes(BaseModel):
+    """What extraction found but the ontology does not declare: dropped, or kept as Unknown."""
+
+    model_config = ConfigDict(extra="forbid")
+    entities: dict[str, int] = Field(
+        default_factory=dict, description="Undeclared entity type -> entities dropped."
+    )
+    relations: dict[str, int] = Field(
+        default_factory=dict, description="Undeclared relation type -> relations dropped."
+    )
+    pattern_mismatches: dict[str, dict[str, int]] = Field(
+        default_factory=dict,
+        description="Declared relation -> 'Source->Target' pair it is not declared for -> count.",
+    )
+    pattern_examples: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        description=(
+            "Declared relation -> 'Source->Target' pair -> one dropped relation "
+            "('source name -> target name: fact'), to judge whether the pair fits."
+        ),
+    )
+    dangling: int = Field(default=0, description="Relations whose endpoint was dropped.")
+    unknown: int = Field(
+        default=0,
+        description="Entities kept with label Unknown: their type is not in the ontology.",
+    )
+    unknown_endpoints: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Declared relation -> relations dropped because an endpoint is an Unknown "
+            "entity (declare that entity's type; a pattern cannot name Unknown)."
+        ),
+    )
+
+    @classmethod
+    def from_report(cls, report: Any) -> PrunedTypes | None:
+        """From a pipeline ``metadata["pruned"]`` dict; ``None`` when empty."""
+        if not isinstance(report, dict) or not report:
+            return None
+        return cls(
+            entities={str(k): int(v) for k, v in (report.get("entities") or {}).items()},
+            relations={str(k): int(v) for k, v in (report.get("relations") or {}).items()},
+            pattern_mismatches={
+                str(rel): {str(pair): int(n) for pair, n in pairs.items()}
+                for rel, pairs in (report.get("pattern_mismatches") or {}).items()
+            },
+            pattern_examples={
+                str(rel): {str(pair): str(text) for pair, text in pairs.items()}
+                for rel, pairs in (report.get("pattern_examples") or {}).items()
+            },
+            dangling=int(report.get("dangling") or 0),
+            unknown=int(report.get("unknown") or 0),
+            unknown_endpoints={
+                str(k): int(v) for k, v in (report.get("unknown_endpoints") or {}).items()
+            },
+        )
+
+    def add(self, other: PrunedTypes) -> None:
+        for key, n in other.entities.items():
+            self.entities[key] = self.entities.get(key, 0) + n
+        for key, n in other.relations.items():
+            self.relations[key] = self.relations.get(key, 0) + n
+        for rel, pairs in other.pattern_mismatches.items():
+            mine = self.pattern_mismatches.setdefault(rel, {})
+            for pair, n in pairs.items():
+                mine[pair] = mine.get(pair, 0) + n
+        for rel, examples in other.pattern_examples.items():
+            kept = self.pattern_examples.setdefault(rel, {})
+            for pair, text in examples.items():
+                kept.setdefault(pair, text)
+        self.dangling += other.dangling
+        self.unknown += other.unknown
+        for key, n in other.unknown_endpoints.items():
+            self.unknown_endpoints[key] = self.unknown_endpoints.get(key, 0) + n
+
+    @property
+    def missing_types(self) -> bool:
+        """Whether an undeclared type or pattern showed up (not only dangling edges)."""
+        return bool(
+            self.entities
+            or self.relations
+            or self.pattern_mismatches
+            or self.unknown
+            or self.unknown_endpoints
+        )
+
+    def summary(self, limit: int = 8) -> str:
+        def top(counts: dict[str, int]) -> str:
+            ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            shown = ", ".join(f"{_clean(k)} ({n})" for k, n in ranked[:limit])
+            return shown + (f" (+{len(ranked) - limit} more)" if len(ranked) > limit else "")
+
+        parts = []
+        if self.entities:
+            parts.append(f"entity types {top(self.entities)}")
+        if self.relations:
+            parts.append(f"relation types {top(self.relations)}")
+        if self.pattern_mismatches:
+            flat = {
+                f"{rel} {pair}": n
+                for rel, pairs in self.pattern_mismatches.items()
+                for pair, n in pairs.items()
+            }
+            parts.append(f"undeclared relation patterns {top(flat)}")
+        if self.unknown:
+            parts.append(f"{self.unknown} entities of no declared type (stored as Unknown)")
+        if self.unknown_endpoints:
+            parts.append(f"relations to Unknown entities {top(self.unknown_endpoints)}")
+        if self.dangling:
+            parts.append(f"{self.dangling} relations to dropped entities")
+        return "; ".join(parts)
+
+
+class IngestedDocument(BaseModel):
+    """The outcome for one file of an ingest call."""
+
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    document_id: str | None = None
+    status: Literal["ingested", "unchanged", "reextracted", "failed"]
+    chunks_indexed: int = 0
+    nodes_created: int = 0
+    relationships_created: int = 0
+    plan: dict[str, Any] | None = Field(
+        default=None, description="Strategies used: chunker, extractor, resolver, params, reason."
+    )
+    pruned: PrunedTypes | None = None
+    error: str | None = None
+
+
+class IngestResult(ToolResult):
+    """Outcome of adding text or files to the graph.
+
+    For text, ``document_id`` names the stored document; for files,
+    ``documents`` has one entry per file. ``pruned`` totals what the
+    ontology did not declare and was dropped.
+    """
+
+    document_id: str | None = None
+    status: Literal["ingested", "unchanged", "reextracted"] | None = Field(
+        default=None, description="For text: whether it was extracted, or already stored as is."
+    )
+    chunks_indexed: int = 0
+    nodes_created: int = 0
+    relationships_created: int = 0
+    documents: list[IngestedDocument] = Field(default_factory=list)
+    failed: int = 0
+    pruned: PrunedTypes | None = None
+    finalized: bool = False
+    hint: str | None = None
+
+    @property
+    def unchanged(self) -> bool:
+        """True when nothing was written: every document was already stored as is."""
+        if self.document_id is not None:
+            return self.status == "unchanged"
+        return bool(self.documents) and all(d.status == "unchanged" for d in self.documents)
+
+    def _preamble(self) -> list[str]:
+        totals = (
+            f"{self.chunks_indexed} chunks, {self.nodes_created} nodes, "
+            f"{self.relationships_created} relations"
+        )
+        if self.document_id is not None:
+            doc = _clean(self.document_id)
+            if self.status == "unchanged":
+                lines = [f"Document '{doc}' is already stored unchanged; nothing was extracted."]
+            elif self.status == "reextracted":
+                lines = [f"Re-extracted document '{doc}' ({totals})."]
+            else:
+                lines = [f"Stored document '{doc}' ({totals})."]
+        else:
+            counts: dict[str, int] = {}
+            for doc in self.documents:
+                counts[doc.status] = counts.get(doc.status, 0) + 1
+            status = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "none"
+            lines = [f"Files: {status} ({totals})."]
+        if self.pruned is not None:
+            lines.append(f"Dropped (not in the ontology): {self.pruned.summary()}.")
+        if self.finalized:
+            lines.append("Finalized.")
+        elif not self.unchanged:
+            lines.append("Not finalized yet.")
+        if self.hint:
+            lines.append(f"Hint: {_clean(self.hint)}")
+        return lines
+
+    def _sections(self) -> list[tuple[str, list[str]]]:
+        items = []
+        for doc in self.documents:
+            line = f"- {_clean(doc.path)}: {doc.status}"
+            if doc.error:
+                line += f" — {_snippet(doc.error, 160)}"
+            else:
+                line += f" ({doc.chunks_indexed} chunks, {doc.nodes_created} nodes)"
+            if doc.plan:
+                p = doc.plan
+                line += f" [{p.get('chunker')}/{p.get('extractor')}/{p.get('resolver')}]"
+            items.append(line)
+        return [("Documents", items)]
 
 
 class FinalizeReport(ToolResult):

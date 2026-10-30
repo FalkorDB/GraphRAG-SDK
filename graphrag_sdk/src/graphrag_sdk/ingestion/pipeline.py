@@ -19,6 +19,7 @@ from graphrag_sdk.core.models import (
     DocumentOutput,
     EntityMention,
     GraphData,
+    GraphNode,
     GraphRelationship,
     IngestionResult,
     Ontology,
@@ -38,6 +39,33 @@ logger = logging.getLogger(__name__)
 # "pattern mismatch" warning. Enough to spot the inversion; bounded
 # so a misconfigured ontology can't flood logs.
 _PATTERN_MISMATCH_SAMPLE_SIZE = 3
+# Longest fact description kept as a pattern-mismatch example.
+_PATTERN_EXAMPLE_CHARS = 160
+
+
+def content_hash(text: str) -> str:
+    """The content hash stored on a Document node (SHA-256 hex of the text).
+
+    The single definition: the unchanged-document short-circuit in
+    :meth:`IngestionPipeline.run` and the facade's pre-planning check both
+    compare against it, so they cannot drift apart.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+#: Alias used inside ``run``, where ``content_hash`` is a local variable.
+document_content_hash = content_hash
+
+
+def _relation_example(src: GraphNode, tgt: GraphNode, rel: GraphRelationship) -> str:
+    """``"Source -> Target: description"`` for one relation, shortened."""
+    text = f"{src.properties.get('name') or src.id} -> {tgt.properties.get('name') or tgt.id}"
+    desc = str(rel.properties.get("description") or "").strip()
+    if desc:
+        text = f"{text}: {desc}"
+    if len(text) > _PATTERN_EXAMPLE_CHARS:
+        text = text[: _PATTERN_EXAMPLE_CHARS - 1] + "…"
+    return text
 
 
 def _has_explicit(info: DocumentInfo, field: str) -> bool:
@@ -307,7 +335,7 @@ class IngestionPipeline(LexicalGraphWriter):
             # (timestamps, randomized ordering, run-id watermarks, etc.)
             # will produce a different hash on every run and the no-op
             # short-circuit will never fire — correct, just not optimal.
-            content_hash = hashlib.sha256(document.text.encode("utf-8")).hexdigest()
+            content_hash = document_content_hash(document.text)
 
             # Unchanged re-ingest short-circuit — before chunking, so a
             # no-op costs one graph lookup and nothing else (contextual and
@@ -376,7 +404,7 @@ class IngestionPipeline(LexicalGraphWriter):
 
             # Step 5: Prune against ontology
             ctx.log("Step 5/9: Pruning against ontology")
-            graph_data = self._prune(graph_data, self.ontology)
+            graph_data, prune_report = self._prune_with_report(graph_data, self.ontology)
 
             # Step 6: Resolve duplicate entities
             ctx.log("Step 6/9: Resolving duplicates")
@@ -464,6 +492,9 @@ class IngestionPipeline(LexicalGraphWriter):
             # an embedding by a rate-limited embedder must not be certified
             # complete, or it would never be repaired (galshubeli on #309).
             result_metadata: dict[str, Any] = {
+                # What the ontology filter dropped, by type (see
+                # ``_prune_with_report``); empty when nothing was dropped.
+                "pruned": prune_report,
                 "merged_entities": resolved.merged_count,
                 "raw_nodes": len(graph_data.nodes),
                 "raw_relationships": len(graph_data.relationships),
@@ -531,6 +562,12 @@ class IngestionPipeline(LexicalGraphWriter):
             raise IngestionError(f"Pipeline failed: {exc}") from exc
 
     def _prune(self, graph_data: GraphData, ontology: Ontology) -> GraphData:
+        """Filter graph data to the ontology; see :meth:`_prune_with_report`."""
+        return self._prune_with_report(graph_data, ontology)[0]
+
+    def _prune_with_report(
+        self, graph_data: GraphData, ontology: Ontology
+    ) -> tuple[GraphData, dict[str, Any]]:
         """Filter graph data to only include ontology-conforming nodes and relationships.
 
         Each check runs only when the corresponding ontology section is populated:
@@ -544,15 +581,38 @@ class IngestionPipeline(LexicalGraphWriter):
 
         When both sections are empty the pipeline is in open-ontology mode and
         the graph is returned unchanged.
+
+        Also returns what was dropped, so a caller can see which types its
+        ontology is missing: ``{}`` when nothing was dropped, otherwise
+        ``entities`` (label -> count), ``relations`` (undeclared rel_type ->
+        count), ``pattern_mismatches`` (rel_type -> {"Src->Tgt": count}),
+        ``pattern_examples`` (rel_type -> {"Src->Tgt": one dropped fact}) and
+        ``dangling`` (relations whose endpoint entity was dropped), each key
+        present only when non-empty. ``unknown`` counts kept "Unknown"
+        entities: extraction told the ontology's types stores anything else
+        as "Unknown", so this is where the missing entity types show up.
+        ``unknown_endpoints`` (rel_type -> count) holds relations dropped
+        because an endpoint is one of those "Unknown" entities: no pattern can
+        name "Unknown", so they point at a missing entity type, not a missing
+        pattern, and are left out of ``pattern_mismatches``.
         """
         if not ontology.entities and not ontology.relations:
-            return graph_data
+            return graph_data, {}
+
+        dropped_entities: dict[str, int] = {}
+        dropped_relations: dict[str, int] = {}
+        dangling = 0
+        unknown = 0
 
         # --- Node filtering (keep "Unknown" — low-confidence entities) ---
         allowed_labels = {e.label for e in ontology.entities}
         if allowed_labels:
             allowed_labels.add("Unknown")
             pruned_nodes = [n for n in graph_data.nodes if n.label in allowed_labels]
+            for n in graph_data.nodes:
+                if n.label not in allowed_labels:
+                    dropped_entities[n.label] = dropped_entities.get(n.label, 0) + 1
+            unknown = sum(1 for n in pruned_nodes if n.label == "Unknown")
         else:
             pruned_nodes = graph_data.nodes
 
@@ -570,12 +630,15 @@ class IngestionPipeline(LexicalGraphWriter):
         # type or pruned endpoints). Direction inversion is the most common
         # cause and the hardest to debug without a structured warning.
         pattern_mismatches: dict[str, list[tuple[str, str]]] = {}
+        pattern_examples: dict[str, dict[str, str]] = {}
+        unknown_endpoints: dict[str, int] = {}
         for r in graph_data.relationships:
             rel_label = r.properties.get("rel_type", r.type)
 
             src = nodes_by_id.get(r.start_node_id)
             tgt = nodes_by_id.get(r.end_node_id)
             if src is None or tgt is None:
+                dangling += 1
                 continue
 
             if not allowed_rels:
@@ -587,9 +650,17 @@ class IngestionPipeline(LexicalGraphWriter):
                 pruned_rels.append(r)
             elif valid_pairs and (src.label, tgt.label) in valid_pairs:
                 pruned_rels.append(r)
+            elif valid_pairs and "Unknown" in (src.label, tgt.label):
+                unknown_endpoints[rel_label] = unknown_endpoints.get(rel_label, 0) + 1
             elif valid_pairs:
                 # Declared rel type, but (src, tgt) doesn't match any pattern.
                 pattern_mismatches.setdefault(rel_label, []).append((src.label, tgt.label))
+                examples = pattern_examples.setdefault(rel_label, {})
+                pair = f"{src.label}->{tgt.label}"
+                if pair not in examples:
+                    examples[pair] = _relation_example(src, tgt, r)
+            else:
+                dropped_relations[rel_label] = dropped_relations.get(rel_label, 0) + 1
 
         pruned_node_count = len(graph_data.nodes) - len(pruned_nodes)
         pruned_rel_count = len(graph_data.relationships) - len(pruned_rels)
@@ -609,9 +680,32 @@ class IngestionPipeline(LexicalGraphWriter):
                 sample,
             )
 
+        report: dict[str, Any] = {}
+        if dropped_entities:
+            report["entities"] = dropped_entities
+        if dropped_relations:
+            report["relations"] = dropped_relations
+        if pattern_mismatches:
+            mismatch_counts: dict[str, dict[str, int]] = {}
+            for rel_label, observed in pattern_mismatches.items():
+                counts: dict[str, int] = {}
+                for src_label, tgt_label in observed:
+                    key = f"{src_label}->{tgt_label}"
+                    counts[key] = counts.get(key, 0) + 1
+                mismatch_counts[rel_label] = counts
+            report["pattern_mismatches"] = mismatch_counts
+            report["pattern_examples"] = pattern_examples
+        if dangling:
+            report["dangling"] = dangling
+        if unknown:
+            report["unknown"] = unknown
+        if unknown_endpoints:
+            report["unknown_endpoints"] = unknown_endpoints
+
         # ``model_copy`` rather than rebuilding field-by-field, so report
         # fields (``chunks_attempted``, ``failed_chunks``, ...) survive.
-        return graph_data.model_copy(update={"nodes": pruned_nodes, "relationships": pruned_rels})
+        pruned = graph_data.model_copy(update={"nodes": pruned_nodes, "relationships": pruned_rels})
+        return pruned, report
 
     def _filter_quality(self, graph_data: GraphData) -> GraphData:
         """Remove nodes with empty IDs or labels, and dangling relationships."""

@@ -1,13 +1,14 @@
 # GraphRAG SDK — MCP server CLI
 # Usage:
-#   python -m graphrag_sdk.mcp --transport stdio
+#   python -m graphrag_sdk.mcp --transport stdio --files-root ./docs
 #   GRAPHRAG_MCP_TOKEN=... python -m graphrag_sdk.mcp --transport sse --host 0.0.0.0
 #
 # Connection and model are read from environment variables / CLI flags so
 # the server can be launched by an MCP client without code:
 #   FALKOR_HOST / FALKOR_PORT / FALKOR_USERNAME / FALKOR_PASSWORD, GRAPHRAG_GRAPH,
 #   GRAPHRAG_MODEL, GRAPHRAG_EMBED_MODEL, GRAPHRAG_EMBED_DIM,
-#   GRAPHRAG_EMBED_SEND_DIMENSIONS, GRAPHRAG_MCP_TOKEN, GRAPHRAG_MCP_READ_ONLY.
+#   GRAPHRAG_EMBED_SEND_DIMENSIONS, GRAPHRAG_MCP_TOKEN, GRAPHRAG_MCP_READ_ONLY,
+#   GRAPHRAG_MCP_FILES_ROOT.
 
 from __future__ import annotations
 
@@ -74,8 +75,18 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=_env_flag("GRAPHRAG_MCP_READ_ONLY"),
         help=(
-            "Serve only the read tools (no ingest / finalize). Default: "
+            "Serve only the read tools (no ingestion tools). Default: "
             "$GRAPHRAG_MCP_READ_ONLY; --no-read-only overrides it."
+        ),
+    )
+    parser.add_argument(
+        "--files-root",
+        default=os.getenv("GRAPHRAG_MCP_FILES_ROOT") or None,
+        help=(
+            "Folder the agent may read and ingest files from (preview_files, "
+            "ingest(files=...)); nothing outside it is read. Default: "
+            "$GRAPHRAG_MCP_FILES_ROOT, else none (text ingestion only). The "
+            "filesystem root and the home folder are refused."
         ),
     )
     parser.add_argument(
@@ -103,8 +114,19 @@ def main() -> None:
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
 
+    files_root = args.files_root
+    if files_root is not None:
+        from graphrag_sdk.tools.files import resolve_root
+
+        try:
+            resolve_root(files_root)
+        except ValueError as exc:
+            raise SystemExit(f"--files-root: {exc}.") from exc
+
     rag = _build_rag()
-    server = GraphRAGMCPServer(rag, auth_token=args.token, read_only=args.read_only)
+    server = GraphRAGMCPServer(
+        rag, auth_token=args.token, read_only=args.read_only, files_root=files_root
+    )
 
     async def _serve() -> None:
         async with rag:  # type: ignore[attr-defined]
