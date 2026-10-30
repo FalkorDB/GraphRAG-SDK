@@ -198,6 +198,15 @@ def _strip_maps(text: str) -> str:
             return text
 
 
+def _blank_maps(text: str) -> str:
+    """``_strip_maps`` that blanks map literals with spaces instead, so
+    offsets in the result are still offsets in the scanned ``code``."""
+    while True:
+        text, n = re.subn(r"\{[^{}]*\}", lambda m: " " * len(m.group(0)), text)
+        if not n:
+            return text
+
+
 #: Words after which ``[`` opens a list literal or comprehension, not a subscript.
 _LIST_CONTEXT_WORDS = frozenset(
     {
@@ -287,26 +296,33 @@ def validate_read_query(
     if schema is None:
         return list(dict.fromkeys(errors))
 
-    scan = _strip_maps(blank)
-    # Backticked names are read with punctuation as ``_`` (``Non-Profit`` ->
-    # ``Non_Profit``); schema names are compared the same way.
-    allowed = {_name_key(n) for n in schema.allowed_names()}
-    semantic = {_name_key(n) for n in schema.semantic_relations}
+    # Names are found in ``scan`` (backticked names read as word characters)
+    # and read back from ``code`` at the same offsets, so ``Non-Profit`` is
+    # compared as written and never confused with ``Non_Profit``.
+    scan = _blank_maps(blank)
+    allowed = set(schema.allowed_names())
+    semantic = set(schema.semantic_relations)
     if schema.labels or schema.relationship_types:
         # With strings and map literals gone, every remaining ``:Name`` is a
         # node label or a relationship type (``(n:A:B)``, ``[r:T|U]``, ``n:A``).
-        for first, rest in _LABEL_RE.findall(scan):
-            for name in [first, *_ALT_NAME_RE.findall(rest)]:
+        for match in _LABEL_RE.finditer(scan):
+            spans = [match.span(1)] + [
+                (match.start(2) + alt.start(1), match.start(2) + alt.end(1))
+                for alt in _ALT_NAME_RE.finditer(match.group(2))
+            ]
+            for start, end in spans:
+                name = code[start:end]
                 # A declared relation used as an edge type gets the more
                 # useful "stored as RELATES" hint below instead.
                 if name not in allowed and name not in semantic:
                     errors.append(f"unknown label or relationship type '{name}'")
     if schema.property_keys:
-        known = {
-            _name_key(k)
-            for k in (*schema.property_keys, *_SYSTEM_NODE_PROPERTIES, *_SYSTEM_EDGE_PROPERTIES)
+        known = set(schema.property_keys) | _SYSTEM_NODE_PROPERTIES | _SYSTEM_EDGE_PROPERTIES
+        props = {
+            code[m.start(1) : m.end(1)]
+            for m in re.finditer(r"\b[A-Za-z_]\w*\s*\.\s*`?([A-Za-z_]\w*)`?", scan)
         }
-        for prop in sorted(set(re.findall(r"\b[A-Za-z_]\w*\s*\.\s*`?([A-Za-z_]\w*)`?", scan))):
+        for prop in sorted(props):
             if prop not in known:
                 errors.append(f"unknown property '{prop}'")
     if schema.semantic_relations:
@@ -316,9 +332,11 @@ def validate_read_query(
         # Anonymous edges are told apart by count: each one typed in its map
         # covers one ``[:RELATES]`` in the pattern, not all of them.
         anonymous_typed = 0
-        for variable, props in re.findall(
-            r"\[\s*([A-Za-z_]\w*)?\s*:\s*`?RELATES`?\s*\{([^}]*)\}", code
-        ):
+        # Found in ``blank`` so an edge written inside a string is not one;
+        # the map's values are read from ``code`` at the same offsets.
+        for match in re.finditer(r"\[\s*([A-Za-z_]\w*)?\s*:\s*`?RELATES`?\s*\{[^}]*\}", blank):
+            variable = match.group(1) or ""
+            props = code[match.start() : match.end()]
             rels = re.findall(r"\brel_type\s*:\s*['\"]([^'\"]*)['\"]", props)
             if rels and not variable:
                 anonymous_typed += 1
@@ -351,19 +369,15 @@ def validate_read_query(
                 for rel in re.findall(r"['\"]([^'\"]+)['\"]", value):
                     if rel not in declared:
                         errors.append(f"unknown relation '{rel}' in rel_type")
-        stored_types = {_name_key(t) for t in schema.relationship_types}
-        for rel in re.findall(r"\[\s*(?:[A-Za-z_]\w*)?\s*:\s*`?([A-Za-z_]\w*)`?", scan):
+        stored_types = set(schema.relationship_types)
+        for match in re.finditer(r"\[\s*(?:[A-Za-z_]\w*)?\s*:\s*`?([A-Za-z_]\w*)`?", scan):
+            rel = code[match.start(1) : match.end(1)]
             if rel in semantic and rel not in stored_types:
                 errors.append(
                     f"'{rel}' is stored as RELATES; match [r:RELATES] with r.rel_type = '{rel}'"
                 )
     # Keep the order stable but drop exact repeats.
     return list(dict.fromkeys(errors))
-
-
-def _name_key(name: str) -> str:
-    """A label, type or property name as the scanner reads it in backticks."""
-    return re.sub(r"\W", "_", name)
 
 
 def enforce_row_cap(cypher: str, cap: int, params: dict[str, Any] | None = None) -> str:

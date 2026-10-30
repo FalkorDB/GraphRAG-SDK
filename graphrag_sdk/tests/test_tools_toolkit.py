@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -372,6 +373,25 @@ class TestReadTools:
         result = await toolkit.status()
         assert result.entities == 0 and "empty" in (result.hint or "")
 
+    async def test_schema_counts_failure_is_logged_as_a_warning(self, rag, monkeypatch, caplog):
+        import graphrag_sdk.tools.toolkit as tk_mod
+
+        async def introspect(store, ontology):
+            return GraphSchema(labels=["Person"], semantic_relations=["WORKS_AT"])
+
+        async def schema_counts(store):
+            raise RuntimeError("procedure missing")
+
+        monkeypatch.setattr(tk_mod, "introspect_schema", introspect)
+        monkeypatch.setattr(ops, "schema_counts", schema_counts)
+        with caplog.at_level(logging.WARNING, logger=tk_mod.logger.name):
+            schema = await GraphRAGToolkit(rag)._schema()
+        assert schema.semantic_relations == ["WORKS_AT"]
+        assert any(
+            r.levelno == logging.WARNING and "schema_counts failed" in r.getMessage()
+            for r in caplog.records
+        )
+
     async def test_lookup_entity_is_not_evidence(self, toolkit, monkeypatch):
         async def find(store, name, *, limit):
             return []
@@ -545,7 +565,7 @@ class TestReadTools:
 
         monkeypatch.setattr(ops, "resolve_start", resolve)
         monkeypatch.setattr(ops, "typed_path", typed_path)
-        monkeypatch.setattr(tk_mod.time, "monotonic", lambda: next(clock, 200.0))
+        monkeypatch.setattr(tk_mod, "time", SimpleNamespace(monotonic=lambda: next(clock, 200.0)))
         result = await toolkit.traverse("Alice", via=["WORKS_AT"], timeout_ms=1000)
         assert calls == [] and result.stopped == "time_budget" and result.truncated
         assert "timed out" in (result.hint or "")

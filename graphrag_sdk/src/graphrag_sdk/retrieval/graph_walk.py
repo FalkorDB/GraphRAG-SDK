@@ -148,7 +148,8 @@ class DynamicGraphWalk:
         """Beam-search outward from ``start``, keeping the top-k paths each round.
 
         If ``goal`` is given, paths reaching it are returned as soon as
-        found; otherwise the highest-scoring frontier paths are returned.
+        found, and none (``[]``) when it is not reached; otherwise the
+        highest-scoring frontier paths are returned.
         """
         # Each beam entry: (path_nodes, path_edge_labels, path_edge_weights,
         # path_edge_directions).
@@ -218,7 +219,10 @@ class DynamicGraphWalk:
                 completed.extend(self._scored(entry) for entry in goal_hits)
                 break
 
-        results = completed or [self._scored(entry) for entry in beam] + terminal
+        if goal is not None:
+            results = completed
+        else:
+            results = [self._scored(entry) for entry in beam] + terminal
         results.sort(key=lambda p: p.score, reverse=True)
         return results[: self._beam_width]
 

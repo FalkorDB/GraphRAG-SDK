@@ -66,6 +66,11 @@ def register_skill(skill_cls: type[Skill], *, replace: bool = False) -> type[Ski
         raise ValueError(f"Skill {name!r}: `parameters.properties` must map names to schemas")
     if not isinstance(required, list) or not all(isinstance(r, str) for r in required):
         raise ValueError(f"Skill {name!r}: `parameters.required` must be a list of names")
+    undeclared = sorted(set(required) - set(properties))
+    if undeclared and params.get("additionalProperties") is False:
+        raise ValueError(
+            f"Skill {name!r}: required name(s) {undeclared} are not in `parameters.properties`"
+        )
     if name in SKILL_REGISTRY and SKILL_REGISTRY[name] is not skill_cls and not replace:
         raise ValueError(f"A skill named {name!r} is already registered (pass replace=True)")
     SKILL_REGISTRY[name] = skill_cls

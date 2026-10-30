@@ -1356,15 +1356,19 @@ class GraphStore:
         always recomputes) is reused when no node or relationship was created
         or deleted through this connection since; failures are not cached.
         """
-        if not entity_label.isidentifier():
-            raise ValueError(f"Invalid entity_label for pagerank: {entity_label!r}")
-        if relationship_type is not None and not relationship_type.isidentifier():
-            raise ValueError(f"Invalid relationship_type for pagerank: {relationship_type!r}")
-        rel = f"'{relationship_type}'" if relationship_type else "NULL"
+        # Any name the SDK can write as a label works (``Legal Entity``,
+        # ``Org-Unit``): it is passed as a parameter, never spliced in.
+        for kind, name in (
+            ("entity_label", entity_label),
+            ("relationship_type", relationship_type),
+        ):
+            if name is not None and (not name.strip() or sanitize_cypher_label(name) != name):
+                raise ValueError(f"Invalid {kind} for pagerank: {name!r}")
         query = (
-            f"CALL algo.pageRank('{entity_label}', {rel}) "
-            "YIELD node, score RETURN node.id AS id, score AS score"
+            "CALL algo.pageRank($label, $rel) YIELD node, score "
+            "RETURN node.id AS id, score AS score"
         )
+        params = {"label": entity_label, "rel": relationship_type or None}
         max_age = self.PAGERANK_CACHE_SECONDS if max_age_seconds is None else max_age_seconds
         key = (entity_label, relationship_type)
         version = getattr(self._conn, "topology_version", 0)
@@ -1377,7 +1381,7 @@ class GraphStore:
         ):
             return dict(cached[2])
         try:
-            result = await self._conn.query(query, read_only=True)
+            result = await self._conn.query(query, params, read_only=True)
             scores: dict[str, float] = {}
             for row in result.result_set:
                 if row[0] is not None:

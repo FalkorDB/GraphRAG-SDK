@@ -441,10 +441,37 @@ class TestCLI:
         seen: dict[str, Any] = {}
         monkeypatch.setenv("GRAPHRAG_EMBED_MODEL", "text-embedding-ada-002")
         monkeypatch.setenv("GRAPHRAG_EMBED_DIM", "1536")
+        monkeypatch.delenv("GRAPHRAG_EMBED_SEND_DIMENSIONS", raising=False)
         monkeypatch.setattr(api_main, "GraphRAG", lambda **kw: seen.update(kw) or "RAG")
         cli._build_rag()
         assert seen["embedding_dimension"] == 1536
         assert "dimensions" not in seen["embedder"]._extra
+
+    def test_large_embedding_model_defaults_to_its_native_dimension(self, monkeypatch):
+        import graphrag_sdk.api.main as api_main
+        from graphrag_sdk.mcp import __main__ as cli
+
+        seen: dict[str, Any] = {}
+        monkeypatch.setenv("GRAPHRAG_EMBED_MODEL", "text-embedding-3-large")
+        monkeypatch.delenv("GRAPHRAG_EMBED_DIM", raising=False)
+        monkeypatch.delenv("GRAPHRAG_EMBED_SEND_DIMENSIONS", raising=False)
+        monkeypatch.setattr(api_main, "GraphRAG", lambda **kw: seen.update(kw) or "RAG")
+        cli._build_rag()
+        assert seen["embedding_dimension"] == 3072
+        assert "dimensions" not in seen["embedder"]._extra
+
+    def test_embedder_dimensions_can_be_sent_to_an_aliased_model(self, monkeypatch):
+        import graphrag_sdk.api.main as api_main
+        from graphrag_sdk.mcp import __main__ as cli
+
+        seen: dict[str, Any] = {}
+        monkeypatch.setenv("GRAPHRAG_EMBED_MODEL", "azure/my-embedding-deployment")
+        monkeypatch.setenv("GRAPHRAG_EMBED_DIM", "256")
+        monkeypatch.setenv("GRAPHRAG_EMBED_SEND_DIMENSIONS", "true")
+        monkeypatch.setattr(api_main, "GraphRAG", lambda **kw: seen.update(kw) or "RAG")
+        cli._build_rag()
+        assert seen["embedding_dimension"] == 256
+        assert seen["embedder"]._extra["dimensions"] == 256
 
     @pytest.mark.parametrize(
         ("env", "argv", "expected"),
@@ -459,7 +486,6 @@ class TestCLI:
         ],
     )
     def test_read_only_flag_and_environment(self, monkeypatch, env, argv, expected):
-        import graphrag_sdk.mcp.server as server_mod
         from graphrag_sdk.mcp import __main__ as cli
 
         seen: dict[str, Any] = {}
@@ -474,7 +500,7 @@ class TestCLI:
         monkeypatch.setenv("GRAPHRAG_MCP_READ_ONLY", env)
         monkeypatch.setattr("sys.argv", ["graphrag-mcp", *argv])
         monkeypatch.setattr(cli, "_build_rag", lambda: "RAG")
-        monkeypatch.setattr(server_mod, "GraphRAGMCPServer", FakeServer)
+        monkeypatch.setattr("graphrag_sdk.mcp.server.GraphRAGMCPServer", FakeServer)
         monkeypatch.setattr(cli.asyncio, "run", fake_run)
         cli.main()
         assert seen["read_only"] is expected

@@ -29,7 +29,9 @@ _DATE_WORDS = frozenset(
 _IGNORED_KEYS = frozenset({"created_at", "updated_at", "ingested_at", "created", "updated"})
 _WORD_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
 _NUMBER_RE = re.compile(r"\s*[-+]?\d+(?:\.\d+)?\s*")
-_DATE_RE = re.compile(r"\b(1\d{3}|2\d{3})(?:-(\d{1,2}))?(?:-(\d{1,2}))?\b")
+#: ``2024``, ``2024-05``, ``2024-05-20``, also with an ISO time after it
+#: (``2024-05-20T12:00:00Z``).
+_DATE_RE = re.compile(r"\b(1\d{3}|2\d{3})(?:-(\d{1,2}))?(?:-(\d{1,2}))?(?:\b|(?=T\d))")
 
 
 def _is_date_key(key: str) -> bool:

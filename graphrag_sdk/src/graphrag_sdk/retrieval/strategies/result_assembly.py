@@ -42,6 +42,21 @@ async def rerank_chunks(
     Returns:
         Top-k chunk texts ranked by cosine similarity to query.
     """
+    ranked = await _rerank_chunk_ids(
+        embedder, query_vector, candidate_chunks, chunk_top_k, stored_embeddings, ctx
+    )
+    return [candidate_chunks[cid] for cid in ranked]
+
+
+async def _rerank_chunk_ids(
+    embedder: Embedder,
+    query_vector: list[float],
+    candidate_chunks: dict[str, str],
+    chunk_top_k: int = 15,
+    stored_embeddings: dict[str, list[float]] | None = None,
+    ctx: Context | None = None,
+) -> list[str]:
+    """:func:`rerank_chunks`, returning the ids of the top-k chunks."""
     if not candidate_chunks:
         return []
 
@@ -59,7 +74,7 @@ async def rerank_chunks(
                 # No stored vector — place at end rather than penalizing
                 scored.append((i, -1.0))
         scored.sort(key=lambda x: x[1], reverse=True)
-        return [chunk_texts[i] for i, _ in scored[:chunk_top_k]]
+        return [chunk_ids[i] for i, _ in scored[:chunk_top_k]]
 
     # Fallback: re-embed all candidates (coverage too low for fast path)
     try:
@@ -75,12 +90,12 @@ async def rerank_chunks(
         )
         scored = [(i, cosine_sim(query_vector, cvec)) for i, cvec in enumerate(chunk_vectors)]
         scored.sort(key=lambda x: x[1], reverse=True)
-        return [chunk_texts[i] for i, _ in scored[:chunk_top_k]]
+        return [chunk_ids[i] for i, _ in scored[:chunk_top_k]]
     except LatencyBudgetExceededError:
         raise
     except Exception as exc:
         logger.debug("Chunk reranking failed, returning unranked: %s", exc)
-        return chunk_texts[:chunk_top_k]
+        return chunk_ids[:chunk_top_k]
 
 
 def filter_facts_by_relevance(

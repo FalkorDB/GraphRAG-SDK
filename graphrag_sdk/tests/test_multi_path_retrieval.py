@@ -1064,6 +1064,42 @@ class TestProvenanceMetadata:
         assert f"[Source: docs/a.md]\n{text}" in passages
         assert f"[Source: docs/b.md]\n{text}" in passages
 
+    async def test_reranked_chunk_keeps_its_id_when_a_twin_ranks_lower(
+        self, mp_vector_store, mp_embedder, monkeypatch
+    ):
+        from graphrag_sdk.retrieval.strategies import multi_path as mp_mod
+
+        text = "Alice works at Acme."
+        chunks = {"c1": text, "c2": text, **{f"c{i}": f"other {i}" for i in range(3, 11)}}
+        # c1 alone has no stored vector, so it ranks last and its twin c2 first.
+        embeddings = {cid: [1.0] * 8 for cid in chunks if cid != "c1"}
+
+        async def fake_retrieve_chunks(*args, **kwargs):
+            return dict(chunks), {}, embeddings
+
+        graph_store = MagicMock()
+
+        async def route_query(cypher, params=None):
+            if "PART_OF" in cypher:
+                return _rows([["c1", "docs/a.md"], ["c2", "docs/b.md"]])
+            return _rows([])
+
+        graph_store.query_raw = AsyncMock(side_effect=route_query)
+        monkeypatch.setattr(mp_mod, "retrieve_chunks", fake_retrieve_chunks)
+        strategy = MultiPathRetrieval(
+            graph_store=graph_store,
+            vector_store=mp_vector_store,
+            embedder=mp_embedder,
+            llm=MockLLM(responses=["Alice"]),
+            chunk_top_k=1,
+        )
+        result = await strategy.search("Who is Alice?")
+        chunks_out = result.metadata["provenance"]["chunks"]
+        assert [(c["id"], c["document_path"]) for c in chunks_out] == [("c2", "docs/b.md")]
+        passages = {i.metadata["section"]: i.content for i in result.items}["passages"]
+        assert f"[Source: docs/b.md]\n{text}" in passages
+        assert "docs/a.md" not in passages
+
     async def test_empty_graph_provenance(self, mp_graph_store, mp_vector_store, mp_embedder):
         s = MultiPathRetrieval(
             graph_store=mp_graph_store,
