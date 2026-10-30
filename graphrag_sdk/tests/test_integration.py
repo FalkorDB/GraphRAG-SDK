@@ -1339,3 +1339,13 @@ class TestIncrementalUpdateInvariants:
         assert result.result_set[0][0] == 1, (
             "writing the same fact twice must still MERGE onto one edge"
         )
+
+    async def test_pagerank_on_labels_with_spaces_and_hyphens(self, real_falkordb_rag_factory):
+        rag = real_falkordb_rag_factory(llm=None, resolver=None)
+        store = rag._graph_store
+        await store._conn.query(
+            "CREATE (:`Legal Entity` {id: 'le1'})-[:`Owns-It`]->(:`Legal Entity` {id: 'le2'})"
+        )
+        scores = await store.pagerank(entity_label="Legal Entity", relationship_type="Owns-It")
+        assert set(scores) == {"le1", "le2"}
+        assert scores["le2"] > scores["le1"]

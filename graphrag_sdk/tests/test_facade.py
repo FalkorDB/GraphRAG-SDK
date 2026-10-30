@@ -13,6 +13,7 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import (
     ConfigError,
+    DatabaseError,
     DocumentNotFoundError,
     LatencyBudgetExceededError,
 )
@@ -1323,6 +1324,29 @@ class TestGraphRAGConfigNode:
 
         result = await g.retrieve("test?")
         assert isinstance(result, RetrieverResult)
+
+    async def test_config_check_is_read_only(self, mock_conn, embedder):
+        """Checking the config must not create a graph that was never written."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
+
+        await g._validate_graph_config()
+
+        assert g._graph_store.query_raw.await_args.kwargs.get("read_only") is True
+        assert g._config_validated is True
+
+    async def test_missing_graph_still_probes_the_embedder(self, mock_conn, embedder):
+        """A graph that was never written has no stored config; the embedder
+        probe still runs and its dimension check still applies."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=4)
+        g._graph_store.query_raw = AsyncMock(
+            side_effect=DatabaseError("Invalid graph operation on empty key")
+        )
+
+        with pytest.raises(ConfigError, match="dimension"):
+            await g._validate_graph_config()
 
 
 class TestSameEmbeddingModel:
@@ -2810,3 +2834,138 @@ class TestDefaultResolver:
         mine = ExactMatchResolution()
         await graphrag.ingest(text="Airbus builds aircraft.", resolver=mine)
         assert captured["resolver"] is mine
+
+
+# ── Retrieval edges: history, per-call ontology, skill arguments ─
+
+
+class TestRetrievalEdges:
+    @pytest.fixture
+    def rag(self, mock_conn):
+        return GraphRAG(
+            connection=mock_conn,
+            llm=MockLLM(responses=["Generated."]),
+            embedder=MockEmbedder(dimension=8),
+            embedding_dimension=8,
+        )
+
+    def test_retrieve_sync_forwards_every_argument(self, rag):
+        import inspect
+
+        seen: dict = {}
+
+        async def fake_retrieve(question, **kwargs):
+            seen.update(question=question, **kwargs)
+            return RetrieverResult(items=[])
+
+        rag.retrieve = fake_retrieve  # type: ignore[method-assign]
+        strategy, reranker, ctx = object(), object(), Context()
+        rag.retrieve_sync("q", strategy=strategy, reranker=reranker, ctx=ctx)
+        assert seen == {"question": "q", "strategy": strategy, "reranker": reranker, "ctx": ctx}
+        # The sync wrapper takes exactly what retrieve() takes (no history:
+        # retrieval strategies never see the conversation).
+        assert inspect.signature(GraphRAG.retrieve_sync).parameters.keys() == (
+            inspect.signature(GraphRAG.retrieve).parameters.keys()
+        )
+        with pytest.raises(TypeError):
+            rag.retrieve_sync("q", history=[{"role": "user", "content": "hi"}])
+
+    async def test_strategies_get_no_history(self, rag):
+        strategy = MagicMock(spec=RetrievalStrategy)
+        strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="ctx")])
+        )
+        with pytest.raises(TypeError):
+            await rag.retrieve("q", strategy=strategy, history=[{"role": "user", "content": "x"}])
+        result = await rag.completion(
+            "q", strategy=strategy, history=[{"role": "user", "content": "x"}]
+        )
+        assert result.answer == "Generated."  # regular completion still generates
+        strategy.search.assert_awaited_once()
+        assert "history" not in strategy.search.await_args.kwargs
+        assert strategy.search.await_args.args[0] == "q"
+
+    async def test_caller_ontology_is_kept(self, rag):
+        from graphrag_sdk.core.models import Ontology
+
+        strategy = MagicMock()
+        strategy._ontology = Ontology()
+        strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
+        await rag.retrieve("q", strategy=strategy)
+        strategy.set_ontology.assert_not_called()
+
+    async def test_per_call_strategy_without_ontology_gets_the_facades(self, rag):
+        strategy = MagicMock()
+        strategy._ontology = None
+        strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
+        await rag.retrieve("q", strategy=strategy)
+        # Lent for the call, then taken back.
+        assert strategy.set_ontology.call_args_list == [
+            ((rag._global_ontology,),),
+            ((None,),),
+        ]
+
+    async def test_the_lent_ontology_is_taken_back(self, rag):
+        from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+
+        strategy = MultiPathRetrieval(
+            graph_store=rag._graph_store,
+            vector_store=rag._vector_store,
+            embedder=rag.embedder,
+            llm=rag.llm,
+        )
+        seen = []
+
+        async def search(question, ctx, **kwargs):
+            seen.append(strategy._ontology)
+            return RetrieverResult(items=[])
+
+        strategy.search = search
+        await rag.retrieve("q", strategy=strategy)
+        assert seen == [rag._global_ontology]
+        assert strategy._ontology is None  # the caller's strategy is left as it was
+
+    async def test_concurrent_calls_share_the_lent_ontology(self, rag):
+        import asyncio
+
+        strategy = MagicMock()
+        strategy._ontology = None
+        strategy.set_ontology = lambda o: setattr(strategy, "_ontology", o)
+        gate = asyncio.Event()
+        seen = []
+
+        async def search(question, ctx, **kwargs):
+            await gate.wait()
+            seen.append(strategy._ontology)
+            return RetrieverResult(items=[])
+
+        strategy.search = search
+        calls = [asyncio.create_task(rag.retrieve(q, strategy=strategy)) for q in "ab"]
+        await asyncio.sleep(0)
+        gate.set()
+        await asyncio.gather(*calls)
+        assert seen == [rag._global_ontology] * 2 and strategy._ontology is None
+
+    async def test_run_skill_checks_arguments(self, rag):
+        with pytest.raises(ValueError, match="unknown argument"):
+            await rag.run_skill("gap_analysis", colour="red")
+        result = await rag.run_skill("gap_analysis")
+        assert result.skill == "gap_analysis"
+
+    async def test_run_skill_respects_an_exhausted_budget(self, rag, mock_conn):
+        ctx = Context(latency_budget_ms=0)
+        with pytest.raises(LatencyBudgetExceededError):
+            await rag.run_skill("gap_analysis", ctx=ctx)
+        mock_conn.query.assert_not_awaited()
+        mock_conn._driver.select_graph.return_value.query.assert_not_awaited()
+
+    async def test_run_skill_checks_the_budget_after_ontology_setup(self, rag, mock_conn):
+        ctx = Context()
+
+        async def slow_setup():
+            ctx.latency_budget_ms = 0  # the budget runs out during setup
+
+        rag._ensure_ontology_initialized = slow_setup
+        with pytest.raises(LatencyBudgetExceededError, match="gap_analysis"):
+            await rag.run_skill("gap_analysis", ctx=ctx)
+        mock_conn.query.assert_not_awaited()

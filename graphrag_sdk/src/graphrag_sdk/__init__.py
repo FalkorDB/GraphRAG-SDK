@@ -24,6 +24,7 @@ from graphrag_sdk.core.exceptions import (
     FalkorDBVersionError,
     GraphRAGError,
     LatencyBudgetExceededError,
+    ReadOnlyViolation,
 )
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
@@ -52,8 +53,10 @@ from graphrag_sdk.core.models import (
     ResolutionResult,
     RetrieverResult,
     RetrieverResultItem,
+    ScoredPath,
     SearchType,
     SetVerdict,
+    SkillResult,
     TextChunk,
     TextChunks,
     UpdateResult,
@@ -135,12 +138,37 @@ from graphrag_sdk.ingestion.structured_pipeline import (
     RelationshipIngestionResult,
     RelationshipResolutionError,
 )
+from graphrag_sdk.retrieval.graph_walk import (
+    DynamicGraphWalk,
+    GraphWalkRetrieval,
+    score_path,
+)
 
 # ── Retrieval Strategies ────────────────────────────────────────
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.reranking_strategies.cosine import CosineReranker
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+from graphrag_sdk.retrieval.strategies.path_router import (
+    RETRIEVAL_PATHS,
+    HeuristicPathRouter,
+    LLMPathRouter,
+)
+
+# ── Skills ──────────────────────────────────────────────────────
+from graphrag_sdk.skills import (
+    ENTITY_PARAM,
+    SKILL_REGISTRY,
+    ContradictionDetectionSkill,
+    EntityComparisonSkill,
+    GapAnalysisSkill,
+    ImpactAnalysisSkill,
+    Skill,
+    TimelineReconstructionSkill,
+    build_skill,
+    register_skill,
+    skill_parameters,
+)
 
 # ── Storage ─────────────────────────────────────────────────────
 from graphrag_sdk.storage.dedup_judges.base import DedupJudge
@@ -153,6 +181,9 @@ from graphrag_sdk.storage.ontology_store import (
 )
 from graphrag_sdk.storage.system_store import DedupRunActiveError
 from graphrag_sdk.storage.vector_store import VectorStore
+
+# ── Agent Toolkit ───────────────────────────────────────────────
+from graphrag_sdk.tools import GraphRAGToolkit, ToolError, ToolSpec
 
 __all__ = [
     "DEFAULT_RELATION_TYPES",
@@ -202,7 +233,9 @@ __all__ = [
     "ResolutionResult",
     "RetrieverResult",
     "RetrieverResultItem",
+    "ScoredPath",
     "SearchType",
+    "SkillResult",
     "TextChunk",
     "TextChunks",
     "UpdateResult",
@@ -238,9 +271,27 @@ __all__ = [
     "LLMVerifiedResolution",
     # Retrieval
     "CosineReranker",
+    "DynamicGraphWalk",
+    "GraphWalkRetrieval",
+    "HeuristicPathRouter",
+    "LLMPathRouter",
     "MultiPathRetrieval",
+    "RETRIEVAL_PATHS",
     "RerankingStrategy",
     "RetrievalStrategy",
+    "score_path",
+    # Skills
+    "Skill",
+    "SKILL_REGISTRY",
+    "build_skill",
+    "register_skill",
+    "skill_parameters",
+    "ENTITY_PARAM",
+    "ContradictionDetectionSkill",
+    "EntityComparisonSkill",
+    "GapAnalysisSkill",
+    "ImpactAnalysisSkill",
+    "TimelineReconstructionSkill",
     # Storage
     "DedupJudge",
     "DedupRunActiveError",
@@ -261,6 +312,11 @@ __all__ = [
     "RecordBatch",
     "RecordLoaderStrategy",
     "Link",
+    # Agent toolkit
+    "GraphRAGToolkit",
+    "ReadOnlyViolation",
+    "ToolError",
+    "ToolSpec",
 ]
 
 

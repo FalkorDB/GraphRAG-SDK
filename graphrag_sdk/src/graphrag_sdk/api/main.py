@@ -41,6 +41,7 @@ from graphrag_sdk.core.models import (
     Ontology,
     RagResult,
     RetrieverResult,
+    SkillResult,
     UpdateResult,
     ensure_no_pending_marker,
     reject_reserved_labels,
@@ -333,6 +334,9 @@ class GraphRAG:
         self.ontology = ontology or Ontology()
         self._embedding_dimension = embedding_dimension
         self._config_validated = False
+        # Per-call strategies currently lent the facade's ontology by
+        # retrieve(), with how many calls are using each.
+        self._lent_ontology: dict[int, int] = {}
 
         # Storage layer
         self._graph_store = GraphStore(self._conn)
@@ -4817,8 +4821,30 @@ class GraphRAG:
         await self._validate_graph_config(ctx=ctx)
 
         retrieval = strategy or self._retrieval_strategy
-        ctx.ensure_budget("retrieval strategy search")
-        retriever_result = await retrieval.search(question, ctx)
+        key = id(strategy)
+        borrower = (
+            strategy
+            if strategy is not None
+            and strategy is not self._retrieval_strategy
+            and (key in self._lent_ontology or getattr(strategy, "_ontology", None) is None)
+            else None
+        )
+        if borrower is not None:
+            # A per-call strategy without an ontology of its own never saw the
+            # facade's; lend it the current one for this call only (an ontology
+            # the caller set is left alone, and so is the strategy afterwards).
+            if key not in self._lent_ontology:
+                borrower.set_ontology(self._global_ontology)
+            self._lent_ontology[key] = self._lent_ontology.get(key, 0) + 1
+        try:
+            ctx.ensure_budget("retrieval strategy search")
+            retriever_result = await retrieval.search(question, ctx)
+        finally:
+            if borrower is not None:
+                self._lent_ontology[key] -= 1
+                if not self._lent_ontology[key]:
+                    del self._lent_ontology[key]
+                    borrower.set_ontology(None)
 
         if reranker is not None:
             ctx.ensure_budget("retrieval reranking")
@@ -5087,11 +5113,19 @@ class GraphRAG:
         try:
             if ctx is not None:
                 ctx.ensure_budget("graph config query")
-            result = await self._graph_store.query_raw(
-                "MATCH (c:__GraphRAGConfig__ {id: 'default'}) "
-                "RETURN c.embedding_model, c.embedding_dimension"
-            )
-            if result.result_set:
+            try:
+                # Read-only: on a graph that was never written, a plain
+                # query would create the key.
+                result = await self._graph_store.query_raw(
+                    "MATCH (c:__GraphRAGConfig__ {id: 'default'}) "
+                    "RETURN c.embedding_model, c.embedding_dimension",
+                    read_only=True,
+                )
+            except Exception as exc:
+                if "empty key" not in str(exc).lower():
+                    raise
+                result = None  # no graph yet, so no stored config
+            if result is not None and result.result_set:
                 stored_model = result.result_set[0][0]
                 stored_dim = result.result_set[0][1]
                 current_model = self.embedder.model_name
@@ -5596,6 +5630,39 @@ class GraphRAG:
     # IDE autocomplete and mypy enforcement on keyword arguments. When you
     # add a kwarg to an async method, also add it to the matching wrapper
     # below — the in-line "keep in sync with" notes mark the pairings.
+
+    async def run_skill(
+        self,
+        skill: str,
+        *,
+        ctx: Context | None = None,
+        **params: Any,
+    ) -> SkillResult:
+        """Run a high-level reasoning skill against the graph.
+
+        Args:
+            skill: Registered skill name (e.g. ``"entity_comparison"``,
+                ``"impact_analysis"``, ``"contradiction_detection"``,
+                ``"gap_analysis"``, ``"timeline_reconstruction"``).
+            ctx: Execution context.
+            **params: Skill-specific arguments.
+
+        Returns:
+            ``SkillResult`` with the skill's structured findings.
+        """
+        from graphrag_sdk.skills import build_skill
+        from graphrag_sdk.skills.base import check_arguments
+
+        if ctx is None:
+            ctx = Context()
+        ctx.ensure_budget(f"skill '{skill}' ontology initialization")
+        await self._ensure_ontology_initialized()
+        skill_impl = build_skill(skill, self._graph_store, self.llm)
+        problems = check_arguments(skill_impl.parameters, params)
+        if problems:
+            raise ValueError(f"Invalid arguments for skill '{skill}': {'; '.join(problems)}")
+        ctx.ensure_budget(f"skill '{skill}'")
+        return await skill_impl.run(ctx, **params)
 
     def retrieve_sync(
         self,

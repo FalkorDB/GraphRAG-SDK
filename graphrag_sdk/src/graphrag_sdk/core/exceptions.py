@@ -155,6 +155,28 @@ class SchemaValidationError(GraphRAGError):
     pass
 
 
+# ── Read-Only Surface Errors ─────────────────────────────────────
+
+
+class ReadOnlyViolation(GraphRAGError):
+    """Raised when a write is attempted through a read-only surface.
+
+    Raised by :mod:`graphrag_sdk.tools` when a write tool (``ingest``,
+    ``finalize``) is called on a toolkit constructed with
+    ``read_only=True``. A ``cypher_query`` with a write clause is rejected
+    with a ``ToolError`` instead, before it reaches the database.
+
+    Attributes:
+        offending_token: The specific rejected token (e.g. ``"MERGE"``), or
+            None when the violation is not about a query (the toolkit sets
+            None).
+    """
+
+    def __init__(self, message: str, *, offending_token: str | None = None) -> None:
+        super().__init__(message)
+        self.offending_token = offending_token
+
+
 # ── Configuration Errors ─────────────────────────────────────────
 
 

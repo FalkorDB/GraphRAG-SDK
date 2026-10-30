@@ -1,0 +1,170 @@
+---
+title: "GraphRAG SDK Agentic Retrieval: Graph Tools and MCP Server"
+sidebarTitle: "Agentic Retrieval"
+description: "Give your own agent read-only graph tools — lookup, traverse, graph walk, guarded Cypher, hybrid search and skills — with numbered evidence and a citation check, in Python or over MCP."
+---
+
+GraphRAG SDK does not run an agent loop. **Your** agent — Claude Code, Cursor, a pydantic-ai or LangGraph agent — plans, calls the graph tools and writes the answer. The SDK runs each tool call bounded and read-only, numbers every piece of evidence it returns, and checks the `[n]` citations in your agent's draft against that evidence.
+
+Use the tools when questions need more than one lookup: counts and rankings, "which X are connected to Y", multi-hop questions, comparisons. For a plain question about the content, [`rag.completion()`](/retrieval) is faster and cheaper.
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `status` | Entity, relation, document and chunk counts, and every entity label and relation type with its count. |
+| `get_ontology` | Declared entity types with their properties, relation types with their (source, target) patterns. |
+| `lookup_entity` | Turn (part of) a name into exact entity names and ids, exact match first. |
+| `traverse` | Walk from one entity: every neighbour breadth-first up to `max_depth`, or one exact relation path with `via` (e.g. `["WORKS_AT", "HEADQUARTERED_IN"]`). Bounded by depth, edge and time budgets; `stopped` says which ended the walk. Edges are followed both ways. |
+| `graph_walk` | Strong paths out of an entity, ranked by relation weight and PageRank, or a strong short path to a `goal` entity (`max_depth` hops in total; each side keeps its `beam_width` best entities per hop, and a search cut short by its lookup or time budget says so with `truncated`). Every relation is drawn in its stored direction: `Acme <-[WORKS_AT]- Alice`. |
+| `cypher_query` | One read-only Cypher query for counts, sums, sorting and property filters. Checked by a schema-aware guard, rows returned capped to `max_rows`, run as `GRAPH.RO_QUERY` with a timeout. |
+| `retrieve` | Hybrid search (vector + full-text + graph) for a question: entities, relations, facts and source passages. Runs every search path unless `paths` names a few: `facts` (facts on relations), `exact_names` (entities named in the question), `fuzzy_names` (full-text match on names and descriptions), `links` (relations around the entities found) and `passages` (source text). Needs the embedding model the graph was built with. |
+| `run_skill` | A built-in analysis (see [Skills](#skills)). |
+| `check_citations` | Check a draft answer: every `[n]` must be evidence a tool returned in this session. Also lists claims with no `[n]` of their own, and cited claims whose figures or names the cited evidence does not contain. |
+| `ingest` | Add text to the graph (write). |
+| `finalize` | Deduplicate, embed and index after a batch of ingests (write; listed only with `finalize_policy="manual"`). |
+
+Results never contain embedding vectors or internal `__Label__` names. On a graph that was never written, the read tools say the graph does not exist (and `status` says so in its hint) instead of answering "nothing found", and they never create it.
+
+## Python
+
+```python
+from graphrag_sdk.tools import GraphRAGToolkit, ToolError
+
+toolkit = GraphRAGToolkit(rag, read_only=True)
+
+for spec in toolkit.tool_specs():          # name, description, JSON Schema input
+    register_with_your_agent(spec.name, spec.description, spec.input_schema)
+
+result = await toolkit.call("traverse", {"start": "Alice", "via": ["WORKS_AT"]})
+print(result.to_llm_text())                # compact text with [n] evidence numbers
+print(result.model_dump_json())            # or the typed result
+```
+
+Every tool is also an async method (`await toolkit.lookup_entity("Acme")`). `call()` validates arguments against the same pydantic models that produce `input_schema`.
+
+A call that cannot run raises `ToolError` with a `hint` naming the fix — the tool to call, or the exact names to use:
+
+```
+Unknown relation 'EMPLOYS' in via. Hint: Relation types: WORKS_AT, HEADQUARTERED_IN.
+```
+
+Options:
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `read_only` | `False` | Drop `ingest` / `finalize`; calling them raises `ReadOnlyViolation`. |
+| `include` | all | Subset of tool names to advertise and accept in `call()`. |
+| `finalize_policy` | `"manual"` | `"manual"`: call `finalize` after a batch. `"on_write"`: finalize after every ingest (demos only — cost grows with the graph). `"never"`: you call `rag.finalize()`. |
+| `ledger_capacity` | 2000 | Evidence items kept per session. |
+
+`GraphRAGToolkit.for_tenant(base_config, "acme", llm=..., embedder=...)` binds a toolkit to the graph `<base>__acme` and closes it on `aclose()` / `async with`.
+
+## Evidence and citations
+
+Every entity, edge, fact, passage, row and skill result a tool returns carries an evidence number `n`. Numbers run across all calls of one **session** — one toolkit, or one `toolkit.new_session()` copy per conversation — so an answer can cite results from several tools.
+
+```python
+session = toolkit.new_session()
+walk = await session.traverse("Alice", max_depth=1)
+check = await session.check_citations(f"Alice works at Acme Corp [{walk.edges[0].n}].")
+check.grounded        # True
+check.cited           # the valid numbers the answer cites
+check.invalid         # numbers that point at nothing; removed from check.answer
+check.sources         # the cited evidence: tool, kind, content
+check.uncited         # sentences stating a figure or a name with no [n] of their own
+check.unsupported     # cited sentences + the figures / names their evidence lacks
+```
+
+A marker can cite one item (`[3]`), a list (`[1, 4]`) or a range (`[1-3]`). The claim checks are literal and use no LLM: a figure must appear as a number in the full text of the evidence the sentence cites (so "two" for "2" is reported), and a name counts as found when at least half of its words appear there as whole words, ignoring case (either word of "Corvane Systems"; "Ann" is not found in "planning"). They are warnings and never change `grounded`.
+
+An answer that cites no real evidence is not grounded. `lookup_entity` results are not evidence: they are names to call other tools with.
+
+## Cypher guard
+
+`cypher_query` treats the query as untrusted. Before anything reaches the database it rejects:
+
+- writes (`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`, `DROP`, `FOREACH`, `LOAD CSV`) and every `CALL`;
+- labels, relation types and property names the graph does not have — with the real names in the hint;
+- semantic relation types used as edge types: they are stored as `[:RELATES {rel_type: 'WORKS_AT'}]`;
+- internal labels and embedding properties.
+
+The query then runs as `GRAPH.RO_QUERY`, so the database refuses writes too. The rows it returns are capped to `max_rows` (a `LIMIT` inside the query, such as `WITH n LIMIT 100`, is kept as written, so `count()` and `collect()` after it stay correct); when more rows matched, the result says `truncated: true` — aggregate with `count()` instead of counting rows. Whatever the query, returned nodes and property maps of the SDK's own bookkeeping nodes are replaced by `[internal node omitted]`, and vectors by a placeholder.
+
+## MCP server
+
+```bash
+pip install "graphrag-sdk[mcp]"
+graphrag-mcp --read-only                                           # stdio, for local MCP clients
+GRAPHRAG_MCP_TOKEN=... graphrag-mcp --transport sse --host 0.0.0.0  # network, bearer token required
+```
+
+Claude Code / Cursor config:
+
+```json
+{
+  "mcpServers": {
+    "graphrag": {
+      "command": "graphrag-mcp",
+      "args": ["--read-only"],
+      "env": { "FALKOR_HOST": "localhost", "GRAPHRAG_GRAPH": "my_graph", "OPENAI_API_KEY": "sk-..." }
+    }
+  }
+}
+```
+
+Configuration comes from `FALKOR_HOST`, `FALKOR_PORT`, `FALKOR_USERNAME`, `FALKOR_PASSWORD`, `GRAPHRAG_GRAPH`, `GRAPHRAG_MODEL`, `GRAPHRAG_EMBED_MODEL`, `GRAPHRAG_EMBED_DIM`, `GRAPHRAG_EMBED_SEND_DIMENSIONS` and `GRAPHRAG_MCP_READ_ONLY`. `GRAPHRAG_EMBED_DIM` defaults to the model's native size (3072 for `text-embedding-3-large`, otherwise 1536); when it is set, it is sent to `text-embedding-3` models as `dimensions`. Set `GRAPHRAG_EMBED_SEND_DIMENSIONS=true` to send it to a model whose name does not say `text-embedding-3`, such as an Azure deployment. The LLM and embedder serve `retrieve`, skills and `ingest`; the other read tools need neither.
+
+The server serves the same tools, with MCP annotations (`readOnlyHint`, `destructiveHint`; `ingest` and `finalize` are marked destructive, so clients such as Claude Code ask the user before running them), and sends the client a short guide as its instructions: call `retrieve` first with the user's question word for word (all paths unless it knows the question needs only a few), resolve names with `lookup_entity`, walk with `traverse` / `graph_walk`, use `status` for questions about the graph itself and `cypher_query` for aggregates (straight after `get_ontology`, without `retrieve`, when the question is only a count, sum or filter), answer briefly, cite `[n]`, and always run `check_citations` before replying. Results over 40,000 characters are shortened (longest lists first, at any depth, then long strings; the JSON stays valid) and marked `truncated`, with a hint naming the lists that were cut. A failure that is not a `ToolError` comes back as a short message naming the kind of failure (timeout, model provider, database, configuration) with a next step; the underlying message stays in the server log, and API keys and tokens are masked in any error text.
+
+Each client connection gets its own evidence numbering. Over SSE that holds for every client stream, including clients on the stateless MCP protocol (2026-07-28). Over stdio one process serves one client, so there is one numbering.
+
+Serving SSE on a non-loopback host without a token is refused. A loopback SSE server only accepts requests whose `Host` / `Origin` name it (DNS-rebinding protection).
+
+From Python:
+
+```python
+from graphrag_sdk.mcp import GraphRAGMCPServer
+
+server = GraphRAGMCPServer(rag, read_only=True)
+await server.run(transport="stdio")
+```
+
+## Skills
+
+Skills are higher-level analyses. Run them through `run_skill`, or directly:
+
+| Skill | Arguments |
+|---|---|
+| `entity_comparison` | `entity_a`, `entity_b` |
+| `impact_analysis` | `entity`; optional `max_depth`, `beam_width` |
+| `contradiction_detection` | `entity`; optional `limit` |
+| `gap_analysis` | optional `min_instances`, `limit` |
+| `timeline_reconstruction` | optional `label`, `limit` |
+
+```python
+result = await rag.run_skill("entity_comparison", entity_a="Acme", entity_b="Globex")
+print(result.summary, result.data["shared_neighbors"])
+```
+
+Entities can be given by name or id. Arguments are checked against each skill's `parameters` schema; numeric arguments are capped. Through `run_skill`, the evidence `[n]` holds the skill's structured `data`, so `check_citations` checks figures against the findings rather than the LLM summary. `contradiction_detection` sets `checked_by_llm` only when the LLM's reply parsed; otherwise `llm_error` says why, and the examined `facts` are returned for the agent to judge. Every built-in skill reports `truncated: true` when a cap cut its findings: `contradiction_detection` found more facts than `limit`, `gap_analysis` listed fewer isolated entities than its full `num_isolated` count, `entity_comparison` and `impact_analysis` met an entity with more neighbours than were fetched, and `timeline_reconstruction` ran a scan that may have missed earlier events. `timeline_reconstruction` reads a plain number as a year only under a year-like property name (`founded`, `start_year`), never `start_headcount`.
+
+Register your own:
+
+```python
+from graphrag_sdk.skills import ENTITY_PARAM, Skill, register_skill, skill_parameters
+
+@register_skill
+class OwnersSkill(Skill):
+    name = "owners"
+    description = "List who owns an entity."
+    parameters = skill_parameters({"entity": ENTITY_PARAM}, ["entity"])
+
+    async def run(self, ctx=None, **params):
+        entity = await self._resolve_entity(params["entity"])
+        ...
+```
+
+A registered skill shows up in `run_skill`'s description, so agents see it.
+
+See [`examples/12_agent_toolkit.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/12_agent_toolkit.py) for a runnable script.

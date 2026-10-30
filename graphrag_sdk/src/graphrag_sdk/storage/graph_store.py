@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import unicodedata
 from collections.abc import Sequence
 from typing import Any, NamedTuple
@@ -115,6 +116,9 @@ class GraphStore:
         # ``(label, property)`` pairs known to be range-indexed. Seeded from the
         # graph on first use, then extended as this instance creates indexes.
         self._indexed: set[tuple[str, str]] | None = None
+        # PageRank scores per (label, relationship type):
+        # (computed at, connection topology version, scores).
+        self._pagerank_cache: dict[tuple[str, str | None], tuple[float, int, dict[str, float]]] = {}
 
     # ── Write Operations ─────────────────────────────────────────
 
@@ -1256,13 +1260,137 @@ class GraphStore:
             logger.warning(f"Failed to get entities for chunk {chunk_id}: {exc}")
             return []
 
-    async def query_raw(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
+    async def query_raw(
+        self,
+        cypher: str,
+        params: dict[str, Any] | None = None,
+        *,
+        read_only: bool = False,
+        timeout: int | None = None,
+    ) -> Any:
         """Execute a raw Cypher query.
 
         Escape hatch for advanced use cases. Prefer specific methods
         for standard operations.
+
+        Args:
+            cypher: The Cypher query string.
+            params: Optional query parameters.
+            read_only: Run with ``GRAPH.RO_QUERY`` so the database rejects
+                any write (use for model- or user-written queries).
+            timeout: Optional per-query timeout in milliseconds.
         """
-        return await self._conn.query(cypher, params)
+        if not read_only and timeout is None:
+            return await self._conn.query(cypher, params)
+        return await self._conn.query(cypher, params, timeout=timeout, read_only=read_only)
+
+    # ── Graph Walk ───────────────────────────────────────────────
+
+    async def weighted_neighbors(
+        self,
+        node_id: str,
+        *,
+        limit: int = 50,
+        with_direction: bool = False,
+    ) -> list[tuple[Any, ...]]:
+        """Return weighted neighbors of an entity for dynamic graph walks.
+
+        Each tuple is ``(neighbor_id, edge_weight, edge_label)``, one per
+        neighbour (the strongest edge when several connect the pair),
+        strongest first and then by id, so the same graph always yields the
+        same neighbours. Edges in both directions count; SDK bookkeeping
+        edges (``SAME_AS``, ``DISTINCT_FROM``) do not. Edge weight falls back
+        to ``1.0`` when the relationship has no stored ``weight`` property.
+
+        With ``with_direction=True`` each tuple gains a fourth element,
+        ``True`` when the chosen edge is stored from ``node_id`` to the
+        neighbour and ``False`` when it points the other way. Runs read-only;
+        database errors propagate.
+        """
+        query = (
+            "MATCH (n:__Entity__ {id: $node_id})-[r]-(m:__Entity__) "
+            "WHERE NOT type(r) IN ['SAME_AS', 'DISTINCT_FROM'] AND m.id IS NOT NULL "
+            "WITH m, r, coalesce(r.weight, 1.0) AS w, ID(startNode(r)) = ID(n) AS out "
+            # The label tie-break makes the chosen label stable when parallel
+            # edges have the same weight.
+            "ORDER BY w DESC, coalesce(r.rel_type, type(r)), out DESC "
+            "WITH m, collect([coalesce(r.rel_type, type(r)), out])[0] AS pick, "
+            "max(w) AS weight "
+            "RETURN m.id AS id, pick[0] AS label, weight, pick[1] AS out "
+            f"ORDER BY weight DESC, id LIMIT {int(limit)}"
+        )
+        result = await self._conn.query(query, {"node_id": node_id}, read_only=True)
+        neighbors: list[tuple[Any, ...]] = []
+        for row in result.result_set:
+            nbr_id = row[0]
+            if nbr_id is None:
+                continue
+            label = row[1] if len(row) > 1 else ""
+            weight = float(row[2]) if len(row) > 2 and row[2] is not None else 1.0
+            if with_direction:
+                outgoing = bool(row[3]) if len(row) > 3 and row[3] is not None else True
+                neighbors.append((nbr_id, weight, label or "", outgoing))
+            else:
+                neighbors.append((nbr_id, weight, label or ""))
+        return neighbors
+
+    #: Seconds a PageRank result is reused while the graph keeps its shape. A
+    #: write through this store's connection that creates or deletes nodes or
+    #: relationships invalidates it at once; the age limit covers writers
+    #: elsewhere (another process). The scores only rank walk candidates.
+    PAGERANK_CACHE_SECONDS = 60.0
+
+    async def pagerank(
+        self,
+        *,
+        entity_label: str = "__Entity__",
+        relationship_type: str | None = None,
+        max_age_seconds: float | None = None,
+    ) -> dict[str, float]:
+        """Compute PageRank importance per entity via FalkorDB's algo procedure.
+
+        Returns a ``{entity_id: score}`` map. Returns an empty map when the
+        procedure is unavailable (e.g. older FalkorDB) so callers can fall
+        back to an unweighted walk. A result computed less than
+        ``max_age_seconds`` ago (default :attr:`PAGERANK_CACHE_SECONDS`; ``0``
+        always recomputes) is reused when no node or relationship was created
+        or deleted through this connection since; failures are not cached.
+        """
+        # Any name the SDK can write as a label works (``Legal Entity``,
+        # ``Org-Unit``): it is passed as a parameter, never spliced in.
+        for kind, name in (
+            ("entity_label", entity_label),
+            ("relationship_type", relationship_type),
+        ):
+            if name is not None and (not name.strip() or sanitize_cypher_label(name) != name):
+                raise ValueError(f"Invalid {kind} for pagerank: {name!r}")
+        query = (
+            "CALL algo.pageRank($label, $rel) YIELD node, score "
+            "RETURN node.id AS id, score AS score"
+        )
+        params = {"label": entity_label, "rel": relationship_type or None}
+        max_age = self.PAGERANK_CACHE_SECONDS if max_age_seconds is None else max_age_seconds
+        key = (entity_label, relationship_type)
+        version = getattr(self._conn, "topology_version", 0)
+        cached = self._pagerank_cache.get(key)
+        if (
+            cached is not None
+            and max_age > 0
+            and cached[1] == version
+            and time.monotonic() - cached[0] < max_age
+        ):
+            return dict(cached[2])
+        try:
+            result = await self._conn.query(query, params, read_only=True)
+            scores: dict[str, float] = {}
+            for row in result.result_set:
+                if row[0] is not None:
+                    scores[row[0]] = float(row[1]) if row[1] is not None else 0.0
+        except Exception as exc:
+            logger.warning(f"pagerank unavailable: {exc}")
+            return {}
+        self._pagerank_cache[key] = (time.monotonic(), version, scores)
+        return dict(scores)
 
     # ── Statistics ────────────────────────────────────────────────
 

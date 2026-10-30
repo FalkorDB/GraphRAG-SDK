@@ -97,6 +97,9 @@ class _FakeGraph:
             return _FakeQueryResult(self._rel_prop_rows)
         return _FakeQueryResult([])
 
+    async def ro_query(self, cypher: str, params: dict | None = None):
+        return await self.query(cypher, params)
+
 
 @pytest.fixture
 def fake_graph():
@@ -336,6 +339,29 @@ class TestLoad:
         result = await store.load()
         assert result.entities == []
         assert result.relations == []
+
+    @pytest.mark.asyncio
+    async def test_load_only_reads(self, store_factory, fake_graph):
+        """GRAPH.QUERY on a missing key creates it; load() uses RO_QUERY."""
+        store = store_factory()
+        write_calls: list[str] = []
+        ro_calls: list[str] = []
+
+        # load() swallows exceptions, so record calls and assert afterwards.
+        async def no_write_query(cypher, params=None):
+            write_calls.append(cypher)
+            return _FakeQueryResult([])
+
+        async def missing(cypher, params=None):
+            ro_calls.append(cypher)
+            raise RuntimeError("Invalid graph operation on empty key")
+
+        fake_graph.query = no_write_query
+        fake_graph.ro_query = missing
+        result = await store.load()
+        assert write_calls == []
+        assert ro_calls
+        assert result.entities == [] and result.relations == []
 
     @pytest.mark.asyncio
     async def test_reconstructs_entity_with_property_nodes(self, store_factory, fake_graph):

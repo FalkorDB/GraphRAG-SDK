@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Graph tools for your own agent, and an MCP server (#274)
+
+- **`GraphRAGToolkit` gives an agent you already run read-only tools on the
+  graph**: `status`, `get_ontology`, `lookup_entity`, `traverse`, `graph_walk`,
+  `cypher_query`, `retrieve`, `run_skill` and `check_citations`, plus `ingest`
+  and `finalize` for agents allowed to write: wrap a `GraphRAG` in
+  `GraphRAGToolkit(rag)`.
+  The SDK runs no agent loop: your agent plans, calls the tools and writes
+  the answer. Every tool validates its input with a strict schema, runs
+  bounded (row, depth, expansion and time limits), and returns a typed result
+  whose `to_llm_text()` stays under a fixed size.
+- **Every piece of evidence is numbered.** Entities, edges, rows, passages and
+  skill findings carry an `[n]` from a per-session ledger
+  (`toolkit.new_session()`), and `check_citations(answer)` reports which `[n]`
+  in a draft answer are real and whether the answer cites anything at all.
+- **`cypher_query` only reads.** A guard parses the query and allows a single
+  `MATCH`/`OPTIONAL MATCH`/`UNWIND`/`WITH`/`RETURN` statement with no writes and
+  no procedure calls, injects a row limit and a timeout, and rejects labels,
+  relation types and properties the graph does not have, with a hint listing
+  the ones it does.
+- **`retrieve` runs every search path unless the agent names a few.**
+  `paths` picks from `facts`, `exact_names`, `fuzzy_names`, `links` and
+  `passages`, so a question that only needs the source text skips the entity
+  searches and the graph walk. Leave it out to run them all; when the chosen
+  paths find nothing, the result says to run again without them.
+- **Five built-in skills** run through `run_skill`: `impact_analysis`,
+  `entity_comparison`, `contradiction_detection`, `gap_analysis` and
+  `timeline_reconstruction`.
+- **`graphrag-mcp` serves the same tools over MCP** (`pip install
+  "graphrag-sdk[mcp]"`) to Claude Code, Cursor and any other MCP client, on
+  stdio or SSE with a bearer token. `--read-only` (or
+  `GRAPHRAG_MCP_READ_ONLY=1`) hides the write tools. The server sends a usage
+  guide as its instructions, keeps one evidence ledger per client connection,
+  and works with `mcp` 1.x and 2.x.
+- **Tool results stay truthful when limited.** `cypher_query` caps only the
+  rows the final `RETURN` gives back, never a `LIMIT` inside the query, so
+  counts and collections stay correct; results never include internal
+  nodes or embedding vectors, and a path reads as names and relation types.
+  Skills report `truncated` when a list was capped (`gap_analysis` also
+  gives the real total). `contradiction_detection` sets `checked_by_llm` only
+  when the model's reply could be read, and gives `llm_error` otherwise.
+  A skill's evidence is its structured data, not the model's summary.
+- **`graph_walk` follows edges in their stored direction**
+  (`(Acme)<-[WORKS_AT]-(Alice)`). With a `goal`, `max_depth` is the length
+  of the whole path, each step keeps `beam_width` nodes, and the search
+  stops at an expansion and time budget with `truncated` set.
+- **Read tools on a graph that does not exist** raise an error naming it and
+  create nothing.
+- **`check_citations`** accepts `[1, 2]` and `[1-3]`, and matches names as
+  whole words, case-insensitively.
+- **`ingest` and `finalize` are marked destructive** in their MCP
+  annotations, so clients ask before running them. The MCP server keeps
+  every reply valid JSON within its size limit, and reports unexpected
+  errors with a next step and with API keys and tokens masked.
+- `pip install "graphrag-sdk[all]"` includes the MCP server.
+- New example `graphrag_sdk/examples/12_agent_toolkit.py` and docs page
+  *Agentic Retrieval*.
+
 #### Structured ingestion — tables declared on the ontology, one node for a row and its mention
 
 - **`Ontology(tables=[TableMapping(...)])`** declares what a table's columns mean,
@@ -512,6 +570,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves more concurrent questions.
 
 ### Fixed
+- **Reading the ontology no longer creates its graph.** `OntologyStore.load()`
+  read with `GRAPH.QUERY`, which on a graph nothing was declared on yet left an
+  empty `<graph>__ontology` key behind. It now reads with `GRAPH.RO_QUERY` and
+  treats a missing key as an empty ontology.
 - **A write batch holding the same entity or relationship twice lost a write.**
   In one `UNWIND ... MERGE` call FalkorDB 4.x kept the first row's values and
   6.0.x the last, and on both only one row's `source_chunk_ids` survived, so an
