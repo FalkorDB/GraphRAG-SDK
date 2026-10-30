@@ -337,3 +337,28 @@ class TestLargeNumbersAndAbbreviations:
         led.add(tool="retrieve", kind="fact", content="Bob works at Acme")
         g = ground_answer("Acme grew 40 percent. It hired Bob Stone [1].", led)
         assert g.uncited == ["Acme grew 40 percent."]
+
+    def test_a_marker_after_an_abbreviation_closes_the_sentence(self):
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="fact", content="Acme bought Corvane Inc")
+        g = ground_answer("Acme bought Corvane Inc. [1] Bob Stone runs Zeta Labs.", led)
+        assert g.uncited == ["Bob Stone runs Zeta Labs."] and g.unsupported == []
+
+    def test_mixed_marker_checks_each_number_against_the_ledger(self):
+        led = ledger(1001, capacity=1)
+        g = ground_answer("Both facts [1000, 1001].", led)
+        assert g.grounded and g.cited == [1001] and g.invalid == [1000]
+        assert g.answer == "Both facts [1001]."
+
+    @pytest.mark.parametrize(
+        "answer", ["Acme ships widgets [0] [1].", "Acme ships widgets, pages [1-200] [1]."]
+    )
+    def test_non_citation_brackets_are_not_claimed_figures(self, answer):
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="fact", content="Acme ships widgets")
+        g = ground_answer(answer, led)
+        assert g.grounded and g.unsupported == []
+
+    def test_a_bracketed_year_is_still_a_claimed_figure(self):
+        g = ground_answer("The war ended [1945] [1].", ledger(1))
+        assert [u.missing for u in g.unsupported] == [["1945"]]

@@ -41,11 +41,11 @@ from graphrag_sdk.retrieval.strategies.relationship_expansion import (
     expand_relationships,
 )
 from graphrag_sdk.retrieval.strategies.result_assembly import (
+    _rerank_chunk_ids,
     assemble_raw_result,
     cosine_sim,
     detect_question_type,
     filter_facts_by_relevance,
-    rerank_chunks,
 )
 
 logger = logging.getLogger(__name__)
@@ -415,7 +415,9 @@ class MultiPathRetrieval(RetrievalStrategy):
             ctx=ctx,
         )
         # 8. Cosine rerank (uses stored embeddings when available)
-        source_passages = await rerank_chunks(
+        # Ranked by id, so chunks with identical text each keep their own id
+        # (and source document).
+        passage_cids = await _rerank_chunk_ids(
             self._embedder,
             query_vector,
             candidate_chunks,
@@ -423,18 +425,10 @@ class MultiPathRetrieval(RetrievalStrategy):
             stored_embeddings=chunk_embeddings,
             ctx=ctx,
         )
+        source_passages = [candidate_chunks[cid] for cid in passage_cids]
 
         # Structured provenance for graphrag_sdk.tools — additive only; does
-        # not alter section content. Captured before [Source:] tagging so
-        # chunk texts still match candidate_chunks values exactly. Chunks
-        # with identical text each keep their own id (and source document).
-        text_to_cids: dict[str, list[str]] = {}
-        for cid, text in candidate_chunks.items():
-            text_to_cids.setdefault(text, []).append(cid)
-        passage_cids: list[str | None] = [
-            text_to_cids[p].pop(0) if text_to_cids.get(p) else None for p in source_passages
-        ]
-        kept_cids = [cid for cid in passage_cids if cid is not None]
+        # not alter section content.
         provenance: dict[str, Any] = {
             "entities": [
                 {
@@ -450,7 +444,7 @@ class MultiPathRetrieval(RetrievalStrategy):
                     "text": candidate_chunks[cid],
                     "document_path": chunk_doc_map.get(cid, ""),
                 }
-                for cid in kept_cids
+                for cid in passage_cids
             ],
             "facts": list(fact_strings),
             "relationships": list(relationship_strings),

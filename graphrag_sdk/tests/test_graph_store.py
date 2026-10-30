@@ -1960,6 +1960,27 @@ class TestPageRankCache:
         await GraphStore(conn).pagerank()
         assert conn.query.await_args.kwargs.get("read_only") is True
 
+    @pytest.mark.parametrize(("label", "rel"), [("Legal Entity", None), ("Org-Unit", "Reports-To")])
+    async def test_pagerank_accepts_any_writable_label_as_a_parameter(self, label, rel):
+        conn = MagicMock()
+        conn.query = AsyncMock(return_value=MagicMock(result_set=[["a", 0.5]]))
+        assert await GraphStore(conn).pagerank(entity_label=label, relationship_type=rel) == {
+            "a": 0.5
+        }
+        cypher, params = conn.query.await_args.args
+        assert "$label" in cypher and "$rel" in cypher and label not in cypher
+        assert params == {"label": label, "rel": rel}
+
+    @pytest.mark.parametrize(
+        "kwargs", [{"entity_label": "Bad`Label"}, {"entity_label": " "}, {"relationship_type": ""}]
+    )
+    async def test_pagerank_rejects_labels_the_sdk_cannot_write(self, kwargs):
+        conn = MagicMock()
+        conn.query = AsyncMock()
+        with pytest.raises(ValueError, match="for pagerank"):
+            await GraphStore(conn).pagerank(**kwargs)
+        conn.query.assert_not_awaited()
+
     async def test_pagerank_failure_is_not_cached(self):
         conn, _ = self.counting_conn(
             results=[Exception("procedure missing"), MagicMock(result_set=[["a", 1.0]])]

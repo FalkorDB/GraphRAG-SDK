@@ -388,7 +388,7 @@ class GraphRAGToolkit:
             _, rel_counts = await ops.schema_counts(self._store)
             schema.semantic_relations = sorted(set(schema.semantic_relations) | set(rel_counts))
         except Exception:
-            logger.debug(
+            logger.warning(
                 "schema_counts failed; RELATES types come from the ontology only", exc_info=True
             )
         self._shared["schema"] = (version, now, schema)

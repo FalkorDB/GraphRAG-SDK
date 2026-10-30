@@ -66,6 +66,12 @@ class TestBeamSearch:
         assert paths[0].nodes[0] == "a"
         assert paths[0].nodes[-1] == "d"
 
+    async def test_unreached_goal_returns_no_paths(self, ctx: Context):
+        adj = {"a": [("b", 1.0, "R")]}
+        walk = DynamicGraphWalk(make_neighbor_fn(adj), beam_width=5, max_depth=3)
+        assert await walk.beam_search("a", goal="c", ctx=ctx) == []
+        assert [p.nodes for p in await walk.beam_search("a", ctx=ctx)] == [["a", "b"]]
+
     async def test_no_cycles_within_path(self, ctx: Context):
         adj = {"a": [("b", 1.0, "R")], "b": [("a", 1.0, "R")]}
         walk = DynamicGraphWalk(make_neighbor_fn(adj), beam_width=5, max_depth=4)

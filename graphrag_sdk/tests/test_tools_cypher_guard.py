@@ -516,8 +516,27 @@ class TestReviewFixes:
         cypher = "MATCH (o:`Non-Profit`)<-[:RELATES]-(p:Person) RETURN p.`first-name`"
         assert validate_read_query(cypher, schema, require_rel_type=False) == []
         errors = validate_read_query("MATCH (o:`Non-Charity`) RETURN o.`last-name`", schema)
-        assert any("Non_Charity" in e for e in errors), errors
-        assert any("last_name" in e for e in errors), errors
+        assert any("'Non-Charity'" in e for e in errors), errors
+        assert any("'last-name'" in e for e in errors), errors
+
+    def test_punctuation_and_underscore_names_are_not_confused(self):
+        dashed = GraphSchema(labels=["Non-Profit"], property_keys=["first-name"])
+        errors = validate_read_query("MATCH (o:Non_Profit) RETURN o.first_name", dashed)
+        assert "unknown label or relationship type 'Non_Profit'" in errors, errors
+        assert "unknown property 'first_name'" in errors, errors
+        underscored = GraphSchema(labels=["Non_Profit"], property_keys=["first_name"])
+        errors = validate_read_query("MATCH (o:`Non-Profit`) RETURN o.`first-name`", underscored)
+        assert "unknown label or relationship type 'Non-Profit'" in errors, errors
+        assert "unknown property 'first-name'" in errors, errors
+
+    @pytest.mark.parametrize("variable", ["", "r"])
+    def test_a_typed_relates_edge_inside_a_string_types_no_edge(self, variable):
+        cypher = (
+            f"MATCH (a)-[{variable}:RELATES]->(b) "
+            f"WHERE a.name <> '[{variable}:RELATES {{rel_type: \"WORKS_AT\"}}]' RETURN b.name"
+        )
+        errors = validate_read_query(cypher, SCHEMA)
+        assert any("RELATES edge" in e for e in errors), errors
 
     def test_each_anonymous_relates_edge_needs_its_own_rel_type(self):
         one_typed = "MATCH (a)-[:RELATES {rel_type: 'WORKS_AT'}]->(b)-[:RELATES]->(c) RETURN c.name"

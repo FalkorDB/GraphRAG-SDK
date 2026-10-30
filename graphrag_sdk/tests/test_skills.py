@@ -645,6 +645,26 @@ class TestReviewFixes:
             register_skill(cls)
         assert "bad_params_test" not in SKILL_REGISTRY
 
+    def test_register_rejects_required_names_it_cannot_accept(self):
+        cls = type(
+            "Bad",
+            (GapAnalysisSkill,),
+            {"name": "bad_required_test", "parameters": skill_parameters({}, ["entity"])},
+        )
+        with pytest.raises(ValueError, match="entity"):
+            register_skill(cls)
+        assert "bad_required_test" not in SKILL_REGISTRY
+
+    def test_register_allows_required_extras_when_extras_are_allowed(self):
+        open_params = {"type": "object", "properties": {}, "required": ["entity"]}
+        cls = type(
+            "Open", (GapAnalysisSkill,), {"name": "open_required_test", "parameters": open_params}
+        )
+        try:
+            assert register_skill(cls) is cls
+        finally:
+            SKILL_REGISTRY.pop("open_required_test", None)
+
     def test_whole_number_floats_are_integers(self):
         from graphrag_sdk.skills import check_arguments
 
@@ -708,6 +728,8 @@ class TestReviewFixes:
             ("2000-02-29", (2000, 2, 29)),
             ("2001-04", (2001, 4, 0)),
             ("2001", (2001, 0, 0)),
+            ("2024-05-20T12:00:00Z", (2024, 5, 20)),
+            ("2024-02-31T12:00:00Z", None),
         ],
     )
     def test_impossible_dates_are_rejected(self, raw, expected):

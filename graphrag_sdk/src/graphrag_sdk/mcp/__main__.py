@@ -6,8 +6,8 @@
 # Connection and model are read from environment variables / CLI flags so
 # the server can be launched by an MCP client without code:
 #   FALKOR_HOST / FALKOR_PORT / FALKOR_USERNAME / FALKOR_PASSWORD, GRAPHRAG_GRAPH,
-#   GRAPHRAG_MODEL, GRAPHRAG_EMBED_MODEL, GRAPHRAG_EMBED_DIM, GRAPHRAG_MCP_TOKEN,
-#   GRAPHRAG_MCP_READ_ONLY.
+#   GRAPHRAG_MODEL, GRAPHRAG_EMBED_MODEL, GRAPHRAG_EMBED_DIM,
+#   GRAPHRAG_EMBED_SEND_DIMENSIONS, GRAPHRAG_MCP_TOKEN, GRAPHRAG_MCP_READ_ONLY.
 
 from __future__ import annotations
 
@@ -15,6 +15,12 @@ import argparse
 import asyncio
 import logging
 import os
+
+_TRUE_VALUES = {"1", "true", "t", "yes", "y", "on"}
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in _TRUE_VALUES
 
 
 def _build_rag() -> object:
@@ -31,14 +37,19 @@ def _build_rag() -> object:
     )
     llm = LiteLLM(model=os.getenv("GRAPHRAG_MODEL", "gpt-4o-mini"))
     # The dimension must match the embedding model (1536 for
-    # text-embedding-3-small); the facade's default (256) would not. A set
-    # GRAPHRAG_EMBED_DIM is also asked of text-embedding-3 models, so the
-    # vectors fit it; older models reject a "dimensions" argument.
+    # text-embedding-3-small, 3072 for -large); the facade's default (256)
+    # would not. A set GRAPHRAG_EMBED_DIM is also asked of text-embedding-3
+    # models, so the vectors fit it; older models reject a "dimensions"
+    # argument. GRAPHRAG_EMBED_SEND_DIMENSIONS sends it to any model (an
+    # Azure deployment name or other alias of a text-embedding-3 model).
     dim_env = os.getenv("GRAPHRAG_EMBED_DIM", "").strip()
-    dimension = int(dim_env) if dim_env else 1536
     embed_model = os.getenv("GRAPHRAG_EMBED_MODEL", "text-embedding-3-small")
-    accepts_dimensions = "text-embedding-3" in embed_model
-    embed_kwargs = {"dimensions": dimension} if dim_env and accepts_dimensions else {}
+    native = 3072 if "text-embedding-3-large" in embed_model else 1536
+    dimension = int(dim_env) if dim_env else native
+    send_dimensions = (dim_env and "text-embedding-3" in embed_model) or _env_flag(
+        "GRAPHRAG_EMBED_SEND_DIMENSIONS"
+    )
+    embed_kwargs = {"dimensions": dimension} if send_dimensions else {}
     embedder = LiteLLMEmbedder(model=embed_model, **embed_kwargs)
     return GraphRAG(connection=config, llm=llm, embedder=embedder, embedding_dimension=dimension)
 
@@ -61,8 +72,7 @@ def main() -> None:
     parser.add_argument(
         "--read-only",
         action=argparse.BooleanOptionalAction,
-        default=os.getenv("GRAPHRAG_MCP_READ_ONLY", "").strip().lower()
-        in {"1", "true", "t", "yes", "y", "on"},
+        default=_env_flag("GRAPHRAG_MCP_READ_ONLY"),
         help=(
             "Serve only the read tools (no ingest / finalize). Default: "
             "$GRAPHRAG_MCP_READ_ONLY; --no-read-only overrides it."

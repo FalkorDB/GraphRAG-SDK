@@ -182,16 +182,32 @@ class GroundedAnswer:
 def _marker_numbers(body: str, valid: set[int] | EvidenceLedger | None = None) -> list[int] | None:
     """The numbers a marker cites, ranges expanded; ``None`` when it is not a
     citation (``[0]``, a backwards range, one longer than ``_MAX_RANGE``, or a
-    number of four or more digits that is not in ``valid``, such as a year)."""
+    number of four or more digits ``valid`` never numbered, such as a year)."""
     numbers: list[int] = []
     for part in re.split(r"[,;]", body):
         ends = [int(x) for x in re.split(r"[-–]", part)]
         if len(ends) == 2 and not 0 < ends[1] - ends[0] < _MAX_RANGE:
             return None
         numbers.extend(range(ends[0], ends[-1] + 1))
-    if any(n >= 1000 and (valid is None or n not in valid) for n in numbers):
+    if _names_a_year(body, valid):
         return None
     return None if numbers == [0] else numbers
+
+
+def _names_a_year(body: str, valid: set[int] | EvidenceLedger | None) -> bool:
+    """Whether a marker holds a number of four or more digits that ``valid``
+    never numbered (``[2024]``). A number the ledger gave out and has since
+    dropped is still a citation, of evidence no longer held."""
+    for x in re.findall(r"\d+", body):
+        n = int(x)
+        if n < 1000:
+            continue
+        if isinstance(valid, EvidenceLedger):
+            if n >= valid._next:
+                return True
+        elif valid is None or n not in valid:
+            return True
+    return False
 
 
 def _clean_markers(text: str, valid: set[int] | EvidenceLedger) -> tuple[str, list[int], list[int]]:
@@ -282,7 +298,8 @@ def _merge_abbreviations(pieces: list[str]) -> list[str]:
     """Join a piece that ends with an abbreviation to the piece after it."""
     out: list[str] = []
     for piece in pieces:
-        if out and _ABBREVIATION_END_RE.search(out[-1]):
+        # ``Inc. [1] Next`` ends a sentence: the marker closes the piece before.
+        if out and _ABBREVIATION_END_RE.search(out[-1]) and not _LEADING_MARKERS_RE.match(piece):
             out[-1] = f"{out[-1]} {piece}"
         else:
             out.append(piece)
@@ -348,8 +365,10 @@ def _check_claims(answer: str, ledger: EvidenceLedger) -> tuple[list[str], list[
         numbers: list[int] = []
         for marker in _MARKER_RE.findall(sentence):
             numbers.extend(_marker_numbers(marker, ledger) or [])
+        # A bracketed year stays in the claim as a figure; every other marker
+        # (a citation, ``[0]``, a page span ``[1-200]``) is blanked.
         bare = _MARKER_RE.sub(
-            lambda m: m.group(0) if _marker_numbers(m.group(1), ledger) is None else " ", sentence
+            lambda m: m.group(0) if _names_a_year(m.group(1), ledger) else " ", sentence
         )
         bare = " ".join(bare.split())
         terms = _claim_terms(bare)
