@@ -77,21 +77,22 @@ def _fold(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
 
-def _respell(base: Path, parts: Sequence[str], listings: dict[Path, list[str]]) -> list[str]:
+def _respell(base: Path, parts: Sequence[str], listings: dict[Path, set[str]]) -> list[str]:
     """``parts`` below ``base`` spelled as their folder entries.
 
     A case-insensitive filesystem (the macOS and Windows default) opens
     ``NOTES/A.MD`` as ``notes/a.md`` and ``resolve()`` keeps the given case,
-    so one file would get two document ids; ``listings`` caches each folder.
+    so one file would get two document ids; ``listings`` caches each folder's
+    entries as a set, so a big folder costs one lookup per name.
     """
     out = []
     folder = base
     for name in parts:
         if folder not in listings:
             try:
-                listings[folder] = os.listdir(folder)
+                listings[folder] = set(os.listdir(folder))
             except OSError:
-                listings[folder] = []
+                listings[folder] = set()
         if name not in listings[folder]:
             same = [n for n in listings[folder] if _fold(n) == _fold(name)]
             if len(same) == 1:
@@ -101,7 +102,7 @@ def _respell(base: Path, parts: Sequence[str], listings: dict[Path, list[str]]) 
     return out
 
 
-def _canonical(root: Path, path: Path, listings: dict[Path, list[str]]) -> str | None:
+def _canonical(root: Path, path: Path, listings: dict[Path, set[str]]) -> str | None:
     """``path`` relative to ``root`` with symlinks resolved and names spelled as
     on disk, so each file has one spelling; ``None`` when outside ``root``."""
     try:
@@ -129,7 +130,7 @@ def list_files(
     """
     pattern = _check_relative(pattern)
     found: list[str] = []
-    listings: dict[Path, list[str]] = {}
+    listings: dict[Path, set[str]] = {}
     seen = 0
     for folder, dirs, names in os.walk(root, followlinks=False):
         seen += len(dirs) + len(names)
@@ -169,7 +170,7 @@ def resolve_files(
     """
     out: list[str] = []
     seen: set[str | tuple[int, int]] = set()
-    listings: dict[Path, list[str]] = {}
+    listings: dict[Path, set[str]] = {}
     for entry in entries:
         text = _check_relative(entry)
         # A file whose name has '[' or '*' in it is that file, not a glob.

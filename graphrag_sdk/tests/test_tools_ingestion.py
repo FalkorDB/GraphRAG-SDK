@@ -14,7 +14,7 @@ import pytest
 
 from graphrag_sdk.api import main as main_mod
 from graphrag_sdk.api.main import GraphRAG
-from graphrag_sdk.core.exceptions import ReadOnlyViolation
+from graphrag_sdk.core.exceptions import LLMError, LoaderError, ReadOnlyViolation
 from graphrag_sdk.core.models import (
     DocumentInfo,
     Entity,
@@ -156,6 +156,14 @@ class TestFiles:
         assert got == ["notes/a.md"]
         assert fs.resolve_root(str(corpus).upper()) == root  # the root is respelled too
 
+    def test_folder_listings_are_cached_as_sets(self, corpus):
+        # A set: a big flat folder costs one lookup per name, not a scan.
+        root = fs.resolve_root(corpus)
+        listings: dict = {}
+        assert fs._respell(root, ["notes", "a.md"], listings) == ["notes", "a.md"]
+        assert listings and all(isinstance(v, set) for v in listings.values())
+        assert "a.md" in listings[root / "notes"]
+
     @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
     def test_links_to_one_file_are_one_path(self, corpus):
         os.link(corpus / "notes" / "a.md", corpus / "hard.md")
@@ -193,6 +201,7 @@ class TestFiles:
         with pytest.raises(ToolError, match="at most 2"):
             fs.resolve_files(root, ["**/*"], max_files=2)
 
+    @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
     def test_links_to_hidden_or_unsupported_files_are_not_listed(self, corpus):
         root = fs.resolve_root(corpus)
         (root / ".private").mkdir()
@@ -495,7 +504,7 @@ class FakeRAG:
         out: list[Any] = []
         for path in source:
             if os.path.basename(path) in self.fail:
-                out.append(RuntimeError(f"cannot read {path}"))
+                out.append(LoaderError(f"cannot read {path}"))
                 continue
             p = await planner.plan(None, source=path)
             out.append(
@@ -803,6 +812,7 @@ class TestConfinedLoader:
         assert doc.text.startswith("# Beta") and doc.elements  # Markdown loader
         assert doc.document_info.path == str(corpus / "notes" / "b.md")
 
+    @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
     async def test_a_symlink_swapped_in_after_validation_is_refused(self, corpus, tmp_path):
         from graphrag_sdk.core.context import Context
         from graphrag_sdk.tools.toolkit import _ConfinedLoader
@@ -949,7 +959,39 @@ class TestFileErrorsAreRedacted:
         dumped = result.model_dump_json()
         assert "SECRET" not in dumped and "hunter2" not in dumped
         assert result.documents[0].status == "failed"
-        assert "sk-***" in result.documents[0].error
+        assert "RuntimeError" in result.documents[0].error
+
+    @pytest.mark.parametrize(
+        "error",
+        [LLMError("Incorrect API key provided"), RuntimeError("Incorrect API key provided")],
+    )
+    async def test_a_message_redact_cannot_mask_is_withheld(self, corpus, error):
+        # redact() masks key-shaped text only; the MCP server withholds such messages.
+        rag = FakeRAG()
+
+        async def ingest(source=None, **kw):
+            return [error for _ in source]
+
+        rag.ingest = ingest
+        result = await toolkit(rag, corpus).ingest(files=["notes/b.md"])
+        assert "Incorrect API key" not in result.model_dump_json()
+        assert type(error).__name__ in result.documents[0].error
+        assert "withheld" in result.documents[0].error
+
+    async def test_the_sdk_messages_about_the_file_are_kept_masked(self, corpus):
+        rag = FakeRAG()
+        secret = self.SECRET
+        budget = planner_mod.ChunkBudgetExceededError("The document makes 900 chunks")
+
+        async def ingest(source=None, **kw):
+            return [LoaderError(f"Failed to read {secret}"), budget]
+
+        rag.ingest = ingest
+        result = await toolkit(rag, corpus).ingest(files=["notes/a.md", "notes/b.md"])
+        errors = [d.error for d in result.documents]
+        assert "SECRET" not in result.model_dump_json()
+        assert errors[0].startswith("Failed to read") and "sk-***" in errors[0]
+        assert errors[1] == "The document makes 900 chunks"
 
     async def test_reextract(self, corpus, fake_strategies):
         rag = FakeRAG()
@@ -1015,6 +1057,10 @@ class TestIngestFiles:
         result = await toolkit(rag, corpus).ingest(files=["notes/*"])
         assert result.pruned.unknown == 3
         assert "MATCH (n:Unknown)" in result.hint
+        # Unknown may be a declared type classified with low confidence.
+        assert "3 entities have an unresolved type" in result.hint
+        assert "check them before adding types" in result.hint
+        assert "types the ontology does not declare" not in result.hint
         assert "ingest(files=['notes/b.md'], reextract=true)" in result.hint
 
     async def test_relations_to_unknown_entities_hint_at_the_entity_type(self, corpus):
@@ -1024,8 +1070,11 @@ class TestIngestFiles:
         assert result.pruned.unknown_endpoints == {"WORKS_AT": 3}
         assert result.pruned.pattern_mismatches == {}
         hint = result.hint
-        assert "3 relation(s) (WORKS_AT) were dropped because an endpoint's type" in hint
-        assert "declare that entity type with set_ontology(entities=[...])" in hint
+        assert "3 relation(s) (WORKS_AT) were dropped because an endpoint's type was not " in hint
+        assert "resolved (stored as Unknown)" in hint and "is not declared" not in hint
+        assert "classified with low confidence, so check those entities first" in hint
+        assert "Only if they are of a type the ontology lacks, declare it with " in hint
+        assert "set_ontology(entities=[...])" in hint
         assert 'Unknown"]' not in hint and "'Unknown']" not in hint
         assert "ingest(files=['notes/a.md'], reextract=true)" in hint
 
@@ -1212,6 +1261,16 @@ class TestIngestFiles:
         rag.unchanged.discard("b.md")
         partly = await tk.ingest(files=["notes/*"])
         assert partly.finalized and rag.finalized == 1
+
+    async def test_on_write_policy_skips_finalize_when_nothing_was_written(self, corpus):
+        rag = FakeRAG()
+        rag.fail.add("b.md")
+        rag.unchanged.add("a.md")
+        tk = toolkit(rag, corpus, finalize_policy="on_write")
+        failed = await tk.ingest(files=["notes/b.md"])
+        mixed = await tk.ingest(files=["notes/*"])
+        assert failed.failed == 1 and mixed.failed == 1
+        assert rag.finalized == 0 and not failed.finalized and not mixed.finalized
 
     async def test_bad_file_arguments(self, corpus):
         tk = toolkit(FakeRAG(), corpus)

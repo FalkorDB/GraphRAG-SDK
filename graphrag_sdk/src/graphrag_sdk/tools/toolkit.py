@@ -24,7 +24,12 @@ from pydantic import BaseModel, ValidationError
 
 from graphrag_sdk.core.connection import ConnectionConfig
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import ConfigError, DatabaseError, ReadOnlyViolation
+from graphrag_sdk.core.exceptions import (
+    ConfigError,
+    DatabaseError,
+    LoaderError,
+    ReadOnlyViolation,
+)
 from graphrag_sdk.core.models import (
     RESERVED_NODE_LABELS,
     DocumentOutput,
@@ -281,10 +286,24 @@ def _short(text: str, limit: int) -> str:
 
 
 def _file_error(exc: BaseException) -> str:
-    """One file's error for a tool result, with any secret in it masked."""
+    """One file's error for a tool result.
+
+    Only messages the SDK writes about the file itself are forwarded (masked):
+    a ToolError, a loader's read failure and the chunk budget's refusal. Any
+    other exception (a model provider's, say) is named by type only, as the
+    MCP server does, because its message can quote a secret that ``redact``
+    does not recognise; the log has it.
+    """
+    from graphrag_sdk.ingestion.ingestion_planner import ChunkBudgetExceededError
     from graphrag_sdk.mcp.server import redact  # lazy: the server imports this module
 
-    return _short(redact(str(exc)), 300)
+    if isinstance(exc, (ToolError, LoaderError, ChunkBudgetExceededError)):
+        return _short(redact(str(exc)), 300)
+    logger.warning("A file failed (%s): %s", type(exc).__name__, redact(str(exc)))
+    return (
+        f"Failed with {type(exc).__name__}; the message is withheld "
+        "(details are in the server log)."
+    )
 
 
 def _mask(value: Any) -> Any:
@@ -1572,7 +1591,11 @@ class GraphRAGToolkit:
             )
         else:
             out = await self._ingest_files(inp.files or [], inp.plan or [], inp.reextract, ctx)
-        if self._finalize_policy == "on_write" and not out.unchanged:
+        # Only a document actually written needs a finalize; a failed file
+        # (refused before writing, say) or an unchanged one does not.
+        written = ("ingested", "reextracted")
+        wrote = out.status in written or any(d.status in written for d in out.documents)
+        if self._finalize_policy == "on_write" and wrote:
             await self._rag.finalize()
             out.finalized = True
         out.hint = self._ingest_hint(out)
@@ -1746,15 +1769,29 @@ class GraphRAGToolkit:
                 n = sum(pruned.unknown_endpoints.values())
                 hints.append(
                     f"{n} relation(s) ({_names_hint(sorted(pruned.unknown_endpoints))}) were "
-                    "dropped because an endpoint's type is not declared (stored as Unknown). "
-                    "A pattern cannot name Unknown: declare that entity type with "
+                    "dropped because an endpoint's type was not resolved (stored as Unknown); "
+                    "a pattern cannot name Unknown. Unknown can also be a declared type the "
+                    "extractor classified with low confidence, so check those entities "
+                    "first. Only if they are of a type the ontology lacks, declare it with "
                     "set_ontology(entities=[...]) and add it to the relation's patterns, "
                     f"then {redo}."
                 )
             if pruned.entities or pruned.relations or pruned.unknown:
+                found = (
+                    "Extraction found types the ontology does not declare (see pruned). "
+                    if pruned.entities or pruned.relations
+                    else ""
+                )
+                unresolved = (
+                    f"{pruned.unknown} entities have an unresolved type (stored as Unknown); "
+                    "a declared type classified with low confidence ends up there too, so "
+                    f"check them before adding types.{look} "
+                    if pruned.unknown
+                    else ""
+                )
                 hints.append(
-                    "Extraction found types the ontology does not declare (see pruned)."
-                    f"{look} If they matter, add them with set_ontology, then {redo}."
+                    f"{found}{unresolved}If new types matter, add them with set_ontology, "
+                    f"then {redo}."
                 )
         if out.documents and all(d.status == "unchanged" for d in out.documents):
             hints.append("Every file was unchanged; pass reextract=true to extract them again.")

@@ -703,16 +703,23 @@ class GraphRAG:
 
         A rejected ontology (a contradiction, a reserved label) is not kept:
         the previous one stays in force, so later ingests do not fail on it.
+        The swap, the registration and that rollback run under the ontology
+        lock, so a concurrent call waits and then registers its own ontology.
         """
-        previous, was_initialized = self.ontology, self._ontology_initialized
-        self.ontology = ontology
-        self._ontology_initialized = False
-        try:
-            await self._ensure_ontology_initialized()
-        except BaseException:
-            self.ontology = previous
-            self._ontology_initialized = was_initialized
-            raise
+        current = asyncio.current_task()
+        async with self._ontology_lock():
+            previous, was_initialized = self.ontology, self._ontology_initialized
+            self.ontology = ontology
+            self._ontology_initialized = False
+            self._ontology_init_task = current
+            try:
+                await self._initialize_ontology()
+            except BaseException:
+                self.ontology = previous
+                self._ontology_initialized = was_initialized
+                raise
+            finally:
+                self._ontology_init_task = None
         return self._global_ontology
 
     async def _warn_about_a_parallel_label(self, incoming: Ontology, existing: Ontology) -> None:
@@ -3681,6 +3688,8 @@ class GraphRAG:
         returned unchanged. A missing/invalid plan or any planner/build
         failure degrades to leaving the slot as ``None`` (the pipeline then
         applies its own defaults), so this never raises on a bad/slow planner.
+        A source that fails to load raises :class:`IngestionError`, as the
+        pipeline would, before the planner is called.
 
         ``report``, when given, is filled with what was decided — the shape
         stored as ``IngestionResult.metadata["plan"]``: the planner, the plan
@@ -3696,9 +3705,9 @@ class GraphRAG:
         caller) is planned from and returned as is, without loading again.
         """
         # In file mode the raw text isn't loaded yet, so give the planner a real
-        # content sample (best-effort) rather than only the file path — many
-        # documents' extensions carry no structural signal. A load failure just
-        # falls through to path-only planning. The loaded document is returned
+        # content sample rather than only the file path — many documents'
+        # extensions carry no structural signal. A load failure raises
+        # IngestionError, as the pipeline does. The loaded document is returned
         # to the caller so `_ingest_single` can reuse it instead of loading
         # the source a second time via the pipeline.
         sample_text = text
