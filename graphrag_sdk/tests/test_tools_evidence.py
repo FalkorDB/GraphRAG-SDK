@@ -220,7 +220,7 @@ def contract() -> EvidenceLedger:
         "Total 1,200,000 EUR.",
         source="corvane_contract.pdf",
     )
-    led.add(tool="graph_walk", kind="path", content="Sofia Marquez -[SIGNED]-> HG-2025-118")
+    led.add(tool="retrieve", kind="relation", content="Sofia Marquez -[SIGNED]-> HG-2025-118")
     return led
 
 

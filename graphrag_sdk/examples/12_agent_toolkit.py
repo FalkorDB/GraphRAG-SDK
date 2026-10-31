@@ -3,7 +3,7 @@ GraphRAG SDK -- Agent Toolkit
 =============================
 The graph tools your own agent calls: wrap a GraphRAG in GraphRAGToolkit,
 ingest a few facts, then run each read tool an agent would use -- status,
-lookup_entity, traverse, graph_walk, cypher_query, retrieve --
+lookup_entity, cypher_query, retrieve --
 cite the evidence numbers they return, and check the citations.
 
 The same tools are served to MCP clients by ``graphrag-mcp``.
@@ -66,12 +66,6 @@ async def main():
         alice = names.matches[0].name
         print(f"=== lookup_entity -> {alice} ===\n")
 
-        walk = await session.traverse(alice, max_depth=2)
-        print("=== traverse ===\n" + walk.to_llm_text(max_chars=1200), "\n")
-
-        paths = await session.graph_walk(alice, goal="Berlin")
-        print("=== graph_walk ===\n" + paths.to_llm_text(max_chars=800), "\n")
-
         rows = await session.cypher_query(
             "MATCH ()-[r:RELATES]->() RETURN r.rel_type AS relation, count(*) AS edges "
             "ORDER BY edges DESC"
@@ -88,8 +82,8 @@ async def main():
             print(f"Guard: {exc}\n")
 
         # 4. Your agent drafts an answer citing [n]; check it before replying
-        if walk.edges:
-            edge = walk.edges[0]
+        if found.relations:
+            edge = found.relations[0]
             draft = f"{edge.source} {edge.type} {edge.target} [{edge.n}]. Also [999]."
         else:
             draft = f"{alice} is in the graph. Also [999]."

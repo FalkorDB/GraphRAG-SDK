@@ -53,7 +53,6 @@ from graphrag_sdk.core.models import (
     ResolutionResult,
     RetrieverResult,
     RetrieverResultItem,
-    ScoredPath,
     SearchType,
     SetVerdict,
     TextChunk,
@@ -146,11 +145,6 @@ from graphrag_sdk.ingestion.structured_pipeline import (
     RelationshipIngestionResult,
     RelationshipResolutionError,
 )
-from graphrag_sdk.retrieval.graph_walk import (
-    DynamicGraphWalk,
-    GraphWalkRetrieval,
-    score_path,
-)
 
 # ── Retrieval Strategies ────────────────────────────────────────
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
@@ -226,7 +220,6 @@ __all__ = [
     "ResolutionResult",
     "RetrieverResult",
     "RetrieverResultItem",
-    "ScoredPath",
     "SearchType",
     "TextChunk",
     "TextChunks",
@@ -270,15 +263,12 @@ __all__ = [
     "build_ingestion_strategies",
     # Retrieval
     "CosineReranker",
-    "DynamicGraphWalk",
-    "GraphWalkRetrieval",
     "HeuristicPathRouter",
     "LLMPathRouter",
     "MultiPathRetrieval",
     "RETRIEVAL_PATHS",
     "RerankingStrategy",
     "RetrievalStrategy",
-    "score_path",
     # Storage
     "DedupJudge",
     "DedupRunActiveError",

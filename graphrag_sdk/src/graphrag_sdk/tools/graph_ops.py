@@ -7,15 +7,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import time
-from collections.abc import Callable
 from typing import Any
 
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.storage import system_store
 from graphrag_sdk.storage.graph_store import GraphStore
-from graphrag_sdk.tools.cypher_guard import STRUCTURAL_RELATIONSHIPS
-from graphrag_sdk.tools.errors import ToolError
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +40,6 @@ VECTOR_MIN_LENGTH = 64
 #: Longest string returned in one cell.
 MAX_CELL_CHARS = 2000
 
-TRAVERSE_DEFAULT_DEPTH, TRAVERSE_MAX_DEPTH = 2, 5
-TRAVERSE_DEFAULT_EXPANSIONS, TRAVERSE_MAX_EXPANSIONS = 50, 200
-TRAVERSE_DEFAULT_TIMEOUT_MS, TRAVERSE_MIN_TIMEOUT_MS, TRAVERSE_MAX_TIMEOUT_MS = 1000, 50, 5000
-TRAVERSE_MAX_VIA = 5
-TRAVERSE_PATH_LIMIT = 200
 
 LOOKUP_DEFAULT_LIMIT, LOOKUP_MAX_LIMIT = 5, 25
 LOOKUP_TIMEOUT_MS = 1000
@@ -57,15 +48,6 @@ _CANDIDATE_TOKEN_RE = re.compile(r"[^\W_]+(?:[-_./][^\W_]+)*")
 _CANDIDATE_STOP = frozenset(
     {"the", "and", "for", "with", "from", "into", "that", "this", "what", "which", "entity"}
 )
-
-
-def clamp_int(value: Any, default: int, low: int, high: int) -> int:
-    """Coerce ``value`` to an int within ``[low, high]``; ``default`` if unusable."""
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(low, min(high, number))
 
 
 class NoGraph:
@@ -394,18 +376,6 @@ async def chunk_documents(store: Any, chunk_ids: list[str]) -> dict[str, tuple[s
     return {str(row[0]): (str(row[1] or ""), str(row[2] or "")) for row in _rows(result) if row[0]}
 
 
-async def entity_names(store: Any, ids: list[str]) -> dict[str, str]:
-    """id -> name for the given entity ids."""
-    if not ids:
-        return {}
-    result = await _read(
-        store,
-        "UNWIND $ids AS eid MATCH (e:__Entity__ {id: eid}) RETURN e.id, e.name",
-        {"ids": list(dict.fromkeys(ids))},
-    )
-    return {str(r[0]): str(r[1] or r[0]) for r in _rows(result) if r and r[0] is not None}
-
-
 # ── Entity lookup ────────────────────────────────────────────────
 
 
@@ -462,197 +432,3 @@ async def find_entities(
             }
         )
     return found
-
-
-def render_candidates(candidates: list[dict[str, str]]) -> str:
-    def one(c: dict[str, str]) -> str:
-        name = c["name"] if len(c["name"]) <= 120 else c["name"][:120] + "…"
-        label = f"{c['label']}, " if c.get("label") else ""
-        return f'"{name}" ({label}id {c["id"]})'
-
-    return "; ".join(one(c) for c in candidates)
-
-
-async def resolve_start(store: Any, start: str, deadline: float) -> tuple[str, str]:
-    """Return ``(id, name)`` of the one entity ``start`` names, or raise ToolError.
-
-    Exact id or name first, then a case-insensitive name. An ambiguous or
-    unknown name raises with the candidates to retry with. Every lookup
-    draws on the caller's time budget (``deadline``).
-    """
-
-    def left_ms() -> int:
-        remaining = int((deadline - time.monotonic()) * 1000)
-        if remaining <= 0:
-            raise ToolError(
-                "Resolving the start entity used up the time budget.",
-                hint="Retry with a larger timeout_ms or an exact entity id.",
-            )
-        return remaining
-
-    if not start:
-        raise ToolError("'start' is empty.", hint="Pass an entity name or id from lookup_entity.")
-    for cypher in (
-        "MATCH (e:__Entity__) WHERE e.id = $k OR e.name = $k RETURN e.id, e.name LIMIT 6",
-        "MATCH (e:__Entity__) WHERE toLower(toString(e.name)) = toLower($k) "
-        "RETURN e.id, e.name LIMIT 6",
-    ):
-        try:
-            result = await bounded_query(store, cypher, {"k": start}, left_ms())
-        except TIMEOUTS as exc:
-            raise ToolError(
-                "Resolving the start entity timed out.",
-                hint="Retry with an exact entity id from lookup_entity.",
-            ) from exc
-        rows = [r for r in _rows(result) if r and r[0] is not None]
-        if len(rows) == 1:
-            return str(rows[0][0]), str(rows[0][1])
-        if len(rows) > 1:
-            listed = "; ".join(f'"{r[1]}" (id {r[0]})' for r in rows[:5])
-            raise ToolError(
-                f"{start!r} matches {len(rows)} entities: {listed}.",
-                hint="Retry with one of these ids.",
-            )
-    candidates = await find_entities(store, start, timeout_ms=min(LOOKUP_TIMEOUT_MS, left_ms()))
-    if candidates:
-        raise ToolError(
-            f"No entity is called {start!r}. Did you mean: {render_candidates(candidates)}?",
-            hint="Retry with one of these exact names or ids.",
-        )
-    raise ToolError(
-        f"No entity is called {start!r}.",
-        hint="Call lookup_entity or retrieve first to find the exact name.",
-    )
-
-
-# ── Traverse ─────────────────────────────────────────────────────
-
-
-async def expand(
-    store: Any,
-    start_id: str,
-    start_name: str,
-    depth_cap: int,
-    expansions_cap: int,
-    remaining_ms: Callable[[], int],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
-    """Breadth-first walk from ``start_id``; one query per hop.
-
-    Returns ``(nodes, edges, stopped)``: the entities reached (with depth and
-    the edge that reached them), every distinct edge seen with its fact, and
-    which budget stopped the walk (``"complete"`` when none did). The
-    remaining edge allowance goes into each hop's ``LIMIT``.
-    """
-    cypher = (
-        "MATCH (s:__Entity__)-[r]-(t:__Entity__) WHERE s.id IN $frontier "
-        "AND NOT type(r) IN $structural "
-        "RETURN s.id, s.name, t.id, t.name, coalesce(r.rel_type, type(r)), "
-        "ID(startNode(r)) = ID(s), coalesce(r.fact, r.description, '') "
-        "ORDER BY s.id, t.id LIMIT $remaining"
-    )
-    frontier = [start_id]
-    visited = {start_id}
-    nodes: list[dict[str, Any]] = []
-    edges: list[dict[str, Any]] = []
-    seen_edges: set[tuple[str, str, str, str]] = set()
-    expansions = 0
-    depth = 0
-    stopped = "complete"
-    while frontier and depth < depth_cap:
-        left_ms = remaining_ms()
-        if left_ms <= 0:
-            stopped = "time_budget"
-            break
-        allowance = expansions_cap - expansions
-        if allowance <= 0:
-            stopped = "expansion_budget"
-            break
-        params = {
-            "frontier": frontier,
-            "remaining": allowance,
-            "structural": sorted(STRUCTURAL_RELATIONSHIPS),
-        }
-        try:
-            result = await bounded_query(store, cypher, params, left_ms)
-        except TIMEOUTS:
-            stopped = "time_budget"
-            break
-        depth += 1
-        next_frontier = []
-        for row in _rows(result):
-            expansions += 1
-            sid, sname, tid, tname, relation = row[0], row[1], row[2], row[3], row[4]
-            outgoing = bool(row[5]) if len(row) > 5 else True
-            fact = fact_body(str(row[6] or ""), str(relation)) if len(row) > 6 else ""
-            if tid is None:
-                continue
-            src, tgt = ((sid, sname), (tid, tname)) if outgoing else ((tid, tname), (sid, sname))
-            key = (str(src[0]), str(relation), str(tgt[0]), fact)
-            if key not in seen_edges:
-                seen_edges.add(key)
-                edges.append(
-                    {
-                        "source_id": str(src[0]),
-                        "source": str(src[1] or src[0]),
-                        "relation": str(relation),
-                        "target_id": str(tgt[0]),
-                        "target": str(tgt[1] or tgt[0]),
-                        "fact": fact,
-                    }
-                )
-            if tid in visited:
-                continue
-            visited.add(tid)
-            next_frontier.append(tid)
-            nodes.append(
-                {
-                    "id": str(tid),
-                    "name": str(tname or tid),
-                    "depth": depth,
-                    "from_id": str(sid),
-                    "relation": str(relation),
-                    "outgoing": outgoing,
-                }
-            )
-        frontier = next_frontier
-        if expansions >= expansions_cap:
-            stopped = "expansion_budget"
-            break
-    if stopped == "complete" and frontier and depth >= depth_cap:
-        stopped = "depth_budget"
-    return nodes, edges, stopped
-
-
-async def typed_path(
-    store: Any,
-    start_id: str,
-    via: list[str],
-    timeout_ms: int,
-) -> tuple[list[dict[str, Any]], str]:
-    """Entities at the end of ``start -via[0]-> ... -via[-1]->`` (either direction per hop),
-    never the start itself.
-
-    Returns ``(nodes, stopped)``; ``stopped`` is ``"return_limit"`` when more
-    than :data:`TRAVERSE_PATH_LIMIT` entities matched.
-    """
-    # The pattern is built from the hop count only; relation names are parameters.
-    pattern = "".join(f"-[r{i}:RELATES]-(n{i}:__Entity__)" for i in range(len(via)))
-    conditions = " AND ".join(f"r{i}.rel_type = $t{i}" for i in range(len(via)))
-    last = f"n{len(via) - 1}"
-    cypher = (
-        f"MATCH (s:__Entity__){pattern} WHERE s.id = $start AND {conditions} "
-        f"AND {last}.id <> $start "
-        f"RETURN DISTINCT {last}.id, {last}.name LIMIT {TRAVERSE_PATH_LIMIT + 1}"
-    )
-    params: dict[str, Any] = {"start": start_id, **{f"t{i}": t for i, t in enumerate(via)}}
-    try:
-        result = await bounded_query(store, cypher, params, timeout_ms)
-    except TIMEOUTS:
-        return [], "time_budget"
-    rows = [r for r in _rows(result) if r and r[0] is not None]
-    truncated = len(rows) > TRAVERSE_PATH_LIMIT
-    nodes = [
-        {"id": str(r[0]), "name": str(r[1] or r[0]), "depth": len(via), "relation": via[-1]}
-        for r in rows[:TRAVERSE_PATH_LIMIT]
-    ]
-    return nodes, "return_limit" if truncated else "complete"

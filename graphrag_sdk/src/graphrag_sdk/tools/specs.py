@@ -40,56 +40,6 @@ class LookupEntityInput(_Input):
     )
 
 
-class TraverseInput(_Input):
-    """Arguments for traverse."""
-
-    start: str = Field(
-        min_length=1, max_length=500, description="Exact entity name or id to start from."
-    )
-    via: list[str] | None = Field(
-        default=None,
-        max_length=ops.TRAVERSE_MAX_VIA,
-        description=(
-            "Optional relation path, e.g. ['WORKS_AT', 'LOCATED_IN']: follow exactly these "
-            "relations in order and return where the path ends. Omit to explore all "
-            "neighbours breadth-first."
-        ),
-    )
-    max_depth: int = Field(
-        default=ops.TRAVERSE_DEFAULT_DEPTH,
-        ge=1,
-        le=ops.TRAVERSE_MAX_DEPTH,
-        description="Most hops to walk (ignored with via).",
-    )
-    max_expansions: int = Field(
-        default=ops.TRAVERSE_DEFAULT_EXPANSIONS,
-        ge=1,
-        le=ops.TRAVERSE_MAX_EXPANSIONS,
-        description="Most edges to read before stopping.",
-    )
-    timeout_ms: int = Field(
-        default=ops.TRAVERSE_DEFAULT_TIMEOUT_MS,
-        ge=ops.TRAVERSE_MIN_TIMEOUT_MS,
-        le=ops.TRAVERSE_MAX_TIMEOUT_MS,
-        description="Time budget for the whole walk.",
-    )
-
-
-class GraphWalkInput(_Input):
-    """Arguments for graph_walk."""
-
-    start: str = Field(min_length=1, max_length=500, description="Exact entity name or id.")
-    goal: str | None = Field(
-        default=None,
-        max_length=500,
-        description="Optional second entity: find a strong short path from start to it.",
-    )
-    beam_width: int = Field(default=5, ge=1, le=20, description="Paths kept per round.")
-    max_depth: int = Field(
-        default=3, ge=1, le=5, description="Most hops per path (start to goal in total)."
-    )
-
-
 class CypherQueryInput(_Input):
     """Arguments for cypher_query."""
 
@@ -337,8 +287,8 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "get_ontology",
         OntologyInput,
         "The graph's declared ontology: entity types with their properties and relation "
-        "types with their (source, target) patterns. Use it to write traverse paths and "
-        "Cypher with the right names.",
+        "types with their (source, target) patterns. Use it to write Cypher with the "
+        "right names.",
     ),
     ToolDef(
         "lookup_entity",
@@ -346,22 +296,6 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "Find entities by (part of) their name: exact names, ids, labels and short "
         "descriptions, best match first. Use it to turn a name from the question into "
         "the exact name or id the other tools need. Not a source to cite.",
-    ),
-    ToolDef(
-        "traverse",
-        TraverseInput,
-        "Walk the graph from one entity. Without via: every neighbour breadth-first up "
-        "to max_depth, with each edge and its fact. With via: follow that exact relation "
-        "path and return where it ends (e.g. via=['WORKS_AT','LOCATED_IN'] for 'where is "
-        "the company X works at'). Bounded by depth, edge and time budgets; 'stopped' "
-        "says which one ended the walk." + _CITE,
-    ),
-    ToolDef(
-        "graph_walk",
-        GraphWalkInput,
-        "Find strong paths out of an entity, ranked by relation weight and "
-        "PageRank importance, or (with goal) a strong short path connecting two entities. "
-        "Use it for 'how is A connected to B' and 'what matters most around A'." + _CITE,
     ),
     ToolDef(
         "cypher_query",

@@ -39,7 +39,6 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
-from graphrag_sdk.retrieval.graph_walk import DynamicGraphWalk
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 from graphrag_sdk.tools import files as fs
 from graphrag_sdk.tools import graph_ops as ops
@@ -76,18 +75,12 @@ from graphrag_sdk.tools.models import (
     RelationTypeInfo,
     RetrieveResult,
     StatusResult,
-    TraverseNode,
-    TraverseResult,
-    WalkPath,
-    WalkResult,
-    path_text,
 )
 from graphrag_sdk.tools.specs import (
     RETRIEVE_PATHS,
     TOOL_REGISTRY,
     CheckCitationsInput,
     CypherQueryInput,
-    GraphWalkInput,
     IngestInput,
     LookupEntityInput,
     PlanRuleInput,
@@ -95,7 +88,6 @@ from graphrag_sdk.tools.specs import (
     RetrieveInput,
     SetOntologyInput,
     ToolSpec,
-    TraverseInput,
     build_tool_specs,
     tool_enabled,
 )
@@ -111,10 +103,6 @@ _TENANT_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 SCHEMA_CACHE_SECONDS = 60.0
 logger = logging.getLogger(__name__)
 
-#: Time allowed to resolve graph_walk's start / goal names.
-_RESOLVE_BUDGET_SECONDS = 2.0
-#: Wall-clock budget of graph_walk's start-to-goal search.
-_WALK_BUDGET_SECONDS = 15.0
 #: Most names listed in a hint.
 _HINT_NAMES = 30
 #: Total characters preview_files returns in one call (split across the files).
@@ -337,11 +325,11 @@ class GraphRAGToolkit:
     """The graph tools for an outside agent, over one :class:`GraphRAG`.
 
     Read tools: ``status``, ``get_ontology``, ``lookup_entity``,
-    ``traverse``, ``graph_walk``, ``cypher_query``, ``retrieve``,
-    ``check_citations``. Ingestion tools: ``preview_files``
-    (with a ``files_root``), ``set_ontology``, ``ingest``, ``finalize``.
-    Each is an async method; :meth:`tool_specs` describes them for an agent
-    framework and :meth:`call` runs one by name with validated arguments.
+    ``cypher_query``, ``retrieve``, ``check_citations``. Ingestion tools:
+    ``preview_files`` (with a ``files_root``), ``set_ontology``, ``ingest``,
+    ``finalize``. Each is an async method; :meth:`tool_specs` describes them
+    for an agent framework and :meth:`call` runs one by name with validated
+    arguments.
 
     Every tool result an answer may rely on carries an evidence number
     ``[n]``. Numbers run across all calls of one session (one toolkit, or one
@@ -649,7 +637,7 @@ class GraphRAGToolkit:
         elif counts["entities"] == 0:
             hint = "The graph is empty: ingest documents (and finalize) before querying."
         elif counts["relations"] == 0:
-            hint = "The graph has entities but no relations; traverse will find nothing."
+            hint = "The graph has entities but no relations."
         return StatusResult(
             entities=counts["entities"],
             relations=counts["relations"],
@@ -726,243 +714,6 @@ class GraphRAGToolkit:
                 "or retrieve to search by meaning."
             )
         return LookupResult(query=inp.name, matches=[EntityMatch(**c) for c in found], hint=hint)
-
-    async def traverse(
-        self,
-        start: str,
-        *,
-        via: list[str] | None = None,
-        max_depth: int = ops.TRAVERSE_DEFAULT_DEPTH,
-        max_expansions: int = ops.TRAVERSE_DEFAULT_EXPANSIONS,
-        timeout_ms: int = ops.TRAVERSE_DEFAULT_TIMEOUT_MS,
-    ) -> TraverseResult:
-        """Walk the graph from ``start``, breadth-first or along ``via``.
-
-        Bounded by ``max_depth`` hops, ``max_expansions`` edges read and
-        ``timeout_ms`` in total; ``stopped`` names the budget that ended the
-        walk (``"complete"`` when none did). Each edge (or, with ``via``,
-        each entity reached) is a piece of evidence.
-        """
-        inp = TraverseInput(
-            start=start,
-            via=via,
-            max_depth=max_depth,
-            max_expansions=max_expansions,
-            timeout_ms=timeout_ms,
-        )
-        await self._require_graph()
-        deadline = time.monotonic() + inp.timeout_ms / 1000
-
-        def remaining_ms() -> int:
-            return int((deadline - time.monotonic()) * 1000)
-
-        start_id, start_name = await ops.resolve_start(self._store, inp.start.strip(), deadline)
-
-        if inp.via:
-            path = await self._resolve_via(inp.via)
-            if remaining_ms() <= 0:
-                nodes, stopped = [], "time_budget"
-            else:
-                nodes, stopped = await ops.typed_path(self._store, start_id, path, remaining_ms())
-            arrow = " -> ".join(path)
-            reached = [
-                TraverseNode(
-                    n=self._evidence(
-                        "traverse",
-                        "path",
-                        f"{start_name} -[{arrow}]-> {x['name']}",
-                        entity_id=x["id"],
-                    ),
-                    id=x["id"],
-                    name=x["name"],
-                    depth=x["depth"],
-                    via=x["relation"],
-                )
-                for x in nodes
-            ]
-            hint = None
-            if stopped == "time_budget":
-                hint = "The path query timed out; raise timeout_ms or start from a narrower entity."
-            elif stopped == "return_limit":
-                hint = (
-                    f"More than {ops.TRAVERSE_PATH_LIMIT} entities matched; only those are shown."
-                )
-            elif not reached:
-                hint = (
-                    f"Nothing is reached from {start_name} by {arrow}. Relations are followed "
-                    "in either direction; check the names with get_ontology, or traverse "
-                    "without via to see what is connected."
-                )
-            return TraverseResult(
-                start=start_name,
-                start_id=start_id,
-                via=path,
-                nodes=reached,
-                stopped=stopped,
-                truncated=stopped != "complete",
-                hint=hint,
-            )
-
-        nodes, edges, stopped = await ops.expand(
-            self._store,
-            start_id,
-            start_name,
-            inp.max_depth,
-            inp.max_expansions,
-            remaining_ms,
-        )
-        triples = []
-        for e in edges:
-            text = f"{e['source']} -[{e['relation']}]-> {e['target']}"
-            if e["fact"]:
-                text += f": {e['fact']}"
-            triples.append(
-                RelationTriple(
-                    n=self._evidence(
-                        "traverse",
-                        "relation",
-                        text,
-                        source_id=e["source_id"],
-                        target_id=e["target_id"],
-                    ),
-                    source=e["source"],
-                    type=e["relation"],
-                    target=e["target"],
-                    fact=e["fact"] or None,
-                )
-            )
-        hint = None
-        if stopped == "expansion_budget":
-            hint = "Stopped at max_expansions; raise it, or follow one path with via."
-        elif stopped == "time_budget":
-            hint = "Stopped at timeout_ms; raise it, or follow one path with via."
-        elif stopped == "depth_budget":
-            hint = "More lies beyond max_depth; raise it if you need further hops."
-        elif not triples:
-            hint = f"{start_name} has no relations."
-        return TraverseResult(
-            start=start_name,
-            start_id=start_id,
-            nodes=[
-                TraverseNode(id=x["id"], name=x["name"], depth=x["depth"], via=x["relation"])
-                for x in nodes
-            ],
-            edges=triples,
-            stopped=stopped,
-            truncated=stopped != "complete",
-            hint=hint,
-        )
-
-    async def _resolve_via(self, via: list[str]) -> list[str]:
-        """Map relation names to the stored spelling, or raise with the valid ones."""
-        schema = await self._schema()
-        known = list(schema.semantic_relations)
-        if not known:
-            return list(via)
-        by_lower = {k.lower(): k for k in known}
-        resolved, unknown = [], []
-        for v in via:
-            hit = by_lower.get(v.strip().lower())
-            if hit is None:
-                unknown.append(v)
-            else:
-                resolved.append(hit)
-        if unknown:
-            raise ToolError(
-                f"Unknown relation(s): {', '.join(unknown)}.",
-                hint=f"Relations in this graph: {_names_hint(known)}.",
-            )
-        return resolved
-
-    async def graph_walk(
-        self,
-        start: str,
-        *,
-        goal: str | None = None,
-        beam_width: int = 5,
-        max_depth: int = 3,
-        ctx: Context | None = None,
-    ) -> WalkResult:
-        """Strong paths out of ``start`` (or a strong short path from ``start``
-        to ``goal``).
-
-        Paths are scored by relation weight and PageRank importance (when
-        FalkorDB provides PageRank); each path is a piece of evidence and
-        draws every relation in its stored direction. With a goal,
-        ``max_depth`` bounds the whole path.
-        """
-        inp = GraphWalkInput(start=start, goal=goal, beam_width=beam_width, max_depth=max_depth)
-        ctx = ctx or self._new_ctx()
-        await self._require_graph()
-        start_id, start_name = await ops.resolve_start(
-            self._store, inp.start.strip(), time.monotonic() + _RESOLVE_BUDGET_SECONDS
-        )
-        goal_id = goal_name = None
-        if inp.goal and inp.goal.strip():
-            goal_id, goal_name = await ops.resolve_start(
-                self._store, inp.goal.strip(), time.monotonic() + _RESOLVE_BUDGET_SECONDS
-            )
-        try:
-            weights = await asyncio.wait_for(self._store.pagerank(), _WALK_BUDGET_SECONDS)
-        except Exception:
-            # Includes a timeout: the walk then runs without node weights.
-            weights = {}
-
-        async def neighbor_fn(node_id: str) -> list[tuple[Any, ...]]:
-            return await self._store.weighted_neighbors(node_id, with_direction=True)
-
-        walk = DynamicGraphWalk(
-            neighbor_fn,
-            node_weights=weights,
-            beam_width=inp.beam_width,
-            max_depth=inp.max_depth,
-            time_budget_seconds=_WALK_BUDGET_SECONDS,
-        )
-        if goal_id is not None:
-            found = await walk.bidirectional_search(start_id, goal_id, ctx=ctx)
-            scored = [found] if found is not None else []
-        else:
-            try:
-                found_paths = await asyncio.wait_for(
-                    walk.beam_search(start_id, ctx=ctx), _WALK_BUDGET_SECONDS
-                )
-            except asyncio.TimeoutError:
-                raise ToolError(
-                    f"graph_walk ran past its time budget ({_WALK_BUDGET_SECONDS:g}s).",
-                    hint="Use a smaller beam_width or max_depth, or traverse from the start.",
-                ) from None
-            scored = [p for p in found_paths if p.length >= 1]
-        names = await ops.entity_names(self._store, [n for p in scored for n in p.nodes])
-        paths = []
-        for p in scored:
-            path = WalkPath(
-                node_ids=list(p.nodes),
-                nodes=[names.get(n, n) for n in p.nodes],
-                edges=list(p.edges),
-                edge_forward=list(p.edge_forward),
-                score=round(float(p.score), 4),
-            )
-            path.n = self._evidence("graph_walk", "path", path_text(path), node_ids=path.node_ids)
-            paths.append(path)
-        truncated = walk.stopped != "complete"
-        hint = None
-        if truncated and not paths:
-            reason = "time budget" if walk.stopped == "time_budget" else "lookup limit"
-            hint = (
-                f"The search between {start_name} and {goal_name} hit its {reason} "
-                "before the two sides met; try a smaller max_depth or beam_width, or "
-                "traverse from one of them."
-            )
-        elif not paths:
-            hint = (
-                f"No path of at most {inp.max_depth} hop{'s' if inp.max_depth > 1 else ''} "
-                f"connects {start_name} and {goal_name}."
-                if goal_id is not None
-                else f"{start_name} has no relations to walk."
-            )
-        return WalkResult(
-            start=start_name, goal=goal_name, paths=paths, truncated=truncated, hint=hint
-        )
 
     async def cypher_query(
         self,
