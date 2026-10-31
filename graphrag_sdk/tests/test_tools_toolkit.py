@@ -19,7 +19,6 @@ from graphrag_sdk.core.models import (
     FinalizeResult,
     IngestionResult,
     RetrieverResult,
-    ScoredPath,
 )
 from graphrag_sdk.tools import TOOL_NAMES, GraphRAGToolkit, ToolError
 from graphrag_sdk.tools import graph_ops as ops
@@ -38,26 +37,12 @@ class FakeStore:
         self.header = header or []
         self.error = error
         self.queries: list[tuple[str, dict]] = []
-        self.neighbors: Any = {}
-        self.neighbor_calls: list[tuple[str, bool]] = []
 
     async def query_raw(self, cypher: str, params: dict | None = None, **kwargs: Any):
         self.queries.append((cypher, params or {}))
         if self.error is not None:
             raise self.error
         return FakeResult(self.rows, self.header)
-
-    async def pagerank(self, **kwargs: Any):
-        return {}
-
-    async def weighted_neighbors(
-        self, node_id: str, *, limit: int = 50, with_direction: bool = False
-    ):
-        self.neighbor_calls.append((node_id, with_direction))
-        if isinstance(self.neighbors, Exception):
-            raise self.neighbors
-        found = self.neighbors.get(node_id, [])
-        return found if with_direction else [t[:3] for t in found]
 
 
 class FakeRAG:
@@ -136,7 +121,7 @@ def toolkit(rag: FakeRAG, monkeypatch: pytest.MonkeyPatch) -> GraphRAGToolkit:
 class TestSpecsAndDispatch:
     def test_all_tools_advertised(self, toolkit: GraphRAGToolkit):
         assert [s.name for s in toolkit.tool_specs()] == list(TOOL_NAMES)
-        assert len(TOOL_NAMES) == 10
+        assert len(TOOL_NAMES) == 8
 
     def test_read_only_drops_writes(self, rag: FakeRAG):
         tk = GraphRAGToolkit(rag, read_only=True)  # type: ignore[arg-type]
@@ -406,218 +391,6 @@ class TestReadTools:
         with pytest.raises(ToolError, match="lookup failed"):
             await toolkit.lookup_entity("x")
 
-    async def test_traverse_edges_are_evidence(self, toolkit, monkeypatch):
-        async def resolve(store, ref, deadline):
-            return "a", "Alice"
-
-        async def expand(store, sid, sname, depth, exp, remaining):
-            nodes = [{"id": "c", "name": "Acme", "depth": 1, "relation": "WORKS_AT"}]
-            edges = [
-                {
-                    "source": "Alice",
-                    "source_id": "a",
-                    "relation": "WORKS_AT",
-                    "target": "Acme",
-                    "target_id": "c",
-                    "fact": "Alice joined Acme in 2020",
-                }
-            ]
-            return nodes, edges, "expansion_budget"
-
-        monkeypatch.setattr(ops, "resolve_start", resolve)
-        monkeypatch.setattr(ops, "expand", expand)
-        result = await toolkit.traverse("alice")
-        assert result.start == "Alice" and result.edges[0].n == 1
-        assert result.truncated and "max_expansions" in (result.hint or "")
-        expected = "Alice -[WORKS_AT]-> Acme: Alice joined Acme in 2020"
-        assert toolkit.ledger.get(1).content == expected
-
-    async def test_traverse_via_resolves_case_and_rejects_unknown(self, toolkit, monkeypatch):
-        seen = {}
-
-        async def resolve(store, ref, deadline):
-            return "a", "Alice"
-
-        async def typed_path(store, sid, path, ms):
-            seen["path"] = path
-            return [{"id": "c", "name": "Acme", "depth": 1, "relation": "WORKS_AT"}], "complete"
-
-        monkeypatch.setattr(ops, "resolve_start", resolve)
-        monkeypatch.setattr(ops, "typed_path", typed_path)
-        result = await toolkit.traverse("Alice", via=["works_at"])
-        assert seen["path"] == ["WORKS_AT"] and result.nodes[0].n == 1
-        with pytest.raises(ToolError, match="Unknown relation") as exc:
-            await toolkit.traverse("Alice", via=["EMPLOYS"])
-        assert "WORKS_AT" in (exc.value.hint or "")
-
-    async def test_traverse_unknown_start_is_a_tool_error(self, toolkit, monkeypatch):
-        async def resolve(store, ref, deadline):
-            raise ToolError("No entity is called 'Zed'.", hint="Use lookup_entity.")
-
-        monkeypatch.setattr(ops, "resolve_start", resolve)
-        with pytest.raises(ToolError, match="Zed"):
-            await toolkit.call("traverse", {"start": "Zed"})
-
-    async def test_graph_walk_paths_are_evidence(self, toolkit, monkeypatch):
-        async def resolve(store, ref, deadline):
-            return ref.lower(), ref
-
-        async def names(store, ids):
-            return {"alice": "Alice", "acme": "Acme"}
-
-        async def beam(self, start, goal=None, ctx=None):
-            return [
-                ScoredPath(
-                    nodes=["alice", "acme"], edges=["WORKS_AT"], edge_forward=[True], score=0.75
-                )
-            ]
-
-        monkeypatch.setattr(ops, "resolve_start", resolve)
-        monkeypatch.setattr(ops, "entity_names", names)
-        monkeypatch.setattr("graphrag_sdk.tools.toolkit.DynamicGraphWalk.beam_search", beam)
-        result = await toolkit.graph_walk("Alice")
-        assert result.paths[0].nodes == ["Alice", "Acme"] and result.paths[0].n == 1
-        assert toolkit.ledger.get(1).content == "Alice -[WORKS_AT]-> Acme"
-
-    async def test_graph_walk_draws_edges_in_their_stored_direction(
-        self, toolkit, store, monkeypatch
-    ):
-        # Stored: alice-[WORKS_AT]->acme, acme-[IN]->berlin.
-        store.neighbors = {
-            "acme": [("alice", 1.0, "WORKS_AT", False)],
-            "alice": [("acme", 1.0, "WORKS_AT", True)],
-            "berlin": [("acme", 1.0, "IN", False)],
-        }
-        store.neighbors["acme"].append(("berlin", 1.0, "IN", True))
-
-        async def resolve(store, ref, deadline):
-            return ref.lower(), ref
-
-        async def names(store, ids):
-            return {"alice": "Alice", "acme": "Acme", "berlin": "Berlin"}
-
-        monkeypatch.setattr(ops, "resolve_start", resolve)
-        monkeypatch.setattr(ops, "entity_names", names)
-        out = await toolkit.graph_walk("Acme", max_depth=1)
-        texts = {toolkit.ledger.get(p.n).content for p in out.paths}
-        assert texts == {"Acme <-[WORKS_AT]- Alice", "Acme -[IN]-> Berlin"}
-        assert all(with_dir for _, with_dir in store.neighbor_calls)
-        goal = await toolkit.graph_walk("Berlin", goal="Alice", max_depth=2)
-        assert toolkit.ledger.get(goal.paths[0].n).content == (
-            "Berlin <-[IN]- Acme <-[WORKS_AT]- Alice"
-        )
-        assert "Berlin <-[IN]- Acme <-[WORKS_AT]- Alice" in goal.to_llm_text()
-
-    async def test_graph_walk_goal_depth_is_the_whole_path(self, toolkit, store, monkeypatch):
-        store.neighbors = {
-            "a": [("b", 1.0, "R", True)],
-            "b": [("a", 1.0, "R", False), ("c", 1.0, "R", True)],
-            "c": [("b", 1.0, "R", False)],
-        }
-
-        async def resolve(store, ref, deadline):
-            return ref, ref
-
-        async def names(store, ids):
-            return {}
-
-        monkeypatch.setattr(ops, "resolve_start", resolve)
-        monkeypatch.setattr(ops, "entity_names", names)
-        out = await toolkit.graph_walk("a", goal="c", max_depth=1)
-        assert out.paths == [] and not out.truncated
-        assert "at most 1 hop " in out.hint
-        two = await toolkit.graph_walk("a", goal="c", max_depth=2)
-        assert two.paths[0].nodes == ["a", "b", "c"]
-
-    async def test_graph_walk_reports_a_search_cut_short(self, toolkit, store, monkeypatch):
-        import graphrag_sdk.tools.toolkit as tk_mod
-
-        store.neighbors = {"a": [("b", 1.0, "R", True)], "b": [("c", 1.0, "R", True)]}
-
-        async def resolve(store, ref, deadline):
-            return ref, ref
-
-        async def names(store, ids):
-            return {}
-
-        monkeypatch.setattr(ops, "resolve_start", resolve)
-        monkeypatch.setattr(ops, "entity_names", names)
-        monkeypatch.setattr(tk_mod, "_WALK_BUDGET_SECONDS", 0.0)
-        out = await toolkit.graph_walk("a", goal="z", max_depth=4)
-        assert out.truncated and out.paths == []
-        assert "time budget" in out.hint
-
-    async def test_traverse_via_with_no_time_left_sends_no_query(self, toolkit, monkeypatch):
-        import graphrag_sdk.tools.toolkit as tk_mod
-
-        calls = []
-        clock = iter([100.0, 200.0, 200.0, 200.0])
-
-        async def resolve(store, ref, deadline):
-            return "a", "Alice"
-
-        async def typed_path(store, sid, path, ms):
-            calls.append(ms)
-            return [], "complete"
-
-        monkeypatch.setattr(ops, "resolve_start", resolve)
-        monkeypatch.setattr(ops, "typed_path", typed_path)
-        monkeypatch.setattr(tk_mod, "time", SimpleNamespace(monotonic=lambda: next(clock, 200.0)))
-        result = await toolkit.traverse("Alice", via=["WORKS_AT"], timeout_ms=1000)
-        assert calls == [] and result.stopped == "time_budget" and result.truncated
-        assert "timed out" in (result.hint or "")
-
-    async def test_graph_walk_slow_beam_search_is_a_tool_error(self, toolkit, monkeypatch):
-        import graphrag_sdk.tools.toolkit as tk_mod
-
-        async def resolve(store, ref, deadline):
-            return ref, ref
-
-        async def beam(self, start, goal=None, ctx=None):
-            await asyncio.sleep(5)
-            return []
-
-        monkeypatch.setattr(ops, "resolve_start", resolve)
-        monkeypatch.setattr("graphrag_sdk.tools.toolkit.DynamicGraphWalk.beam_search", beam)
-        monkeypatch.setattr(tk_mod, "_WALK_BUDGET_SECONDS", 0.05)
-        with pytest.raises(ToolError, match="time budget") as exc:
-            await toolkit.graph_walk("a")
-        assert "beam_width" in (exc.value.hint or "")
-
-    async def test_graph_walk_slow_pagerank_falls_back_to_no_weights(
-        self, toolkit, store, monkeypatch
-    ):
-        import graphrag_sdk.tools.toolkit as tk_mod
-
-        store.neighbors = {"a": [("b", 1.0, "R", True)]}
-
-        async def resolve(store, ref, deadline):
-            return ref, ref
-
-        async def names(store, ids):
-            return {}
-
-        async def slow_pagerank(**kwargs):
-            await asyncio.sleep(5)
-            return {"a": 1.0}
-
-        monkeypatch.setattr(ops, "resolve_start", resolve)
-        monkeypatch.setattr(ops, "entity_names", names)
-        monkeypatch.setattr(store, "pagerank", slow_pagerank)
-        monkeypatch.setattr(tk_mod, "_WALK_BUDGET_SECONDS", 0.05)
-        out = await asyncio.wait_for(toolkit.graph_walk("a", max_depth=1), 2)
-        assert [p.nodes for p in out.paths] == [["a", "b"]]
-
-    async def test_graph_walk_database_errors_are_not_hidden(self, toolkit, store, monkeypatch):
-        store.neighbors = RuntimeError("connection refused")
-
-        async def resolve(store, ref, deadline):
-            return ref, ref
-
-        monkeypatch.setattr(ops, "resolve_start", resolve)
-        with pytest.raises(RuntimeError, match="connection refused"):
-            await toolkit.graph_walk("a")
-
     async def test_retrieve_numbers_every_item(self, toolkit, rag, monkeypatch):
         rag.retrieve_result = RetrieverResult(
             items=[],
@@ -835,8 +608,6 @@ class TestMissingGraph:
             ("cypher_query", {"cypher": "MATCH (n) RETURN count(n) AS c"}),
             ("retrieve", {"question": "Who founded Acme?"}),
             ("lookup_entity", {"name": "Alice"}),
-            ("traverse", {"start": "Alice"}),
-            ("graph_walk", {"start": "Alice"}),
         ],
     )
     async def test_read_tools_name_the_missing_graph(self, missing, tool, args):
@@ -867,10 +638,10 @@ class TestMissingGraph:
 
 class TestCheckCitations:
     async def test_cited_invalid_and_missing(self, toolkit: GraphRAGToolkit):
-        toolkit.ledger.add(tool="traverse", kind="relation", content="Alice -[WORKS_AT]-> Acme")
+        toolkit.ledger.add(tool="retrieve", kind="relation", content="Alice -[WORKS_AT]-> Acme")
         ok = await toolkit.check_citations("Alice works at Acme [1].")
         assert ok.grounded and ok.reason == "cited" and ok.cited == [1]
-        assert ok.sources[0].tool == "traverse" and ok.hint is None
+        assert ok.sources[0].tool == "retrieve" and ok.hint is None
 
         mixed = await toolkit.check_citations("Alice works at Acme [1][7].")
         assert mixed.grounded and mixed.invalid == [7] and "[7]" not in mixed.answer
@@ -883,7 +654,7 @@ class TestCheckCitations:
         assert not none.grounded and none.reason == "no_citations" and "[n]" in (none.hint or "")
 
     async def test_uncited_and_unsupported_claims(self, toolkit: GraphRAGToolkit):
-        toolkit.ledger.add(tool="traverse", kind="relation", content="Alice -[WORKS_AT]-> Acme")
+        toolkit.ledger.add(tool="retrieve", kind="relation", content="Alice -[WORKS_AT]-> Acme")
         result = await toolkit.check_citations(
             "Alice works at Globex [1]. Alice joined Acme in 2019."
         )

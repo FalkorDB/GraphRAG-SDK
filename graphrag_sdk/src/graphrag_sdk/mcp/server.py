@@ -57,11 +57,9 @@ To answer a question:
    the retrieve schema. Leave paths out for broad questions; if your paths
    find nothing, run it again without them.
 2. lookup_entity: turn names in the question into exact entity names and ids.
-3. traverse (all neighbours, or one relation path with via) or graph_walk
-   (strong paths; how A connects to B) to follow relations from them.
-4. status or get_ontology: what the graph holds (entity labels, relation
+3. status or get_ontology: what the graph holds (entity labels, relation
    types, counts), for questions about the graph itself.
-5. cypher_query for counts, sums, sorting and property filters. When the
+4. cypher_query for counts, sums, sorting and property filters. When the
    question is only that, call get_ontology and cypher_query and skip
    retrieve; otherwise use it last. When a result says truncated: true, do
    not count its rows; aggregate in Cypher.
@@ -221,13 +219,13 @@ def describe_error(name: str, exc: BaseException) -> str:
         exc, (LatencyBudgetExceededError, LLMTimeoutError, TimeoutError, asyncio.TimeoutError)
     ):
         message = f"{name} ran out of time ({kind})."
-        hint = "Narrow the call (smaller top_k, max_depth or max_rows, fewer paths) and retry."
+        hint = "Narrow the call (smaller top_k or max_rows, fewer paths) and retry."
     elif isinstance(exc, (LLMError, EmbeddingError)) or root in _PROVIDER_MODULES:
         message = f"{name} failed: the model provider returned an error ({kind})."
         hint = (
             "The server's LLM or embedding setup needs attention (API key, model, quota; "
-            "details are in the server log). lookup_entity, traverse, graph_walk, "
-            "cypher_query and status need no model and still work."
+            "details are in the server log). lookup_entity, cypher_query, status "
+            "and get_ontology need no model and still work."
         )
     elif isinstance(exc, (DatabaseUnavailableError, ConnectionError)) or root in _DATABASE_MODULES:
         message = f"{name} failed: the graph database could not be reached ({kind})."
@@ -237,7 +235,7 @@ def describe_error(name: str, exc: BaseException) -> str:
         hint = "Retry once; if it fails again, use another tool (details are in the server log)."
     elif isinstance(exc, RetrieverError):
         message = f"{name} failed during retrieval ({kind})."
-        hint = "Retry with fewer paths, or use lookup_entity and traverse instead."
+        hint = "Retry with fewer paths, or use lookup_entity and cypher_query instead."
     elif isinstance(exc, (ConfigError, SchemaValidationError)):
         message = f"{name} failed: the server is misconfigured ({kind})."
         hint = (

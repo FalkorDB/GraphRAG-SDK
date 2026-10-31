@@ -12,15 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Graph tools for your own agent, and an MCP server (#274)
 
 - **`GraphRAGToolkit` gives an agent you already run read-only tools on the
-  graph**: `status`, `get_ontology`, `lookup_entity`, `traverse`, `graph_walk`,
-  `cypher_query`, `retrieve` and `check_citations`, plus `ingest` and
+  graph**: `status`, `get_ontology`, `lookup_entity`, `cypher_query`, `retrieve`
+  and `check_citations`, plus `ingest` and
   `finalize` for agents allowed to write: wrap a `GraphRAG` in
   `GraphRAGToolkit(rag)`.
   The SDK runs no agent loop: your agent plans, calls the tools and writes
   the answer. Every tool validates its input with a strict schema, runs
-  bounded (row, depth, expansion and time limits), and returns a typed result
+  bounded (row and time limits), and returns a typed result
   whose `to_llm_text()` stays under a fixed size.
-- **Every piece of evidence is numbered.** Entities, edges, rows and passages
+- **Every piece of evidence is numbered.** Entities, relations, rows and passages
   carry an `[n]` from a per-session ledger
   (`toolkit.new_session()`), and `check_citations(answer)` reports which `[n]`
   in a draft answer are real and whether the answer cites anything at all.
@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`retrieve` runs every search path unless the agent names a few.**
   `paths` picks from `facts`, `exact_names`, `fuzzy_names`, `links` and
   `passages`, so a question that only needs the source text skips the entity
-  searches and the graph walk. Leave it out to run them all; when the chosen
+  searches and the relation expansion. Leave it out to run them all; when the chosen
   paths find nothing, the result says to run again without them.
 - **`graphrag-mcp` serves the same tools over MCP** (`pip install
   "graphrag-sdk[mcp]"`) to Claude Code, Cursor and any other MCP client, on
@@ -44,10 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows the final `RETURN` gives back, never a `LIMIT` inside the query, so
   counts and collections stay correct; results never include internal
   nodes or embedding vectors, and a path reads as names and relation types.
-- **`graph_walk` follows edges in their stored direction**
-  (`(Acme)<-[WORKS_AT]-(Alice)`). With a `goal`, `max_depth` is the length
-  of the whole path, each step keeps `beam_width` nodes, and the search
-  stops at an expansion and time budget with `truncated` set.
 - **Read tools on a graph that does not exist** raise an error naming it and
   create nothing.
 - **`check_citations`** accepts `[1, 2]` and `[1-3]`, and matches names as

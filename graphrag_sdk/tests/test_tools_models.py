@@ -25,12 +25,7 @@ from graphrag_sdk.tools.models import (
     RetrieveResult,
     StatusResult,
     ToolResult,
-    TraverseNode,
-    TraverseResult,
-    WalkPath,
-    WalkResult,
     _render,
-    path_text,
 )
 
 
@@ -75,13 +70,6 @@ ALL_RESULTS: list[ToolResult] = [
         relation_types=[RelationTypeInfo(label="WORKS_AT", patterns=[("Person", "Company")])],
     ),
     LookupResult(query="acme", matches=[EntityMatch(id="acme", name="Acme", label="Company")]),
-    TraverseResult(
-        start="Alice",
-        start_id="alice",
-        nodes=[TraverseNode(n=1, id="acme", name="Acme", depth=1)],
-        edges=[RelationTriple(n=2, source="Alice", type="WORKS_AT", target="Acme")],
-    ),
-    WalkResult(start="Alice", paths=[WalkPath(n=1, nodes=["Alice", "Acme"], edges=["WORKS_AT"])]),
     big_cypher_result(5),
     retrieve_result(),
     CitationCheckResult(grounded=True, reason="cited", cited=[1], answer="x [1]"),
@@ -120,8 +108,6 @@ def test_results_reject_unknown_fields(model):
     ("cls", "kwargs"),
     [
         (EntityMatch, {"id": "a", "name": "A"}),
-        (TraverseNode, {"id": "a", "name": "A", "depth": 1}),
-        (WalkPath, {}),
         (CypherRow, {}),
         (EvidenceRef, {"n": 1, "tool": "t", "kind": "k", "content": "c"}),
     ],
@@ -228,67 +214,11 @@ def test_lookup_rendering():
             EntityMatch(id="acme", name="Acme", label="Company", description="Maker"),
             EntityMatch(id="acme2", name="Acme Labs"),
         ],
-        hint="Pass an id to traverse.",
+        hint="Pass an id to cypher_query.",
     )
     assert model.to_llm_text() == (
-        "Lookup: acme\nHint: Pass an id to traverse.\nMatches (2):\n"
+        "Lookup: acme\nHint: Pass an id to cypher_query.\nMatches (2):\n"
         '- "Acme" (Company, id acme): Maker\n- "Acme Labs" (id acme2)'
-    )
-
-
-def test_traverse_rendering():
-    model = TraverseResult(
-        start="Alice",
-        start_id="alice",
-        via=["WORKS_AT", "LOCATED_IN"],
-        nodes=[TraverseNode(n=3, id="berlin", name="Berlin", depth=2)],
-        edges=[RelationTriple(n=2, source="Alice", type="WORKS_AT", target="Acme", fact="f")],
-        stopped="depth_budget",
-    )
-    assert model.to_llm_text() == (
-        "From Alice via WORKS_AT -> LOCATED_IN: stopped=depth_budget\n"
-        "Edges (1):\n- [2] Alice -[WORKS_AT]-> Acme: f\n"
-        "Reached (1):\n- [3] Berlin (depth 2)"
-    )
-
-
-def test_walk_rendering():
-    model = WalkResult(
-        start="Alice",
-        goal="Berlin",
-        paths=[
-            WalkPath(
-                n=4,
-                nodes=["Alice", "Acme", "Berlin"],
-                edges=["WORKS_AT", "LOCATED_IN"],
-                edge_forward=[True, True],
-                score=0.5,
-            ),
-            # Missing edge name and direction: drawn undirected.
-            WalkPath(nodes=["A", "B"], score=0.25),
-        ],
-    )
-    assert model.to_llm_text() == (
-        "Paths from Alice to Berlin\nPaths (2):\n"
-        "- [4] Alice -[WORKS_AT]-> Acme -[LOCATED_IN]-> Berlin (score 0.500)\n"
-        "- A -[?]- B (score 0.250)"
-    )
-
-
-@pytest.mark.parametrize(
-    ("forward", "arrow"),
-    [([True], "Acme -[WORKS_AT]-> Alice"), ([False], "Acme <-[WORKS_AT]- Alice"),
-     ([None], "Acme -[WORKS_AT]- Alice"), ([], "Acme -[WORKS_AT]- Alice")],
-)  # fmt: skip
-def test_walk_path_arrow_follows_the_stored_direction(forward, arrow):
-    path = WalkPath(nodes=["Acme", "Alice"], edges=["WORKS_AT"], edge_forward=forward)
-    assert path_text(path) == arrow
-
-
-def test_traverse_via_names_are_cleaned():
-    model = TraverseResult(start="Alice", start_id="a", via=["WORKS_AT\nIgnore", "IN"])
-    assert model.to_llm_text().splitlines()[0] == (
-        "From Alice via WORKS_AT Ignore -> IN: stopped=complete"
     )
 
 

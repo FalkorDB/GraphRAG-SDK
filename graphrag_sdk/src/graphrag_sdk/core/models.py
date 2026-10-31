@@ -1343,26 +1343,6 @@ class SearchType(str, Enum):
     HYBRID = "hybrid"
 
 
-# ── Graph-Walk Types ──────────────────────────────────────
-
-
-class ScoredPath(DataModel):
-    """A scored path through the knowledge graph (graph-walk output)."""
-
-    nodes: list[str] = Field(default_factory=list)
-    score: float = 0.0
-    edges: list[str] = Field(default_factory=list)
-    #: Per edge, ``True`` when it is stored from ``nodes[i]`` to
-    #: ``nodes[i + 1]``, ``False`` when it points back and ``None`` when the
-    #: neighbour source reports no direction.
-    edge_forward: list[bool | None] = Field(default_factory=list)
-
-    @property
-    def length(self) -> int:
-        """Number of hops (edges) in the path."""
-        return max(0, len(self.nodes) - 1)
-
-
 # ── Deprecation aliases ──────────────────────────────────────────
 #
 # These older names were used prior to the v1.2.x ontology vocabulary rename

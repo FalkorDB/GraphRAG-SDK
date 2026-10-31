@@ -251,7 +251,7 @@ guards the default.
 | 9 | [Ontology Evolution](graphrag_sdk/examples/09_ontology_evolution.py) | Mutating schema evolution — rename types and atomically add attributes with LLM backfill |
 | 10 | [Ontology Discovery](graphrag_sdk/examples/10_ontology_discovery.py) | Discover an ontology from raw sources and propose extensions as new docs arrive |
 | 11 | [Structured Ingestion](graphrag_sdk/examples/11_structured_ingestion.py) | Declared mappings end to end, with a re-ingest that corrects a row, adds one and drops one |
-| 12 | [Agent Toolkit](graphrag_sdk/examples/12_agent_toolkit.py) | Read-only graph tools for your own agent — lookup, traverse, guarded Cypher, hybrid search — with numbered evidence and a citation check |
+| 12 | [Agent Toolkit](graphrag_sdk/examples/12_agent_toolkit.py) | Read-only graph tools for your own agent — lookup, guarded Cypher, hybrid search — with numbered evidence and a citation check |
 | ★ | [Grounded Answers with Abstention](graphrag_sdk/examples/grounded_answers_with_abstention.py) | Cite the retrieved context behind an answer, and abstain when the graph has no supporting evidence |
 
 ---

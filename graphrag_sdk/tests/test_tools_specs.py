@@ -8,14 +8,12 @@ import jsonschema
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from graphrag_sdk.tools import graph_ops as ops
 from graphrag_sdk.tools.specs import (
     TOOL_NAMES,
     TOOL_REGISTRY,
     CheckCitationsInput,
     CypherQueryInput,
     FinalizeInput,
-    GraphWalkInput,
     IngestInput,
     LookupEntityInput,
     OntologyInput,
@@ -23,7 +21,6 @@ from graphrag_sdk.tools.specs import (
     StatusInput,
     ToolDef,
     ToolSpec,
-    TraverseInput,
     build_tool_specs,
 )
 
@@ -31,8 +28,6 @@ ALL_NAMES = (
     "status",
     "get_ontology",
     "lookup_entity",
-    "traverse",
-    "graph_walk",
     "cypher_query",
     "retrieve",
     "check_citations",
@@ -44,8 +39,6 @@ VALID_INPUTS: dict[type[BaseModel], dict] = {
     StatusInput: {},
     OntologyInput: {},
     LookupEntityInput: {"name": "Acme"},
-    TraverseInput: {"start": "Alice"},
-    GraphWalkInput: {"start": "Alice"},
     CypherQueryInput: {"cypher": "MATCH (n) RETURN n"},
     RetrieveInput: {"question": "Who?"},
     CheckCitationsInput: {"answer": "x [1]"},
@@ -65,7 +58,7 @@ def specs(**kwargs) -> list[ToolSpec]:
 # ── Registry ─────────────────────────────────────────────────────
 
 
-def test_registry_has_ten_tools_in_order():
+def test_registry_has_eight_tools_in_order():
     assert TOOL_NAMES == ALL_NAMES
     assert [td.name for td in TOOL_REGISTRY] == list(ALL_NAMES)
     assert all(isinstance(td, ToolDef) for td in TOOL_REGISTRY)
@@ -163,7 +156,7 @@ def test_schema_accepts_valid_and_rejects_extra_arguments():
 
 def test_tools_that_return_evidence_say_so():
     by_name = {s.name: s for s in specs()}
-    for name in ("traverse", "graph_walk", "cypher_query", "retrieve"):
+    for name in ("cypher_query", "retrieve"):
         assert "evidence numbers [n]" in by_name[name].description
     assert "Not a source to cite" in by_name["lookup_entity"].description
 
@@ -202,44 +195,12 @@ def test_cypher_query_defaults_and_bounds():
             CypherQueryInput(cypher=cypher)
 
 
-def test_traverse_defaults_and_bounds():
-    t = TraverseInput(start="Alice")
-    assert t.via is None
-    assert t.max_depth == ops.TRAVERSE_DEFAULT_DEPTH
-    assert t.max_expansions == ops.TRAVERSE_DEFAULT_EXPANSIONS
-    assert t.timeout_ms == ops.TRAVERSE_DEFAULT_TIMEOUT_MS
-    TraverseInput(start="a", via=["R"] * 5, max_depth=5, max_expansions=200, timeout_ms=5000)
-    TraverseInput(start="a", max_depth=1, max_expansions=1, timeout_ms=50)
-    bad = [
-        {"via": ["R"] * 6},
-        {"max_depth": 0},
-        {"max_depth": 6},
-        {"max_expansions": 0},
-        {"max_expansions": 201},
-        {"timeout_ms": 49},
-        {"timeout_ms": 5001},
-    ]
-    for extra in bad:
-        with pytest.raises(ValidationError):
-            TraverseInput(start="a", **extra)
-    with pytest.raises(ValidationError):
-        TraverseInput(start="")
-
-
-def test_traverse_bounds_match_graph_ops():
-    assert (ops.TRAVERSE_MAX_VIA, ops.TRAVERSE_MAX_DEPTH) == (5, 5)
-    assert ops.TRAVERSE_MAX_EXPANSIONS == 200
-    assert (ops.TRAVERSE_MIN_TIMEOUT_MS, ops.TRAVERSE_MAX_TIMEOUT_MS) == (50, 5000)
-
-
 @pytest.mark.parametrize(
     ("model", "base", "field", "ok", "bad"),
     [
         (LookupEntityInput, {"name": "a"}, "limit", 25, 26),
         (RetrieveInput, {"question": "q"}, "top_k", 25, 26),
         (RetrieveInput, {"question": "q"}, "expand_hops", 3, 4),
-        (GraphWalkInput, {"start": "a"}, "beam_width", 20, 21),
-        (GraphWalkInput, {"start": "a"}, "max_depth", 5, 6),
     ],
 )
 def test_other_upper_bounds(model, base, field, ok, bad):

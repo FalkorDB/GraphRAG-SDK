@@ -134,57 +134,6 @@ async def test_lookup_entity(toolkit: GraphRAGToolkit):
     assert toolkit.ledger.items == []
 
 
-async def test_traverse(toolkit: GraphRAGToolkit):
-    near = await toolkit.call("traverse", {"start": "Alice", "max_depth": 1})
-    assert near.start == "Alice"
-    assert any(e.type == "WORKS_AT" and e.target == "Acme Corp" for e in near.edges)
-    assert all(e.n for e in near.edges)
-
-    far = await toolkit.call("traverse", {"start": "Alice", "max_depth": 2})
-    assert "Berlin" in {n.name for n in far.nodes}
-    assert "Bob" in {n.name for n in far.nodes}  # edges are followed both ways
-
-    typed = await toolkit.call(
-        "traverse", {"start": "Alice", "via": ["works_at", "headquartered_in"]}
-    )
-    assert [n.name for n in typed.nodes] == ["Berlin"] and typed.nodes[0].n
-    assert typed.via == ["WORKS_AT", "HEADQUARTERED_IN"]
-
-    with pytest.raises(ToolError, match="Unknown relation") as bad_via:
-        await toolkit.call("traverse", {"start": "Alice", "via": ["EMPLOYS"]})
-    assert "WORKS_AT" in (bad_via.value.hint or "")
-    with pytest.raises(ToolError, match="Zebulon"):
-        await toolkit.call("traverse", {"start": "Zebulon"})
-
-    budget = await toolkit.call("traverse", {"start": "Acme Corp", "max_expansions": 1})
-    assert budget.truncated and budget.stopped == "expansion_budget"
-
-
-async def test_graph_walk(toolkit: GraphRAGToolkit):
-    walk = await toolkit.call("graph_walk", {"start": "Alice", "goal": "Berlin"})
-    assert walk.paths and walk.paths[0].nodes[0] == "Alice"
-    assert walk.paths[0].nodes[-1] == "Berlin" and walk.paths[0].n
-    out = await toolkit.call("graph_walk", {"start": "Alice"})
-    assert out.paths and all(len(p.nodes) >= 2 for p in out.paths)
-
-
-async def test_graph_walk_states_edges_in_their_stored_direction(toolkit: GraphRAGToolkit):
-    """The stored edges are Alice-[WORKS_AT]->Acme Corp-[HEADQUARTERED_IN]->Berlin;
-    walking from the far end must not reverse them."""
-    out = await toolkit.call("graph_walk", {"start": "Acme Corp", "max_depth": 1})
-    texts = {toolkit.ledger.get(p.n).content for p in out.paths}
-    assert "Acme Corp <-[WORKS_AT]- Alice" in texts
-    assert "Acme Corp -[HEADQUARTERED_IN]-> Berlin" in texts
-    assert not any("Acme Corp -[WORKS_AT]->" in t for t in texts)
-
-    back = await toolkit.call("graph_walk", {"start": "Berlin", "goal": "Alice"})
-    assert toolkit.ledger.get(back.paths[0].n).content == (
-        "Berlin <-[HEADQUARTERED_IN]- Acme Corp <-[WORKS_AT]- Alice"
-    )
-    near = await toolkit.call("graph_walk", {"start": "Alice", "goal": "Berlin", "max_depth": 1})
-    assert near.paths == [] and "at most 1 hop " in (near.hint or "")
-
-
 async def test_cypher_query_renders_paths_as_names(toolkit: GraphRAGToolkit):
     out = await toolkit.call(
         "cypher_query",
@@ -194,16 +143,6 @@ async def test_cypher_query_renders_paths_as_names(toolkit: GraphRAGToolkit):
         },
     )
     assert out.rows[0].values == ["(Berlin)<-[HEADQUARTERED_IN]-(Acme Corp)<-[WORKS_AT]-(Alice)"]
-
-
-async def test_traverse_via_never_returns_the_start(toolkit: GraphRAGToolkit):
-    # A second WORKS_AT edge lets Alice -WORKS_AT- Acme -WORKS_AT- Alice match.
-    await toolkit.rag._graph_store.query_raw(
-        "MATCH (a:__Entity__ {name: 'Alice'}), (c:__Entity__ {name: 'Acme Corp'}) "
-        "CREATE (a)-[:RELATES {rel_type: 'WORKS_AT'}]->(c)"
-    )
-    out = await toolkit.call("traverse", {"start": "Alice", "via": ["WORKS_AT", "WORKS_AT"]})
-    assert sorted(n.name for n in out.nodes) == ["Bob", "Carol"]
 
 
 async def test_cypher_query(toolkit: GraphRAGToolkit):
@@ -385,17 +324,20 @@ async def test_retrieve_on_chosen_paths(toolkit: GraphRAGToolkit):
 
 async def test_citations_across_tools(toolkit: GraphRAGToolkit):
     session = toolkit.new_session()
-    walk = await session.call("traverse", {"start": "Alice", "max_depth": 1})
+    found = await session.call(
+        "retrieve", {"question": "Who works at Acme Corp?", "paths": ["exact_names", "links"]}
+    )
     rows = await session.call(
         "cypher_query", {"cypher": "MATCH (p:Person) RETURN count(p) AS people"}
     )
-    edge, row = walk.edges[0].n, rows.rows[0].n
+    works = [r for r in found.relations if r.source == "Alice" and r.type == "WORKS_AT"]
+    edge, row = works[0].n, rows.rows[0].n
     checked = await session.call(
         "check_citations",
         {"answer": f"Alice works at Acme Corp [{edge}]. There are 3 people [{row}][999]."},
     )
     assert checked.grounded and checked.cited == [edge, row] and checked.invalid == [999]
-    assert {s.tool for s in checked.sources} == {"traverse", "cypher_query"}
+    assert {s.tool for s in checked.sources} == {"retrieve", "cypher_query"}
     assert "[999]" not in checked.answer
 
     fresh = await toolkit.new_session().call("check_citations", {"answer": f"x [{edge}]"})
@@ -420,10 +362,15 @@ async def test_mcp_round_trip(toolkit: GraphRAGToolkit):
     async with connect(server) as (client, _):
         listed = await client.call_tool("lookup_entity", {"name": "Bob"})
         assert json.loads(listed.content[0].text)["matches"][0]["name"] == "Bob"
-        walked = json.loads(
-            (await client.call_tool("traverse", {"start": "Bob", "max_depth": 1})).content[0].text
+        cypher = (
+            "MATCH (:Person {name: 'Bob'})-[r:RELATES]->(c:Organization) "
+            "RETURN r.rel_type AS type, c.name AS company"
         )
-        n = walked["edges"][0]["n"]
+        queried = json.loads(
+            (await client.call_tool("cypher_query", {"cypher": cypher})).content[0].text
+        )
+        assert queried["rows"][0]["values"] == ["WORKS_AT", "Acme Corp"]
+        n = queried["rows"][0]["n"]
         checked = json.loads(
             (
                 await client.call_tool(

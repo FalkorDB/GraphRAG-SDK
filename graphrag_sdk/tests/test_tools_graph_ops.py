@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
@@ -59,15 +58,7 @@ def test_tool_error_carries_a_hint():
     assert plain.hint == "" and str(plain) == "boom"
 
 
-# ── clamp_int / bounded_query ────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [(5, 5), ("7", 7), (0, 1), (-3, 1), (10_000, 200), (None, 50), ("x", 50), (3.9, 3)],
-)
-def test_clamp_int(value, expected):
-    assert ops.clamp_int(value, 50, 1, 200) == expected
+# ── bounded_query ──────────────────────────────────────────────
 
 
 async def test_bounded_query_runs_read_only_with_a_database_timeout():
@@ -356,15 +347,6 @@ async def test_chunk_documents():
     assert store.calls == []
 
 
-async def test_entity_names():
-    store = FakeGraphStore(
-        [("RETURN e.id, e.name", lambda c, p: result([["a", "A"], ["b", None]]))]
-    )
-    assert await ops.entity_names(store, ["a", "b", "a"]) == {"a": "A", "b": "b"}
-    assert store.calls[0]["params"] == {"ids": ["a", "b"]}
-    assert await ops.entity_names(store, []) == {}
-
-
 # ── Entity lookup ────────────────────────────────────────────────
 
 
@@ -426,193 +408,3 @@ class TestFindEntities:
         store = FakeGraphStore([("CONTAINS", lambda c, p: LatencyBudgetExceededError("late"))])
         with pytest.raises(LatencyBudgetExceededError):
             await ops.find_entities(store, "acme")
-
-
-def test_render_candidates():
-    out = ops.render_candidates(
-        [
-            {"id": "a1", "name": "Apex", "label": "Company"},
-            {"id": "a2", "name": "N" * 130, "label": ""},
-        ]
-    )
-    assert out == f'"Apex" (Company, id a1); "{"N" * 120}…" (id a2)'
-
-
-# ── resolve_start ────────────────────────────────────────────────
-
-EXACT = "WHERE e.id = $k OR e.name = $k"
-CASELESS = "toLower(toString(e.name)) = toLower($k)"
-
-
-def deadline(seconds: float = 5.0) -> float:
-    return time.monotonic() + seconds
-
-
-class TestResolveStart:
-    async def test_exact_id_or_name(self):
-        store = FakeGraphStore([(EXACT, lambda c, p: result([["alice", "Alice"]]))])
-        assert await ops.resolve_start(store, "alice", deadline()) == ("alice", "Alice")
-        assert store.calls[0]["params"] == {"k": "alice"} and store.calls[0]["read_only"]
-
-    async def test_case_insensitive_fallback(self):
-        store = FakeGraphStore([(CASELESS, lambda c, p: result([["alice", "Alice"]]))])
-        assert await ops.resolve_start(store, "ALICE", deadline()) == ("alice", "Alice")
-        assert len(store.calls) == 2
-
-    async def test_ambiguous_start_lists_the_ids(self):
-        store = FakeGraphStore([(EXACT, lambda c, p: result([["a1", "Apex"], ["a2", "Apex"]]))])
-        with pytest.raises(ToolError, match="matches 2 entities") as exc:
-            await ops.resolve_start(store, "Apex", deadline())
-        assert '"Apex" (id a1)' in str(exc.value) and "one of these ids" in exc.value.hint
-
-    async def test_unknown_start_suggests_candidates(self):
-        store = FakeGraphStore([("CONTAINS $needle", lookup_rows)])
-        with pytest.raises(ToolError, match="No entity is called 'CX-10'") as exc:
-            await ops.resolve_start(store, "CX-10", deadline())
-        assert '"Control Board CX-10" (Part, id control_board_cx10)' in str(exc.value)
-        assert "exact names or ids" in exc.value.hint
-
-    async def test_unknown_start_without_candidates(self):
-        with pytest.raises(ToolError, match="No entity is called 'zzz'") as exc:
-            await ops.resolve_start(FakeGraphStore(), "zzz", deadline())
-        assert "lookup_entity" in exc.value.hint
-
-    async def test_empty_start(self):
-        with pytest.raises(ToolError, match="empty"):
-            await ops.resolve_start(FakeGraphStore(), "", deadline())
-
-    async def test_resolution_uses_the_remaining_budget(self):
-        store = FakeGraphStore([(EXACT, lambda c, p: result([["a", "A"]]))])
-        await ops.resolve_start(store, "a", deadline(0.2))
-        assert 0 < store.calls[0]["timeout"] <= 200
-        with pytest.raises(ToolError, match="time budget"):
-            await ops.resolve_start(store, "a", time.monotonic() - 1)
-
-    async def test_timeout_is_a_tool_error(self):
-        store = FakeGraphStore([(EXACT, lambda c, p: asyncio.TimeoutError())])
-        with pytest.raises(ToolError, match="timed out"):
-            await ops.resolve_start(store, "a", deadline())
-
-
-# ── expand (breadth-first traverse) ──────────────────────────────
-
-EDGES = [
-    ("alice", "WORKS_AT", "acme"),
-    ("alice", "KNOWS", "bob"),
-    ("acme", "LOCATED_IN", "berlin"),
-]
-
-
-def walk_store(edges=EDGES) -> FakeGraphStore:
-    """Answers the hop query like FalkorDB: each edge from both of its ends."""
-
-    def hop(c, p):
-        rows = []
-        for s in p["frontier"]:
-            for src, rel, tgt in edges:
-                if s == src:
-                    rows.append([s, s.title(), tgt, tgt.title(), rel, True, f"{src} {rel} {tgt}"])
-                elif s == tgt:
-                    rows.append([s, s.title(), src, src.title(), rel, False, f"{src} {rel} {tgt}"])
-        rows.sort(key=lambda r: (r[0], r[2]))
-        return result(rows[: p["remaining"]])
-
-    return FakeGraphStore([("s.id IN $frontier", hop)])
-
-
-class TestExpand:
-    async def test_breadth_first_walk(self):
-        store = walk_store()
-        nodes, edges, stopped = await ops.expand(store, "alice", "Alice", 3, 50, remaining())
-        assert stopped == "complete"  # berlin has no further neighbours
-        assert [(n["id"], n["depth"]) for n in nodes] == [("acme", 1), ("bob", 1), ("berlin", 2)]
-        assert nodes[-1]["from_id"] == "acme" and nodes[-1]["relation"] == "LOCATED_IN"
-        # Each edge once, in its stored direction, with its fact.
-        assert [(e["source_id"], e["relation"], e["target_id"]) for e in edges] == [
-            ("alice", "WORKS_AT", "acme"),
-            ("alice", "KNOWS", "bob"),
-            ("acme", "LOCATED_IN", "berlin"),
-        ]
-        assert edges[0]["source"] == "Alice" and edges[0]["fact"] == "alice WORKS_AT acme"
-        call = store.calls[0]
-        assert call["read_only"] and call["timeout"] == 5000
-        assert "SAME_AS" in call["params"]["structural"]
-        assert "MENTIONED_IN" in call["params"]["structural"]
-
-    async def test_incoming_edges_keep_their_direction(self):
-        nodes, edges, _ = await ops.expand(walk_store(), "berlin", "Berlin", 1, 50, remaining())
-        assert nodes == [
-            {
-                "id": "acme",
-                "name": "Acme",
-                "depth": 1,
-                "from_id": "berlin",
-                "relation": "LOCATED_IN",
-                "outgoing": False,
-            }
-        ]
-        assert (edges[0]["source_id"], edges[0]["target_id"]) == ("acme", "berlin")
-
-    async def test_depth_budget(self):
-        nodes, _, stopped = await ops.expand(walk_store(), "alice", "Alice", 1, 50, remaining())
-        assert stopped == "depth_budget" and len(nodes) == 2
-
-    async def test_expansion_budget(self):
-        store = walk_store()
-        nodes, _, stopped = await ops.expand(store, "alice", "Alice", 3, 1, remaining())
-        assert stopped == "expansion_budget" and len(nodes) == 1
-        assert store.calls[0]["params"]["remaining"] == 1
-
-    async def test_remaining_allowance_goes_into_each_hop(self):
-        store = walk_store()
-        await ops.expand(store, "alice", "Alice", 3, 3, remaining())
-        assert [c["params"]["remaining"] for c in store.calls] == [3, 1]
-
-    async def test_time_budget_before_a_hop(self):
-        store = walk_store()
-        nodes, edges, stopped = await ops.expand(store, "alice", "Alice", 3, 50, remaining(0))
-        assert (nodes, edges, stopped) == ([], [], "time_budget") and store.calls == []
-
-    @pytest.mark.parametrize("error", [asyncio.TimeoutError, TimeoutError])
-    async def test_timeout_is_a_time_budget_stop(self, error):
-        store = FakeGraphStore([("s.id IN $frontier", lambda c, p: error())])
-        nodes, _, stopped = await ops.expand(store, "a", "A", 2, 50, remaining())
-        assert stopped == "time_budget" and nodes == []
-
-    async def test_isolated_start_is_complete(self):
-        nodes, edges, stopped = await ops.expand(FakeGraphStore(), "x", "X", 2, 50, remaining())
-        assert (nodes, edges, stopped) == ([], [], "complete")
-
-
-# ── typed_path ───────────────────────────────────────────────────
-
-
-class TestTypedPath:
-    async def test_relation_names_are_parameters(self):
-        store = FakeGraphStore(
-            [("RETURN DISTINCT n1.id", lambda c, p: result([["berlin", "Berlin"], [None, "x"]]))]
-        )
-        nodes, stopped = await ops.typed_path(store, "alice", ["WORKS_AT", "LOCATED_IN"], 900)
-        assert stopped == "complete"
-        assert nodes == [{"id": "berlin", "name": "Berlin", "depth": 2, "relation": "LOCATED_IN"}]
-        call = store.calls[0]
-        assert call["params"] == {"start": "alice", "t0": "WORKS_AT", "t1": "LOCATED_IN"}
-        assert "WORKS_AT" not in call["cypher"] and "LOCATED_IN" not in call["cypher"]
-        assert call["read_only"] and call["timeout"] == 900
-
-    async def test_the_start_entity_is_never_the_result(self):
-        # via=[A, A] can lead back to the start over a second A edge.
-        store = FakeGraphStore([("RETURN DISTINCT", lambda c, p: result([]))])
-        await ops.typed_path(store, "alice", ["WORKS_AT", "WORKS_AT"], 500)
-        assert "n1.id <> $start" in store.calls[0]["cypher"]
-
-    async def test_return_limit(self):
-        rows = [[f"n{i}", f"N{i}"] for i in range(ops.TRAVERSE_PATH_LIMIT + 1)]
-        store = FakeGraphStore([("RETURN DISTINCT", lambda c, p: result(rows))])
-        nodes, stopped = await ops.typed_path(store, "a", ["R"], 500)
-        assert stopped == "return_limit" and len(nodes) == ops.TRAVERSE_PATH_LIMIT
-        assert f"LIMIT {ops.TRAVERSE_PATH_LIMIT + 1}" in store.calls[0]["cypher"]
-
-    async def test_timeout(self):
-        store = FakeGraphStore([("RETURN DISTINCT", lambda c, p: asyncio.TimeoutError())])
-        assert await ops.typed_path(store, "a", ["R"], 500) == ([], "time_budget")

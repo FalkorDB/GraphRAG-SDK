@@ -135,7 +135,7 @@ class FalkorDBConnection:
         self._breaker = CircuitBreaker()
         #: Bumped by every query through this connection that creates or
         #: deletes nodes or relationships (and by ``delete_graph``), so
-        #: caches of graph-shape results (PageRank) know when they are stale.
+        #: caches of graph-shape results (the tool schema) know when they are stale.
         self.topology_version = 0
         # Set once the server's version passed, or was not reported (see
         # _check_server_version); cleared by close(), so a reconnect asks again.

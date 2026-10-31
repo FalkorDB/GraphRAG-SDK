@@ -39,10 +39,6 @@ from graphrag_sdk.tools.models import (
     RetrieveResult,
     StatusResult,
     ToolResult,
-    TraverseNode,
-    TraverseResult,
-    WalkPath,
-    WalkResult,
 )
 from graphrag_sdk.tools.specs import TOOL_NAMES, ToolSpec
 from graphrag_sdk.tools.toolkit import FinalizePolicy, GraphRAGToolkit
@@ -77,10 +73,6 @@ __all__ = [
     "ToolError",
     "ToolResult",
     "ToolSpec",
-    "TraverseNode",
-    "TraverseResult",
     "UnsupportedClaim",
-    "WalkPath",
-    "WalkResult",
     "ground_answer",
 ]
