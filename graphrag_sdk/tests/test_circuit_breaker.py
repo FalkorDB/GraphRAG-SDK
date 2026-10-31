@@ -1,4 +1,5 @@
 """Tests for core/circuit_breaker.py — async-safe circuit breaker."""
+
 from __future__ import annotations
 
 import asyncio

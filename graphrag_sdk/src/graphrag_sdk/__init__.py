@@ -21,6 +21,7 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import (
     DocumentNotFoundError,
+    FalkorDBVersionError,
     GraphRAGError,
     LatencyBudgetExceededError,
 )
@@ -40,6 +41,11 @@ from graphrag_sdk.core.models import (
     GraphNode,
     GraphRelationship,
     IngestionResult,
+    JudgeAttribute,
+    JudgeEntity,
+    JudgeGroup,
+    JudgeSet,
+    JudgeType,
     Ontology,
     RagResult,
     Relation,
@@ -47,6 +53,7 @@ from graphrag_sdk.core.models import (
     RetrieverResult,
     RetrieverResultItem,
     SearchType,
+    SetVerdict,
     TextChunk,
     TextChunks,
     UpdateResult,
@@ -102,19 +109,31 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     GraphExtraction,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+from graphrag_sdk.ingestion.loaders.record_loader import (
+    CsvRecordLoader,
+    RecordBatch,
+    RecordLoaderStrategy,
+)
+from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+from graphrag_sdk.ingestion.mapping import (
+    Column,
+    EndpointMapping,
+    Link,
+    MappingError,
+    RelationshipMapping,
+    TableMapping,
+)
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
-from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
-    DescriptionMergeResolution,
-)
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
     ExactMatchResolution,
 )
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
-from graphrag_sdk.ingestion.resolution_strategies.semantic_resolution import (
-    SemanticResolution,
+from graphrag_sdk.ingestion.structured_pipeline import (
+    RelationshipIngestionResult,
+    RelationshipResolutionError,
 )
 
 # ── Retrieval Strategies ────────────────────────────────────────
@@ -124,12 +143,15 @@ from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 
 # ── Storage ─────────────────────────────────────────────────────
+from graphrag_sdk.storage.dedup_judges.base import DedupJudge
+from graphrag_sdk.storage.dedup_judges.llm_judge import LLMJudge
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.ontology_store import (
     OntologyContradictionError,
     OntologyModificationNotAllowedError,
     OntologyStore,
 )
+from graphrag_sdk.storage.system_store import DedupRunActiveError
 from graphrag_sdk.storage.vector_store import VectorStore
 
 __all__ = [
@@ -148,6 +170,7 @@ __all__ = [
     "DeleteDocumentResult",
     "DocumentInfo",
     "DocumentNotFoundError",
+    "FalkorDBVersionError",
     "Attribute",
     "DocumentOutput",
     "DocumentRecord",
@@ -170,6 +193,12 @@ __all__ = [
     "OpenRouterLLM",
     "RagResult",
     "Relation",
+    "JudgeAttribute",
+    "JudgeEntity",
+    "JudgeGroup",
+    "JudgeSet",
+    "JudgeType",
+    "SetVerdict",
     "ResolutionResult",
     "RetrieverResult",
     "RetrieverResultItem",
@@ -203,22 +232,35 @@ __all__ = [
     "FastCorefResolver",
     "IngestionPipeline",
     "LoaderStrategy",
+    "TextLoader",
     "ResolutionStrategy",
-    "DescriptionMergeResolution",
     "ExactMatchResolution",
     "LLMVerifiedResolution",
-    "SemanticResolution",
     # Retrieval
     "CosineReranker",
     "MultiPathRetrieval",
     "RerankingStrategy",
     "RetrievalStrategy",
     # Storage
+    "DedupJudge",
+    "DedupRunActiveError",
+    "LLMJudge",
     "GraphStore",
     "OntologyContradictionError",
     "OntologyModificationNotAllowedError",
     "OntologyStore",
     "VectorStore",
+    "Column",
+    "EndpointMapping",
+    "TableMapping",
+    "RelationshipMapping",
+    "RelationshipIngestionResult",
+    "RelationshipResolutionError",
+    "CsvRecordLoader",
+    "MappingError",
+    "RecordBatch",
+    "RecordLoaderStrategy",
+    "Link",
 ]
 
 

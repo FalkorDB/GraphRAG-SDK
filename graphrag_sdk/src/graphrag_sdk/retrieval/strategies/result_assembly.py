@@ -159,11 +159,17 @@ def assemble_raw_result(
     source_passages: list[str],
     q_type_hint: str = "",
     cypher_results: list[str] | None = None,
+    cypher_question: str = "",
 ) -> RawSearchResult:
     """Build structured RawSearchResult with section records.
 
     ``cypher_results`` are placed in their own section and are NOT
     subject to cosine reranking — they go directly to the final LLM.
+
+    ``cypher_question`` names the question the query was generated from. An
+    aggregate row carries no scope of its own, so a bare ``average_age: 39.5``
+    is unattributable and gets reported as missing context; saying which
+    question the rows answer is what makes it usable.
     """
     records: list[dict[str, Any]] = []
 
@@ -178,11 +184,16 @@ def assemble_raw_result(
 
     # Cypher Query Results (direct to LLM — not reranked)
     if cypher_results:
+        heading = "## Graph Query Results"
+        if cypher_question:
+            heading += (
+                f"\nRows a graph query returned for the question: {cypher_question!r}. "
+                "Any aggregate below is already scoped to that question."
+            )
         records.append(
             {
                 "section": "cypher_results",
-                "content": "## Graph Query Results\n"
-                + "\n".join(f"- {r}" for r in cypher_results[:20]),
+                "content": heading + "\n" + "\n".join(f"- {r}" for r in cypher_results[:20]),
             }
         )
 

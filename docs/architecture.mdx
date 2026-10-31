@@ -1,6 +1,7 @@
 ---
-title: "Architecture"
-description: "How the strategy-based ingestion and retrieval pipelines fit together."
+title: "GraphRAG SDK Pipeline Architecture"
+sidebarTitle: "Architecture"
+description: "How GraphRAG SDK's strategy-based ingestion and retrieval pipelines fit together, with pluggable ABCs for extraction, resolution, chunking, and loading."
 ---
 
 GraphRAG SDK v2 follows a **strategy-based pipeline architecture**. Every algorithmic concern is an abstract base class (ABC) with swappable implementations. The system has two main flows: **ingestion** (document to knowledge graph) and **retrieval** (question to answer).
@@ -59,7 +60,7 @@ The knowledge graph contains these node types and edge types:
 |-------|---------|--------------|
 | `Document` | Source document metadata | No |
 | `Chunk` | Text chunk (fragment of a document) | Yes |
-| `__Entity__` | Secondary label on all extracted entities | Yes (after backfill) |
+| `__Entity__` | Secondary label on all extracted entities | Yes (written by `finalize()`'s dedup) |
 | `Person`, `Organization`, etc. | Primary entity labels — 11 defaults: Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method | Via `__Entity__` |
 
 ### Edge Types
@@ -77,7 +78,7 @@ All LLM-extracted relationships use the single `RELATES` edge type. The original
 
 ### Post-ingestion: Entity Deduplication
 
-Entity deduplication is handled post-ingestion via `deduplicate_entities()` rather than during the pipeline. This allows ingesting multiple documents independently, then deduplicating globally. The method groups entities by `(normalized name, label)` to prevent cross-type merging (e.g. Person "Paris" and Location "Paris" remain separate).
+Entity deduplication is handled post-ingestion via `deduplicate_entities()` rather than during the pipeline. This allows ingesting multiple documents independently, then deduplicating incrementally: the pending entities (new since the last run — they have no name vector yet — or awaiting a retry) are compared with their nearest names in the graph, found through the vector index. The exact phase groups them by `(canonical name, label)`, so no rule merges across types (Person "Paris" and Location "Paris" remain separate); the other candidates, whatever their spelling, go to the judge — a pluggable `DedupJudge`, `LLMJudge` by default; every run has one.
 
 ## Retrieval Flow
 

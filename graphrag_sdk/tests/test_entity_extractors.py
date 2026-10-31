@@ -718,6 +718,7 @@ class TestGLiNERWindowing:
         ex._predict_sync(_long_text(800, {5: "Marie Curie"}), ["Person"])
         assert vars(ex) == before
 
+
 # ── SpacyExtractor Tests ─────────────────────────────────────
 
 
@@ -767,16 +768,21 @@ class TestSpacyExtractor:
         assert ex._type_for("MONEY", TYPES) is None
 
     async def test_extract_filters_labels_and_maps_types(self, monkeypatch):
-        _fake_spacy(monkeypatch, ents=[
-            _ent("Alice", "PERSON", 0, 5),
-            _ent("Paris", "GPE", 10, 15),
-            _ent("Acme Corp", "ORG", 20, 29),
-            _ent("2020", "DATE", 30, 34),        # DATE not in DEFAULT_LABELS
-            _ent("Parisians", "NORP", 40, 49),   # NORP not in DEFAULT_LABELS
-        ])
+        _fake_spacy(
+            monkeypatch,
+            ents=[
+                _ent("Alice", "PERSON", 0, 5),
+                _ent("Paris", "GPE", 10, 15),
+                _ent("Acme Corp", "ORG", 20, 29),
+                _ent("2020", "DATE", 30, 34),  # DATE not in DEFAULT_LABELS
+                _ent("Parisians", "NORP", 40, 49),  # NORP not in DEFAULT_LABELS
+            ],
+        )
         ents = await SpacyExtractor(confidence=0.4).extract_entities("text", TYPES, "c0")
         assert [(e.name, e.type) for e in ents] == [
-            ("Alice", "Person"), ("Paris", "Location"), ("Acme Corp", "Organization"),
+            ("Alice", "Person"),
+            ("Paris", "Location"),
+            ("Acme Corp", "Organization"),
         ]
         assert ents[0].spans["c0"] == [{"start": 0, "end": 5}]
         # A low recorded confidence never demotes: spaCy has no real scores.
@@ -806,7 +812,7 @@ class TestSpacyExtractor:
     async def test_load_disables_everything_but_ner(self, monkeypatch):
         loads = _fake_spacy(monkeypatch)
         await SpacyExtractor().extract_entities("t", TYPES, "c0")
-        (_, disabled), = loads
+        ((_, disabled),) = loads
         assert {"tagger", "parser", "attribute_ruler", "lemmatizer"} <= set(disabled)
         assert not {"ner", "tok2vec"} & set(disabled)
 
@@ -894,10 +900,18 @@ class TestCompositeExtractor:
         # The docstring's measured false positive: spaCy's ``The Paris
         # Observatory`` is the same entity as GLiNER's ``Paris Observatory``.
         text = "At the Paris Observatory. Acme Corp. was there."
-        gliner = StaticExtractor([_pred("Paris Observatory", "Location", 7, 24),
-                                 _pred("Acme Corp", "Organization", 26, 35)])
-        spacy = StaticExtractor([_pred("the Paris Observatory", "Location", 3, 24),
-                                 _pred("Acme Corp.", "Organization", 26, 36)])
+        gliner = StaticExtractor(
+            [
+                _pred("Paris Observatory", "Location", 7, 24),
+                _pred("Acme Corp", "Organization", 26, 35),
+            ]
+        )
+        spacy = StaticExtractor(
+            [
+                _pred("the Paris Observatory", "Location", 3, 24),
+                _pred("Acme Corp.", "Organization", 26, 36),
+            ]
+        )
         ents = await CompositeExtractor([gliner, spacy]).extract_entities(text, TYPES, "c0")
         assert {e.name for e in ents} == {"Paris Observatory", "Acme Corp"}
 
@@ -920,8 +934,9 @@ class TestCompositeExtractor:
         assert _offsets(out["Paris Observatory"]) == [(0, 17)]
 
     async def test_superseded_fragment_keeps_its_other_occurrences(self):
-        gliner = StaticExtractor([_pred("Paris", "Location", 0, 5),
-                                  _pred("Paris", "Location", 40, 45)])
+        gliner = StaticExtractor(
+            [_pred("Paris", "Location", 0, 5), _pred("Paris", "Location", 40, 45)]
+        )
         spacy = StaticExtractor([_pred("Paris Observatory", "Location", 0, 17)])
         out = await _run(gliner, spacy)
         assert set(out) == {"Paris", "Paris Observatory"}
@@ -940,30 +955,43 @@ class TestCompositeExtractor:
         assert set(out) == {"Dr. Smith"}
 
     async def test_same_extractor_entities_never_suppress_each_other(self):
-        one = StaticExtractor([_pred("Paris", "Location", 0, 5),
-                               _pred("Paris Observatory", "Location", 0, 17)])
+        one = StaticExtractor(
+            [_pred("Paris", "Location", 0, 5), _pred("Paris Observatory", "Location", 0, 17)]
+        )
         out = await _run(one)
         assert set(out) == {"Paris", "Paris Observatory"}
 
     async def test_repeat_occurrences_keep_every_span(self):
         # Two mentions arrive as two entities with the same name; the merged
         # entity must carry both offsets, not just the first.
-        one = StaticExtractor([_pred("Fresnel lens", "Organization", 0, 12),
-                               _pred("Fresnel lens", "Organization", 50, 62)])
+        one = StaticExtractor(
+            [
+                _pred("Fresnel lens", "Organization", 0, 12),
+                _pred("Fresnel lens", "Organization", 50, 62),
+            ]
+        )
         out = await _run(one)
         assert _offsets(out["Fresnel lens"]) == [(0, 12), (50, 62)]
 
     async def test_repeat_occurrences_are_claimed_against_later_fragments(self):
-        gliner = StaticExtractor([_pred("Fresnel lens", "Organization", 0, 12),
-                                  _pred("Fresnel lens", "Organization", 50, 62)])
+        gliner = StaticExtractor(
+            [
+                _pred("Fresnel lens", "Organization", 0, 12),
+                _pred("Fresnel lens", "Organization", 50, 62),
+            ]
+        )
         spacy = StaticExtractor([_pred("Fresnel", "Organization", 50, 57)])
         out = await _run(gliner, spacy)
         assert set(out) == {"Fresnel lens"}
 
     async def test_later_extractor_adds_a_new_mention_of_a_known_name(self):
         gliner = StaticExtractor([_pred("Fresnel lens", "Organization", 0, 12)])
-        spacy = StaticExtractor([_pred("Fresnel lens", "Organization", 0, 12),
-                                 _pred("Fresnel lens", "Organization", 50, 62)])
+        spacy = StaticExtractor(
+            [
+                _pred("Fresnel lens", "Organization", 0, 12),
+                _pred("Fresnel lens", "Organization", 50, 62),
+            ]
+        )
         out = await _run(gliner, spacy)
         assert _offsets(out["Fresnel lens"]) == [(0, 12), (50, 62)]
 
@@ -989,13 +1017,18 @@ class TestCompositeExtractor:
 
     async def test_all_failing_reraises_the_first_error(self):
         with pytest.raises(RuntimeError, match="first"):
-            await _run(StaticExtractor(error=RuntimeError("first")),
-                       StaticExtractor(error=RuntimeError("second")))
+            await _run(
+                StaticExtractor(error=RuntimeError("first")),
+                StaticExtractor(error=RuntimeError("second")),
+            )
 
-    @pytest.mark.parametrize("error", [
-        ImportError("SpacyExtractor requires the 'spacy' extra"),
-        OSError("spaCy model 'en_core_web_lg' is not installed"),
-    ])
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ImportError("SpacyExtractor requires the 'spacy' extra"),
+            OSError("spaCy model 'en_core_web_lg' is not installed"),
+        ],
+    )
     async def test_configuration_faults_propagate_immediately(self, error):
         # A missing dependency or model is not a bad chunk; it must not become
         # 157 identical warnings while the composite quietly degrades to GLiNER.

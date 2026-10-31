@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import unicodedata
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, NamedTuple
 
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
@@ -21,9 +23,70 @@ from graphrag_sdk.core.models import (
     GraphNode,
     GraphRelationship,
 )
+from graphrag_sdk.storage.deduplicator import properties_to_carry
+from graphrag_sdk.storage.merge_query import (
+    copy_on_server,
+    fold_query,
+    handled,
+    read_for_merge,
+    snapshot_params,
+)
+from graphrag_sdk.storage.system_store import (
+    CONFIG_LABEL,
+    PROCESSING_LABEL,
+    deleted_record_clause,
+    is_system_label,
+)
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
+
+class ReferenceNode(NamedTuple):
+    """An entity a record points at without describing.
+
+    A foreign key asserts that something exists and gives its key. It does not
+    know the thing's name or any of its attributes, so the name is applied ON
+    CREATE only — whichever source arrives first creates the node, and the source
+    that owns the entity fills in the rest — while the key lands either way.
+
+    ``properties`` carries the key column, so the placeholder is queryable and
+    joinable by the same key the mapping declared. Without it a stub exists but
+    ``MATCH (o:Organization {org_id: 'ORG-42'})`` finds nothing, which reads as
+    missing data rather than as a placeholder.
+    """
+
+    id: str
+    label: str
+    name: str
+    properties: dict[str, Any] = {}
+
+
 logger = logging.getLogger(__name__)
+
+#: Reads of a re-keyed row's two nodes before its fold gives up: a fold writes
+#: nothing when either node changed since the read (a property, a new edge
+#: type, a node gone), and is read again.
+_FOLD_READS = 3
+
+# An entity's ``source_chunk_ids`` is every chunk that mentioned it, across
+# documents. ``SET n += props`` alone replaces the list with the incoming
+# write's, so the second document to mention an entity erased the first's
+# provenance — the same fault the RELATES edge path and the merge queries
+# (``merge_query``) already guard against, with the same union. Bound after the MERGE as
+# ``old`` (what the node has) and ``contrib`` (what this write brings).
+# A write carrying no list — a table row, a re-embed — leaves the node's list
+# alone rather than giving it ``[]``. ``strip_stale_provenance`` is the
+# counterpart that removes a deleted chunk's id.
+_UNION_NODE_PROVENANCE = (
+    "SET n.source_chunk_ids = CASE WHEN size(contrib) = 0 THEN n.source_chunk_ids "
+    "ELSE old + [c IN contrib WHERE NOT c IN old] END"
+)
+
+# How long a write waits for an index it just created to finish building before
+# it gives up with a warning and runs anyway. ``CREATE INDEX`` returns at once
+# and FalkorDB plans queries without the index until it is built: the first
+# 500-key lookup on a 1M-node label scanned the label once per key and timed
+# out. A 1M-node range index builds in about 1.5 s.
+_INDEX_READY_WAIT_S = 60.0
 
 
 class GraphStore:
@@ -49,12 +112,16 @@ class GraphStore:
 
     def __init__(self, connection: FalkorDBConnection) -> None:
         self._conn = connection
-        self._indexed_labels: set[str] = set()
+        # ``(label, property)`` pairs known to be range-indexed. Seeded from the
+        # graph on first use, then extended as this instance creates indexes.
+        self._indexed: set[tuple[str, str]] | None = None
 
     # ── Write Operations ─────────────────────────────────────────
 
     _BATCH_SIZE = 500
     _STRUCTURAL_LABELS = RESERVED_NODE_LABELS
+    #: Property written by entity resolution holding labels absorbed on merge.
+    _MERGED_LABELS_KEY = "merged_labels"
     _REL_LABEL_HINTS: dict[str, tuple[str, str]] = {
         "PART_OF": ("Document", "Chunk"),
         "NEXT_CHUNK": ("Chunk", "Chunk"),
@@ -62,50 +129,124 @@ class GraphStore:
         "RELATES": ("__Entity__", "__Entity__"),
     }
 
-    async def _ensure_id_index(self, safe_label: str) -> None:
-        """Create a range index on ``id`` for a label, once per label per store.
+    _LABEL_INDEXED_PROPERTIES = ("id", "entity_key")
 
-        Every write path here addresses nodes by ``{id: ...}`` — ``MERGE`` in
-        :meth:`upsert_nodes`, and a double ``MATCH`` in
-        :meth:`upsert_relationships`. Without a range index each of those scans
-        every node carrying the label, so the cost of writing one batch grows
-        linearly with the graph and total ingest cost grows quadratically.
+    async def _ensure_label_id_index(self, label: str, *extra: str) -> None:
+        """Range-index ``id`` and ``entity_key`` on a label before writing into it.
 
-        Measured against FalkorDB v4.18.0, writing 50K nodes in batches of 500
-        using the exact MERGE this class issues:
+        Every node write is ``MERGE (n:`Label` {id: ...})``, and a MERGE can only
+        use an index on the label in the *pattern*. Indexing ``__Entity__.id`` does
+        not help, because that label is added by a later ``SET`` — the MERGE still
+        scans every node of the specific label, which makes writing n nodes cost
+        O(n^2). Measured on a structured ingest: 25k rows took 95s with an
+        ``__Entity__`` index alone. ``entity_key`` is the other property a table
+        write looks nodes up by — a foreign key finding its target, a row finding
+        the placeholder or the renamed node it wrote last time — and those
+        lookups run once per keyed row, so they get the same treatment.
 
-        =============  ===========  ===========  ==========
-        arm            first batch  last batch   total
-        =============  ===========  ===========  ==========
-        no index       4.6 ms       2194.8 ms    111.47 s
-        range index    8.8 ms       8.5 ms       0.69 s
-        =============  ===========  ===========  ==========
+        Labels come from the ontology and from mappings, so they cannot be known
+        up front and are indexed the first time they are written. What the graph
+        already has is read once per instance, so reopening an existing graph
+        creates nothing rather than failing a CREATE per label. Failure is not
+        fatal, it only costs speed. ``extra`` names further properties a caller
+        is about to look nodes up by, such as a table's signed key.
 
-        That is 477x degradation across the run unindexed versus 0.97x (flat)
-        indexed, and 161x less total time. The degradation is why bulk ingest
-        "gets slower as the graph grows" — it is not the LLM, it is this.
-
-        Creating the index is idempotent in FalkorDB but still a round trip, so
-        results are memoised per label. The cache is per-store-instance, which
-        is the right scope: a new store means a possibly different graph.
-        :meth:`delete_all` clears it, because ``GRAPH.DELETE`` drops every
-        index along with the graph.
-
-        Failures are logged and swallowed. A missing index is a performance
-        problem; a raised exception here would be a correctness problem, and
-        the caller's write must not depend on the optimisation succeeding.
-        The label is memoised only after the query succeeds, so a transient
-        failure (connection blip, server restart) is retried on the next
-        write rather than disabling the index for the life of the store.
+        Every missing field goes into one ``CREATE INDEX``: on FalkorDB 6.0.2 the
+        last of several statements sent back to back for one label sometimes
+        stayed empty while reporting OPERATIONAL, so every lookup on it, and
+        any plain ``MATCH`` filtering on it, found nothing. It then waits for
+        the build, so the caller's first query can use the index.
         """
-        if safe_label in self._indexed_labels:
-            return
+        if self._indexed is None:
+            self._indexed = await self._read_range_indexes()
+        safe_label = sanitize_cypher_label(label)
+        wanted = list(dict.fromkeys((*self._LABEL_INDEXED_PROPERTIES, *extra)))
+        sent = False
+        for _ in range(3):
+            missing = [prop for prop in wanted if (label, prop) not in self._indexed]
+            if not missing:
+                break
+            fields = ", ".join(
+                f"n.{prop}"
+                if prop in self._LABEL_INDEXED_PROPERTIES
+                else f"n.`{sanitize_cypher_label(prop)}`"
+                for prop in missing
+            )
+            try:
+                await self._conn.query(
+                    f"CREATE INDEX FOR (n:`{safe_label}`) ON ({fields})",
+                    expected_errors=("already indexed",),
+                )
+            except Exception as exc:
+                if "already indexed" not in str(exc).lower():
+                    # The graph refused, or the connection blipped: not
+                    # remembered, so the next write tries again.
+                    logger.debug("Range index on %s %s not created: %s", safe_label, missing, exc)
+                    break
+                # Another instance indexed one of these first, and FalkorDB
+                # then creates none of them. Read which, and ask for the rest.
+                sent = True
+                self._indexed |= await self._read_range_indexes()
+                continue
+            logger.debug("Created range index on %s %s", safe_label, missing)
+            self._indexed.update((label, prop) for prop in missing)
+            sent = True
+            break
+        if sent:
+            await self._wait_for_index(label, "NODE")
+
+    async def _wait_for_index(self, label: str, entity_type: str) -> None:
+        """Wait, up to ``_INDEX_READY_WAIT_S``, until ``label``'s index is built.
+
+        Both 4.x and 6.0.x report ``"[Indexing] x/y: UNDER CONSTRUCTION"`` while
+        building and exactly ``"OPERATIONAL"`` after. Giving up only costs
+        speed: until the build ends FalkorDB plans without the index.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _INDEX_READY_WAIT_S
+        delay = 0.1
+        while True:
+            try:
+                result = await self._conn.query(
+                    "CALL db.indexes() YIELD label, status, entitytype "
+                    "WHERE label = $label AND entitytype = $entity_type RETURN status",
+                    {"label": label, "entity_type": entity_type},
+                )
+            except Exception:
+                logger.debug("Could not read index status for %s", label, exc_info=True)
+                return
+            statuses = [row[0] for row in getattr(result, "result_set", None) or [] if row]
+            if all(status == "OPERATIONAL" for status in statuses):
+                return
+            if loop.time() >= deadline:
+                logger.warning(
+                    "Index on %s still building after %.0fs (%s); queries on it run "
+                    "without the index until it finishes",
+                    label,
+                    _INDEX_READY_WAIT_S,
+                    "; ".join(str(status) for status in statuses),
+                )
+                return
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 1.0)
+
+    async def _read_range_indexes(self) -> set[tuple[str, str]]:
+        """Every ``(label, property)`` the graph already indexes; empty if unreadable."""
         try:
-            await self._conn.query(f"CREATE INDEX FOR (n:`{safe_label}`) ON (n.id)")
-        except Exception as exc:  # noqa: BLE001 - optimisation only
-            logger.debug("Could not create id index on %s: %s", safe_label, exc)
-            return
-        self._indexed_labels.add(safe_label)
+            result = await self._conn.query(
+                "CALL db.indexes() YIELD label, properties RETURN label, properties"
+            )
+        except Exception:
+            logger.debug("Could not list indexes; will attempt each CREATE", exc_info=True)
+            return set()
+        rows = getattr(result, "result_set", None) or []
+        return {
+            (row[0], prop)
+            for row in rows
+            if isinstance(row, (list, tuple)) and len(row) >= 2 and isinstance(row[1], list)
+            for prop in row[1]
+            if isinstance(prop, str)
+        }
 
     async def upsert_nodes(self, nodes: list[GraphNode]) -> int:
         """Batch upsert nodes using UNWIND, grouped by label.
@@ -128,7 +269,9 @@ class GraphStore:
             by_label.setdefault(node.label, []).append(node)
 
         count = 0
+        promotable: list[tuple[GraphNode, str]] = []
         for label, group in by_label.items():
+            await self._ensure_label_id_index(label)
             safe_label = sanitize_cypher_label(label)
             is_entity = label not in self._STRUCTURAL_LABELS
             # Sanitize IDs once and filter out None / empty (bad LLM extraction)
@@ -146,47 +289,70 @@ class GraphStore:
                 )
             if not cleaned_group:
                 continue
-            await self._ensure_id_index(safe_label)
             if is_entity:
-                await self._ensure_id_index("__Entity__")
+                promotable.extend(cleaned_group)
+                # Relationship writes MATCH endpoints as ``__Entity__ {id}``.
+                await self._ensure_label_id_index("__Entity__")
+            # One row per id: see _fold_properties. Each row keeps how many
+            # input nodes it stands for, so the returned count is unchanged.
+            folded: dict[str, tuple[GraphNode, dict[str, Any], int, set[Any] | None]] = {}
+            for n, cid in cleaned_group:
+                props = self._clean_properties(n.properties)
+                if cid in folded:
+                    first, acc, weight, seen = folded[cid]
+                    props, seen = self._fold_properties(
+                        acc, props, union_provenance=is_entity, seen=seen
+                    )
+                    folded[cid] = (first, props, weight + 1, seen)
+                else:
+                    folded[cid] = (n, props, 1, None)
+            rows = [(n, cid, props, weight) for cid, (n, props, weight, _) in folded.items()]
             # Process in batches
-            for start in range(0, len(cleaned_group), self._BATCH_SIZE):
-                batch = cleaned_group[start : start + self._BATCH_SIZE]
-                batch_data = [
-                    {
-                        "id": cid,
-                        "properties": self._clean_properties(n.properties),
-                    }
-                    for n, cid in batch
-                ]
-                query = (
-                    f"UNWIND $batch AS item "
-                    f"MERGE (n:`{safe_label}` {{id: item.id}}) "
-                    f"SET n += item.properties"
-                )
+            for start in range(0, len(rows), self._BATCH_SIZE):
+                batch = rows[start : start + self._BATCH_SIZE]
+                batch_data = [{"id": cid, "properties": props} for _, cid, props, _ in batch]
+                query = f"UNWIND $batch AS item MERGE (n:`{safe_label}` {{id: item.id}}) "
                 if is_entity:
-                    query += " SET n:__Entity__"
+                    # Nothing marks a new entity for dedup: it has no name
+                    # vector, and that is what the next finalize() looks for.
+                    query += (
+                        "WITH n, item, "
+                        "     coalesce(n.source_chunk_ids, []) AS old, "
+                        "     coalesce(item.properties.source_chunk_ids, []) AS contrib "
+                        "SET n += item.properties "
+                        f"{_UNION_NODE_PROVENANCE} "
+                        "SET n:__Entity__"
+                    )
+                else:
+                    query += "SET n += item.properties"
                 try:
                     await self._conn.query(query, {"batch": batch_data})
-                    count += len(batch)
+                    count += sum(weight for *_, weight in batch)
                 except Exception as exc:
                     logger.warning(
                         f"Batch upsert failed for {safe_label} ({len(batch)} nodes), "
                         f"falling back to individual: {exc}"
                     )
-                    # Per-item fallback
-                    for node, cid in batch:
+                    # Per-item fallback, mirroring the batch query so a transient
+                    # batch failure cannot regress to overwriting provenance.
+                    for node, cid, props, weight in batch:
                         safe_node_label = sanitize_cypher_label(node.label)
-                        q = f"MERGE (n:`{safe_node_label}` {{id: $id}}) SET n += $properties"
+                        q = f"MERGE (n:`{safe_node_label}` {{id: $id}}) "
                         if is_entity:
-                            q += " SET n:__Entity__"
-                        params = {
-                            "id": cid,
-                            "properties": self._clean_properties(node.properties),
-                        }
+                            q += (
+                                "WITH n, $properties AS props, "
+                                "     coalesce(n.source_chunk_ids, []) AS old, "
+                                "     coalesce($properties.source_chunk_ids, []) AS contrib "
+                                "SET n += props "
+                                f"{_UNION_NODE_PROVENANCE} "
+                                "SET n:__Entity__"
+                            )
+                        else:
+                            q += "SET n += $properties"
+                        params = {"id": cid, "properties": props}
                         try:
                             await self._conn.query(q, params)
-                            count += 1
+                            count += weight
                         except Exception as inner_exc:
                             logger.warning(
                                 f"Failed to upsert node {cid} "
@@ -194,14 +360,435 @@ class GraphStore:
                             )
                             raise DatabaseError(f"Node upsert failed: {inner_exc}") from inner_exc
 
+        await self._promote_merged_labels(promotable)
+
         logger.debug(f"Upserted {count} nodes")
         return count
 
-    async def upsert_relationships(self, relationships: list[GraphRelationship]) -> int:
+    async def _promote_merged_labels(self, nodes: list[tuple[GraphNode, str]]) -> None:
+        """Add labels absorbed during resolution as real Cypher labels.
+
+        Entity resolution collapses duplicates into one node and records the
+        losers' labels in a ``merged_labels`` property, because
+        ``GraphNode.label`` holds a single string. A property is not a type:
+        measured against a real FalkorDB, a ``Person`` that absorbed
+        ``Engineer`` was invisible to ``MATCH (n:Engineer)`` (0 rows) while the
+        property lookup found it. Promoting them here keeps the merged node
+        reachable under every type it was extracted as, which is the whole
+        point of preserving the label.
+
+        Failures are logged, not raised -- the labels are an enrichment and
+        must not cost us the nodes themselves.
+        """
+        by_labels: dict[tuple[str, ...], list[str]] = {}
+        for node, cid in nodes:
+            raw = node.properties.get(self._MERGED_LABELS_KEY)
+            if not isinstance(raw, str):
+                continue
+            extra: set[str] = set()
+            # The exact delimiter every writer joins with; a bare "|" would
+            # read a label such as "A|B" back as two.
+            for part in raw.split(" | "):
+                part = part.strip()
+                # The survivor already carries its own label.
+                if not part or part == node.label:
+                    continue
+                # Sanitize *before* the structural check, not after. The guard
+                # compares strings, and sanitizing strips backticks, so a raw
+                # "`Document`" would pass the check and then become Document —
+                # landing a structural label on an entity, which is the exact
+                # case this guard exists to prevent.
+                try:
+                    safe = sanitize_cypher_label(part)
+                except ValueError:
+                    logger.warning("Skipping unusable merged label %r", part)
+                    continue
+                # Never stamp a structural or marker label onto an entity: it
+                # would surface in every MATCH (:Document) / (:Chunk) query.
+                if safe in self._STRUCTURAL_LABELS or safe == "__Entity__":
+                    logger.warning("Skipping structural merged label %r", part)
+                    continue
+                if safe == node.label:
+                    continue
+                extra.add(safe)
+            if extra:
+                by_labels.setdefault(tuple(sorted(extra)), []).append(cid)
+
+        for labels, ids in by_labels.items():
+            clause = "".join(f":`{lab}`" for lab in labels)
+            # Batched like every other write in this class. Unbatched, a
+            # cross-label-heavy ingest puts every matching id in one parameter
+            # list, and the except below would then drop the promoted labels
+            # for all of them at once.
+            for start in range(0, len(ids), self._BATCH_SIZE):
+                chunk = ids[start : start + self._BATCH_SIZE]
+                try:
+                    await self._conn.query(
+                        f"UNWIND $ids AS nid MATCH (n:__Entity__ {{id: nid}}) SET n{clause}",
+                        {"ids": chunk},
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to add merged labels %s to %d node(s): %s",
+                        ", ".join(labels),
+                        len(chunk),
+                        exc,
+                    )
+
+    async def set_document_path(self, document_id: str, path: str) -> None:
+        """Point a Document at the file it is now read from.
+
+        ``update()``'s cutover rewrites the path as part of promoting the pending
+        Document, but a no-op re-sync (same content hash) never reaches the
+        cutover — so a table re-loaded under a new filename with identical rows
+        would keep pointing at the old file.
+        """
+        await self._conn.query(
+            "MATCH (d:Document {id: $id}) SET d.path = $path",
+            {"id": document_id, "path": path},
+        )
+
+    async def resolve_by_entity_key(self, label: str, keys: Sequence[str]) -> dict[str, list[str]]:
+        """``key_value -> ids`` of every node under ``label`` already carrying that key.
+
+        Every structured node — real or placeholder — carries ``entity_key``, the
+        value its row is keyed by, whoever wrote it. A foreign key arriving
+        *after* its target's source must find the real node rather than create a
+        placeholder beside it; this is that lookup. One batched query.
+
+        A key is returned with **every** node holding it, not the last one the
+        graph happened to list: two tables that both number ``Person`` from 1
+        leave two nodes with ``entity_key = "1"``, and a third table's foreign
+        key ``1`` cannot tell which it means. The caller decides what to do with
+        more than one; choosing here would choose arbitrarily.
+        """
+        if not keys:
+            return {}
+        await self._ensure_label_id_index(label)
+        safe_label = sanitize_cypher_label(label)
+        found = await self.query_raw(
+            f"UNWIND $keys AS k MATCH (n:`{safe_label}` {{entity_key: k}}) "
+            f"RETURN k, collect(DISTINCT n.id)",
+            {"keys": list(dict.fromkeys(keys))},
+        )
+        return {
+            row[0]: [node_id for node_id in row[1] if node_id]
+            for row in getattr(found, "result_set", None) or []
+            if row[1]
+        }
+
+    async def resolve_by_property(
+        self, label: str, property_name: str, keys: Sequence[str]
+    ) -> dict[str, list[str]]:
+        """Resolve exact endpoint keys without crossing declared key spaces."""
+        if not keys:
+            return {}
+        await self._ensure_label_id_index(label, property_name)
+        safe_label = sanitize_cypher_label(label)
+        safe_property = sanitize_cypher_label(property_name)
+        resolved: dict[str, list[str]] = {}
+        unique = list(dict.fromkeys(keys))
+        for start in range(0, len(unique), self._BATCH_SIZE):
+            batch = unique[start : start + self._BATCH_SIZE]
+            found = await self.query_raw(
+                f"UNWIND $keys AS k "
+                f"MATCH (n:__Entity__:`{safe_label}` {{`{safe_property}`: k}}) "
+                # Not DISTINCT: two nodes sharing one id (nothing makes ids
+                # unique) are two matches, refused as ambiguous, rather than
+                # one candidate the write then MATCHes twice.
+                "RETURN k, collect(n.id)",
+                {"keys": batch},
+            )
+            for row in getattr(found, "result_set", None) or []:
+                if not (isinstance(row, list) and len(row) >= 2 and row[0]):
+                    continue
+                resolved[str(row[0])] = [node_id for node_id in row[1] if node_id]
+        return resolved
+
+    async def reconcile_keyed_identity(
+        self, label: str, signed_key: str, rows: Sequence[tuple[str, str]]
+    ) -> dict[str, str]:
+        """Point every node carrying one of these keys at the id its name now gives it.
+
+        An entity's id comes from its **name**, for a table row exactly as for a
+        prose mention, so the two halves land on one node without a merge step.
+        The row's key is an attribute — ``entity_key`` — and it is what two
+        cases resolve through:
+
+        - a **placeholder** a foreign key created before this source arrived,
+          whose id was derived from the key because the name was not yet known;
+        - a **rename** between exports — the row still says ``E-1`` but the name,
+          and so the id, changed; the node written last time must follow rather
+          than be orphaned with its prose description.
+
+        Only nodes this table is entitled to move are considered: a placeholder
+        (``is_stub = true``) carrying the key as ``entity_key``, or a row whose
+        ``signed_key`` -- the key property as this table signs it -- **equals**
+        the key. ``entity_key`` alone cannot decide: it is one slot every table
+        writes, so a person ``hr.csv`` numbers ``1`` and ``crm.csv`` numbers ``2``
+        holds whichever key was written last, and matching on it would let
+        ``hr.csv``'s row ``2`` claim that person's node -- measured: Alice's CRM
+        email and record provenance moved onto Bob. The signed key is the one
+        value only this table writes, under this table's meaning of the key.
+
+        ``rows`` are ``(entity_key, new_id)``. A qualifying node under ``label``
+        with that key and a different id is **renamed in place** when nothing is
+        at ``new_id`` (edges stay on the node), or **merged** into what is (edges
+        remapped, properties carried, old node deleted). One batched lookup.
+
+        Returns ``old_id -> new_id`` for every node moved either way. A caller
+        holding ids it read before this ran -- ``update()`` snapshots the live
+        document's entities for its cleanup -- has to apply it, or the cleanup
+        looks for nodes under ids that no longer exist and the stale edges
+        between renamed rows outlive the export that dropped them.
+        """
+        if not rows:
+            return {}
+        await self._ensure_label_id_index(label, signed_key)
+        safe_label = sanitize_cypher_label(label)
+        safe_key = sanitize_cypher_label(signed_key)
+        params = {"rows": [{"k": key, "new_id": new_id} for key, new_id in rows]}
+        # Two patterns rather than one OR, so each can use its index.
+        owned = await self.query_raw(
+            f"UNWIND $rows AS it "
+            f"MATCH (n:`{safe_label}` {{`{safe_key}`: it.k}}) "
+            f"WHERE n.id <> it.new_id "
+            f"RETURN it.new_id AS new_id, collect(DISTINCT n.id) AS old_ids",
+            params,
+        )
+        placeholders = await self.query_raw(
+            f"UNWIND $rows AS it "
+            f"MATCH (n:`{safe_label}` {{entity_key: it.k}}) "
+            f"WHERE n.id <> it.new_id AND n.is_stub = true "
+            f"RETURN it.new_id AS new_id, collect(DISTINCT n.id) AS old_ids",
+            params,
+        )
+        # A placeholder is "the row keyed thus", and a link was parked on one
+        # because more than one real node answered to the key (two tables
+        # numbering this label from 1). Claiming it here for whichever table
+        # re-syncs first would make the choice the link refused to make. A
+        # real node under another table's key is such an owner; this table's
+        # own row for the key -- possibly still under last export's id -- is not.
+        contested = await self.query_raw(
+            f"UNWIND $rows AS it "
+            f"MATCH (n:`{safe_label}` {{entity_key: it.k}}) "
+            f"WHERE n.id <> it.new_id AND NOT coalesce(n.is_stub, false) "
+            f"AND (n.`{safe_key}` IS NULL OR n.`{safe_key}` <> it.k) "
+            f"RETURN DISTINCT it.new_id",
+            params,
+        )
+        contested_ids = {row[0] for row in getattr(contested, "result_set", None) or []}
+        to_move: dict[str, list[str]] = {}
+        for result, skip in ((owned, frozenset()), (placeholders, contested_ids)):
+            for new_id, old_ids in getattr(result, "result_set", None) or []:
+                if new_id in skip:
+                    logger.warning(
+                        "%s: placeholder for a key another table's row also carries left "
+                        "in place rather than claimed for %s",
+                        label,
+                        new_id,
+                    )
+                    continue
+                seen = to_move.setdefault(new_id, [])
+                seen.extend(old_id for old_id in old_ids if old_id not in seen)
+        moved: dict[str, str] = {}
+        renamed = merged = 0
+        # Two rows that swapped names: each one's new id is the other's current
+        # id. Moving either directly would merge it into a node that is itself
+        # about to leave. Such a node steps aside under a transient id first and
+        # takes its place once the other has gone.
+        movers = {old_id for old_ids in to_move.values() for old_id in old_ids}
+        deferred: list[tuple[str, str]] = []
+        for new_id, old_ids in to_move.items():
+            for old_id in old_ids:
+                moved[old_id] = new_id
+                if new_id in movers:
+                    aside = f"{old_id}__swapping"
+                    await self.query_raw(
+                        "MATCH (n:__Entity__ {id: $old}) SET n.id = $aside "
+                        + deleted_record_clause("[$old]"),
+                        {"old": old_id, "aside": aside},
+                    )
+                    deferred.append((aside, new_id))
+                    continue
+                renamed_here, merged_here = await self._move_entity(old_id, new_id)
+                renamed += renamed_here
+                merged += merged_here
+        for aside, new_id in deferred:
+            renamed_here, merged_here = await self._move_entity(aside, new_id)
+            renamed += renamed_here
+            merged += merged_here
+        if moved:
+            logger.info(
+                "%s: %d node(s) renamed to their name-derived id, %d merged into an "
+                "existing node of that name",
+                label,
+                renamed,
+                merged,
+            )
+        return moved
+
+    async def _move_entity(self, old_id: str, new_id: str) -> tuple[int, int]:
+        """Rename the node at ``old_id`` to ``new_id``, or fold it into what is there.
+
+        Returns ``(renamed, merged)`` -- one of them 1.
+
+        Raises:
+            DatabaseError: the two nodes changed between every read and its
+                fold (``_FOLD_READS`` tries), or a query failed.
+        """
+        for _ in range(_FOLD_READS):
+            read = await read_for_merge(self, new_id, old_id)
+            if read is None:
+                # The embedding is of the old name; left on the node, vector
+                # search kept finding the row under a name it no longer has.
+                # Without it the node is pending dedup again — the new name is
+                # new to dedup too — and the next finalize() embeds and checks
+                # it. The old id leaves a deleted record, so a merge planned on
+                # it is not applied to the node.
+                await self.query_raw(
+                    "MATCH (n:__Entity__ {id: $old}) SET n.id = $new REMOVE n.embedding "
+                    + deleted_record_clause("[$old]"),
+                    {"old": old_id, "new": new_id},
+                )
+                return 1, 0
+            # Something already sits at new_id — a prose mention of the same
+            # name, typically. Fold the old node into it in one query, which
+            # also makes the result pending dedup again: it now carries the
+            # row's identity, which no dedup run has seen with it. The query
+            # unions provenance itself, from the values at write time, and
+            # writes nothing if anything this read saw has changed since.
+            carry = properties_to_carry(read.keep, read.dup, never=self._NEVER_CARRY_ON_RECONCILE)
+            sets = copy_on_server(carry)
+            if carry:
+                sets.append("s += $carry")
+            result = await self.query_raw(
+                fold_query(read.kinds, sets),
+                {
+                    "old": old_id,
+                    "new": new_id,
+                    "handled": handled(read.kinds),
+                    **snapshot_params(read, carry),
+                },
+            )
+            if result.result_set and result.result_set[0][0] is True:
+                return 0, 1
+        raise DatabaseError(
+            f"Could not fold entity {old_id!r} into {new_id!r}: one of them kept changing "
+            "between its read and the fold"
+        )
+
+    # The row about to be written sets ``is_stub`` itself; a placeholder's
+    # ``True`` must not land on the node first and then have to be undone.
+    _NEVER_CARRY_ON_RECONCILE = frozenset({"id", "embedding", "is_stub"})
+    #: Nodes a label-wide delete removes per query. Each query writes the
+    #: deleted records of its own nodes, so no query holds the whole label.
+    _DELETE_BATCH = 10_000
+
+    async def upsert_reference_nodes(self, references: Sequence[ReferenceNode]) -> int:
+        """Write foreign-key reference nodes: the key always, the name never.
+
+        A reference is a claim that an entity *exists* under a key, never a
+        claim about what it is called. ``upsert_nodes`` issues ``SET n +=
+        properties`` unconditionally, so a row referencing ORG-42 would
+        overwrite the ``name`` a dimension source already supplied ("Acme Corp")
+        with the raw key ("ORG-42"). Entity vector search embeds ``name``, so
+        that silently makes the organisation unfindable while every structural
+        metric stays green.
+
+        The write is split so the order of sources cannot decide the graph:
+
+        - **ON CREATE** the reference creates a keyed placeholder — its
+          properties, the fallback ``name``, ``is_stub: true`` — for the owning
+          source to fill in when it arrives.
+        - **ON MATCH** it adds only what a pointer knows: its own signed key
+          column, ``entity_key`` if the node has none yet, and ``is_stub: true``
+          if nothing has said otherwise. The name and every other property stay
+          as the owner — or the document that mentioned the entity first —
+          wrote them.
+
+        ON CREATE alone left a node a document had already created without any
+        key at all, so the next table pointing at the same key could not find
+        it and raised a placeholder beside it.
+
+        Args:
+            references: :class:`ReferenceNode` entries.
+
+        Returns:
+            Number of references written.
+        """
+        if not references:
+            return 0
+        by_label: dict[str, list[dict[str, Any]]] = {}
+        for reference in references:
+            node_id, label, fallback, properties = ReferenceNode(*reference)
+            cleaned = self._clean_identifier(node_id)
+            if not cleaned.strip():
+                continue
+            cleaned_properties = self._clean_properties(dict(properties or {}))
+            by_label.setdefault(label, []).append(
+                {
+                    "id": cleaned,
+                    "name": fallback,
+                    "properties": cleaned_properties,
+                    # What may land on a node that already exists: the pointer's
+                    # own signed column, never the SDK-owned identity it would
+                    # otherwise demote (``is_stub``) or overwrite (``entity_key``),
+                    # and not provenance, which is unioned below like any write.
+                    "claims": {
+                        k: v
+                        for k, v in cleaned_properties.items()
+                        if k not in ("entity_key", "is_stub", "source_chunk_ids")
+                    },
+                }
+            )
+
+        count = 0
+        for label, batch_all in by_label.items():
+            await self._ensure_label_id_index(label)
+            safe_label = sanitize_cypher_label(label)
+            for start in range(0, len(batch_all), self._BATCH_SIZE):
+                batch = batch_all[start : start + self._BATCH_SIZE]
+                query = (
+                    f"UNWIND $batch AS item "
+                    f"MERGE (n:`{safe_label}` {{id: item.id}}) "
+                    f"ON CREATE SET n += item.properties, n.name = item.name, "
+                    f"n.is_stub = true "
+                    f"ON MATCH SET n += item.claims, "
+                    f"n.entity_key = coalesce(n.entity_key, item.properties.entity_key), "
+                    f"n.is_stub = coalesce(n.is_stub, true) "
+                    f"WITH n, item, "
+                    f"     coalesce(n.source_chunk_ids, []) AS old, "
+                    f"     coalesce(item.properties.source_chunk_ids, []) AS contrib "
+                    f"{_UNION_NODE_PROVENANCE} "
+                    f"SET n:__Entity__"
+                )
+                try:
+                    await self._conn.query(query, {"batch": batch})
+                    count += len(batch)
+                except Exception as exc:
+                    logger.warning(
+                        f"Reference upsert failed for [{safe_label}] ({len(batch)} refs): {exc}"
+                    )
+                    raise DatabaseError(f"Reference upsert failed: {exc}") from exc
+        logger.debug(f"Upserted {count} reference nodes")
+        return count
+
+    async def upsert_relationships(
+        self,
+        relationships: list[GraphRelationship],
+        *,
+        snapshot_property: str | None = None,
+    ) -> int:
         """Batch upsert relationships using UNWIND, grouped by type.
 
         Args:
             relationships: List of relationships to upsert.
+            snapshot_property: A RELATES property holding a relationship-table
+                run's snapshot number (see :meth:`next_relationship_snapshot`).
+                An edge keeps the larger of its stored and incoming number, so a
+                run that started earlier and writes later cannot make a newer
+                run's edges look stale to that run's cleanup.
 
         Returns:
             Number of relationships upserted.
@@ -213,6 +800,27 @@ class GraphStore:
         by_type: dict[str, list[GraphRelationship]] = {}
         for rel in relationships:
             by_type.setdefault(rel.type, []).append(rel)
+
+        # A snapshot number is read before ``SET r += ...`` overwrites it and
+        # the larger of the stored and incoming one is kept.
+        #
+        # A relationship-table write also keeps the ``fact`` of an edge a
+        # document supports: the table's is one template per mapping, and
+        # replacing the document's left the embedding of the document's text
+        # on an edge whose fact no longer said it (finalize() does not
+        # re-embed an edge that has an embedding).
+        old_snapshot = batch_snapshot = item_snapshot = ""
+        if snapshot_property:
+            safe_snapshot = sanitize_cypher_label(snapshot_property)
+            old_snapshot = f", r.`{safe_snapshot}` AS old_snapshot, r.fact AS old_fact"
+            batch_snapshot, item_snapshot = (
+                f" SET r.`{safe_snapshot}` = CASE WHEN old_snapshot > "
+                f"{incoming}.`{safe_snapshot}` THEN old_snapshot "
+                f"ELSE {incoming}.`{safe_snapshot}` END, "
+                "r.fact = CASE WHEN size(old) > 0 AND old_fact IS NOT NULL "
+                "THEN old_fact ELSE r.fact END"
+                for incoming in ("item.properties", "$properties")
+            )
 
         count = 0
         for rel_type, group in by_type.items():
@@ -240,17 +848,54 @@ class GraphStore:
             if not cleaned_group:
                 continue
             hint_src, hint_tgt = self._REL_LABEL_HINTS.get(rel_type, ("__Entity__", "__Entity__"))
-            await self._ensure_id_index(sanitize_cypher_label(hint_src))
-            await self._ensure_id_index(sanitize_cypher_label(hint_tgt))
-            for start in range(0, len(cleaned_group), self._BATCH_SIZE):
-                batch = cleaned_group[start : start + self._BATCH_SIZE]
+            await self._ensure_label_id_index(hint_src)
+            await self._ensure_label_id_index(hint_tgt)
+            # One row per MERGE key — the pair, plus ``rel_type`` for RELATES —
+            # see _fold_properties. Each row keeps how many input relationships
+            # it stands for, so the returned count is unchanged.
+            is_relates = rel_type == "RELATES"
+            folded: dict[
+                tuple[str, str, Any],
+                tuple[GraphRelationship, dict[str, Any], int, set[Any] | None],
+            ] = {}
+            for rel, sid, eid in cleaned_group:
+                props = self._clean_properties(rel.properties)
+                # A blank signed property (a relationship table's empty cell,
+                # or a LIST cell with no items, which ``_clean_properties``
+                # drops) is sent as null, which ``SET r += ...`` removes;
+                # left out, the edge kept the value an earlier run wrote. A
+                # REMOVE clause per combination of blank cells split each
+                # batch into up to one query per row.
+                # Relationship-table writes only: a node table's link edges keep
+                # leaving a blank property out, as before, so a later blank row
+                # in one batch cannot clear what an earlier row wrote.
+                if snapshot_property:
+                    props.update(
+                        (name, None)
+                        for name, value in rel.properties.items()
+                        if "__" in name
+                        and name not in props
+                        and (value is None or isinstance(value, list))
+                    )
+                rel_key = self._merge_key_value(props.get("rel_type", "")) if is_relates else ""
+                key = (sid, eid, rel_key)
+                if key in folded:
+                    first, acc, weight, seen = folded[key]
+                    props, seen = self._fold_properties(
+                        acc, props, union_provenance=is_relates, seen=seen
+                    )
+                    folded[key] = (first, props, weight + 1, seen)
+                else:
+                    folded[key] = (rel, props, 1, None)
+            rows = [
+                (rel, sid, eid, props, weight)
+                for (sid, eid, _), (rel, props, weight, _) in folded.items()
+            ]
+            for start in range(0, len(rows), self._BATCH_SIZE):
+                batch = rows[start : start + self._BATCH_SIZE]
                 batch_data = [
-                    {
-                        "start_id": sid,
-                        "end_id": eid,
-                        "properties": self._clean_properties(r.properties),
-                    }
-                    for r, sid, eid in batch
+                    {"start_id": sid, "end_id": eid, "properties": props}
+                    for _, sid, eid, props, _ in batch
                 ]
                 src_label, tgt_label = self._REL_LABEL_HINTS.get(
                     rel_type, ("__Entity__", "__Entity__")
@@ -264,18 +909,33 @@ class GraphStore:
                 # breaking ``delete_stale_relationships`` (a later delete
                 # of the new doc would drop the edge even though earlier
                 # docs still support it). Special-case RELATES to UNION
-                # the lists — same idiom as the deduplicator remap path.
+                # the lists — same idiom as the merge queries' RELATES block.
                 if rel_type == "RELATES":
+                    # The MERGE is keyed on ``rel_type`` as well as the pair.
+                    # Without it, one edge exists per (start, end) and a second
+                    # fact between the same two entities overwrites the first:
+                    # ``Alice WORKS_AT Acme`` then ``Alice FOUNDED Acme`` ends as
+                    # a single edge, one fact destroyed and its source chunk
+                    # attached to the surviving fact. ``coalesce(..., '')`` keeps
+                    # the merge key non-null — FalkorDB rejects a MERGE keyed on
+                    # a null property outright.
                     query = (
                         f"UNWIND $batch AS item "
                         f"MATCH (a:`{safe_src}` {{id: item.start_id}}), "
                         f"(b:`{safe_tgt}` {{id: item.end_id}}) "
-                        f"MERGE (a)-[r:`{safe_rel_type}`]->(b) "
+                        f"MERGE (a)-[r:`{safe_rel_type}` "
+                        f"{{rel_type: coalesce(item.properties.rel_type, '')}}]->(b) "
                         f"WITH r, item, "
                         f"     coalesce(r.source_chunk_ids, []) AS old, "
-                        f"     coalesce(item.properties.source_chunk_ids, []) AS contrib "
+                        f"     coalesce(item.properties.source_chunk_ids, []) AS contrib, "
+                        f"     coalesce(r.structured_sources, []) AS old_sources, "
+                        f"     coalesce(item.properties.structured_sources, []) AS sources"
+                        f"{old_snapshot} "
                         f"SET r += item.properties "
-                        f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]"
+                        f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old], "
+                        f"    r.structured_sources = old_sources + "
+                        f"[s IN sources WHERE NOT s IN old_sources]"
+                        f"{batch_snapshot}"
                     )
                 else:
                     query = (
@@ -287,7 +947,7 @@ class GraphStore:
                     )
                 try:
                     await self._conn.query(query, {"batch": batch_data})
-                    count += len(batch)
+                    count += sum(weight for *_, weight in batch)
                 except Exception as exc:
                     logger.warning(
                         f"Batch upsert failed for [{safe_rel_type}] "
@@ -295,7 +955,7 @@ class GraphStore:
                         f"falling back to individual: {exc}"
                     )
                     # Per-item fallback
-                    for rel, sid, eid in batch:
+                    for rel, sid, eid, props, weight in batch:
                         fb_src, fb_tgt = self._REL_LABEL_HINTS.get(
                             rel.type, ("__Entity__", "__Entity__")
                         )
@@ -310,12 +970,20 @@ class GraphStore:
                             q = (
                                 f"MATCH (a:`{safe_fb_src}` {{id: $start_id}}), "
                                 f"(b:`{safe_fb_tgt}` {{id: $end_id}}) "
-                                f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
+                                f"MERGE (a)-[r:`{safe_fb_rel}` "
+                                f"{{rel_type: coalesce($properties.rel_type, '')}}]->(b) "
                                 f"WITH r, $properties AS props, "
                                 f"     coalesce(r.source_chunk_ids, []) AS old, "
-                                f"     coalesce($properties.source_chunk_ids, []) AS contrib "
+                                f"     coalesce($properties.source_chunk_ids, []) AS contrib, "
+                                f"     coalesce(r.structured_sources, []) AS old_sources, "
+                                f"     coalesce($properties.structured_sources, []) AS sources"
+                                f"{old_snapshot} "
                                 f"SET r += props "
-                                f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]"
+                                f"SET r.source_chunk_ids = old + "
+                                f"[c IN contrib WHERE NOT c IN old], "
+                                f"    r.structured_sources = old_sources + "
+                                f"[s IN sources WHERE NOT s IN old_sources]"
+                                f"{item_snapshot}"
                             )
                         else:
                             q = (
@@ -324,14 +992,10 @@ class GraphStore:
                                 f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
                                 f"SET r += $properties"
                             )
-                        params = {
-                            "start_id": sid,
-                            "end_id": eid,
-                            "properties": self._clean_properties(rel.properties),
-                        }
+                        params = {"start_id": sid, "end_id": eid, "properties": props}
                         try:
                             await self._conn.query(q, params)
-                            count += 1
+                            count += weight
                         except Exception as inner_exc:
                             logger.warning(
                                 f"Failed to upsert relationship "
@@ -341,6 +1005,208 @@ class GraphStore:
 
         logger.debug(f"Upserted {count} relationships")
         return count
+
+    # Rows one cleanup query strips or deletes, so dropping a large table is a
+    # series of short writes rather than one that holds the graph for seconds.
+    _RELATIONSHIP_CLEANUP_BATCH = 10_000
+
+    async def _ensure_relationship_source_index(self) -> None:
+        """Range-index ``RELATES.structured_sources``, once for every relationship table.
+
+        A table's snapshot and cleanup queries then read only the edges that
+        list it, through ``$signature IN r.structured_sources`` -- without the
+        index each one read every RELATES edge in the graph, document edges
+        included. One index for all tables: adding a field to RELATES makes
+        FalkorDB rebuild the whole RELATES index, embeddings included, so a
+        per-table index would rebuild it for every new table. Created here
+        rather than with the other indexes, so a graph that never ingests a
+        relationship table never pays that rebuild.
+        """
+        if self._indexed is None:
+            self._indexed = await self._read_range_indexes()
+        if ("RELATES", "structured_sources") in self._indexed:
+            return
+        # Not while the RELATES embedding index is still building: on FalkorDB
+        # 6.0.2 a field added while another one builds could come up empty.
+        await self._wait_for_index("RELATES", "RELATIONSHIP")
+        try:
+            await self._conn.query(
+                "CREATE INDEX FOR ()-[r:RELATES]-() ON (r.structured_sources)",
+                expected_errors=("already indexed",),
+            )
+        except Exception as exc:
+            if "already indexed" not in str(exc).lower():
+                logger.debug("Range index on RELATES.structured_sources not created: %s", exc)
+                return
+        self._indexed.add(("RELATES", "structured_sources"))
+        await self._wait_for_index("RELATES", "RELATIONSHIP")
+
+    async def next_relationship_snapshot(self, marker_property: str, signature: str) -> int:
+        """Return the snapshot number for a new relationship-table run.
+
+        It is the server clock in milliseconds, so a run that starts later
+        outranks one already running, and that run's cleanup leaves the later
+        run's edges alone. When one of the source's edges already holds that
+        number or a larger one (two runs in one millisecond, or a clock set
+        back) it is one more than the largest, so a re-ingest always outranks
+        the run before it.
+
+        The ``structured_sources`` index this reads through is created by the
+        run's cleanup, after its endpoint lookups: FalkorDB builds one index at
+        a time, and on a graph with many embedded edges the endpoint key index
+        those lookups need waited behind the RELATES rebuild. Without the index
+        this query reads every RELATES edge, once.
+        """
+        marker = sanitize_cypher_label(marker_property)
+        result = await self._conn.query(
+            "MATCH ()-[r:RELATES]->() "
+            # Not wrapped in coalesce(): FalkorDB 4.x then skips the index.
+            "WHERE $signature IN r.structured_sources "
+            f"AND r.`{marker}` IS NOT NULL "
+            f"WITH max(r.`{marker}`) AS newest "
+            "WITH newest, timestamp() AS now "
+            "RETURN CASE WHEN newest IS NULL OR now > newest THEN now ELSE newest + 1 END",
+            {"signature": signature},
+        )
+        return int(result.result_set[0][0])
+
+    async def finalize_relationship_snapshot(
+        self,
+        signature: str,
+        marker_property: str,
+        snapshot_token: int,
+        signed_properties: Sequence[str],
+    ) -> int:
+        """Remove stale contributions after a complete relationship-table write.
+
+        Current rows carry ``marker_property`` set to this run's
+        ``snapshot_token`` or a newer run's (:meth:`upsert_relationships` never
+        lowers it). Rows whose number is older than this run's lose only this
+        mapping's signed properties and source marker; a newer run's rows are
+        left alone, so two runs of one source at once cannot delete each
+        other's edges. The physical edge is deleted only when no structured
+        table and no document chunk still supports it.
+
+        Stale edges are found through the ``structured_sources`` index, so only
+        this source's edges are read, and changed ``_RELATIONSHIP_CLEANUP_BATCH``
+        at a time. Finding and changing them are two queries: FalkorDB 6.0.2
+        crashed (a RediSearch lock assertion) when one query set
+        ``structured_sources`` on edges while its LIMIT left the scan of that
+        index open. The change finds each edge again by the ids of both its
+        nodes and checks it is still stale: matching only the start node made
+        every row walk all of that node's RELATES edges, so cleanup took time
+        rows x out-degree (38 s for 20,000 edges from one node).
+        """
+        await self._ensure_relationship_source_index()
+        marker = sanitize_cypher_label(marker_property)
+        removed = ", ".join(
+            f"r.`{sanitize_cypher_label(name)}`"
+            for name in dict.fromkeys((marker_property, *signed_properties))
+        )
+        params: dict[str, Any] = {"signature": signature, "snapshot": snapshot_token}
+        find = (
+            "MATCH (a)-[r:RELATES]->(b) "
+            # Not wrapped in coalesce(): FalkorDB 4.x then skips the index.
+            "WHERE $signature IN r.structured_sources "
+            f"AND coalesce(r.`{marker}`, 0) < $snapshot "
+            "RETURN id(a), id(r), id(b) LIMIT $limit"
+        )
+        strip = (
+            "UNWIND $edges AS edge "
+            "MATCH (a) WHERE id(a) = edge.a "
+            # WITH between the MATCHes: FalkorDB 6.0.2 loses ``edge`` without it.
+            "WITH a, edge "
+            "MATCH (b) WHERE id(b) = edge.b "
+            "WITH a, b, edge "
+            # Both ends bound: the engine checks the edges between a and b only,
+            # instead of every edge leaving a.
+            "MATCH (a)-[r:RELATES]->(b) WHERE id(r) = edge.r "
+            # any() rather than IN, so this query never reads that index.
+            "AND any(s IN r.structured_sources WHERE s = $signature) "
+            f"AND coalesce(r.`{marker}`, 0) < $snapshot "
+            "WITH r, [s IN r.structured_sources WHERE s <> $signature] AS rest "
+            "SET r.structured_sources = rest "
+            f"REMOVE {removed} "
+            "WITH collect(r) AS stale, collect(CASE WHEN size(rest) = 0 "
+            "AND size(coalesce(r.source_chunk_ids, [])) = 0 THEN r END) AS unsupported "
+            "FOREACH (x IN unsupported | DELETE x) "
+            "RETURN size(stale)"
+        )
+        total = 0
+        while True:
+            found = await self._conn.query(
+                find, {**params, "limit": self._RELATIONSHIP_CLEANUP_BATCH}
+            )
+            edges = [
+                {"a": row[0], "r": row[1], "b": row[2]}
+                for row in getattr(found, "result_set", None) or []
+            ]
+            if not edges:
+                return total
+            result = await self._conn.query(strip, {**params, "edges": edges})
+            rows = getattr(result, "result_set", None) or []
+            stripped = int(rows[0][0]) if rows and rows[0] else 0
+            total += stripped
+            # A stripped edge no longer lists the source, so the next read starts
+            # on the ones left; one that could not be stripped would come back.
+            if not stripped:
+                return total
+
+    async def clear_relationship_source_property(
+        self, signature: str, relationship_type: str, property_name: str
+    ) -> None:
+        """Retract a removed mapping property from surviving source-owned edges.
+
+        In ``_RELATIONSHIP_CLEANUP_BATCH`` edges per write, found and changed
+        by two queries as in :meth:`finalize_relationship_snapshot`: one write
+        over every edge of a large source could hold the graph or time out.
+        An edge drops out of the next read once the property is gone.
+        """
+        await self._ensure_relationship_source_index()
+        safe_property = sanitize_cypher_label(property_name)
+        params: dict[str, Any] = {"signature": signature, "type": relationship_type}
+        find = (
+            "MATCH (a)-[r:RELATES]->(b) "
+            "WHERE $signature IN r.structured_sources AND r.rel_type = $type "
+            f"AND r.`{safe_property}` IS NOT NULL "
+            "RETURN id(a), id(r), id(b) LIMIT $limit"
+        )
+        clear = (
+            "UNWIND $edges AS edge "
+            "MATCH (a) WHERE id(a) = edge.a "
+            "WITH a, edge "
+            "MATCH (b) WHERE id(b) = edge.b "
+            "WITH a, b, edge "
+            "MATCH (a)-[r:RELATES]->(b) WHERE id(r) = edge.r "
+            f"REMOVE r.`{safe_property}` "
+            "RETURN count(r)"
+        )
+        while True:
+            found = await self._conn.query(
+                find, {**params, "limit": self._RELATIONSHIP_CLEANUP_BATCH}
+            )
+            edges = [
+                {"a": row[0], "r": row[1], "b": row[2]}
+                for row in getattr(found, "result_set", None) or []
+            ]
+            if not edges:
+                return
+            result = await self._conn.query(clear, {**params, "edges": edges})
+            rows = getattr(result, "result_set", None) or []
+            if not (rows and rows[0] and rows[0][0]):
+                return
+
+    async def drop_relationship_source(
+        self, signature: str, signed_properties: Sequence[str]
+    ) -> int:
+        """Remove one relationship table's contribution without touching peers."""
+        return await self.finalize_relationship_snapshot(
+            signature,
+            f"relationship_mapping_{signature}",
+            # Newer than any run's number, so every row of the source is stale.
+            2**63 - 1,
+            signed_properties,
+        )
 
     # ── Read Operations ──────────────────────────────────────────
 
@@ -355,16 +1221,24 @@ class GraphStore:
 
         Args:
             chunk_id: ID of the chunk node.
-            max_hops: Maximum traversal depth (default: 1).
+            max_hops: Maximum traversal depth (default: 1). With 1, the 50
+                entities kept are those with the lowest ids; beyond one hop,
+                which 50 are kept follows the engine's row order.
 
         Returns:
             List of entity dicts with id, label, properties.
         """
         max_hops = max(1, min(max_hops, 5))
+        # Without an order, which 50 survive the LIMIT is the engine's row
+        # order — newest-first on FalkorDB 4.x, oldest-first on 6.0.x. Only one
+        # hop is ordered: an order needs every path before the LIMIT, and paths
+        # multiply with each hop — 3 hops over 40k nodes went from 0.2 s to
+        # 16.6 s on 4.x and timed out.
+        order = "ORDER BY id " if max_hops == 1 else ""
         query = (
             f"MATCH (c {{id: $chunk_id}})-[*1..{max_hops}]-(e:__Entity__) "
             f"RETURN DISTINCT e.id AS id, labels(e) AS labels, properties(e) AS props "
-            f"LIMIT 50"
+            f"{order}LIMIT 50"
         )
         try:
             result = await self._conn.query(query, {"chunk_id": chunk_id})
@@ -403,14 +1277,21 @@ class GraphStore:
         """
         stats: dict[str, Any] = {}
 
-        r = await self._conn.query("MATCH (n) RETURN count(n)")
-        stats["node_count"] = r.result_set[0][0] if r.result_set else 0
+        # The SDK's own system nodes (config, dedup records) are not data.
+        r = await self._conn.query(
+            "MATCH (n) RETURN count(n) AS n UNION ALL "
+            f"MATCH (n:{CONFIG_LABEL}) RETURN -count(n) AS n UNION ALL "
+            f"MATCH (n:{PROCESSING_LABEL}) RETURN -count(n) AS n"
+        )
+        stats["node_count"] = sum(row[0] for row in r.result_set or [])
 
         r = await self._conn.query("MATCH ()-[r]->() RETURN count(r)")
         stats["edge_count"] = r.result_set[0][0] if r.result_set else 0
 
         r = await self._conn.query("CALL db.labels()")
-        stats["entity_types"] = [row[0] for row in r.result_set] if r.result_set else []
+        stats["entity_types"] = [
+            row[0] for row in r.result_set or [] if not is_system_label(row[0])
+        ]
 
         r = await self._conn.query("CALL db.relationshipTypes()")
         stats["relationship_types"] = [row[0] for row in r.result_set] if r.result_set else []
@@ -461,7 +1342,9 @@ class GraphStore:
         except Exception:
             logger.debug("GRAPH.DELETE failed, falling back to DETACH DELETE", exc_info=True)
             await self._conn.query("MATCH (n) DETACH DELETE n")
-        self._indexed_labels.clear()
+        # GRAPH.DELETE drops every index; the fallback keeps them. Re-read
+        # on the next write rather than guess.
+        self._indexed = None
         logger.info("Deleted all graph data")
 
     # ── Document Lifecycle (incremental ingestion support) ──────
@@ -469,7 +1352,7 @@ class GraphStore:
     # Cypher stays here per the repository pattern — facade calls these.
 
     async def get_document_record(self, document_id: str) -> DocumentRecord | None:
-        """Return persisted Document state (``path``, ``content_hash``)
+        """Return persisted Document state (``path``, ``content_hash``, ``kind``)
         as a typed ``DocumentRecord``, or ``None`` if no such Document.
 
         Pre-1.1.0 Document nodes lack ``content_hash`` — the field will
@@ -478,13 +1361,31 @@ class GraphStore:
         """
         result = await self._conn.query(
             "MATCH (d:Document {id: $id}) RETURN d.path AS path, "
-            "d.content_hash AS content_hash LIMIT 1",
+            "d.content_hash AS content_hash, d.kind AS kind, d.table AS table LIMIT 1",
             {"id": document_id},
         )
         if not result.result_set:
             return None
         row = result.result_set[0]
-        return DocumentRecord(path=row[0], content_hash=row[1])
+        return DocumentRecord(
+            path=row[0],
+            content_hash=row[1],
+            kind=row[2] if len(row) > 2 else None,
+            table=row[3] if len(row) > 3 else None,
+        )
+
+    async def documents_of_table(self, signature: str) -> list[str]:
+        """Ids of the live Documents written from the table signed ``signature``.
+
+        Pending copies an interrupted update left behind are not Documents of
+        the table; recovery deals with those under their real id.
+        """
+        result = await self._conn.query(
+            "MATCH (d:Document {table: $table}) "
+            "WHERE NOT d.id CONTAINS '__pending__' RETURN d.id ORDER BY d.id",
+            {"table": signature},
+        )
+        return [row[0] for row in result.result_set]
 
     async def get_document_entity_candidates(self, document_id: str) -> list[str]:
         """Return ids of entities mentioned in this document's chunks.
@@ -1055,13 +1956,64 @@ class GraphStore:
                 "MATCH (e:__Entity__ {id: eid})-[r:RELATES]-(:__Entity__) "
                 "WHERE r.source_chunk_ids IS NOT NULL "
                 "AND size(r.source_chunk_ids) = 0 "
+                "AND size(coalesce(r.structured_sources, [])) = 0 "
                 "WITH DISTINCT r "
                 "DELETE r "
                 "RETURN count(r) AS n",
                 {"ids": batch},
             )
+            # An edge a relationship table still owns survives without its
+            # last chunk; it is no longer embedded (see embed_relationships),
+            # so its old vector goes too rather than keep taking search slots.
+            await self._conn.query(
+                "UNWIND $ids AS eid "
+                "MATCH (e:__Entity__ {id: eid})-[r:RELATES]-(:__Entity__) "
+                "WHERE r.source_chunk_ids IS NOT NULL "
+                "AND size(r.source_chunk_ids) = 0 "
+                "AND size(coalesce(r.structured_sources, [])) > 0 "
+                "AND r.embedding IS NOT NULL "
+                "WITH DISTINCT r "
+                "REMOVE r.embedding",
+                {"ids": batch},
+            )
             deleted += r.result_set[0][0] if r.result_set else 0
         return deleted
+
+    async def strip_stale_provenance(
+        self,
+        candidate_ids: list[str],
+        old_chunk_ids: list[str],
+    ) -> int:
+        """Strip ``old_chunk_ids`` from the ``source_chunk_ids`` of the entities
+        in ``candidate_ids``. The node counterpart of
+        :meth:`delete_stale_relationships`.
+
+        ``upsert_nodes`` unions a node's provenance across documents, so once a
+        document's chunks are deleted their ids would otherwise stay on every
+        entity the document mentioned, pointing at chunks that no longer exist.
+        The list is trimmed, never the node: whether the entity itself survives
+        is ``delete_orphan_entities``'s question, answered from ``MENTIONED_IN``.
+
+        Scoped to the candidates, so it never scans the graph, and idempotent.
+
+        Returns the number of entities whose list changed.
+        """
+        if not candidate_ids or not old_chunk_ids:
+            return 0
+        touched = 0
+        for start in range(0, len(candidate_ids), self._BATCH_SIZE):
+            batch = candidate_ids[start : start + self._BATCH_SIZE]
+            r = await self._conn.query(
+                "UNWIND $ids AS eid "
+                "MATCH (e:__Entity__ {id: eid}) "
+                "WHERE e.source_chunk_ids IS NOT NULL "
+                "AND any(c IN e.source_chunk_ids WHERE c IN $old_chunks) "
+                "SET e.source_chunk_ids = [c IN e.source_chunk_ids WHERE NOT c IN $old_chunks] "
+                "RETURN count(e) AS n",
+                {"ids": batch, "old_chunks": old_chunk_ids},
+            )
+            touched += r.result_set[0][0] if r.result_set else 0
+        return touched
 
     async def delete_orphan_entities(self, candidate_ids: list[str]) -> int:
         """Delete entities from ``candidate_ids`` that no longer have any
@@ -1083,11 +2035,71 @@ class GraphStore:
                 "UNWIND $ids AS eid "
                 "MATCH (e:__Entity__ {id: eid}) "
                 "WHERE NOT (e)-[:MENTIONED_IN]->(:Chunk) "
-                "DETACH DELETE e RETURN count(e) AS n",
+                "WITH collect(e) AS orphans, collect(DISTINCT e.id) AS gone "
+                + deleted_record_clause("gone")
+                + "FOREACH (e IN orphans | DETACH DELETE e) RETURN size(orphans) AS n",
                 {"ids": batch},
             )
             deleted += r.result_set[0][0] if r.result_set else 0
         return deleted
+
+    async def entities_outside_document(
+        self, candidate_ids: list[str], document_id: str
+    ) -> list[str]:
+        """The entities in ``candidate_ids`` that ``document_id`` no longer mentions.
+
+        After a table is re-synced the rows and foreign keys the new export has
+        are ``MENTIONED_IN`` its new record chunks, and the ones it dropped are
+        not: they survive only because a document or another table still holds
+        them. Those are the nodes the table has to take its columns back from.
+        Scoped to the candidates, so it never scans the graph.
+        """
+        if not candidate_ids:
+            return []
+        outside: list[str] = []
+        for start in range(0, len(candidate_ids), self._BATCH_SIZE):
+            batch = candidate_ids[start : start + self._BATCH_SIZE]
+            r = await self._conn.query(
+                "UNWIND $ids AS eid "
+                "MATCH (e:__Entity__ {id: eid}) "
+                "WHERE NOT (e)-[:MENTIONED_IN]->(:Chunk)<-[:PART_OF]-(:Document {id: $doc}) "
+                "RETURN e.id",
+                {"ids": batch, "doc": document_id},
+            )
+            outside.extend(row[0] for row in r.result_set or [] if row and row[0])
+        return outside
+
+    async def rows_outside_document(
+        self, candidate_ids: list[str], document_id: str, label: str, signed_key: str
+    ) -> list[str]:
+        """The nodes in ``candidate_ids`` this table wrote as rows and no longer does.
+
+        A row is current when a record chunk of ``document_id`` keyed on its
+        ``entity_key`` mentions it. Being mentioned at all is not enough: a
+        table whose link points at its own label (``manager_id``) still mentions
+        a row that left the export, through the rows that report to it, so
+        :meth:`entities_outside_document` keeps it and its stale columns with
+        it. Scoped to nodes carrying ``signed_key`` — this table's own rows — so
+        a placeholder it merely points at is not counted.
+        """
+        if not candidate_ids:
+            return []
+        safe_label = sanitize_cypher_label(label)
+        safe_key = sanitize_cypher_label(signed_key)
+        outside: list[str] = []
+        for start in range(0, len(candidate_ids), self._BATCH_SIZE):
+            batch = candidate_ids[start : start + self._BATCH_SIZE]
+            r = await self._conn.query(
+                f"UNWIND $ids AS eid "
+                f"MATCH (e:`{safe_label}` {{id: eid}}) WHERE e.`{safe_key}` IS NOT NULL "
+                f"OPTIONAL MATCH (e)-[:MENTIONED_IN]->(c:Chunk {{record_key: e.entity_key}})"
+                f"<-[:PART_OF]-(:Document {{id: $doc}}) "
+                f"WITH e, count(c) AS current WHERE current = 0 "
+                f"RETURN e.id",
+                {"ids": batch, "doc": document_id},
+            )
+            outside.extend(row[0] for row in r.result_set or [] if row and row[0])
+        return outside
 
     # ── Ontology evolution (data-graph migration primitives) ────
     #
@@ -1136,19 +2148,219 @@ class GraphStore:
         )
         return r.result_set[0][0] if r.result_set else 0
 
-    async def drop_node_property(self, label: str, prop: str) -> int:
-        """Remove ``prop`` from every node carrying ``label``.
+    async def count_unresolved_references(self) -> dict[str, int]:
+        """Per label, reference stubs no source ever filled in.
+
+        A ``Link`` writes its target with ``is_stub: True`` — on create, and onto
+        a prose-extracted node it lands on that no table has claimed yet — on the
+        promise that the table owning that entity will arrive and describe it. A
+        stub still flagged at the end means the promise was not kept: either the
+        owning export was never loaded, or the key it is joined on does not match
+        the one that table declares. Both look like a working graph until a
+        question needs the target's columns.
+        """
+        result = await self._conn.query(
+            "MATCH (e:__Entity__) WHERE e.is_stub = true "
+            "RETURN head([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
+            "count(e) AS n"
+        )
+        rows = getattr(result, "result_set", None) or []
+        return {
+            row[0]: int(row[1])
+            for row in rows
+            if isinstance(row, list) and len(row) >= 2 and row[0]
+        }
+
+    async def count_entities_without_a_name(self) -> dict[str, int]:
+        """Per label, mapped entities carrying no display name.
+
+        A table is entitled to have no name column — a fact export keyed on a
+        reading id is a reasonable thing to declare — so this is a report and not
+        an error. But it is also exactly what a wrong ``name=`` column looks like,
+        and without a name nothing can ever join to a mention in prose.
+
+        Scoped to ``is_stub IS NOT NULL``: only a mapped source writes that, so an
+        extracted entity that happens to lack a name is not counted here.
+        """
+        result = await self._conn.query(
+            "MATCH (e:__Entity__) WHERE e.name IS NULL AND e.is_stub IS NOT NULL "
+            "RETURN head([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
+            "count(e) AS n"
+        )
+        rows = getattr(result, "result_set", None) or []
+        return {
+            row[0]: int(row[1])
+            for row in rows
+            if isinstance(row, list) and len(row) >= 2 and row[0]
+        }
+
+    async def find_stale_signed_properties(
+        self, label: str, signature: str, source: str
+    ) -> list[tuple[str, list[str]]]:
+        """Entities carrying a source's signed properties that it no longer mentions.
+
+        When a row disappears from one export but another source still describes
+        the same entity, the entity correctly survives — the orphan predicate is
+        global, so a remaining mention from any source keeps it. The re-sync
+        takes the first source's signed properties back from it; this is the
+        check that nothing escaped — a graph written before that retraction
+        existed, a cleanup interrupted before it ran.
+
+        Not fixed here: the difference between "this source dropped the row" and
+        "this source has not been reloaded yet" is not visible from the graph,
+        and guessing would delete live data. Reported instead.
+
+        Returns ``(entity_id, [orphaned property names])`` pairs.
+        """
+        safe_label = sanitize_cypher_label(label)
+        # Resolve the source to concrete Document ids first. The id is the source
+        # once ingest() looks a mapping up by name, but a caller may still pass a
+        # path — so accept the id itself or a path ending in it, with the
+        # separator required so `my_hr.csv` cannot masquerade as `hr.csv`.
+        doc_result = await self._conn.query(
+            "MATCH (d:Document) WHERE d.id = $source OR d.id ENDS WITH $suffix "
+            "RETURN collect(d.id) AS ids",
+            {"source": source, "suffix": f"/{source}"},
+        )
+        doc_rows = getattr(doc_result, "result_set", None) or []
+        document_ids = list(doc_rows[0][0]) if doc_rows and doc_rows[0] and doc_rows[0][0] else []
+        if not document_ids:
+            # The source was never loaded into this graph, so nothing it wrote can
+            # be stale — there is nothing to compare against.
+            return []
+
+        # A pattern comprehension collects the documents that do mention the
+        # entity, and the filter happens in the WITH. Neither `EXISTS(pattern)`
+        # nor a WHERE inside the comprehension is supported here — both fail with
+        # "Unable to resolve filtered alias".
+        result = await self._conn.query(
+            f"MATCH (e:`{safe_label}`) "
+            f"WHERE any(k IN keys(e) WHERE k STARTS WITH $prefix) "
+            f"WITH e, [(e)-[:MENTIONED_IN]->(:Chunk)<-[:PART_OF]-(d:Document) | d.id] AS docs "
+            f"WHERE none(x IN docs WHERE x IN $ids) "
+            f"RETURN e.id AS id, [k IN keys(e) WHERE k STARTS WITH $prefix] AS orphaned",
+            {"prefix": f"{signature}__", "ids": document_ids},
+        )
+        rows = getattr(result, "result_set", None) or []
+        return [
+            (row[0], list(row[1]))
+            for row in rows
+            if isinstance(row, list) and len(row) >= 2 and row[0]
+        ]
+
+    async def count_shared_property_values(
+        self, label: str, properties: Sequence[str]
+    ) -> tuple[int, int]:
+        """How often the sources behind one logical property meet on an entity.
+
+        ``properties`` are the signed names two or more tables store the same
+        declared property under — ``hr__grade`` and ``finance__grade``. Signing
+        keeps every value, so nothing here is lost; what is measured is how many
+        entities carry more than one of them, and on how many of those the
+        values differ. A value of another type counts as different: ``3`` and
+        ``"3"`` are two answers to the same question.
+
+        Returns ``(entities holding two or more, entities where they differ)``.
+        """
+        safe_label = sanitize_cypher_label(label)
+        refs = ", ".join(f"e.`{sanitize_cypher_label(prop)}`" for prop in properties)
+        result = await self._conn.query(
+            f"MATCH (e:`{safe_label}`) "
+            f"WITH [v IN [{refs}] WHERE v IS NOT NULL] AS vals "
+            f"WHERE size(vals) > 1 "
+            f"RETURN count(*) AS shared, "
+            f"count(CASE WHEN any(v IN vals WHERE v <> vals[0]) THEN 1 END) AS differing"
+        )
+        rows = getattr(result, "result_set", None) or []
+        if not rows or not isinstance(rows[0], list) or len(rows[0]) < 2:
+            return 0, 0
+        return int(rows[0][0] or 0), int(rows[0][1] or 0)
+
+    async def drop_node_property(
+        self, label: str, prop: str, *, ids: Sequence[str] | None = None
+    ) -> int:
+        """Remove ``prop`` from every node carrying ``label``, or from ``ids`` only.
 
         Returns the number of nodes touched.
         """
         safe_label = sanitize_cypher_label(label)
         safe_prop = sanitize_cypher_label(prop)
+        if ids is not None and not ids:
+            return 0
+        scope, params = self._id_scope(ids)
         r = await self._conn.query(
-            f"MATCH (n:`{safe_label}`) WHERE n.`{safe_prop}` IS NOT NULL "
+            f"MATCH (n:`{safe_label}`) WHERE n.`{safe_prop}` IS NOT NULL{scope} "
             f"REMOVE n.`{safe_prop}` "
             f"RETURN count(n) AS n",
+            params,
         )
         return r.result_set[0][0] if r.result_set else 0
+
+    @staticmethod
+    def _id_scope(ids: Sequence[str] | None) -> tuple[str, dict[str, Any] | None]:
+        """A ``WHERE`` clause tail and its parameters restricting a match to ``ids``.
+
+        ``None`` means unscoped: the whole label. An empty sequence is a scope
+        that matches nothing, and callers short-circuit on it.
+        """
+        if ids is None:
+            return "", None
+        return " AND n.id IN $ids", {"ids": list(ids)}
+
+    async def release_entity_keys(
+        self,
+        label: str,
+        *,
+        owned_by: Sequence[str],
+        referenced_by: Sequence[str],
+        ids: Sequence[str] | None = None,
+    ) -> int:
+        """Take a dropped table's identity off the nodes of ``label`` that survive it.
+
+        A row's node carries ``entity_key`` and ``is_stub`` on top of the signed
+        columns; ``drop_node_property`` removes the columns one by one but these
+        two are unsigned, shared by every table that keys the label, so whether
+        they go depends on who else is still writing them:
+
+        - no other table keys the node → ``entity_key`` and ``is_stub`` are
+          removed; what is left is whatever a document said about it;
+        - another table still **owns** rows of the label and its signed key is on
+          the node → nothing changes, the node is still that table's row;
+        - only other tables' **links** still point at it → it is a placeholder
+          again, ``is_stub: true``, exactly as if the dropped table had never
+          arrived.
+
+        Args:
+            label: The label whose nodes are examined.
+            owned_by: Signed key properties of the *other* tables that own rows
+                of this label.
+            referenced_by: Signed key properties of the *other* tables' links
+                into this label.
+            ids: Restrict to these nodes — the rows a re-sync no longer has —
+                rather than the whole label, which is what a drop wants.
+
+        Returns the number of nodes changed.
+        """
+        safe_label = sanitize_cypher_label(label)
+        if ids is not None and not ids:
+            return 0
+        scope, params = self._id_scope(ids)
+
+        def absent(properties: Sequence[str]) -> str:
+            return "".join(f" AND n.`{sanitize_cypher_label(p)}` IS NULL" for p in properties)
+
+        released = await self._conn.query(
+            f"MATCH (n:`{safe_label}`) WHERE n.entity_key IS NOT NULL"
+            f"{absent(owned_by)}{absent(referenced_by)}{scope} "
+            f"REMOVE n.entity_key, n.is_stub RETURN count(n) AS n",
+            params,
+        )
+        demoted = await self._conn.query(
+            f"MATCH (n:`{safe_label}`) WHERE n.is_stub = false{absent(owned_by)}{scope} "
+            f"SET n.is_stub = true RETURN count(n) AS n",
+            params,
+        )
+        return sum(r.result_set[0][0] if r.result_set else 0 for r in (released, demoted))
 
     async def delete_nodes_by_label(self, label: str) -> int:
         """``DETACH DELETE`` every node with this label.
@@ -1164,8 +2376,17 @@ class GraphStore:
         count = count_r.result_set[0][0] if count_r.result_set else 0
         if count == 0:
             return 0
-        await self._conn.query(f"MATCH (n:`{safe_label}`) DETACH DELETE n")
-        return count
+        while True:
+            r = await self._conn.query(
+                f"MATCH (n:`{safe_label}`) WITH n LIMIT $batch "
+                "WITH collect(n) AS nodes, "
+                "collect(DISTINCT CASE WHEN n:__Entity__ THEN n.id END) AS gone "
+                + deleted_record_clause("gone")
+                + "FOREACH (n IN nodes | DETACH DELETE n) RETURN size(nodes)",
+                {"batch": self._DELETE_BATCH},
+            )
+            if not r.result_set or r.result_set[0][0] < self._DELETE_BATCH:
+                return count
 
     async def rename_relation_type(self, old: str, new: str) -> int:
         """Recreate every ``[:old]`` edge as ``[:new]``, preserving
@@ -1363,10 +2584,14 @@ class GraphStore:
             f"MATCH (t:`{safe_tgt}`)-[:MENTIONED_IN]->(c) "
             "WHERE s <> t "
             "AND NOT $op IN coalesce(c.extracted_ops, []) "
+            # Order before collecting: the cap keeps the first pairs, and
+            # collect() order is otherwise the engine's row order, so a capped
+            # chunk showed the LLM different pairs on FalkorDB 4.x and 6.0.x.
+            "WITH c, s, t ORDER BY s.id, t.id "
             "WITH c, collect(DISTINCT {src_id: s.id, src_name: s.name, "
             "tgt_id: t.id, tgt_name: t.name}) AS pairs "
-            f"RETURN c.id AS chunk_id, c.text AS chunk_text, pairs[0..{cap}] AS pairs"
-            f"{limit_clause}",
+            f"RETURN c.id AS chunk_id, c.text AS chunk_text, pairs[0..{cap}] AS pairs "
+            f"ORDER BY chunk_id{limit_clause}",
             {"op": op_id},
         )
         return [
@@ -1409,6 +2634,75 @@ class GraphStore:
     def _clean_identifier(cls, value: Any) -> str:
         """Normalise IDs used in Cypher params."""
         return cls._sanitize_string(str(value))
+
+    @staticmethod
+    def _merge_key_value(value: Any) -> Any:
+        """A MERGE key value, compared the way FalkorDB compares it.
+
+        Numbers are equal by value (``5`` and ``5.0`` are one key, as are
+        ``0`` and ``-0.0``), a boolean is never equal to a number, and a string
+        is never equal to either. Python's ``==`` and ``hash`` already treat
+        numbers that way, so tagging the kind keeps ``True`` apart from ``1``
+        and ``"5"`` apart from ``5`` without splitting ``5`` from ``5.0``.
+        """
+        if isinstance(value, bool):
+            return ("bool", value)
+        if isinstance(value, int | float):
+            return ("number", value)
+        if isinstance(value, str):
+            return ("string", value)
+        return ("other", json.dumps(value, sort_keys=True, default=str))
+
+    @staticmethod
+    def _fold_properties(
+        acc: dict[str, Any],
+        props: dict[str, Any],
+        *,
+        union_provenance: bool,
+        seen: set[Any] | None = None,
+    ) -> tuple[dict[str, Any], set[Any] | None]:
+        """Apply a later write of the same key on top of an earlier one.
+
+        Mirrors what the MERGE ... SET statements do row by row: later
+        properties win, and where the statement unions ``source_chunk_ids``
+        an empty contribution keeps the existing list.
+
+        Writes sharing a key are folded before the batch is sent because the
+        engines disagree when one ``UNWIND ... MERGE`` batch holds the same key
+        twice: the C engine (4.x) keeps the first row's values, the Rust
+        engine (6.0.x) the last; and on both, each row reads
+        ``source_chunk_ids`` before any row's SET, so the union kept one row's
+        chunks and dropped the others'.
+
+        ``seen`` holds the ids already in ``acc``'s ``source_chunk_ids`` list;
+        pass back the set the previous fold of the same key returned. Copying
+        and scanning the list on every repeat made a key written n times cost
+        O(n²): 28 s for one edge repeated on 100,000 rows of a table. The list
+        is extended in place; it is the fresh copy ``_clean_properties`` made.
+        """
+        merged = {**acc, **props}
+        # Relationship-table ownership is unioned like provenance, so two
+        # tables' writes of one edge in a call keep both owners.
+        owners = acc.get("structured_sources")
+        new_owners = props.get("structured_sources")
+        if union_provenance and isinstance(owners, list) and isinstance(new_owners, list):
+            merged["structured_sources"] = owners + [x for x in new_owners if x not in owners]
+        old = acc.get("source_chunk_ids")
+        contrib = props.get("source_chunk_ids")
+        if union_provenance and isinstance(old, list):
+            if not contrib:
+                merged["source_chunk_ids"] = old
+                return merged, seen
+            if isinstance(contrib, list):
+                if seen is None:
+                    seen = set(old)
+                for chunk_id in contrib:
+                    if chunk_id not in seen:
+                        seen.add(chunk_id)
+                        old.append(chunk_id)
+                merged["source_chunk_ids"] = old
+                return merged, seen
+        return merged, None
 
     @classmethod
     def _clean_properties(cls, props: dict[str, Any]) -> dict[str, Any]:

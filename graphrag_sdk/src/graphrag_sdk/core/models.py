@@ -14,6 +14,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+from graphrag_sdk.core.tables import RelationshipMapping, TableMapping
+
 logger = logging.getLogger(__name__)
 
 # ── Base ─────────────────────────────────────────────────────────
@@ -220,6 +222,20 @@ class DocumentRecord(DataModel):
 
     path: str | None = None
     content_hash: str | None = None
+    kind: str | None = None
+    """How the document was written: ``"structured"`` for a mapped source.
+
+    Read so an update cannot re-interpret a table as prose. Absent on documents
+    written before this field existed, and on every extracted document, so treat
+    ``None`` as "prose".
+    """
+    table: str | None = None
+    """The signature of the table a structured Document was written from.
+
+    The prefix that table's columns are stored under (``hr`` for ``hr__grade``),
+    which is how a Document loaded under a caller's own id is traced back to its
+    declaration. ``None`` on prose, and on tables written before it was stamped.
+    """
 
 
 class ChunkEntityRow(DataModel):
@@ -309,6 +325,18 @@ class Attribute(DataModel):
     name: str
     type: str = "STRING"  # STRING, INTEGER, FLOAT, BOOLEAN, DATE, LIST
     description: str | None = None
+    structured: bool = False
+    """True when a structured source's mapping declared this property.
+
+    Such a property has an owner: the table the mapping describes, and its name
+    carries that table's signature — ``employees__title``, not ``title``. Nothing
+    else can write that name, so a job title the extractor reads from a memo
+    cannot overwrite what the HR export spelled; it lands unsigned, under its own
+    name, and both are on the node.
+
+    Read by the prompt builders, which surface the type so generated Cypher can
+    aggregate over the column instead of treating it as prose.
+    """
 
     @model_validator(mode="after")
     def _normalize_type(self) -> Attribute:
@@ -386,6 +414,97 @@ class Ontology(DataModel):
 
     entities: list[Entity] = Field(default_factory=list)
     relations: list[Relation] = Field(default_factory=list)
+    tables: list[TableMapping] = Field(default_factory=list)
+    """How tabular sources become nodes. A mapping is part of the schema.
+
+    Kept here rather than passed per ``ingest()`` call so that a second load of
+    the same table needs no mapping argument, a changed mapping can be diffed
+    against the stored one, and ``save_ontology()`` carries one reviewable
+    object. Each mapping signs the properties it writes with its source, so two
+    tables describing one entity cannot overwrite each other.
+    """
+    relationship_tables: list[RelationshipMapping] = Field(default_factory=list)
+    """Tabular sources whose rows describe only relationships between existing entities."""
+
+    @model_validator(mode="after")
+    def _refuse_duplicate_sources(self) -> Ontology:
+        """One source, one mapping. Two would race on the same properties."""
+        seen: set[str] = set()
+        sources = [mapping.source for mapping in self.tables]
+        sources.extend(mapping.source for mapping in self.relationship_tables)
+        for source in sources:
+            if source in seen:
+                raise ValueError(
+                    f"Structured mapping for {source!r} is declared twice. "
+                    f"One source has one mapping; merge them."
+                )
+            seen.add(source)
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_an_unconnected_new_label(self) -> Ontology:
+        """A mapping may add a label, but then it has to say how it connects.
+
+        A mapping's rows are only reachable from the rest of the graph through
+        something: a ``Link`` to another label, or the entity type already being
+        part of the ontology. A mapping that introduces a label with neither
+        produces an island — rows that are queryable and that no document, no
+        entity and no question can ever reach.
+
+        Usually that is a typo in ``label``, and it is the expensive kind: the
+        load succeeds, the counts look right, and the rows are simply somewhere
+        nobody will look. ``standalone=True`` is how you say you meant it, so an
+        island is something declared rather than something a slip produced.
+
+        A label a sibling mapping already connected counts as declared, so a
+        second table adding properties to ``Person`` does not have to repeat how
+        ``Person`` connects. So does a label a sibling's ``Link`` points at: the
+        table owning ``Organization`` is reached through every ``WORKS_AT`` edge
+        that keys it, which is exactly how a placeholder is meant to be filled.
+        """
+        known = {entity.label for entity in self.entities}
+        known |= {m.label for m in self.tables if m.links or m.standalone}
+        known |= {link.to for m in self.tables for link in m.links}
+        stranded = [
+            m for m in self.tables if m.label not in known and not m.links and not m.standalone
+        ]
+        if stranded:
+            detail = "; ".join(f"{m.source!r} declares {m.label!r}" for m in stranded)
+            raise ValueError(
+                f"A table mapping adds a label the ontology does not have and does "
+                f"not say how it connects: {detail}. Its rows would be an island "
+                f"nothing can reach. Either add the label to the ontology's "
+                f"entities, give the mapping a Link to something, or say the island "
+                f"is deliberate with standalone=True."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_colliding_signatures(self) -> Ontology:
+        """Two sources whose names reduce to one signature would overwrite.
+
+        ``signature_for`` is not injective — ``hr.csv``, ``HR.CSV`` and
+        ``hr csv.csv`` do not all reduce alike, but plenty of pairs do, and a
+        shared signature means a shared property namespace. Caught here, where
+        every mapping is visible at once, because neither mapping can see the
+        other on its own.
+        """
+        by_signature: dict[str, list[str]] = {}
+        for mapping in [*self.tables, *self.relationship_tables]:
+            by_signature.setdefault(mapping.signature, []).append(mapping.source)
+        collisions = {sig: srcs for sig, srcs in by_signature.items() if len(srcs) > 1}
+        if collisions:
+            detail = "; ".join(
+                f"{sig!r} claimed by {', '.join(sorted(srcs))}"
+                for sig, srcs in sorted(collisions.items())
+            )
+            raise ValueError(
+                f"Two table mappings reduce to one property signature: {detail}. "
+                f"Every property a source writes is stored as "
+                f"'<signature>__<property>', so these would silently overwrite "
+                f"each other. Rename one of the files."
+            )
+        return self
 
     @model_validator(mode="after")
     def _warn_on_undeclared_pattern_labels(self) -> Ontology:
@@ -634,10 +753,57 @@ class Ontology(DataModel):
             else:
                 rel_by_label[r.label] = r
 
-        return Ontology(
-            entities=list(ent_by_label.values()),
-            relations=list(rel_by_label.values()),
+        # model_copy, not a fresh Ontology(...): rebuilding by listing fields is
+        # how a newly added field silently disappears. That already happened once
+        # in this codebase — GraphData rebuilt by field list lost `mentions`, and
+        # every extracted entity lost its provenance with it.
+        merged_tables = {mapping.source: mapping for mapping in self.tables}
+        for mapping in other.tables:
+            merged_tables.setdefault(mapping.source, mapping)
+        merged_relationship_tables = {
+            mapping.source: mapping for mapping in self.relationship_tables
+        }
+        for mapping in other.relationship_tables:
+            merged_relationship_tables.setdefault(mapping.source, mapping)
+        merged = self.model_copy(
+            update={
+                "entities": list(ent_by_label.values()),
+                "relations": list(rel_by_label.values()),
+                "tables": list(merged_tables.values()),
+                "relationship_tables": list(merged_relationship_tables.values()),
+            }
         )
+
+        merged._refuse_duplicate_sources()
+        merged._refuse_colliding_signatures()
+        return merged
+
+    def tables_naming(self, label: str) -> dict[str, str]:
+        """``source -> how`` for every mapping that names ``label``.
+
+        A mapping names a label as the type of its rows or as the target of a
+        ``Link``. Either way it is a declaration that the label exists, and it
+        is registered again on every first touch — so an entity dropped from
+        under it comes back at the next start, after every node it described
+        was deleted. :meth:`GraphRAG.drop_entity` refuses on this instead.
+        """
+        naming: dict[str, str] = {}
+        for mapping in self.tables:
+            if mapping.label == label:
+                naming[mapping.source] = "its rows"
+                continue
+            links = sorted(link.type for link in mapping.links if link.to == label)
+            if links:
+                naming[mapping.source] = "Link " + ", ".join(links)
+        for mapping in self.relationship_tables:
+            endpoints = [
+                side
+                for side, endpoint in (("start", mapping.start), ("end", mapping.end))
+                if endpoint.entity == label
+            ]
+            if endpoints:
+                naming[mapping.source] = "relationship " + "/".join(endpoints) + " endpoint"
+        return naming
 
 
 # ── Extraction / Resolution Output Types ─────────────────────────
@@ -762,6 +928,71 @@ class ResolutionResult(DataModel):
     remap: dict[str, str] = Field(default_factory=dict)
 
 
+# ── Dedup Judge Types ────────────────────────────────────────────
+
+
+class JudgeAttribute(DataModel):
+    """One attribute the ontology declares for a type, as a dedup judge sees it."""
+
+    #: Its name as the entities show it: ``born``, or ``role (hr)`` for the
+    #: column one table's mapping writes.
+    name: str
+    type: str = "STRING"
+    description: str = ""
+
+
+class JudgeType(DataModel):
+    """A type of a judged set's members, with the attributes the ontology
+    declares for it."""
+
+    label: str
+    description: str = ""
+    attributes: list[JudgeAttribute] = Field(default_factory=list)
+
+
+class JudgeEntity(DataModel):
+    """One member of a judged set. Every field is text from documents: data
+    to judge, never instructions."""
+
+    name: str
+    labels: list[str] = Field(default_factory=list)
+    #: Other names it was already merged under.
+    aliases: list[str] = Field(default_factory=list)
+    description: str = ""
+    #: Its values of the attributes its types declare, by attribute name.
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class JudgeSet(DataModel):
+    """Candidates for one real-world entity, nominated by name similarity.
+    Most members of a set are merely related; some, or none, are the same."""
+
+    entities: list[JudgeEntity]
+    #: The declared types of its members, with their attributes.
+    types: list[JudgeType] = Field(default_factory=list)
+
+
+class JudgeGroup(DataModel):
+    """Members of one set that are the same real-world entity."""
+
+    #: Positions in ``JudgeSet.entities``, two or more.
+    members: list[int]
+    #: The merged entity's name, copied from its members' names or aliases;
+    #: any other is ignored.
+    name: str | None = None
+    #: Per attribute the members hold different values of — keyed by its name
+    #: as in ``JudgeEntity.attributes`` — the member (position in the set)
+    #: whose value the merged entity keeps.
+    keep: dict[str, int] = Field(default_factory=dict)
+
+
+class SetVerdict(DataModel):
+    """A judge's answer about one set. A member no group lists is a different
+    entity from every other member; no groups means nothing in it merges."""
+
+    groups: list[JudgeGroup] = Field(default_factory=list)
+
+
 # ── Retrieval Types ──────────────────────────────────────────────
 
 
@@ -863,9 +1094,152 @@ class FinalizeResult(DataModel):
 
     null_stubs_removed: int = 0
     entities_deduplicated: int = 0
+    judge_calls: int = 0
+    """Calls to the dedup judge: one per round, the first and each re-ask of
+    the sets without a usable answer. ``judge_stats`` has the rest, with what
+    the judge spent — ``LLMJudge``'s prompts in ``llm_calls``."""
+
+    judge_stats: dict[str, int | str] = Field(default_factory=dict)
+    dedup_pending: int = 0
+    """Entities still pending a dedup check after this run.
+
+    A check that did not complete — a failed judge call or lookup, an answer
+    that was not a clean partition, a group held because one of its sets got no
+    verdict, a merge an ``update()`` changed — leaves the entity pending, and
+    the next ``finalize()`` checks it again.
+    """
+
+    dedup_unresolved: list[str] = Field(default_factory=list)
+    """Entities dedup no longer retries: 3 judged runs gave no usable verdict.
+
+    Left out of every candidate set and never merged automatically, so a
+    model that keeps failing on one entity cannot hold up the rest. Each entry
+    names the entity, the last reason, and the entities it was kept from being
+    judged with. ``finalize(dedup_all=True)`` retries them.
+    """
+
+    dedup_collisions: list[str] = Field(default_factory=list)
+    """Merges whose two entities held different values for one property.
+
+    The value that stays is the judge's choice (``JudgeGroup.keep``) on a judged merge,
+    otherwise the survivor's; the other is not lost — it is kept on the merged
+    entity in ``<property>__dropped``, a list. Each entry names both values::
+
+        "Tim Cook: born kept 1960 (judge), dropped 1961 from Timothy Cook"
+    """
+
+    dedup_merges_changed: int = 0
+    """Planned merges skipped because an entity changed while the run applied
+    them — deleted or re-keyed by ``update()``, renamed, or rewritten too often
+    to read. Nothing was written for them; their groups are decided again on
+    the next run."""
+
     entities_embedded: int = 0
     relationships_embedded: int = 0
     indexes: dict[str, bool] = Field(default_factory=dict)
+    property_conflicts: list[str] = Field(default_factory=list)
+    """One logical property supplied by more than one table, measured on the graph.
+
+    Signing keeps every value — ``hr__grade`` and ``finance__grade`` — so this is
+    not a failure and nothing was lost. Each entry names the property, the
+    tables supplying it, how many entities hold a value from more than one of
+    them and on how many of those the values differ::
+
+        "Person.grade — supplied by finance.csv, hr.csv; 1 of 2 entities hold different values"
+
+    Reported even when every value agrees, because the overlap is also the
+    thing that makes a question ambiguous: asked for "the grade", a query has to
+    pick a source, and it will pick one silently.
+
+    Under signing this is one condition, not two. Before it, a second table
+    overwriting a property was a *loss* and two tables offering the same answer
+    was an *ambiguity*; now the first cannot happen, so only the ambiguity is
+    left to report.
+    """
+
+    unresolved_references: dict[str, int] = Field(default_factory=dict)
+    """Per label, reference stubs no source ever filled in.
+
+    A ``Link`` writes its target on the promise that the table owning it will
+    arrive. A stub still flagged at the end means it did not — the export was
+    never loaded, or the keys do not match. The graph looks complete until a
+    question needs the target's columns.
+    """
+
+    entities_without_a_name: dict[str, int] = Field(default_factory=dict)
+    """Per label, mapped entities with no display name.
+
+    Legitimate for a fact export keyed on a reading id, and identical in shape to
+    a wrong ``name=`` column. Nothing without a name can join to prose, so it is
+    worth seeing either way.
+    """
+
+    proposed_mappings: list[str] = Field(default_factory=list)
+    """Tables running on a mapping nobody declared.
+
+    Loaded without a ``TableMapping`` in the ontology, so the SDK proposed one —
+    from the model, held to the measured columns, or failing that the file read
+    as-is with no name column and so no join. The proposal is in the ontology
+    and every later load uses it. Declare a ``TableMapping`` for the source to
+    replace it, or ``drop_table()`` to remove it.
+    """
+
+    mapping_changed: list[str] = Field(default_factory=list)
+    """Sources whose declared mapping differs from the one already stored.
+
+    The stored mapping is replaced and any property it no longer declares is
+    removed from the nodes. Reported so a change made by editing code, rather
+    than deliberately, does not pass unnoticed.
+    """
+
+    stale_signed_properties: list[str] = Field(default_factory=list)
+    """Signed properties left on an entity by a source that no longer mentions it.
+
+    A re-sync, ``delete_document()`` and ``drop_table()`` all take a table's
+    columns back from the rows it stopped listing, so on a graph this version
+    wrote the list is empty. What it catches is a graph written before that
+    retraction existed, or a cleanup interrupted before it ran: the entity
+    survives -- another source still mentions it -- with the first source's
+    values on it, belonging to nobody and reading as current.
+
+    Reported rather than removed: the graph cannot tell "that source dropped the
+    row" from "that source has not been reloaded yet", and guessing would delete
+    live data. Non-empty here means re-load the named source, or accept that
+    those values are historical.
+    """
+
+    probable_duplicates: list[str] = Field(default_factory=list)
+    """Same-label entities that probably denote one thing and did not merge.
+
+    Grouping is by canonical name, so two sources that spell a name in ways it
+    does not unify, and that the judge did not merge, leave two nodes: an HR
+    export's "Maya Ellison" and a
+    board review's "M. Ellison" become two people, one holding her age and the
+    other holding what she did. Every question needing both then comes back wrong
+    while looking answered, and nothing used to say so.
+
+    Not merged on a guess, because a merge in the graph cannot be undone. Fix
+    the spelling in the source, which fixes it for good; the decision is yours
+    or the judge's, never a threshold's. Non-empty here is a prompt to look at your data, not a
+    failure.
+    """
+
+    unmerged_name_collisions: dict[str, list[str]] = Field(default_factory=dict)
+    """Names that exist under more than one label, mapped to those labels.
+
+    Never merged, deliberately: matching on name *and* label is what stops
+    "Apple" the company joining "Apple" the fruit. But it is also the fingerprint
+    of an ingest-order mistake — a document read before a mapping was declared
+    has its entities labelled by guesswork, and a table declaring the same name
+    under its own label can no longer join them. Non-empty here with
+    ``entities_deduplicated == 0`` is the signature of that, and the fix is to
+    declare mappings up front.
+
+    Keyed by the name as it is spelled in the data, so it can be searched for.
+    Entities are grouped for merging under a canonical form of the name — lower
+    cased, legal suffixes dropped — which is an internal key and never appears
+    here.
+    """
 
 
 class UpdateResult(IngestionResult):
@@ -944,6 +1318,13 @@ class ApplyChangesResult(DataModel):
     failures are wrapped as ``BatchEntry`` with ``error`` set; the batch
     never raises. Callers branch on ``entry.is_success`` (or check
     ``entry.error_type`` for specific failures).
+
+    A table in ``added`` or ``modified`` is reported in the same result type
+    as a prose file, with the structured counts -- ``records``, ``entities``,
+    ``references``, ``edges`` -- in ``result.metadata``.
+    Relationship-only tables use the same wrapper, with their relationship and
+    endpoint counts in ``result.metadata``; ``document_info`` identifies the
+    source, not a persisted Document node.
     """
 
     added: list[BatchEntry[IngestionResult]] = Field(default_factory=list)

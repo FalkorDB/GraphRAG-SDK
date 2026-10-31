@@ -287,23 +287,23 @@ class CachedChunkExtraction(ExtractionStrategy):
                     # read. Dropping the edge here is safe because the chunk
                     # that cites it would already have been excluded.
                     continue
-                props = rel_by_pair.get(key)
-                if props is None:
-                    props = {"source_chunk_ids": []}
+                rel_props = rel_by_pair.get(key)
+                if rel_props is None:
+                    rel_props = {"source_chunk_ids": []}
                     if rel.rel_type:
-                        props["rel_type"] = rel.rel_type
+                        rel_props["rel_type"] = rel.rel_type
                     if rel.description:
-                        props["description"] = rel.description
+                        rel_props["description"] = rel.description
                     if rel.fact:
-                        props["fact"] = rel.fact
+                        rel_props["fact"] = rel.fact
                     if rel.src_name:
-                        props["src_name"] = rel.src_name
+                        rel_props["src_name"] = rel.src_name
                     if rel.tgt_name:
-                        props["tgt_name"] = rel.tgt_name
-                    rel_by_pair[key] = props
+                        rel_props["tgt_name"] = rel.tgt_name
+                    rel_by_pair[key] = rel_props
                 for new_uid in new_uids:
-                    if new_uid not in props["source_chunk_ids"]:
-                        props["source_chunk_ids"].append(new_uid)
+                    if new_uid not in rel_props["source_chunk_ids"]:
+                        rel_props["source_chunk_ids"].append(new_uid)
             relationships = [
                 GraphRelationship(start_node_id=s, end_node_id=e, type="RELATES", properties=p)
                 for (s, e), p in rel_by_pair.items()

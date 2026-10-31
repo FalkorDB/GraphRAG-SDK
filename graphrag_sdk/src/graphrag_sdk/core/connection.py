@@ -7,13 +7,31 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-from graphrag_sdk.core.exceptions import DatabaseError, DatabaseUnavailableError
+from graphrag_sdk.core.exceptions import (
+    DatabaseError,
+    DatabaseUnavailableError,
+    FalkorDBVersionError,
+)
 
 logger = logging.getLogger(__name__)
+
+#: The oldest FalkorDB server the SDK works with. Before 4.20 a write to a node
+#: holding a vector dropped vector-index entries (fixed by FalkorDB PR #2197):
+#: measured on 4.18, ``queryNodes`` returned 2-3 of 6 neighbours after one such
+#: write, so search and dedup miss entities. Ingest, update and dedup all write
+#: to such nodes.
+MIN_SERVER_VERSION = (4, 20, 0)
+
+#: Replies that mean a server will not answer ``MODULE LIST``: an ACL without
+#: the command, or a managed server that disabled or renamed it (which answers
+#: as an unknown command). ``CLUSTERDOWN``, ``TRYAGAIN``, ``OOM`` and the like
+#: are error replies too, and they pass.
+_MODULE_LIST_REFUSALS = ("noperm", "no permission", "unknown command")
 
 
 @dataclass
@@ -78,6 +96,7 @@ class FalkorDBConnection:
     - ``redis.asyncio.BlockingConnectionPool`` for bounded pooling
     - Automatic retries with exponential backoff on transient failures
     - Lazy initialisation — no I/O until the first query
+    - A server older than ``MIN_SERVER_VERSION`` refused at the first query
 
     Example::
 
@@ -85,6 +104,10 @@ class FalkorDBConnection:
         result = await conn.query("RETURN 1")
         await conn.close()
     """
+
+    # Bound for liveness checks (PING, the driver's startup probe), which need
+    # no query budget: redis-py's own default, which the SDK used to inherit.
+    _PROBE_TIMEOUT_S = 5.0
 
     def __init__(self, config: ConnectionConfig | None = None) -> None:
         from graphrag_sdk.core.circuit_breaker import CircuitBreaker
@@ -94,6 +117,11 @@ class FalkorDBConnection:
         self._driver: Any | None = None
         self._graph: Any | None = None
         self._breaker = CircuitBreaker()
+        # Set once the server's version passed, or was not reported (see
+        # _check_server_version); cleared by close(), so a reconnect asks again.
+        self._version_checked = False
+        self._version_check_lock: asyncio.Lock | None = None
+        self._version_check_loop: asyncio.AbstractEventLoop | None = None
 
     def _ensure_client(self) -> None:
         """Lazy-init the async FalkorDB driver and graph handle."""
@@ -114,6 +142,20 @@ class FalkorDBConnection:
             "max_connections": self.config.max_connections,
             "timeout": self.config.pool_timeout,
             "decode_responses": True,
+            # redis-py stops waiting for a reply after 5 s unless told
+            # otherwise, before the server's own query timeout (10 s by
+            # default) can answer. A slower query then failed as a socket
+            # timeout: retried, counted against the breaker, and left running
+            # on the server. Wait for the server's answer plus a margin. For a
+            # read, a reply later than that means the server missed its own
+            # deadline. FalkorDB applies no deadline to a write, so a write
+            # slower than this is still cut here and re-sent by the retry loop.
+            "socket_timeout": (
+                self.config.query_timeout_ms / 1000 + 5.0 if self.config.query_timeout_ms else None
+            ),
+            # Otherwise redis-py connects with the socket timeout above, which
+            # can be None: keep connecting to a dead host bounded.
+            "socket_connect_timeout": 5.0,
         }
         if self.config.ssl:
             from redis.asyncio.connection import SSLConnection
@@ -126,6 +168,14 @@ class FalkorDBConnection:
             pool_kwargs["ssl_check_hostname"] = self.config.ssl_check_hostname
 
         self._pool = self._pool or BlockingConnectionPool(**pool_kwargs)
+        # The driver's constructor probes the server with a blocking call that
+        # copies the pool's socket timeout and stalls the event loop while it
+        # waits. Probe with the short bound; queries get the long one. Safe to
+        # swap: the constructor is synchronous, so no pool connection can be
+        # created from the lowered value.
+        connection_kwargs = self._pool.connection_kwargs
+        query_socket_timeout = connection_kwargs.get("socket_timeout")
+        connection_kwargs["socket_timeout"] = self._PROBE_TIMEOUT_S
         try:
             self._driver = FalkorDB(connection_pool=self._pool)
             self._graph = self._driver.select_graph(self.config.graph_name)
@@ -140,6 +190,8 @@ class FalkorDBConnection:
             raise DatabaseUnavailableError(
                 f"Could not connect to FalkorDB at {self.config.host}:{self.config.port}: {exc}"
             ) from exc
+        finally:
+            connection_kwargs["socket_timeout"] = query_socket_timeout
 
         logger.info(
             "Connected to FalkorDB (async) at %s:%s (tls=%s)",
@@ -162,6 +214,7 @@ class FalkorDBConnection:
         params: dict[str, Any] | None = None,
         *,
         timeout: int | None = None,
+        expected_errors: tuple[str, ...] = (),
     ) -> Any:
         """Execute a Cypher query with retry logic.
 
@@ -169,15 +222,32 @@ class FalkorDBConnection:
             cypher: The Cypher query string.
             params: Optional query parameters.
             timeout: Optional per-query timeout (ms) forwarded to FalkorDB.
+                The client stops waiting at ``query_timeout_ms`` + 5 s whatever
+                this says; a reply later than that is a socket timeout, which
+                is retried (re-sending the query while the earlier attempt may
+                still run) and ends in ``DatabaseUnavailableError``.
+            expected_errors: Lower-case substrings identifying non-transient
+                failures the caller anticipates and handles itself (e.g.
+                ``"already indexed"`` for an idempotent ``CREATE INDEX``). Such
+                a failure still raises ``DatabaseError`` but is logged at DEBUG
+                rather than ERROR. Only the caller knows which failures are
+                expected; ``query()`` cannot tell an idempotent index creation
+                from any other statement whose error happens to say "already
+                exists", so it never downgrades on its own.
 
         Returns:
             ``QueryResult`` from the async FalkorDB driver.
 
         Raises:
-            DatabaseError: The query could not be completed — the connection is
-                unhealthy, retries were exhausted, or the failure is permanent.
-                Driver-level exceptions are wrapped so callers can distinguish
-                infrastructure failures from application errors.
+            DatabaseUnavailableError: The circuit breaker is open, or a
+                transient failure (connection loss, full query queue, ``BUSY``,
+                failover, ...) outlasted ``retry_count`` attempts.
+            DatabaseError: The server rejected the query, or answered that it
+                ran past its timeout. Raised on the first attempt, not retried. Driver-level
+                exceptions are wrapped and kept as ``__cause__``.
+            FalkorDBVersionError: The server is older than FalkorDB 4.20 (a
+                ``DatabaseError``). Checked once per connection, before its
+                first query.
         """
         self._ensure_client()
         assert self._graph is not None  # for type-checkers
@@ -187,29 +257,58 @@ class FalkorDBConnection:
                 "Circuit breaker is open — FalkorDB connection is unhealthy. "
                 "Requests will resume after recovery timeout."
             )
+        await self._check_server_version()
 
         effective_timeout = timeout if timeout is not None else self.config.query_timeout_ms
+        graph = self._graph
+        return await self._with_retries(
+            lambda: graph.query(cypher, params=params, timeout=effective_timeout),
+            "query",
+            expected_errors=expected_errors,
+        )
 
+    async def _with_retries(
+        self,
+        call: Callable[[], Awaitable[Any]],
+        action: str,
+        *,
+        expected_errors: tuple[str, ...] = (),
+    ) -> Any:
+        """Await ``call()``, retrying transient failures with exponential
+        backoff and jitter, and feeding the circuit breaker. A non-transient
+        failure raises ``DatabaseError`` at once; retries spent raise
+        ``DatabaseUnavailableError``. ``action`` names the call in logs and
+        errors; ``expected_errors`` is as for :meth:`query`."""
         last_exc: Exception | None = None
         for attempt in range(self.config.retry_count):
             try:
-                result = await self._graph.query(cypher, params=params, timeout=effective_timeout)
+                result = await call()
                 await self._breaker.record_success()
                 return result
             except Exception as exc:
                 last_exc = exc
                 # Don't retry non-transient errors (e.g. schema/index conflicts)
                 if self._is_non_transient(exc):
-                    logger.error(
-                        "Non-transient FalkorDB query failure: %s: %s",
+                    msg = str(exc).lower()
+                    expected = any(marker in msg for marker in expected_errors)
+                    logger.log(
+                        logging.DEBUG if expected else logging.ERROR,
+                        "Non-transient FalkorDB %s failure: %s: %s",
+                        action,
                         type(exc).__name__,
                         exc,
                     )
-                    logger.debug("Non-transient FalkorDB query failure details", exc_info=True)
-                    raise DatabaseError(f"FalkorDB query failed: {exc}") from exc
+                    logger.debug("Non-transient FalkorDB %s failure details", action, exc_info=True)
+                    # The server answered, so it is reachable: close the
+                    # breaker. Without this a rejected query that happens to be
+                    # the half-open probe leaves the breaker HALF_OPEN for good,
+                    # and every later query is refused.
+                    await self._breaker.record_success()
+                    raise DatabaseError(f"FalkorDB {action} failed: {exc}") from exc
                 await self._breaker.record_failure()
                 logger.warning(
-                    "Query attempt %d/%d failed: %s",
+                    "%s attempt %d/%d failed: %s",
+                    action.capitalize(),
                     attempt + 1,
                     self.config.retry_count,
                     exc,
@@ -220,20 +319,22 @@ class FalkorDBConnection:
                     base_delay = self.config.retry_delay * (2**attempt)
                     await asyncio.sleep(base_delay * (0.5 + random.random()))
         logger.error(
-            "FalkorDB query failed after %d attempts: %s: %s",
+            "FalkorDB %s failed after %d attempts: %s: %s",
+            action,
             self.config.retry_count,
             type(last_exc).__name__ if last_exc is not None else "UnknownError",
             last_exc,
         )
         if last_exc is not None:
             logger.debug(
-                "FalkorDB query failure details",
+                "FalkorDB %s failure details",
+                action,
                 exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
             )
             raise DatabaseUnavailableError(
-                f"FalkorDB query failed after {self.config.retry_count} attempts: {last_exc}"
+                f"FalkorDB {action} failed after {self.config.retry_count} attempts: {last_exc}"
             ) from last_exc
-        raise DatabaseError("FalkorDB query failed without an exception")
+        raise DatabaseError(f"FalkorDB {action} failed without an exception")
 
     # Substrings that indicate a non-transient (permanent) error —
     # retrying will never succeed.
@@ -251,10 +352,62 @@ class FalkorDBConnection:
         "procedure not found",
     )
 
+    # How a server reply (``ResponseError``) starts when the server is
+    # temporarily unable to run the query, rather than saying the query is
+    # wrong. FalkorDB 4.x and 6.0.x word "max pending queries" the same way.
+    # ``BUSY``, ``NOREPLICAS`` and ``MISCONF`` are Redis replies that redis-py
+    # leaves as a plain ``ResponseError`` with the code kept in the text;
+    # GRAPH.QUERY is a write command, so the last two refuse reads too.
+    # ``LOADING`` never gets here: redis-py raises ``BusyLoadingError``, a
+    # ``ConnectionError``. "Query timed out" is left out on purpose: the query
+    # used its whole time budget, so a retry costs as much again and usually
+    # times out too, and counting it against the breaker let two slow queries
+    # refuse every caller for the recovery timeout. Matched as prefixes, not
+    # substrings: a rejection quotes the query ("'timeout' not defined"), and a
+    # substring match would retry it and count it against the breaker.
+    _TRANSIENT_REPLY_PREFIXES = (
+        "max pending queries",
+        "busy ",
+        "noreplicas ",
+        "misconf ",
+    )
+
     @classmethod
     def _is_non_transient(cls, exc: Exception) -> bool:
         msg = str(exc).lower()
-        return any(marker in msg for marker in cls._NON_TRANSIENT_MARKERS)
+        if any(marker in msg for marker in cls._NON_TRANSIENT_MARKERS):
+            return True
+        # Any other reply from the server is a rejection of the query itself —
+        # unknown variable, division by zero, a MERGE on a null key, a missing
+        # index, a procedure called with the wrong arity. The wording differs
+        # between the C engine (4.x) and the Rust engine (6.0.x), so a list of
+        # messages can never be complete. Retrying re-sends the same bytes and
+        # can only fail again, and counting it against the circuit breaker lets
+        # one bad statement lock every caller out. Cluster redirects, failover,
+        # read-only replicas and out-of-memory are ResponseError subclasses that
+        # can succeed later, so they stay transient.
+        try:
+            from redis import exceptions as rx
+        except ImportError:  # pragma: no cover - redis ships with falkordb
+            return False
+        if not isinstance(exc, rx.ResponseError):
+            return False
+        transient_types = tuple(
+            getattr(rx, name)
+            for name in (
+                "AskError",
+                "ClusterDownError",
+                "MasterDownError",
+                "MovedError",
+                "TryAgainError",
+                "ReadOnlyError",
+                "OutOfMemoryError",
+            )
+            if hasattr(rx, name)
+        )
+        if isinstance(exc, transient_types):
+            return False
+        return not msg.strip().startswith(cls._TRANSIENT_REPLY_PREFIXES)
 
     # ── Health & Admin ────────────────────────────────────────────
 
@@ -272,7 +425,9 @@ class FalkorDBConnection:
             from redis.asyncio import Redis
 
             redis: Redis = Redis(connection_pool=self._pool)
-            return await redis.ping()
+            # PING needs no query budget; the pool's socket timeout is sized
+            # for slow queries and is unbounded when query_timeout_ms is None.
+            return await asyncio.wait_for(redis.ping(), timeout=self._PROBE_TIMEOUT_S)
         except ImportError:
             # The driver isn't installed. Reporting that as "server down"
             # sends operators to inspect a healthy database instead of the
@@ -281,6 +436,79 @@ class FalkorDBConnection:
         except Exception:
             logger.debug("Ping failed", exc_info=True)
             return False
+
+    async def server_version(self) -> tuple[int, int, int] | None:
+        """The FalkorDB module version, e.g. ``(4, 20, 4)``; ``None`` when the
+        server does not say (``MODULE LIST`` refused, or no graph module). A
+        server that cannot be reached, or answers with an error that passes,
+        raises: read as "will not say", one ``TRYAGAIN`` left the connection
+        unchecked for good."""
+        self._ensure_client()
+        assert self._driver is not None  # for type-checkers
+        from redis.exceptions import NoPermissionError, ResponseError
+
+        try:
+            modules = await self._driver.execute_command("MODULE", "LIST")
+        except ResponseError as exc:
+            msg = str(exc).lower()
+            if not isinstance(exc, NoPermissionError) and not any(
+                marker in msg for marker in _MODULE_LIST_REFUSALS
+            ):
+                raise
+            logger.debug("MODULE LIST refused", exc_info=True)
+            return None
+        for module in modules or []:
+            info = module if isinstance(module, dict) else dict(zip(module[::2], module[1::2]))
+            info = {str(k).lower(): v for k, v in info.items()}
+            if str(info.get("name", "")).lower() == "graph":
+                try:
+                    ver = int(info.get("ver"))
+                except (TypeError, ValueError):
+                    return None
+                return ver // 10000, ver // 100 % 100, ver % 100
+        return None
+
+    async def _check_server_version(self) -> None:
+        """Refuse a server older than :data:`MIN_SERVER_VERSION`, once per
+        connection and before its first query, so nothing is written to it.
+
+        The version is asked with the retries of any query. A server that
+        refuses to say (``MODULE LIST`` refused) is let through with a warning:
+        refusing it would lock out a managed server that may be current. One
+        that cannot be asked fails the query with ``DatabaseUnavailableError``
+        — no query runs unchecked — and is asked again by the next one."""
+        if self._version_checked:
+            return
+        async with self._version_lock():
+            if self._version_checked:
+                return
+            version = await self._with_retries(self.server_version, "version check")
+            needed = ".".join(str(v) for v in MIN_SERVER_VERSION[:2])
+            if version is None:
+                logger.warning(
+                    "Could not read the FalkorDB server version; GraphRAG SDK needs %s or later",
+                    needed,
+                )
+            elif version < MIN_SERVER_VERSION:
+                found = ".".join(str(v) for v in version)
+                raise FalkorDBVersionError(
+                    f"This FalkorDB server is {found}; GraphRAG SDK needs FalkorDB {needed} or "
+                    "later. Earlier versions drop vector-index entries on every write to a node "
+                    "that holds a vector, so search and dedup miss entities. Upgrade the "
+                    "server, e.g. docker pull falkordb/falkordb:v4.22.2"
+                )
+            self._version_checked = True
+
+    def _version_lock(self) -> asyncio.Lock:
+        """The version check's lock, bound to the running loop and remade when
+        that changes: the ``*_sync`` wrappers run each call under a fresh
+        ``asyncio.run()``, and a lock that once waited on one loop raises when
+        acquired from another."""
+        loop = asyncio.get_running_loop()
+        if self._version_check_lock is None or self._version_check_loop is not loop:
+            self._version_check_lock = asyncio.Lock()
+            self._version_check_loop = loop
+        return self._version_check_lock
 
     async def delete_graph(self) -> None:
         """Delete the entire graph using ``GRAPH.DELETE`` (fast).
@@ -323,3 +551,5 @@ class FalkorDBConnection:
         self._pool = None
         self._driver = None
         self._graph = None
+        # The next query reconnects, perhaps to a server replaced meanwhile.
+        self._version_checked = False

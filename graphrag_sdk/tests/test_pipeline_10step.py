@@ -1,4 +1,5 @@
 """Integration tests for the ingestion pipeline."""
+
 from __future__ import annotations
 
 import json
@@ -165,9 +166,7 @@ class TestPipeline10StepExecution:
         assert "mention_edges_created" in result.metadata
         assert "merged_entities" in result.metadata
 
-    async def test_relationships_count_includes_all_types(
-        self, pipeline, pipeline_components, ctx
-    ):
+    async def test_relationships_count_includes_all_types(self, pipeline, pipeline_components, ctx):
         """relationships_created should include entity rels + mention."""
         result = await pipeline.run("test.txt", ctx)
 
@@ -235,5 +234,3 @@ class TestPipelineParallelSteps:
         pipeline_components["vector_store"].index_chunks.assert_called_once()
         # Mentions generate upsert_relationships calls
         assert pipeline_components["graph_store"].upsert_relationships.call_count >= 2
-
-

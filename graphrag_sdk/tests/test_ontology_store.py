@@ -24,7 +24,7 @@ TARGET edges.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -34,6 +34,7 @@ from graphrag_sdk.core.models import (
     Ontology,
     Relation,
 )
+from graphrag_sdk.core.tables import Column, EndpointMapping, RelationshipMapping
 from graphrag_sdk.storage.ontology_store import (
     OntologyContradictionError,
     OntologyModificationNotAllowedError,
@@ -109,6 +110,7 @@ def store_factory(fake_graph):
     def _make(data_graph_name: str = "kg") -> OntologyStore:
         conn = MagicMock()
         conn._ensure_client = MagicMock()
+        conn._check_server_version = AsyncMock()  # a supported server
         conn._driver = SimpleNamespace(select_graph=MagicMock(return_value=fake_graph))
         return OntologyStore(conn, data_graph_name)
 
@@ -122,6 +124,71 @@ class TestOntologyStoreGraphName:
     def test_suffix(self, store_factory):
         store = store_factory("my_kg")
         assert store.graph_name == "my_kg__ontology"
+
+
+class TestRelationshipMappingStorage:
+    def test_relationship_mapping_rows_round_trip(self):
+        mappings = OntologyStore._load_relationship_tables_sync(
+            [
+                [
+                    "consumed_batch.csv",
+                    "Unit",
+                    "units__unit_id",
+                    "source",
+                    "Batch",
+                    "batches__batch_id",
+                    "target",
+                    "CONSUMED_BATCH",
+                    None,
+                    [],
+                    "OUTGOING",
+                    "error",
+                    "skip",
+                    "Consumption",
+                ]
+            ],
+            [
+                [
+                    "consumed_batch.csv",
+                    "consumed_on",
+                    "consumed_on",
+                    "DATE",
+                    "Consumption date",
+                ]
+            ],
+        )
+        assert mappings == [
+            RelationshipMapping(
+                source="consumed_batch.csv",
+                start=EndpointMapping("Unit", "units__unit_id", "source"),
+                end=EndpointMapping("Batch", "batches__batch_id", "target"),
+                type="CONSUMED_BATCH",
+                properties={
+                    "consumed_on": Column("consumed_on", "DATE", "Consumption date")
+                },
+                ambiguous_endpoint="skip",
+                description="Consumption",
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_register_persists_relationship_mapping(self, store_factory, fake_graph):
+        store = store_factory()
+        mapping = RelationshipMapping(
+            source="consumed_batch.csv",
+            start=EndpointMapping("Unit", "units__unit_id", "source"),
+            end=EndpointMapping("Batch", "batches__batch_id", "target"),
+            type="CONSUMED_BATCH",
+            properties={"consumed_on": Column("consumed_on", "DATE")},
+        )
+        await store.register(Ontology(relationship_tables=[mapping]))
+        calls = [
+            params
+            for query, params in fake_graph.calls
+            if "MERGE (t:RelationshipMapping" in query
+        ]
+        assert calls[0]["start_key"] == "units__unit_id"
+        assert calls[0]["end_key"] == "batches__batch_id"
 
 
 # ── register — entity shape ──────────────────────────────────────
@@ -246,7 +313,7 @@ class TestRegisterRelationShape:
         open_merges = [
             c
             for c in fake_graph.calls
-            if c[0].startswith("MERGE (r:Relation {label: $rel_label}) SET")
+            if c[0].startswith("MERGE (r:Relation {label: $rel_label}) ")
         ]
         assert len(open_merges) == 1
         # Open-mode property attaches to a Relation that lacks SOURCE.
@@ -316,6 +383,27 @@ class TestLoad:
         }
         assert [(a.name, a.type) for a in by_label["WORKS_AT"].properties] == [("since", "DATE")]
         assert by_label["KNOWS"].patterns == [("Person", "Person")]
+
+    @pytest.mark.asyncio
+    async def test_a_relation_property_is_structured_if_any_pattern_node_says_so(
+        self, store_factory, fake_graph
+    ):
+        """One property node per pattern, and the rows come back in no
+        guaranteed order: the flag must not depend on which row is first."""
+        store = store_factory()
+        fake_graph.set_load_response(
+            patterned_relations=[
+                ["WORKS_AT", None, "Person", "Company"],
+                ["WORKS_AT", None, "Person", "Organization"],
+            ],
+            relation_properties=[
+                ["WORKS_AT", "since", "DATE", None, False],
+                ["WORKS_AT", "since", "DATE", None, True],
+            ],
+        )
+        ontology = await store.load()
+        (since,) = next(r for r in ontology.relations if r.label == "WORKS_AT").properties
+        assert since.structured is True
 
     @pytest.mark.asyncio
     async def test_open_relation_loaded_with_empty_patterns(self, store_factory, fake_graph):

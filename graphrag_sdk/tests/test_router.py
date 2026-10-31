@@ -1,4 +1,5 @@
 """Tests for retrieval/router.py — SemanticRouter."""
+
 from __future__ import annotations
 
 from typing import Any

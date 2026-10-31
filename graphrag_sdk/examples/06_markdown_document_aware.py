@@ -14,7 +14,7 @@ works correctly.
 
 Prerequisites:
     pip install graphrag-sdk[litellm,markdown]
-    docker run -p 6379:6379 falkordb/falkordb
+    docker run -p 6379:6379 falkordb/falkordb:v4.22.2
 
 Usage:
     # Generate a ready-to-use sample document and print its content:
@@ -199,7 +199,7 @@ async def main():
     print(f"Done: {result.nodes_created} nodes, {result.relationships_created} edges, "
           f"{result.chunks_indexed} chunks indexed")
 
-    # Post-ingestion: dedup entities, embed entity/relationship descriptions,
+    # Post-ingestion: dedup entities, embed entity names and relationship facts,
     # and build full-text + vector indexes.  Required before retrieval works.
     await rag.finalize()
 

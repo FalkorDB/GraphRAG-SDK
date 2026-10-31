@@ -1,6 +1,7 @@
 ---
-title: "Configuration"
-description: "Comprehensive reference for every configurable component, its parameters, defaults, and usage."
+title: "GraphRAG SDK Configuration Reference"
+sidebarTitle: "Configuration"
+description: "Comprehensive GraphRAG SDK configuration reference -- every configurable component, its parameters, defaults, and usage examples."
 ---
 
 This document is the comprehensive configuration reference for GraphRAG SDK v2. Each section covers a configurable component, its parameters, defaults, and usage examples.
@@ -21,10 +22,10 @@ This document is the comprehensive configuration reference for GraphRAG SDK v2. 
 | `password`         | `str \| None`     | `None`              | Authentication password.                                            |
 | `graph_name`       | `str`             | `"knowledge_graph"` | Name of the FalkorDB graph to operate on.                           |
 | `max_connections`  | `int`             | `16`                | Maximum number of connections in the Redis `BlockingConnectionPool`.|
-| `retry_count`      | `int`             | `3`                 | Number of retry attempts for transient query failures.              |
-| `retry_delay`      | `float`           | `1.0`               | Base delay (seconds) between retries (multiplied by attempt number).|
+| `retry_count`      | `int`             | `3`                 | Attempts per query for transient failures, first try included (`1` disables retries). |
+| `retry_delay`      | `float`           | `1.0`               | Base delay (seconds) for exponential backoff with jitter: `retry_delay * 2^attempt * random(0.5, 1.5)`. |
 | `pool_timeout`     | `float`           | `30.0`              | Timeout (seconds) waiting to acquire a connection from the pool.    |
-| `query_timeout_ms` | `int \| None`     | `10_000`            | Per-query timeout in milliseconds forwarded to FalkorDB. Set to `None` to disable. |
+| `query_timeout_ms` | `int \| None`     | `10_000`            | Per-query timeout in milliseconds forwarded to FalkorDB, which applies it to reads only. The client waits this long plus 5 s for any reply. Set to `None` to disable both: the client then waits indefinitely for every reply. |
 
 ### Creating from a URL
 
@@ -62,7 +63,9 @@ rag = GraphRAG(connection=conn, llm=my_llm, embedder=my_embedder)
 
 ### Retry Behavior
 
-Queries are retried up to `retry_count` times with linear backoff (`retry_delay * attempt_number`). Non-transient errors -- those containing `"already indexed"`, `"already exists"`, or `"unknown index"` -- are raised immediately without retrying.
+Each query is attempted up to `retry_count` times in total, the first try included, with exponential backoff and jitter between attempts (`retry_delay * 2^attempt * random(0.5, 1.5)`, `attempt` counting from 0). Everything that is not a server reply is retried: a lost connection or socket timeout, `LOADING`, an error raised in the driver. Of the server's replies only the temporary ones are: a full query queue, `BUSY`, `NOREPLICAS`, `MISCONF`, a cluster redirect or failover, a read-only replica, and out of memory. If one outlasts every attempt, the circuit breaker is open, or the first connection to the server fails, `query()` raises `DatabaseUnavailableError`. On a server that accepts connections but never answers, that takes about `retry_count` × (`query_timeout_ms` + 5 s); lower either to fail sooner.
+
+Any other server reply means the query itself was rejected -- a syntax error, an unknown variable, division by zero, a `MERGE` on a null key, a missing index, a procedure called with the wrong arguments. A read the server stops at its timeout (`query_timeout_ms`, or the `timeout=` passed to `query()`) is treated the same way, since a retry would cost as much again. FalkorDB applies no timeout to writes: a write slower than `query_timeout_ms` + 5 s is cut on the client as a socket timeout and re-sent, while the first attempt may still run. Both raise `DatabaseError` on the first attempt, and the circuit breaker counts them as a healthy answer, not a failure. `DatabaseUnavailableError` subclasses `DatabaseError`, so `except DatabaseError` catches both.
 
 ---
 
@@ -534,33 +537,29 @@ rag = GraphRAG(
 
 ## 7. Post-Ingestion
 
-After all documents have been ingested, run post-ingestion steps to deduplicate entities, backfill embeddings, and ensure all indexes exist.
+After all documents have been ingested, run post-ingestion steps to deduplicate entities, embed entity names and relationships, and ensure all indexes exist.
 
 ### `finalize()` -- All-In-One
 
 The recommended approach is to call `finalize()` after all ingestion is complete. It bundles four steps in order:
 
-1. `deduplicate_entities()` -- global exact-name deduplication.
-2. `backfill_entity_embeddings()` -- embed entity names for vector search.
+1. Remove NULL-name stub entities left by legacy writes (only nodes no mapping wrote).
+2. `deduplicate_entities()` -- incremental and crash-safe: the entities whose check is pending (added since the last `finalize()`, or left pending by it) get exact-name dedup, then one judge pass over their nearest names in the whole graph. Dedup also gives every entity its name embedding (its id, for an entity with no name, which is never judged). A second `finalize()` with nothing pending does no dedup work. An entity whose check did not complete stays pending and is retried; after 3 judged runs without a usable verdict it is reported in `dedup_unresolved` and no longer retried. An interrupted `finalize()` is finished by the next one. `finalize(dedup_all=True)` checks every entity.
 3. `embed_relationships()` -- embed fact text on RELATES edges.
 4. `ensure_indices()` -- create all 5 standard indexes (idempotent).
 
+GraphRAG SDK requires FalkorDB 4.20 or later (see [Storage](/storage#version)). One dedup run per graph at a time: a second `finalize()` or `deduplicate_entities()` — from another process, or on the same `GraphRAG` — raises `DedupRunActiveError` when it reaches dedup, and the running one is left untouched. `update()` and deletes may run meanwhile.
+
 ```python
 # After ingesting all documents:
-stats = await rag.finalize()
-print(stats)
-# {
-#     "entities_deduplicated": 142,
-#     "entities_embedded": 3200,
-#     "relationships_embedded": 8500,
-#     "indexes": {
-#         "vector_Chunk": True,
-#         "vector___Entity__": True,
-#         "vector_RELATES": True,
-#         "fulltext_Chunk": True,
-#         "fulltext___Entity__": True,
-#     },
-# }
+stats = await rag.finalize()  # a FinalizeResult model, not a dict
+print(stats.entities_deduplicated)   # 142
+print(stats.entities_embedded)       # 3200
+print(stats.relationships_embedded)  # 8500
+print(stats.dedup_pending)           # 0: every check completed
+print(stats.indexes)
+# {"vector_Chunk": True, "vector___Entity__": True, "vector_RELATES": True,
+#  "fulltext_Chunk": True, "fulltext___Entity__": True}
 ```
 
 A synchronous convenience method is also available:
@@ -575,9 +574,9 @@ Call this when you need fine-grained control over deduplication.
 
 ```python
 merged_count = await rag.deduplicate_entities(
-    fuzzy=False,                  # True to also run embedding-based dedup
-    similarity_threshold=0.9,     # cosine threshold for fuzzy matching
     batch_size=500,               # entities per query batch
+    judge=None,                   # a DedupJudge; None = LLMJudge with rag's llm
+    dedup_all=False,              # True to check every entity, not only pending ones
 )
 ```
 
@@ -585,17 +584,19 @@ merged_count = await rag.deduplicate_entities(
 
 | Parameter              | Type    | Default | Description                                                         |
 |------------------------|---------|---------|---------------------------------------------------------------------|
-| `fuzzy`                | `bool`  | `False` | If `True`, runs a second fuzzy dedup phase using embedding similarity.|
-| `similarity_threshold` | `float` | `0.9`   | Cosine similarity threshold for fuzzy matching.                     |
 | `batch_size`           | `int`   | `500`   | Entities per query batch.                                           |
+| `judge`                | `DedupJudge \| None` | `None` | Decides which candidates are one entity; `None` is `LLMJudge` with the instance's `llm`. Every run has a judge — see [DedupJudge](/strategies#7-dedupjudge). |
+| `dedup_all`            | `bool`  | `False` | Check every entity, not only the pending ones, and retry the unresolved ones. |
 
-**Phase 1 (always runs): Exact name match.** Groups entities by normalized name (lowercase, stripped) and label to prevent cross-type merging. Keeps the entity with the longest description as the survivor. Remaps all RELATES and MENTIONED_IN edges from duplicates to the survivor, then deletes the duplicate nodes.
+Only the pending entities are checked: those with no name vector yet (ingest writes entities without one), and those a `pending` system record lists — a run lists every entity before it embeds it, and clears it once its check completes. An entity whose check did not complete (a failed lookup or judge call, an answer that was not a clean partition, a group held for one, a merge an `update()` changed) stays pending for the next run. See [Storage](/storage) for the merge plan and crash safety.
 
-**Phase 2 (optional, `fuzzy=True`): Embedding-based match.** Re-fetches all surviving entities, batch-embeds their names, computes pairwise cosine similarity in memory-efficient blocks (1000 entities per block), and merges near-duplicates above the threshold.
+**Phase 1 (always runs): Exact name match.** Groups the pending entities and their nearest names from the vector index by canonical name (case, accents, punctuation and a leading English article folded; `A.I.` = `AI`; `Surname, Given` un-inverted; common abbreviations expanded; one trailing legal form such as `Ltd` or `Inc` dropped) and label to prevent cross-type merging. An acronym joins its long form when exactly one same-label entity spells its initials (`AIHS` / `Ashford Island Historical Society`). The survivor is the node whose id came from a declared table key, then a real node over a placeholder, then the long form over an acronym, then the best-connected entity (most RELATES and MENTIONED_IN edges), then the longest description, then the longest name. A group of extracted mentions only goes to the judge instead: the same spelling is evidence, not proof. The duplicate's description is appended to the survivor's with `" | "`, its name is recorded in the survivor's `aliases`, its `source_chunk_ids` are unioned in, any property the survivor lacks is copied over, and every relationship it has, of every type, moves to the survivor in the same query that deletes it.
+
+**Phase 2: judged match.** Each pending entity's nearest names from the vector index form small candidate sets; the judge partitions each set once, and agreed groups merge by the Phase 1 rules. Every set is judged before anything merges. See [Storage](/storage).
 
 ### `backfill_entity_embeddings()` -- Entity Vector Backfill
 
-Embeds `__Entity__` nodes that are missing embeddings. Queries entities where `embedding IS NULL`, batch-embeds the entity `name`, and stores vectors. Safe for incremental runs.
+Embeds `__Entity__` nodes that are missing embeddings. Queries entities where `embedding IS NULL`, batch-embeds the entity `name`, and stores vectors. It is **not** a dedup step: an entity with a vector and no pending record counts as checked, so a vector written here skips that entity's dedup check. `finalize()` no longer calls it — dedup embeds every entity — and after calling it directly, run `finalize(dedup_all=True)` once.
 
 ```python
 count = await rag.vector_store.backfill_entity_embeddings(batch_size=500)
@@ -625,7 +626,7 @@ Creates all standard indexes (idempotent -- safe to call repeatedly):
 results = await rag.vector_store.ensure_indices()
 ```
 
-Note: `ensure_indices()` is called automatically after each `ingest()` call. The `finalize()` method resets the internal `_indices_ensured` flag and re-runs it to catch any newly needed indexes.
+Note: `ensure_indices()` is called automatically after each `ingest()` call. The `finalize()` method resets the internal `_indices_ensured` flag and re-runs it to catch any newly needed indexes. It returns once FalkorDB reports every index built (up to 10 minutes), since a vector search on an index still being built finds nothing.
 
 ### When to Call Each
 
@@ -633,9 +634,8 @@ Note: `ensure_indices()` is called automatically after each `ingest()` call. The
 |---------------------------------------------|---------------------------------------|
 | After ingesting all documents               | `await rag.finalize()`                |
 | After incremental ingestion (new documents) | `await rag.finalize()`                |
-| Only need dedup (embeddings already exist)  | `await rag.deduplicate_entities()`    |
-| Only need entity embeddings                 | `await rag.vector_store.backfill_entity_embeddings()` |
+| Only need dedup                             | `await rag.deduplicate_entities()` (it embeds entity names too) |
 | Only need RELATES edge embeddings           | `await rag.vector_store.embed_relationships()`        |
 | Only need indexes                           | `await rag.vector_store.ensure_indices()`             |
 
-Do **not** call `backfill_entity_embeddings()` inside an ingestion loop (i.e., after each document). It re-scans all entities and is slow when called repeatedly. Instead, ingest all documents first, then call `finalize()` once.
+Do **not** call `backfill_entity_embeddings()` between ingests: every entity it embeds skips its dedup check. Ingest all documents first, then call `finalize()` once.

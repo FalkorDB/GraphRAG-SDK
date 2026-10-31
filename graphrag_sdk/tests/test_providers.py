@@ -1,4 +1,5 @@
 """Tests for core/providers.py — Embedder and LLMInterface ABCs + built-in providers."""
+
 from __future__ import annotations
 
 import asyncio
@@ -170,7 +171,9 @@ class TestLLMInterface:
         """S6: retry WARNING must not include multi-line exception bodies."""
 
         attempts = {"n": 0}
-        secret_body = "Authorization: Bearer SECRET_KEY_xyz\nresponse_body=...\nproxy=https://internal"
+        secret_body = (
+            "Authorization: Bearer SECRET_KEY_xyz\nresponse_body=...\nproxy=https://internal"
+        )
 
         class FlakyLLM(LLMInterface):
             def __init__(self) -> None:
@@ -302,9 +305,7 @@ class TestAbatchInvoke:
                 return LLMResponse(content=f"ok: {prompt}")
 
         llm = FailingLLM()
-        results = await llm.abatch_invoke(
-            ["good", "fail_me", "also_good"], max_retries=1
-        )
+        results = await llm.abatch_invoke(["good", "fail_me", "also_good"], max_retries=1)
         assert len(results) == 3
 
         ok_items = [r for r in results if r.ok]
@@ -345,9 +346,7 @@ class TestAbatchInvoke:
                 return LLMResponse(content="ok")
 
         llm = TrackingLLM()
-        results = await llm.abatch_invoke(
-            [f"prompt-{i}" for i in range(6)], max_concurrency=2
-        )
+        results = await llm.abatch_invoke([f"prompt-{i}" for i in range(6)], max_concurrency=2)
         assert len(results) == 6
         assert all(r.ok for r in results)
         assert peak_concurrent <= 2
@@ -411,7 +410,9 @@ class TestLiteLLM:
         mock_litellm = MagicMock()
         mock_litellm.completion.return_value = _mock_litellm_completion_response("Hi there")
         with patch.dict("sys.modules", {"litellm": mock_litellm}):
-            llm = LiteLLM(model="azure/gpt-4", api_key="test-key", api_base="https://test.openai.azure.com")
+            llm = LiteLLM(
+                model="azure/gpt-4", api_key="test-key", api_base="https://test.openai.azure.com"
+            )
             result = llm.invoke("Hello")
 
         assert isinstance(result, LLMResponse)
@@ -571,26 +572,18 @@ class TestLiteLLMReasoningModelDetection:
 class TestOpenRouterReasoningModelDetection:
     def test_kwargs_omit_temperature_for_reasoning_model(self):
         llm = OpenRouterLLM(model="openai/gpt-5.5", api_key="test", temperature=0.0)
-        kw = llm._build_create_kwargs(
-            [{"role": "user", "content": "hi"}], extra={}
-        )
+        kw = llm._build_create_kwargs([{"role": "user", "content": "hi"}], extra={})
         assert "temperature" not in kw
 
     def test_kwargs_translate_max_tokens_for_reasoning_model(self):
-        llm = OpenRouterLLM(
-            model="openai/gpt-5.5", api_key="test", max_tokens=300
-        )
-        kw = llm._build_create_kwargs(
-            [{"role": "user", "content": "hi"}], extra={}
-        )
+        llm = OpenRouterLLM(model="openai/gpt-5.5", api_key="test", max_tokens=300)
+        kw = llm._build_create_kwargs([{"role": "user", "content": "hi"}], extra={})
         assert "max_tokens" not in kw
         assert kw["max_completion_tokens"] == 300
 
     def test_kwargs_keep_temperature_for_chat_model(self):
         llm = OpenRouterLLM(model="openai/gpt-4o", api_key="test", temperature=0.0)
-        kw = llm._build_create_kwargs(
-            [{"role": "user", "content": "hi"}], extra={}
-        )
+        kw = llm._build_create_kwargs([{"role": "user", "content": "hi"}], extra={})
         assert kw["temperature"] == 0.0
 
     def test_caller_supplied_temperature_dropped_for_reasoning_model(self):
@@ -666,9 +659,7 @@ class TestLiteLLMEmbedder:
     async def test_aembed_query(self):
         vec = [0.7, 0.8, 0.9]
         mock_litellm = MagicMock()
-        mock_litellm.aembedding = AsyncMock(
-            return_value=_mock_litellm_embedding_response([vec])
-        )
+        mock_litellm.aembedding = AsyncMock(return_value=_mock_litellm_embedding_response([vec]))
         with patch.dict("sys.modules", {"litellm": mock_litellm}):
             embedder = LiteLLMEmbedder(model="text-embedding-ada-002")
             result = await embedder.aembed_query("hello")
@@ -692,9 +683,7 @@ class TestLiteLLMEmbedder:
     async def test_aembed_documents(self):
         mock_litellm = MagicMock()
         vecs = [[0.1, 0.2], [0.3, 0.4]]
-        mock_litellm.aembedding = AsyncMock(
-            return_value=_mock_litellm_embedding_response(vecs)
-        )
+        mock_litellm.aembedding = AsyncMock(return_value=_mock_litellm_embedding_response(vecs))
         with patch.dict("sys.modules", {"litellm": mock_litellm}):
             embedder = LiteLLMEmbedder(model="text-embedding-ada-002")
             result = await embedder.aembed_documents(["a", "b"])

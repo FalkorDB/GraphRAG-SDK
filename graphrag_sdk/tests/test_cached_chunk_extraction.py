@@ -865,23 +865,46 @@ class TestCachedUpdateIntegration:
         assert r.result_set[0][0] == 1
 
     async def test_no_op_short_circuit_unaffected(self, real_falkordb_rag_factory, scripted_llm):
+        """An unchanged re-``update()`` short-circuits on the stored hash.
+
+        The hash is only stamped when every write completed, and a chunk
+        whose extraction failed counts as incomplete — so step-1 NER is
+        stubbed: the default GLiNER extractor cannot load its tokenizer on
+        every CI runner, which would withhold the hash and fail this test
+        for a reason unrelated to caching. Step 2 still runs the scripted
+        LLM, as in the sibling tests.
+        """
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            EntityExtractor,
+        )
+        from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+            GraphExtraction,
+        )
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
             ExactMatchResolution,
         )
+
+        class _NoLocalNER(EntityExtractor):
+            async def extract_entities(self, text, entity_types, source_chunk_id):
+                return []
 
         v1, _ = self._texts()
         llm = scripted_llm(
             [("Alice", "Person", "Engineer")],
             [("Carol", "Person", "Manager")],
         )
+        extractor = GraphExtraction(llm, entity_extractor=_NoLocalNER())
         rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution())
-        await rag.ingest(text=v1, document_id="doc-noop", chunker=self._chunker())
+        await rag.ingest(
+            text=v1, document_id="doc-noop", chunker=self._chunker(), extractor=extractor
+        )
 
         result = await rag.update(
             text=v1,
             document_id="doc-noop",
             chunker=self._chunker(),
             cache_unchanged_chunks=True,
+            extractor=extractor,
         )
         assert result.no_op is True
 

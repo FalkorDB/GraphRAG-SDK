@@ -4,6 +4,7 @@ Verifies that the four ``while True`` pagination loops in storage/* terminate
 even when underlying data never depletes — protecting against pathological
 server behavior or driver bugs.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,8 +27,10 @@ class TestDeduplicatorPaginationCap:
         embedder = MagicMock()
         d = EntityDeduplicator(graph, embedder)
 
-        with patch.object(dedup_mod, "_MAX_PAGINATION_ITERATIONS", 3), \
-             caplog.at_level(logging.ERROR, logger="graphrag_sdk.storage.deduplicator"):
+        with (
+            patch.object(dedup_mod, "_MAX_PAGINATION_ITERATIONS", 3),
+            caplog.at_level(logging.ERROR, logger="graphrag_sdk.storage.deduplicator"),
+        ):
             entities = await d._fetch_all_entities(batch_size=1)
 
         # Capped at the patched limit → returns partial data, no infinite loop.
@@ -68,8 +71,10 @@ class TestVectorStorePaginationCap:
 
         store = VectorStore(conn, embedder=embedder, embedding_dimension=2)
 
-        with patch.object(vs_mod, "_MAX_PAGINATION_ITERATIONS", 3), \
-             caplog.at_level(logging.ERROR, logger="graphrag_sdk.storage.vector_store"):
+        with (
+            patch.object(vs_mod, "_MAX_PAGINATION_ITERATIONS", 3),
+            caplog.at_level(logging.ERROR, logger="graphrag_sdk.storage.vector_store"),
+        ):
             await store.backfill_entity_embeddings(batch_size=1)
 
         errors = [r for r in caplog.records if r.levelno == logging.ERROR]

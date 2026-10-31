@@ -31,6 +31,7 @@ def store_factory():
         fake = _FakeGraph()
         conn = MagicMock()
         conn._ensure_client = MagicMock()
+        conn._check_server_version = AsyncMock()  # a supported server
         conn._driver = SimpleNamespace(select_graph=MagicMock(return_value=fake))
         return OntologyStore(conn, "kg"), fake
 
@@ -142,6 +143,7 @@ class TestAddRelationProperty:
             "name": "since",
             "type": "DATE",
             "description": None,
+            "structured": False,
         }
 
 
@@ -170,6 +172,19 @@ class TestAddRelationPatternNode:
             and "MERGE (new)-[:HAS_PROPERTY]" in c[0]
         ]
         assert len(copy_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_copies_the_structured_flag_to_the_new_pattern(self, store_factory):
+        """A property a table declared stays declared on every pattern node,
+        otherwise the loader — which reads one row per node in no fixed order —
+        could report it unstructured on a later load."""
+        store, fake = store_factory()
+        await store.add_relation_pattern_node("WORKS_AT", "Person", "Startup")
+        (copy_cypher, _) = next(
+            c for c in fake.calls if "MERGE (new)-[:HAS_PROPERTY]->(p2:Property" in c[0]
+        )
+        assert "any(x IN props WHERE coalesce(x.structured, false)) AS structured" in copy_cypher
+        assert "p2.structured = (coalesce(p2.structured, false) OR structured)" in copy_cypher
 
 
 class TestRenameLabel:
