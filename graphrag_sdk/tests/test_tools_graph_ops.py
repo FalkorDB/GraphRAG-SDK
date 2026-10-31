@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 from falkordb import Edge, Node, Path
 
 from graphrag_sdk.core.exceptions import GraphRAGError
@@ -58,53 +56,7 @@ def test_tool_error_carries_a_hint():
     assert plain.hint == "" and str(plain) == "boom"
 
 
-# ── bounded_query ──────────────────────────────────────────────
-
-
-async def test_bounded_query_runs_read_only_with_a_database_timeout():
-    store = FakeGraphStore([("RETURN 1", lambda c, p: result([[1]]))])
-    out = await ops.bounded_query(store, "RETURN 1", None, 1234)
-    assert out.result_set == [[1]]
-    assert store.calls == [{"cypher": "RETURN 1", "params": {}, "read_only": True, "timeout": 1234}]
-
-
-async def test_bounded_query_has_a_client_side_timeout():
-    class Slow:
-        async def query_raw(self, cypher, params=None, *, read_only=False, timeout=None):
-            await asyncio.sleep(5)
-
-    with pytest.raises(ops.TIMEOUTS):
-        await ops.bounded_query(Slow(), "RETURN 1", {}, 1)
-
-
-async def test_a_server_side_timeout_is_a_timeout():
-    """FalkorDB's own TIMEOUT reaches us wrapped in a DatabaseError."""
-    from graphrag_sdk.core.exceptions import DatabaseError
-
-    class TimedOut:
-        async def query_raw(self, cypher, params=None, *, read_only=False, timeout=None):
-            raise DatabaseError("Query failed: Query timed out")
-
-    with pytest.raises(TimeoutError):
-        await ops.bounded_query(TimedOut(), "RETURN 1", {}, 1000)
-
-
-async def test_other_database_errors_pass_through():
-    from graphrag_sdk.core.exceptions import DatabaseError
-
-    class Broken:
-        async def query_raw(self, cypher, params=None, *, read_only=False, timeout=None):
-            raise DatabaseError("Type mismatch")
-
-    with pytest.raises(DatabaseError, match="Type mismatch"):
-        await ops.bounded_query(Broken(), "RETURN 1", {}, 1000)
-
-
-def test_timeouts_cover_both_timeout_errors():
-    assert TimeoutError in ops.TIMEOUTS and asyncio.TimeoutError in ops.TIMEOUTS
-
-
-# ── to_jsonable / column_names ───────────────────────────────────
+# ── to_jsonable ──────────────────────────────────────────────────
 
 
 class TestToJsonable:
@@ -219,12 +171,6 @@ class TestToJsonable:
                 return "point(1, 2)"
 
         assert ops.to_jsonable(Point()) == "point(1, 2)"
-
-
-def test_column_names():
-    assert ops.column_names(result([], ["name", "n"])) == ["name", "n"]
-    assert ops.column_names(SimpleNamespace(header=["a", "b"])) == ["a", "b"]
-    assert ops.column_names(SimpleNamespace()) == []
 
 
 # ── Status / ontology counts ─────────────────────────────────────

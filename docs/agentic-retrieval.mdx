@@ -1,12 +1,12 @@
 ---
 title: "GraphRAG SDK Agentic Retrieval: Graph Tools and MCP Server"
 sidebarTitle: "Agentic Retrieval"
-description: "Give your own agent read-only graph tools — hybrid search and guarded Cypher — with numbered evidence and a citation check, in Python or over MCP."
+description: "Give your own agent read-only graph tools — hybrid search over entities, relations and passages — with numbered evidence and a citation check, in Python or over MCP."
 ---
 
 GraphRAG SDK does not run an agent loop. **Your** agent — Claude Code, Cursor, a pydantic-ai or LangGraph agent — plans, calls the graph tools and writes the answer. The SDK runs each tool call bounded and read-only, numbers every piece of evidence it returns, and checks the `[n]` citations in your agent's draft against that evidence.
 
-Use the tools when questions need more than one lookup: counts and rankings, "which X are connected to Y", multi-hop questions, comparisons. For a plain question about the content, [`rag.completion()`](/retrieval) is faster and cheaper.
+Use the tools when questions need more than one lookup: "which X are connected to Y", multi-hop questions, comparisons. For a plain question about the content, [`rag.completion()`](/retrieval) is faster and cheaper.
 
 ## Tools
 
@@ -14,7 +14,6 @@ Use the tools when questions need more than one lookup: counts and rankings, "wh
 |---|---|
 | `status` | Entity, relation, document and chunk counts, and every entity label and relation type with its count. |
 | `get_ontology` | Declared entity types with their properties, relation types with their (source, target) patterns. |
-| `cypher_query` | One read-only Cypher query for counts, sums, sorting and property filters. Checked by a schema-aware guard, rows returned capped to `max_rows`, run as `GRAPH.RO_QUERY` with a timeout. |
 | `retrieve` | Hybrid search (vector + full-text + graph) for a question: entities, relations, facts and source passages. Runs every search path unless `paths` names a few: `facts` (facts on relations), `exact_names` (entities named in the question), `fuzzy_names` (full-text match on names and descriptions), `links` (relations around the entities found) and `passages` (source text). Needs the embedding model the graph was built with. |
 | `check_citations` | Check a draft answer: every `[n]` must be evidence a tool returned in this session. Also lists claims with no `[n]` of their own, and cited claims whose figures or names the cited evidence does not contain. |
 | `preview_files` | One sample from the middle of each file under the files root, paged with `next_offset`, to design an ontology from (write side; listed only with a files root). Reads a bounded window around the middle of each file (a few pages of a PDF), never the whole file; a file's `chars` is then an estimate (`chars_estimated`). |
@@ -22,7 +21,7 @@ Use the tools when questions need more than one lookup: counts and rankings, "wh
 | `ingest` | Add text, or files under the files root with a per-file plan (write). See [Building the graph from a folder](#building-the-graph-from-a-folder). |
 | `finalize` | Deduplicate, embed and index after a batch of ingests (write; listed only with `finalize_policy="manual"`). |
 
-Results never contain embedding vectors or internal `__Label__` names. On a graph that was never written, the read tools say the graph does not exist (and `status` says so in its hint) instead of answering "nothing found", and they never create it.
+Every read runs as `GRAPH.RO_QUERY`, so the database refuses writes. Results never contain embedding vectors or internal `__Label__` names. On a graph that was never written, the read tools say the graph does not exist (and `status` says so in its hint) instead of answering "nothing found", and they never create it.
 
 ## Python
 
@@ -41,10 +40,10 @@ print(result.model_dump_json())            # or the typed result
 
 Every tool is also an async method (`await toolkit.retrieve("Who founded Acme?")`). `call()` validates arguments against the same pydantic models that produce `input_schema`.
 
-A call that cannot run raises `ToolError` with a `hint` naming the fix — the tool to call, or the exact names to use:
+A call that cannot run raises `ToolError` with a `hint` naming the fix:
 
 ```
-The query was rejected: unknown relation 'EMPLOYS' in rel_type. Hint: Entity labels: Location, Organization, Person. Relations are [:RELATES {rel_type: ...}] with rel_type in: HEADQUARTERED_IN, WORKS_AT. Copy exact entity names from retrieve results.
+Graph 'kb' does not exist. Hint: Ingest documents (and finalize) first, or check the graph name the server was started with.
 ```
 
 Options:
@@ -90,7 +89,7 @@ Unchanged files are skipped (`status: "unchanged"`); pass `reextract=true` to ex
 
 ## Evidence and citations
 
-Every entity, edge, fact, passage and row a tool returns carries an evidence number `n`. Numbers run across all calls of one **session** — one toolkit, or one `toolkit.new_session()` copy per conversation — so an answer can cite results from several tools.
+Every entity, edge, fact and passage a tool returns carries an evidence number `n`. Numbers run across all calls of one **session** — one toolkit, or one `toolkit.new_session()` copy per conversation — so an answer can cite results from several calls.
 
 ```python
 session = toolkit.new_session()
@@ -107,17 +106,6 @@ check.unsupported     # cited sentences + the figures / names their evidence lac
 A marker can cite one item (`[3]`), a list (`[1, 4]`) or a range (`[1-3]`). The claim checks are literal and use no LLM: a figure must appear as a number in the full text of the evidence the sentence cites (so "two" for "2" is reported), and a name counts as found when at least half of its words appear there as whole words, ignoring case (either word of "Corvane Systems"; "Ann" is not found in "planning"). They are warnings and never change `grounded`.
 
 An answer that cites no real evidence is not grounded.
-
-## Cypher guard
-
-`cypher_query` treats the query as untrusted. Before anything reaches the database it rejects:
-
-- writes (`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`, `DROP`, `FOREACH`, `LOAD CSV`) and every `CALL`;
-- labels, relation types and property names the graph does not have — with the real names in the hint;
-- semantic relation types used as edge types: they are stored as `[:RELATES {rel_type: 'WORKS_AT'}]`;
-- internal labels and embedding properties.
-
-The query then runs as `GRAPH.RO_QUERY`, so the database refuses writes too. The rows it returns are capped to `max_rows` (a `LIMIT` inside the query, such as `WITH n LIMIT 100`, is kept as written, so `count()` and `collect()` after it stay correct); when more rows matched, the result says `truncated: true` — aggregate with `count()` instead of counting rows. Whatever the query, returned nodes and property maps of the SDK's own bookkeeping nodes are replaced by `[internal node omitted]`, and vectors by a placeholder.
 
 ## MCP server
 
@@ -144,7 +132,7 @@ Claude Code / Cursor config:
 
 Configuration comes from `FALKOR_HOST`, `FALKOR_PORT`, `FALKOR_USERNAME`, `FALKOR_PASSWORD`, `GRAPHRAG_GRAPH`, `GRAPHRAG_MODEL`, `GRAPHRAG_EMBED_MODEL`, `GRAPHRAG_EMBED_DIM`, `GRAPHRAG_EMBED_SEND_DIMENSIONS`, `GRAPHRAG_MCP_READ_ONLY` and `GRAPHRAG_MCP_FILES_ROOT`. `GRAPHRAG_EMBED_DIM` defaults to the model's native size (3072 for `text-embedding-3-large`, otherwise 1536); when it is set, it is sent to `text-embedding-3` models as `dimensions`. Set `GRAPHRAG_EMBED_SEND_DIMENSIONS=true` to send it to a model whose name does not say `text-embedding-3`, such as an Azure deployment. A server reads files only when given `--files-root` (or `GRAPHRAG_MCP_FILES_ROOT`); without it, `ingest` takes text only. The LLM and embedder serve `retrieve` and `ingest`; the other read tools need neither.
 
-The server serves the same tools, with MCP annotations (`readOnlyHint`, `destructiveHint`; `ingest`, `set_ontology` and `finalize` are marked destructive, so clients such as Claude Code ask the user before running them), and sends the client a short guide as its instructions: call `retrieve` first with the user's question word for word (all paths unless it knows the question needs only a few), run `retrieve` again with exact names or `expand_hops` 2–3 when the first call did not answer, use `status` for questions about the graph itself and `cypher_query` for aggregates (straight after `get_ontology`, without `retrieve`, when the question is only a count, sum or filter), answer briefly, cite `[n]`, and always run `check_citations` before replying. When it serves the write tools, the guide adds the ingestion steps above, starting with asking the user for their ontology; steps that need `set_ontology` or `finalize` are left out when those tools are not served (`include`, or a `finalize_policy` other than `"manual"`). Results over 40,000 characters are shortened (longest lists first, at any depth, then long strings; the JSON stays valid) and marked `truncated`, with a hint naming the lists that were cut. A failure that is not a `ToolError` comes back as a short message naming the kind of failure (timeout, model provider, database, configuration) with a next step; the underlying message stays in the server log, and API keys and tokens are masked in any error text.
+The server serves the same tools, with MCP annotations (`readOnlyHint`, `destructiveHint`; `ingest`, `set_ontology` and `finalize` are marked destructive, so clients such as Claude Code ask the user before running them), and sends the client a short guide as its instructions: call `retrieve` first with the user's question word for word (all paths unless it knows the question needs only a few), run `retrieve` again with exact names or `expand_hops` 2–3 when the first call did not answer, use `status` or `get_ontology` for questions about the graph itself, answer briefly, cite `[n]`, and always run `check_citations` before replying. When it serves the write tools, the guide adds the ingestion steps above, starting with asking the user for their ontology; steps that need `set_ontology` or `finalize` are left out when those tools are not served (`include`, or a `finalize_policy` other than `"manual"`). Results over 40,000 characters are shortened (longest lists first, at any depth, then long strings; the JSON stays valid) and marked `truncated`, with a hint naming the lists that were cut. A failure that is not a `ToolError` comes back as a short message naming the kind of failure (timeout, model provider, database, configuration) with a next step; the underlying message stays in the server log, and API keys and tokens are masked in any error text.
 
 Each client connection gets its own evidence numbering. Over SSE that holds for every client stream, including clients on the stateless MCP protocol (2026-07-28). Over stdio one process serves one client, so there is one numbering.
 

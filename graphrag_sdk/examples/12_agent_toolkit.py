@@ -3,7 +3,7 @@ GraphRAG SDK -- Agent Toolkit
 =============================
 The graph tools your own agent calls: wrap a GraphRAG in GraphRAGToolkit,
 ingest a few facts, then run each read tool an agent would use -- status,
-retrieve, cypher_query -- cite the evidence numbers they return, and check
+get_ontology, retrieve -- cite the evidence numbers they return, and check
 the citations.
 
 The same tools are served to MCP clients by ``graphrag-mcp``.
@@ -63,17 +63,14 @@ async def main():
         found = await session.retrieve("Who is the CTO of Acme Corp?", top_k=5)
         print("=== retrieve ===\n" + found.to_llm_text(max_chars=1200), "\n")
 
-        rows = await session.cypher_query(
-            "MATCH ()-[r:RELATES]->() RETURN r.rel_type AS relation, count(*) AS edges "
-            "ORDER BY edges DESC"
-        )
-        print("=== cypher_query ===\n" + rows.to_llm_text(max_chars=600), "\n")
+        ontology = await session.get_ontology()
+        print("=== get_ontology ===\n" + ontology.to_llm_text(max_chars=600), "\n")
 
-        # 3. The guard rejects writes, and errors carry a hint for the agent
+        # 3. A call that cannot run raises ToolError with a hint for the agent
         try:
-            await session.cypher_query("CREATE (n:Hack) RETURN n")
+            await session.call("graph_search", {"question": "x"})
         except ToolError as exc:
-            print(f"Guard: {exc}\n")
+            print(f"Error: {exc}\n")
 
         # 4. Your agent drafts an answer citing [n]; check it before replying
         if found.relations:

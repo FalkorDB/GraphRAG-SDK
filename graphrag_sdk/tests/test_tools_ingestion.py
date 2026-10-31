@@ -937,12 +937,6 @@ class TestSetOntology:
         assert "Existing types cannot change" not in err.value.hint
         assert rag.calls == []
 
-    async def test_invalidates_the_schema_cache(self):
-        tk = toolkit(FakeRAG())
-        tk._shared["schema"] = object()
-        await tk.set_ontology(entities=[{"label": "Drug"}])
-        assert "schema" not in tk._shared
-
 
 class TestFileErrorsAreRedacted:
     SECRET = "Incorrect API key provided: sk-SECRET123456 (api_key=hunter2)"
@@ -1051,12 +1045,12 @@ class TestIngestFiles:
         assert "ingest(files=['notes/a.md'], reextract=true)" in result.hint
         assert rag.finalized == 0 and "finalize" in result.hint
 
-    async def test_unknown_entities_suggest_a_query(self, corpus):
+    async def test_unknown_entities_point_at_status(self, corpus):
         rag = FakeRAG()
         rag.pruned["b.md"] = {"unknown": 3}
         result = await toolkit(rag, corpus).ingest(files=["notes/*"])
         assert result.pruned.unknown == 3
-        assert "MATCH (n:Unknown)" in result.hint
+        assert "status shows how many entities are stored as Unknown" in result.hint
         # Unknown may be a declared type classified with low confidence.
         assert "3 entities have an unresolved type" in result.hint
         assert "check them before adding types" in result.hint

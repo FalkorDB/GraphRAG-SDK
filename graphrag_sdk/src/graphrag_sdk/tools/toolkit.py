@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import re
-import time
 import unicodedata
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -26,7 +25,6 @@ from graphrag_sdk.core.connection import ConnectionConfig
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import (
     ConfigError,
-    DatabaseError,
     LoaderError,
     ReadOnlyViolation,
 )
@@ -42,21 +40,12 @@ from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 from graphrag_sdk.tools import files as fs
 from graphrag_sdk.tools import graph_ops as ops
-from graphrag_sdk.tools.cypher_guard import (
-    GraphSchema,
-    enforce_row_cap,
-    introspect_schema,
-    mask_internal_labels,
-    validate_read_query,
-)
 from graphrag_sdk.tools.errors import ToolError
 from graphrag_sdk.tools.evidence import DEFAULT_LEDGER_CAPACITY, EvidenceLedger, ground_answer
 from graphrag_sdk.tools.models import (
     ChunkRef,
     CitationCheckResult,
     ClaimCheck,
-    CypherResult,
-    CypherRow,
     DocSample,
     DocumentRef,
     EntityCard,
@@ -78,7 +67,6 @@ from graphrag_sdk.tools.specs import (
     RETRIEVE_PATHS,
     TOOL_REGISTRY,
     CheckCitationsInput,
-    CypherQueryInput,
     IngestInput,
     PlanRuleInput,
     PreviewFilesInput,
@@ -96,8 +84,6 @@ if TYPE_CHECKING:
 FinalizePolicy = Literal["manual", "on_write", "never"]
 _POLICIES = ("manual", "on_write", "never")
 _TENANT_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-#: Seconds a cached schema is trusted when the graph's topology has not changed.
-SCHEMA_CACHE_SECONDS = 60.0
 logger = logging.getLogger(__name__)
 
 #: Most names listed in a hint.
@@ -289,17 +275,6 @@ def _file_error(exc: BaseException) -> str:
     )
 
 
-def _mask(value: Any) -> Any:
-    """Hide SDK-internal ``__Label__`` names in a JSON-safe value."""
-    if isinstance(value, str):
-        return mask_internal_labels(value)
-    if isinstance(value, list):
-        return [_mask(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _mask(v) for k, v in value.items()}
-    return value
-
-
 def _as_dict(value: Any) -> Any:
     return value.model_dump() if isinstance(value, BaseModel) else value
 
@@ -321,8 +296,8 @@ def _ingested(path: str, res: Any, status: str, plan: dict[str, Any] | None) -> 
 class GraphRAGToolkit:
     """The graph tools for an outside agent, over one :class:`GraphRAG`.
 
-    Read tools: ``status``, ``get_ontology``, ``cypher_query``,
-    ``retrieve``, ``check_citations``. Ingestion tools:
+    Read tools: ``status``, ``get_ontology``, ``retrieve``,
+    ``check_citations``. Ingestion tools:
     ``preview_files`` (with a ``files_root``), ``set_ontology``, ``ingest``,
     ``finalize``. Each is an async method; :meth:`tool_specs` describes them
     for an agent framework and :meth:`call` runs one by name with validated
@@ -586,42 +561,6 @@ class GraphRAGToolkit:
         if exists:
             self._shared["graph_exists"] = True
 
-    async def _schema(self) -> GraphSchema:
-        """Live labels / relationship types / property keys plus every
-        ``RELATES`` rel_type (declared or stored), cached until the graph's
-        topology changes or :data:`SCHEMA_CACHE_SECONDS` pass."""
-        version = getattr(self._rag._conn, "topology_version", 0)
-        now = time.monotonic()
-        cached = self._shared.get("schema")
-        if cached and cached[0] == version and now - cached[1] < SCHEMA_CACHE_SECONDS:
-            return cached[2]
-        ontology: Ontology | None = None
-        try:
-            ontology = await self._declared_ontology()
-        except Exception:
-            ontology = None
-        schema = await introspect_schema(self._store, ontology)
-        try:
-            _, rel_counts = await ops.schema_counts(self._store)
-            schema.semantic_relations = sorted(set(schema.semantic_relations) | set(rel_counts))
-        except Exception:
-            logger.warning(
-                "schema_counts failed; RELATES types come from the ontology only", exc_info=True
-            )
-        self._shared["schema"] = (version, now, schema)
-        return schema
-
-    def _schema_hint(self, schema: GraphSchema) -> str:
-        labels = sorted(
-            lbl for lbl in schema.labels if not lbl.startswith("__") and lbl not in ("Chunk",)
-        )
-        return (
-            f"Entity labels: {_names_hint(labels)}. Relations are "
-            f"[:RELATES {{rel_type: ...}}] with rel_type in: "
-            f"{_names_hint(schema.semantic_relations)}. "
-            "Copy exact entity names from retrieve results."
-        )
-
     # ── Read tools ───────────────────────────────────────────────
 
     async def status(self) -> StatusResult:
@@ -688,93 +627,6 @@ class GraphRAGToolkit:
             for label, count in sorted({**{r: 0 for r in declared_r}, **rel_counts}.items())
         ]
         return OntologyResult(entity_types=entity_types, relation_types=relation_types)
-
-    async def cypher_query(
-        self,
-        cypher: str,
-        params: dict[str, Any] | None = None,
-        *,
-        max_rows: int = 25,
-        timeout_ms: int = 5000,
-    ) -> CypherResult:
-        """Run one read-only Cypher query, checked against the live schema.
-
-        Writes and procedure calls are rejected, unknown labels, relationship
-        types and properties are rejected with the valid names, the rows
-        the final ``RETURN`` yields are capped to ``max_rows`` (an inner
-        ``LIMIT`` is kept, so aggregates after it stay correct) and the query runs as
-        ``GRAPH.RO_QUERY`` with a database timeout. Each row is a piece of
-        evidence; ``truncated`` means more rows matched than were returned.
-        """
-        inp = CypherQueryInput(
-            cypher=cypher, params=params, max_rows=max_rows, timeout_ms=timeout_ms
-        )
-        # Structural checks (writes, procedures) need no schema or database.
-        problems = validate_read_query(inp.cypher, None, require_rel_type=False)
-        if problems:
-            raise ToolError(
-                f"The query was rejected: {'; '.join(problems)}.",
-                hint="Only read queries are allowed: MATCH ... RETURN, with no CALL.",
-            )
-        await self._require_graph()
-        schema = await self._schema()
-        problems = validate_read_query(inp.cypher, schema, require_rel_type=False)
-        if problems:
-            raise ToolError(
-                f"The query was rejected: {'; '.join(problems)}.",
-                hint=self._schema_hint(schema),
-            )
-        try:
-            capped = enforce_row_cap(inp.cypher, inp.max_rows + 1, inp.params)
-        except ValueError as exc:
-            raise ToolError(f"The query could not be read: {exc}.") from None
-        try:
-            result = await ops.bounded_query(self._store, capped, inp.params, inp.timeout_ms)
-        except ops.TIMEOUTS:
-            raise ToolError(
-                f"The query timed out after {inp.timeout_ms} ms.",
-                hint="Filter earlier, start from a specific entity, or aggregate with count().",
-            ) from None
-        except DatabaseError as exc:
-            raise ToolError(
-                f"The query failed: {exc}",
-                hint=self._schema_hint(schema),
-            ) from None
-        if isinstance(result, ops.NoGraph):
-            self._shared.pop("graph_exists", None)
-            raise self._missing_graph()
-        columns = [mask_internal_labels(c) for c in ops.column_names(result)]
-        raw_rows = list(getattr(result, "result_set", None) or [])
-        truncated = len(raw_rows) > inp.max_rows
-        rows = []
-        for raw in raw_rows[: inp.max_rows]:
-            values = [_mask(ops.to_jsonable(v)) for v in raw]
-            record = dict(zip(columns, values, strict=False)) if columns else values
-            n = self._evidence(
-                "cypher_query",
-                "row",
-                json.dumps(record, ensure_ascii=False, default=str),
-                cypher=inp.cypher,
-            )
-            rows.append(CypherRow(n=n, values=values))
-        hint = None
-        if truncated:
-            hint = (
-                f"More than {inp.max_rows} rows matched; do not count or rank from these rows. "
-                "Aggregate in Cypher (count(), collect()) or add filters."
-            )
-        elif not rows:
-            hint = (
-                "No rows. Use exact entity names from retrieve results; rel_type values "
-                "are case-sensitive (see get_ontology)."
-            )
-        return CypherResult(
-            columns=columns,
-            rows=rows,
-            row_count=len(rows),
-            truncated=truncated,
-            hint=hint,
-        )
 
     def _make_strategy(
         self,
@@ -1200,7 +1052,6 @@ class GraphRAGToolkit:
                 f"The ontology was not accepted: {_short(str(exc), 500)}",
                 hint="Existing types cannot change their properties; add new types instead.",
             ) from None
-        self._shared.pop("schema", None)
         return await self.get_ontology()
 
     async def ingest(
@@ -1429,8 +1280,7 @@ class GraphRAGToolkit:
                 else f"ingest(text=..., document_id={out.document_id!r}, reextract=true)"
             )
             look = (
-                " To see the Unknown entities: cypher_query MATCH (n:Unknown) "
-                "RETURN n.name, n.description LIMIT 25."
+                " status shows how many entities are stored as Unknown."
                 if out.pruned.unknown
                 else ""
             )

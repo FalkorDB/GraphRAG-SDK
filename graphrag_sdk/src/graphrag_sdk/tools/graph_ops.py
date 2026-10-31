@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -12,10 +11,6 @@ from graphrag_sdk.storage import system_store
 from graphrag_sdk.storage.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
-
-#: ``asyncio.wait_for`` raises ``asyncio.TimeoutError``, which is only the
-#: builtin ``TimeoutError`` from Python 3.11 on; catch both.
-TIMEOUTS = (TimeoutError, asyncio.TimeoutError)
 
 #: Properties never returned to a caller: vectors and bulky bookkeeping.
 _BULKY_PROPS = frozenset({"source_chunk_ids", "spans"})
@@ -61,34 +56,6 @@ async def graph_exists(store: Any) -> bool | None:
     except Exception as exc:
         return False if _is_missing_graph(exc) else None
     return True
-
-
-def _is_server_timeout(exc: BaseException) -> bool:
-    # FalkorDB's own TIMEOUT answers "Query timed out"; the connection wraps
-    # it in a DatabaseError, which the TIMEOUTS handlers would not catch.
-    return "timed out" in str(exc).lower()
-
-
-async def bounded_query(
-    store: Any,
-    cypher: str,
-    params: dict[str, Any] | None,
-    timeout_ms: int,
-) -> Any:
-    """Run a read-only query with a database timeout and a client-side one."""
-    try:
-        return await asyncio.wait_for(
-            store.query_raw(cypher, params or {}, read_only=True, timeout=timeout_ms),
-            timeout=timeout_ms / 1000 + 0.1,
-        )
-    except TIMEOUTS:
-        raise
-    except Exception as exc:
-        if _is_missing_graph(exc):
-            return NoGraph()
-        if _is_server_timeout(exc):
-            raise TimeoutError(str(exc)) from exc
-        raise
 
 
 async def _read(store: Any, cypher: str, params: dict[str, Any] | None = None) -> Any:
@@ -204,11 +171,6 @@ def to_jsonable(value: Any, *, max_chars: int = MAX_CELL_CHARS) -> Any:
             return {"type": str(relation), **clean}
         return clean
     return GraphStore._sanitize_string(str(value))
-
-
-def column_names(result: Any) -> list[str]:
-    header = list(getattr(result, "header", None) or [])
-    return [str(h[1]) if isinstance(h, list | tuple) and len(h) > 1 else str(h) for h in header]
 
 
 # ── Status / ontology ────────────────────────────────────────────

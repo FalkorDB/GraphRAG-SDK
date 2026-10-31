@@ -4,9 +4,6 @@ FalkorDB in test_tools_integration.py."""
 
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -22,7 +19,6 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.tools import TOOL_NAMES, GraphRAGToolkit, ToolError
 from graphrag_sdk.tools import graph_ops as ops
-from graphrag_sdk.tools.cypher_guard import GraphSchema
 
 
 class FakeResult:
@@ -86,14 +82,6 @@ async def _const(value: Any) -> Any:
     return value
 
 
-SCHEMA = GraphSchema(
-    labels=["Person", "Company", "Chunk", "Document"],
-    relationship_types=["RELATES", "MENTIONED_IN", "PART_OF"],
-    property_keys=["id", "name", "description", "rel_type", "fact", "text"],
-    semantic_relations=["WORKS_AT", "FOUNDED"],
-)
-
-
 @pytest.fixture
 def store() -> FakeStore:
     return FakeStore()
@@ -105,14 +93,8 @@ def rag(store: FakeStore) -> FakeRAG:
 
 
 @pytest.fixture
-def toolkit(rag: FakeRAG, monkeypatch: pytest.MonkeyPatch) -> GraphRAGToolkit:
-    tk = GraphRAGToolkit(rag)  # type: ignore[arg-type]
-
-    async def schema() -> GraphSchema:
-        return SCHEMA
-
-    monkeypatch.setattr(tk, "_schema", schema)
-    return tk
+def toolkit(rag: FakeRAG) -> GraphRAGToolkit:
+    return GraphRAGToolkit(rag)  # type: ignore[arg-type]
 
 
 # ── Construction, specs, dispatch ──────────────────────────────────
@@ -124,13 +106,13 @@ class TestSpecsAndDispatch:
         assert [s.name for s in toolkit.tool_specs()] == [
             n for n in TOOL_NAMES if n != "preview_files"
         ]
-        assert len(TOOL_NAMES) == 9
+        assert len(TOOL_NAMES) == 8
 
     def test_read_only_drops_writes(self, rag: FakeRAG):
         tk = GraphRAGToolkit(rag, read_only=True)  # type: ignore[arg-type]
         names = [s.name for s in tk.tool_specs()]
         assert "ingest" not in names and "finalize" not in names
-        assert "cypher_query" in names
+        assert "retrieve" in names
 
     def test_finalize_only_advertised_when_manual(self, rag: FakeRAG):
         for policy in ("on_write", "never"):
@@ -138,8 +120,8 @@ class TestSpecsAndDispatch:
             assert "finalize" not in [s.name for s in tk.tool_specs()]
 
     def test_include_and_validation(self, rag: FakeRAG):
-        tk = GraphRAGToolkit(rag, include=["status", "cypher_query"])  # type: ignore[arg-type]
-        assert [s.name for s in tk.tool_specs()] == ["status", "cypher_query"]
+        tk = GraphRAGToolkit(rag, include=["status", "retrieve"])  # type: ignore[arg-type]
+        assert [s.name for s in tk.tool_specs()] == ["status", "retrieve"]
         with pytest.raises(ValueError, match="Unknown tool names"):
             GraphRAGToolkit(rag, include=["status", "graph_search"])  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="finalize_policy"):
@@ -148,13 +130,13 @@ class TestSpecsAndDispatch:
     async def test_call_unknown_tool(self, toolkit: GraphRAGToolkit):
         with pytest.raises(ToolError, match="Unknown tool 'graph_search'") as exc:
             await toolkit.call("graph_search", {})
-        assert "cypher_query" in (exc.value.hint or "")
+        assert "retrieve" in (exc.value.hint or "")
         assert "Hint:" in str(exc.value)
 
     async def test_call_disabled_tool(self, rag: FakeRAG):
         tk = GraphRAGToolkit(rag, include=["status"])  # type: ignore[arg-type]
         with pytest.raises(ToolError, match="not enabled"):
-            await tk.call("cypher_query", {"cypher": "MATCH (n) RETURN n"})
+            await tk.call("retrieve", {"question": "Who?"})
 
     async def test_call_write_on_read_only(self, rag: FakeRAG):
         tk = GraphRAGToolkit(rag, read_only=True)  # type: ignore[arg-type]
@@ -166,17 +148,15 @@ class TestSpecsAndDispatch:
 
     async def test_call_rejects_bad_arguments(self, toolkit: GraphRAGToolkit):
         with pytest.raises(ToolError, match="bogus: Extra inputs are not permitted"):
-            await toolkit.call("cypher_query", {"cypher": "MATCH (n) RETURN n", "bogus": 1})
-        with pytest.raises(ToolError, match="cypher"):
-            await toolkit.call("cypher_query", {})
-        with pytest.raises(ToolError, match="max_rows"):
-            await toolkit.call("cypher_query", {"cypher": "MATCH (n) RETURN n", "max_rows": 101})
+            await toolkit.call("retrieve", {"question": "Who?", "bogus": 1})
+        with pytest.raises(ToolError, match="question"):
+            await toolkit.call("retrieve", {})
+        with pytest.raises(ToolError, match="top_k"):
+            await toolkit.call("retrieve", {"question": "Who?", "top_k": 26})
 
-    async def test_call_dispatches(self, toolkit: GraphRAGToolkit, store):
-        store.rows = [["Alice"]]
-        store.header = ["name"]
-        result = await toolkit.call("cypher_query", {"cypher": "MATCH (p:Person) RETURN p.name"})
-        assert result.rows[0].values == ["Alice"]
+    async def test_call_dispatches(self, toolkit: GraphRAGToolkit, rag: FakeRAG):
+        result = await toolkit.call("retrieve", {"question": "Who?"})
+        assert result.question == "Who?" and rag.retrieve_kwargs is not None
 
 
 # ── Sessions and lifecycle ─────────────────────────────────────────
@@ -192,7 +172,7 @@ class TestSessions:
         assert toolkit.ledger.get(1).content == "x"
         assert other.ledger.get(1).content == "y"
 
-    async def test_new_session_shares_schema_cache(self, rag: FakeRAG):
+    async def test_new_session_shares_state(self, rag: FakeRAG):
         tk = GraphRAGToolkit(rag)  # type: ignore[arg-type]
         assert tk.new_session()._shared is tk._shared
 
@@ -228,118 +208,6 @@ class TestSessions:
             )
 
 
-# ── cypher_query ───────────────────────────────────────────────────
-
-
-class TestCypherQuery:
-    @pytest.mark.parametrize(
-        "cypher",
-        [
-            "CREATE (n:Person {name: 'x'}) RETURN n",
-            "MATCH (n) DETACH DELETE n",
-            "MATCH (n) SET n.name = 'x' RETURN n",
-            "CALL db.labels()",
-            "MATCH (n) RETURN n; MATCH (m) DELETE m",
-            "MATCH (n) // comment\nMERGE (m) RETURN m",
-        ],
-    )
-    async def test_writes_rejected_before_the_database(self, rag: FakeRAG, cypher: str):
-        tk = GraphRAGToolkit(rag)  # type: ignore[arg-type]
-        with pytest.raises(ToolError, match="rejected"):
-            await tk.cypher_query(cypher)
-        assert rag._graph_store.queries == []
-
-    async def test_unknown_names_rejected_with_schema_hint(self, toolkit, store):
-        with pytest.raises(ToolError, match="Employee") as exc:
-            await toolkit.cypher_query("MATCH (n:Employee) RETURN n.name")
-        hint = exc.value.hint or ""
-        assert "Person" in hint and "WORKS_AT" in hint
-        assert "Chunk" not in hint.split("Relations")[0]
-        # Only the read-only existence check reached the database.
-        assert store.queries == [("RETURN 1", {})]
-
-    async def test_rows_are_evidence_and_limit_is_capped(self, toolkit, store):
-        store.rows = [["Alice", 3], ["Bob", 1]]
-        store.header = ["name", "n"]
-        result = await toolkit.cypher_query(
-            "MATCH (p:Person) RETURN p.name AS name, 1 AS n LIMIT 500", max_rows=5
-        )
-        assert result.columns == ["name", "n"]
-        assert [r.values for r in result.rows] == [["Alice", 3], ["Bob", 1]]
-        assert [r.n for r in result.rows] == [1, 2]
-        assert not result.truncated and result.row_count == 2
-        cypher, _ = store.queries[-1]
-        assert "LIMIT 6" in cypher and "500" not in cypher
-        await toolkit.cypher_query(
-            "MATCH (p:Person) RETURN p.name AS name LIMIT $k", {"k": 100000}, max_rows=5
-        )
-        cypher, params = store.queries[-1]
-        assert cypher.endswith("LIMIT 6") and params == {"k": 100000}
-        assert toolkit.ledger.get(1).tool == "cypher_query"
-        assert '"name": "Alice"' in toolkit.ledger.get(1).content
-
-    async def test_truncated_when_more_rows_than_max(self, toolkit, store):
-        store.rows = [[i] for i in range(4)]
-        store.header = ["i"]
-        result = await toolkit.cypher_query("MATCH (p:Person) RETURN p.name", max_rows=3)
-        assert result.truncated and result.row_count == 3
-        assert "do not count" in (result.hint or "")
-
-    async def test_inner_limit_is_kept_so_aggregates_stay_correct(self, toolkit, store):
-        store.rows = [[100]]
-        store.header = ["c"]
-        result = await toolkit.cypher_query(
-            "MATCH (n:Person) WITH n ORDER BY n.name LIMIT 100 RETURN count(n) AS c"
-        )
-        cypher, _ = store.queries[-1]
-        assert "LIMIT 100 RETURN" in cypher and cypher.endswith("LIMIT 26")
-        assert result.rows[0].values == [100] and not result.truncated
-
-    async def test_parameter_limit_above_the_cap_is_clamped(self, toolkit, store):
-        store.rows = [[i] for i in range(50)]
-        store.header = ["i"]
-        result = await toolkit.cypher_query(
-            "MATCH (p:Person) RETURN p.name LIMIT $n", {"n": 50}, max_rows=10
-        )
-        cypher, params = store.queries[-1]
-        assert cypher.endswith("LIMIT 11") and cypher.count("LIMIT") == 1
-        assert params == {"n": 50}
-        assert result.row_count == 10 and result.truncated
-
-    async def test_untyped_relates_is_allowed(self, toolkit, store):
-        await toolkit.cypher_query("MATCH (a:Person)-[r:RELATES]->(b) RETURN r.rel_type, count(*)")
-        assert store.queries
-
-    async def test_unknown_rel_type_is_rejected(self, toolkit):
-        with pytest.raises(ToolError, match="EMPLOYED_BY"):
-            await toolkit.cypher_query(
-                "MATCH (a)-[r:RELATES {rel_type: 'EMPLOYED_BY'}]->(b) RETURN b.name"
-            )
-
-    async def test_database_errors_become_tool_errors(self, toolkit, store):
-        store.error = DatabaseError("Type mismatch: expected Integer")
-        with pytest.raises(ToolError, match="Type mismatch") as exc:
-            await toolkit.cypher_query("MATCH (p:Person) RETURN p.name")
-        assert "Entity labels" in (exc.value.hint or "")
-
-    async def test_timeouts_become_tool_errors(self, toolkit, store):
-        store.error = asyncio.TimeoutError()
-        with pytest.raises(ToolError, match="timed out") as exc:
-            await toolkit.cypher_query("MATCH (p:Person) RETURN p.name", timeout_ms=100)
-        assert "aggregate" in (exc.value.hint or "")
-
-    async def test_vectors_never_returned(self, toolkit, store):
-        store.rows = [[{"name": "Alice", "embedding": [0.1] * 128}, [0.2] * 128]]
-        store.header = ["p", "v"]
-        result = await toolkit.cypher_query("MATCH (p:Person) RETURN p.name AS p, 1 AS v")
-        text = str(result.rows[0].values)
-        assert "0.1" not in text and "0.2" not in text
-
-    async def test_empty_hint(self, toolkit):
-        result = await toolkit.cypher_query("MATCH (p:Person) RETURN p.name")
-        assert result.rows == [] and "retrieve" in (result.hint or "")
-
-
 # ── Other read tools ───────────────────────────────────────────────
 
 
@@ -355,25 +223,6 @@ class TestReadTools:
         monkeypatch.setattr(ops, "schema_counts", schema_counts)
         result = await toolkit.status()
         assert result.entities == 0 and "empty" in (result.hint or "")
-
-    async def test_schema_counts_failure_is_logged_as_a_warning(self, rag, monkeypatch, caplog):
-        import graphrag_sdk.tools.toolkit as tk_mod
-
-        async def introspect(store, ontology):
-            return GraphSchema(labels=["Person"], semantic_relations=["WORKS_AT"])
-
-        async def schema_counts(store):
-            raise RuntimeError("procedure missing")
-
-        monkeypatch.setattr(tk_mod, "introspect_schema", introspect)
-        monkeypatch.setattr(ops, "schema_counts", schema_counts)
-        with caplog.at_level(logging.WARNING, logger=tk_mod.logger.name):
-            schema = await GraphRAGToolkit(rag)._schema()
-        assert schema.semantic_relations == ["WORKS_AT"]
-        assert any(
-            r.levelno == logging.WARNING and "schema_counts failed" in r.getMessage()
-            for r in caplog.records
-        )
 
     async def test_retrieve_numbers_every_item(self, toolkit, rag, monkeypatch):
         rag.retrieve_result = RetrieverResult(
@@ -589,7 +438,6 @@ class TestMissingGraph:
     @pytest.mark.parametrize(
         "tool, args",
         [
-            ("cypher_query", {"cypher": "MATCH (n) RETURN count(n) AS c"}),
             ("retrieve", {"question": "Who founded Acme?"}),
         ],
     )
@@ -608,15 +456,9 @@ class TestMissingGraph:
         assert status.entities == 0 and "Graph 'nope' does not exist" in status.hint
 
     async def test_existence_is_checked_once(self, toolkit: GraphRAGToolkit, store: FakeStore):
-        await toolkit.call("cypher_query", {"cypher": "MATCH (n) RETURN n.name AS name"})
-        await toolkit.call("cypher_query", {"cypher": "MATCH (n) RETURN n.name AS name"})
+        await toolkit.call("retrieve", {"question": "Who?"})
+        await toolkit.call("retrieve", {"question": "Who?"})
         assert [q for q, _ in store.queries].count("RETURN 1") == 1
-
-    async def test_other_database_errors_are_left_to_the_tool(self, rag: FakeRAG):
-        rag._graph_store.error = DatabaseError("Unknown function 'foo'")
-        tk = GraphRAGToolkit(rag)  # type: ignore[arg-type]
-        with pytest.raises(ToolError, match="The query failed"):
-            await tk.cypher_query("MATCH (n) RETURN n.name")
 
 
 class TestCheckCitations:
@@ -649,19 +491,6 @@ class TestCheckCitations:
         assert "drop it" in (result.hint or "") and "correct the claim" in (result.hint or "")
         text = result.to_llm_text()
         assert "No citation (1):" in text and "missing: Globex" in text
-
-    async def test_citations_are_checked_against_the_text_the_agent_saw(
-        self, toolkit: GraphRAGToolkit, store: FakeStore
-    ):
-        # A row longer than one evidence item used to be cut at 2,000
-        # characters, so a figure the agent read near its end was flagged.
-        store.header = ["bio", "note"]
-        store.rows = [["x" * 1500, "y" * 800 + " founded in 1987"]]
-        out = await toolkit.cypher_query("MATCH (p:Person) RETURN p.name AS bio, p.name AS note")
-        assert "1987" in json.dumps(out.rows[0].values)
-        assert "1987" in toolkit.ledger.get(out.rows[0].n).content
-        result = await toolkit.check_citations("Acme was founded in 1987 [1].")
-        assert result.grounded and result.unsupported == []
 
     async def test_sessions_do_not_share_numbers(self, toolkit: GraphRAGToolkit):
         toolkit.ledger.add(tool="t", kind="k", content="x")

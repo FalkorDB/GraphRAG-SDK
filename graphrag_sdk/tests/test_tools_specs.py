@@ -12,7 +12,6 @@ from graphrag_sdk.tools.specs import (
     TOOL_NAMES,
     TOOL_REGISTRY,
     CheckCitationsInput,
-    CypherQueryInput,
     FinalizeInput,
     IngestInput,
     OntologyInput,
@@ -30,7 +29,6 @@ from graphrag_sdk.tools.specs import (
 ALL_NAMES = (
     "status",
     "get_ontology",
-    "cypher_query",
     "retrieve",
     "check_citations",
     "preview_files",
@@ -38,12 +36,11 @@ ALL_NAMES = (
     "ingest",
     "finalize",
 )
-READ_NAMES = ALL_NAMES[:5]
+READ_NAMES = ALL_NAMES[:4]
 
 VALID_INPUTS: dict[type[BaseModel], dict] = {
     StatusInput: {},
     OntologyInput: {},
-    CypherQueryInput: {"cypher": "MATCH (n) RETURN n"},
     RetrieveInput: {"question": "Who?"},
     CheckCitationsInput: {"answer": "x [1]"},
     PreviewFilesInput: {},
@@ -186,18 +183,17 @@ def test_descriptions_are_substantial(spec):
 
 def test_schema_accepts_valid_and_rejects_extra_arguments():
     by_name = {s.name: s for s in specs()}
-    schema = by_name["cypher_query"].input_schema
-    jsonschema.validate({"cypher": "RETURN 1", "max_rows": 5}, schema)
+    schema = by_name["retrieve"].input_schema
+    jsonschema.validate({"question": "Who?", "top_k": 5}, schema)
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate({"cypher": "RETURN 1", "write": True}, schema)
+        jsonschema.validate({"question": "Who?", "write": True}, schema)
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate({"cypher": "RETURN 1", "max_rows": 101}, schema)
+        jsonschema.validate({"question": "Who?", "top_k": 26}, schema)
 
 
 def test_tools_that_return_evidence_say_so():
     by_name = {s.name: s for s in specs()}
-    for name in ("cypher_query", "retrieve"):
-        assert "evidence numbers [n]" in by_name[name].description
+    assert "evidence numbers [n]" in by_name["retrieve"].description
 
 
 # ── Input models ─────────────────────────────────────────────────
@@ -212,26 +208,6 @@ def test_inputs_accept_minimal_arguments(model):
 def test_inputs_reject_unknown_arguments(model):
     with pytest.raises(ValidationError, match="extra"):
         model.model_validate({**VALID_INPUTS[model], "unexpected": 1})
-
-
-def test_cypher_query_defaults_and_bounds():
-    q = CypherQueryInput(cypher="RETURN 1")
-    assert (q.max_rows, q.timeout_ms, q.params) == (25, 5000, None)
-    CypherQueryInput(cypher="RETURN 1", max_rows=100, timeout_ms=100)
-    CypherQueryInput(cypher="RETURN 1", max_rows=1, timeout_ms=10_000)
-    CypherQueryInput(cypher="x" * 5000)
-    bad = [
-        {"max_rows": 0},
-        {"max_rows": 101},
-        {"timeout_ms": 99},
-        {"timeout_ms": 10_001},
-    ]
-    for extra in bad:
-        with pytest.raises(ValidationError):
-            CypherQueryInput(cypher="RETURN 1", **extra)
-    for cypher in ("", "x" * 5001):
-        with pytest.raises(ValidationError):
-            CypherQueryInput(cypher=cypher)
 
 
 @pytest.mark.parametrize(

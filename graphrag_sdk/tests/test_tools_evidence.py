@@ -27,9 +27,9 @@ class TestLedger:
     def test_numbers_run_from_one_across_tools(self):
         led = EvidenceLedger()
         a = led.add(tool="retrieve", kind="passage", content="A", source="hr.pdf")
-        b = led.add(tool="cypher_query", kind="row", content="B", metadata={"row": 0})
+        b = led.add(tool="retrieve", kind="passage", content="B", metadata={"row": 0})
         assert (a.n, b.n) == (1, 2)
-        assert led.get(1) is a and led.get(2).tool == "cypher_query"
+        assert led.get(1) is a and led.get(2).tool == "retrieve"
         assert led.get(3) is None
         assert [e.n for e in led.items] == [1, 2]
         assert len(led) == 2

@@ -14,7 +14,6 @@ import pytest
 
 from graphrag_sdk.core.exceptions import DatabaseError, ReadOnlyViolation
 from graphrag_sdk.tools import GraphRAGToolkit, ToolError
-from graphrag_sdk.tools import graph_ops as ops
 
 # Both markers are load-bearing: `-m integration` selects the file in the CI
 # integration job; the skipif keeps it out of the plain unit run.
@@ -124,171 +123,12 @@ async def test_status_and_ontology(toolkit: GraphRAGToolkit):
     assert "WORKS_AT" in {t.label for t in onto.relation_types}
 
 
-async def test_cypher_query_renders_paths_as_names(toolkit: GraphRAGToolkit):
-    out = await toolkit.call(
-        "cypher_query",
-        {
-            "cypher": "MATCH p = (b:Location {name: 'Berlin'})<-[:RELATES]-(:Organization)"
-            "<-[:RELATES]-(a:Person {name: 'Alice'}) RETURN p"
-        },
-    )
-    assert out.rows[0].values == ["(Berlin)<-[HEADQUARTERED_IN]-(Acme Corp)<-[WORKS_AT]-(Alice)"]
-
-
-async def test_cypher_query(toolkit: GraphRAGToolkit):
-    counted = await toolkit.call(
-        "cypher_query", {"cypher": "MATCH (p:Person) RETURN count(p) AS people"}
-    )
-    assert counted.columns == ["people"] and counted.rows[0].values == [3]
-
-    typed = await toolkit.call(
-        "cypher_query",
-        {
-            "cypher": "MATCH (p:Person)-[r:RELATES]->(c:Organization) "
-            "WHERE r.rel_type = 'WORKS_AT' AND c.name = $org RETURN p.name ORDER BY p.name",
-            "params": {"org": "Acme Corp"},
-        },
-    )
-    assert [r.values[0] for r in typed.rows] == ["Alice", "Bob", "Carol"]
-
-    in_map = await toolkit.call(
-        "cypher_query",
-        {"cypher": "MATCH (a)-[:RELATES {rel_type: 'HEADQUARTERED_IN'}]->(b) RETURN b.name"},
-    )
-    assert in_map.rows[0].values == ["Berlin"]
-
-    untyped = await toolkit.call(
-        "cypher_query",
-        {"cypher": "MATCH ()-[r:RELATES]->() RETURN r.rel_type AS t, count(*) AS n ORDER BY t"},
-    )
-    assert dict(r.values for r in untyped.rows) == {"HEADQUARTERED_IN": 1, "WORKS_AT": 3}
-
-    capped = await toolkit.call(
-        "cypher_query", {"cypher": "MATCH (p:Person) RETURN p.name LIMIT 100", "max_rows": 2}
-    )
-    assert capped.row_count == 2 and capped.truncated and "count" in capped.hint
-
-    passages = await toolkit.call(
-        "cypher_query", {"cypher": "MATCH (c:Chunk) RETURN c.text LIMIT 1"}
-    )
-    assert passages.rows
-
-    vectors = await toolkit.call("cypher_query", {"cypher": "MATCH (p:Person) RETURN p LIMIT 1"})
-    assert "embedding" not in json.dumps(vectors.model_dump())
-
-
-async def test_cypher_query_never_returns_system_nodes(toolkit: GraphRAGToolkit):
-    store = toolkit._store
-    await store.query_raw(
-        "MERGE (c:__GraphRAGConfig__ {id: 'default'}) "
-        "SET c.embedding_model = 'secret-model', c.embedding_dimension = 8, "
-        "c.sdk_version = '9.9.9-probe'"
-    )
-    await store.query_raw(
-        "CREATE (:__GraphRAGProcessing__ {kind: 'pending', ids: ['probe-id'], attempts: [1]})"
-    )
-    for label in ("Config", "Processing"):
-        # The label name is built at run time, past the guard's text check.
-        result = await toolkit.call(
-            "cypher_query",
-            {
-                "cypher": f"MATCH (n) WHERE ('__GraphRAG' + '{label}__') IN labels(n) "
-                "RETURN n, properties(n) AS p, [n] AS wrapped"
-            },
-        )
-        dumped = json.dumps(result.model_dump())
-        assert result.rows, label
-        for leaked in ("secret-model", "9.9.9-probe", "probe-id"):
-            assert leaked not in dumped, (label, leaked)
-    props = await toolkit.call(
-        "cypher_query", {"cypher": "MATCH (p:Person) RETURN properties(p) AS p LIMIT 1"}
-    )
-    assert props.rows and "embedding" not in json.dumps(props.model_dump())
-
-
-async def test_cypher_query_aggregates_after_an_inner_limit(real_falkordb_rag_factory):
-    """An inner LIMIT larger than max_rows must not be lowered: count() and
-    collect() after it see every row it lets through."""
-    from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
-
-    from .conftest import MockLLM
-
-    rag = real_falkordb_rag_factory(llm=MockLLM(responses=[]), resolver=ExactMatchResolution())
-    await rag._graph_store.query_raw(
-        "UNWIND range(1, 300) AS i "
-        "CREATE (:__Entity__:Person {id: 'p' + toString(i), name: 'P' + toString(1000 + i)})"
-    )
-    tk = GraphRAGToolkit(rag, read_only=True)
-    counted = await tk.call(
-        "cypher_query",
-        {"cypher": "MATCH (n:Person) WITH n ORDER BY n.name LIMIT 100 RETURN count(n) AS c"},
-    )
-    assert counted.rows[0].values == [100] and not counted.truncated
-    collected = await tk.call(
-        "cypher_query",
-        {"cypher": "MATCH (n:Person) WITH n LIMIT 100 RETURN collect(n.name) AS names"},
-    )
-    assert len(collected.rows[0].values[0]) == 100 and not collected.truncated
-    rows = await tk.call(
-        "cypher_query",
-        {"cypher": "MATCH (n:Person) RETURN n.name LIMIT $n", "params": {"n": 40}},
-    )
-    assert rows.row_count == 25 and rows.truncated
-    small = await tk.call(
-        "cypher_query",
-        {"cypher": "MATCH (n:Person) RETURN n.name ORDER BY n.name LIMIT $n", "params": {"n": 3}},
-    )
-    assert [r.values[0] for r in small.rows] == ["P1001", "P1002", "P1003"]
-    assert not small.truncated
-    over = await tk.call("cypher_query", {"cypher": "MATCH (n:Person) RETURN n.name LIMIT 100"})
-    assert over.row_count == 25 and over.truncated
-
-
-@pytest.mark.parametrize(
-    "cypher, message",
-    [
-        ("CREATE (n:Hack) RETURN n", "CREATE"),
-        ("MATCH (n) DETACH DELETE n", "DETACH"),
-        ("MATCH (n:Person) SET n.name = 'x' RETURN n", "SET"),
-        ("CALL db.labels()", "CALL"),
-        ("MATCH (n:Employee) RETURN n", "Employee"),
-        ("MATCH (n:Person) RETURN n.salary", "salary"),
-        ("MATCH (a)-[r:RELATES {rel_type: 'EMPLOYS'}]->(b) RETURN b", "EMPLOYS"),
-        ("MATCH (a)-[:WORKS_AT]->(b) RETURN b", "stored as RELATES"),
-        ("MATCH (n:__GraphRAGConfig__) RETURN n", "internal"),
-        ("MATCH (n:Person) RETURN n.embedding", "embedding"),
-    ],
-)
-async def test_cypher_query_rejections(toolkit: GraphRAGToolkit, cypher: str, message: str):
-    before = (await toolkit.call("status", {})).entities
-    with pytest.raises(ToolError, match=message) as exc:
-        await toolkit.call("cypher_query", {"cypher": cypher})
-    assert exc.value.hint
-    assert (await toolkit.call("status", {})).entities == before
-
-
-async def test_cypher_query_runtime_errors(toolkit: GraphRAGToolkit):
-    # FalkorDB's own TIMEOUT answer (not only the client-side wait) is a timeout.
-    with pytest.raises(ToolError, match="The query timed out after"):
-        await toolkit.call(
-            "cypher_query",
-            {
-                "cypher": "UNWIND range(1, 100000000) AS x WITH x WHERE x % 7 = 3 RETURN count(x)",
-                "timeout_ms": 100,
-            },
-        )
-    with pytest.raises(ToolError, match="failed"):
-        await toolkit.call(
-            "cypher_query", {"cypher": "MATCH (p:Person) RETURN toInteger({a: p.name})"}
-        )
-
-
 async def test_the_database_refuses_writes_too(toolkit: GraphRAGToolkit):
-    """Below the guard, every tool query runs as GRAPH.RO_QUERY."""
+    """Tool reads run as GRAPH.RO_QUERY, so the database refuses writes."""
+    before = (await toolkit.call("status", {})).entities
     with pytest.raises(DatabaseError):
-        await ops.bounded_query(toolkit.rag._graph_store, "CREATE (n:Hack) RETURN n", None, 2000)
-    hacked = await toolkit.call("cypher_query", {"cypher": "MATCH (n) RETURN count(n) AS c"})
-    assert hacked.rows
+        await toolkit._store.query_raw("CREATE (n:Hack) RETURN n", read_only=True)
+    assert (await toolkit.call("status", {})).entities == before
 
 
 async def test_retrieve(toolkit: GraphRAGToolkit):
@@ -312,22 +152,23 @@ async def test_retrieve_on_chosen_paths(toolkit: GraphRAGToolkit):
     assert any(r.type == "WORKS_AT" for r in names.relations)
 
 
-async def test_citations_across_tools(toolkit: GraphRAGToolkit):
+async def test_citations_across_calls(toolkit: GraphRAGToolkit):
     session = toolkit.new_session()
     found = await session.call(
         "retrieve", {"question": "Who works at Acme Corp?", "paths": ["exact_names", "links"]}
     )
-    rows = await session.call(
-        "cypher_query", {"cypher": "MATCH (p:Person) RETURN count(p) AS people"}
+    passages = await session.call(
+        "retrieve", {"question": "Where is Acme Corp headquartered?", "paths": ["passages"]}
     )
     works = [r for r in found.relations if r.source == "Alice" and r.type == "WORKS_AT"]
-    edge, row = works[0].n, rows.rows[0].n
+    hq = [c for c in passages.chunks if "Berlin" in c.text]
+    edge, chunk = works[0].n, hq[0].n
     checked = await session.call(
         "check_citations",
-        {"answer": f"Alice works at Acme Corp [{edge}]. There are 3 people [{row}][999]."},
+        {"answer": f"Alice works at Acme Corp [{edge}]. Acme is in Berlin [{chunk}][999]."},
     )
-    assert checked.grounded and checked.cited == [edge, row] and checked.invalid == [999]
-    assert {s.tool for s in checked.sources} == {"retrieve", "cypher_query"}
+    assert checked.grounded and checked.cited == [edge, chunk] and checked.invalid == [999]
+    assert {s.tool for s in checked.sources} == {"retrieve"}
     assert "[999]" not in checked.answer
 
     fresh = await toolkit.new_session().call("check_citations", {"answer": f"x [{edge}]"})
@@ -339,8 +180,8 @@ async def test_read_only_toolkit(toolkit: GraphRAGToolkit):
     assert "ingest" not in [s.name for s in ro.tool_specs()]
     with pytest.raises(ReadOnlyViolation):
         await ro.call("ingest", {"text": "x"})
-    bob = "MATCH (p:Person {name: 'Bob'}) RETURN p.name AS name"
-    assert (await ro.call("cypher_query", {"cypher": bob})).rows
+    found = await ro.call("retrieve", {"question": "Where does Bob work?"})
+    assert found.entities or found.chunks
 
 
 async def test_mcp_round_trip(toolkit: GraphRAGToolkit):
@@ -353,19 +194,16 @@ async def test_mcp_round_trip(toolkit: GraphRAGToolkit):
     async with connect(server) as (client, _):
         listed = await client.call_tool("status", {})
         assert json.loads(listed.content[0].text)["entities"] > 0
-        cypher = (
-            "MATCH (:Person {name: 'Bob'})-[r:RELATES]->(c:Organization) "
-            "RETURN r.rel_type AS type, c.name AS company"
-        )
-        queried = json.loads(
-            (await client.call_tool("cypher_query", {"cypher": cypher})).content[0].text
-        )
-        assert queried["rows"][0]["values"] == ["WORKS_AT", "Acme Corp"]
-        n = queried["rows"][0]["n"]
+        args = {"question": "Who works at Acme Corp?", "paths": ["exact_names", "links"]}
+        found = json.loads((await client.call_tool("retrieve", args)).content[0].text)
+        works = [
+            r for r in found["relations"] if r["type"] == "WORKS_AT" and r["target"] == "Acme Corp"
+        ]
+        source, n = works[0]["source"], works[0]["n"]
         checked = json.loads(
             (
                 await client.call_tool(
-                    "check_citations", {"answer": f"Bob works at Acme Corp [{n}]."}
+                    "check_citations", {"answer": f"{source} works at Acme Corp [{n}]."}
                 )
             )
             .content[0]
@@ -406,11 +244,10 @@ async def test_for_tenant_isolated_graphs(embedder):
         assert tk_b.rag._conn.config.graph_name == f"{base.graph_name}__tenant-b"
         await tk_a.ingest("Alice is an engineer.", document_id="doc-a")
         await tk_a.finalize()
-        names = "MATCH (e:__Entity__) RETURN e.name AS name"
-        assert (await tk_a.cypher_query(names)).rows
+        assert (await tk_a.status()).entities >= 1
         # Tenant b's graph was never written, so it cannot see a's entities.
         with pytest.raises(ToolError, match="__tenant-b' does not exist"):
-            await tk_b.cypher_query(names)
+            await tk_b.retrieve("Who is Alice?")
     finally:
         for tk in (tk_a, tk_b):
             try:
@@ -428,9 +265,9 @@ async def test_get_ontology_on_a_fresh_graph_writes_nothing(real_falkordb_rag_fa
     tk = GraphRAGToolkit(rag, read_only=True)
     onto = await tk.call("get_ontology", {})
     assert onto.entity_types == [] and onto.relation_types == []
-    # cypher_query on the missing graph refuses without writing anything.
+    # retrieve on the missing graph refuses without writing anything.
     with pytest.raises(ToolError, match="does not exist"):
-        await tk.call("cypher_query", {"cypher": "MATCH (n) RETURN count(n) AS c"})
+        await tk.call("retrieve", {"question": "Who founded Acme?"})
     stored = await rag._ontology_store.load()
     assert stored.entities == [] and stored.relations == []
 
@@ -530,9 +367,9 @@ async def test_agent_ingests_a_folder(real_falkordb_rag_factory, tmp_path):
     # its relation type is dropped: both point at what the ontology misses.
     assert first.pruned is not None and first.pruned.unknown == 1
     assert first.pruned.relations == {"INHIBITS": 1}
-    assert "MATCH (n:Unknown)" in first.hint
-    unknown = await tk.call("cypher_query", {"cypher": "MATCH (n:Unknown) RETURN n.name AS name"})
-    assert [r.values for r in unknown.rows] == [["COX1"]]
+    assert "stored as Unknown" in first.hint
+    unknown = await rag._graph_store.query_raw("MATCH (n:Unknown) RETURN n.name", read_only=True)
+    assert [r[0] for r in unknown.result_set] == ["COX1"]
     assert "ingest(files=['notes/aspirin.md'], reextract=true)" in first.hint
     assert not first.finalized
 
@@ -564,8 +401,8 @@ async def test_agent_ingests_a_folder(real_falkordb_rag_factory, tmp_path):
     relations = {t.label: t.count for t in status.relation_types}
     assert relations == {"TREATS": 2, "INHIBITS": 1}
     assert status.documents == 2
-    found = await tk.call("cypher_query", {"cypher": "MATCH (g:Gene) RETURN g.name AS name"})
-    assert [r.values for r in found.rows] == [["COX1"]]
+    found = await rag._graph_store.query_raw("MATCH (g:Gene) RETURN g.name", read_only=True)
+    assert [r[0] for r in found.result_set] == ["COX1"]
 
 
 async def test_agent_ingestion_respects_the_root(real_falkordb_rag_factory, tmp_path):
@@ -596,12 +433,8 @@ async def test_read_tools_on_a_fresh_graph_create_no_keys(real_falkordb_rag_fact
     tk = GraphRAGToolkit(rag, read_only=True)
     data_graph = rag._conn.config.graph_name
     await tk.call("get_ontology", {})
-    for tool, args in [
-        ("retrieve", {"question": "Who founded Acme?"}),
-        ("cypher_query", {"cypher": "MATCH (n) RETURN count(n) AS c"}),
-    ]:
-        with pytest.raises(ToolError, match=f"Graph '{data_graph}' does not exist"):
-            await tk.call(tool, args)
+    with pytest.raises(ToolError, match=f"Graph '{data_graph}' does not exist"):
+        await tk.call("retrieve", {"question": "Who founded Acme?"})
     status = await tk.call("status", {})
     assert "does not exist" in (status.hint or "")
     store = rag._ontology_store
@@ -610,10 +443,3 @@ async def test_read_tools_on_a_fresh_graph_create_no_keys(real_falkordb_rag_fact
     assert store.graph_name not in graphs and data_graph not in graphs
     # Retrieval ran without registering the default types.
     assert rag._ontology_initialized is False
-
-
-async def test_a_server_timeout_is_a_timeout(toolkit: GraphRAGToolkit):
-    # A generous client-side wait, so only FalkorDB's own timeout can fire.
-    slow = "UNWIND range(1, 100000000) AS x WITH x WHERE x % 7 = 3 RETURN count(x)"
-    with pytest.raises(TimeoutError):
-        await ops.bounded_query(toolkit._store, slow, None, 50)

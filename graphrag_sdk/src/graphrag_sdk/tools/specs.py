@@ -27,24 +27,6 @@ class OntologyInput(_Input):
     """Arguments for get_ontology (none)."""
 
 
-class CypherQueryInput(_Input):
-    """Arguments for cypher_query."""
-
-    cypher: str = Field(min_length=1, max_length=5000, description="One read-only Cypher query.")
-    params: dict[str, Any] | None = Field(
-        default=None, description="Query parameters ($name); prefer them to inlined values."
-    )
-    max_rows: int = Field(
-        default=25,
-        ge=1,
-        le=100,
-        description="Most rows to return; the final RETURN is capped to it.",
-    )
-    timeout_ms: int = Field(
-        default=5000, ge=100, le=10000, description="Database timeout in milliseconds."
-    )
-
-
 #: The search paths retrieve can run, as the agent names them.
 RetrievePath = Literal["facts", "exact_names", "fuzzy_names", "links", "passages"]
 RETRIEVE_PATHS: tuple[str, ...] = ("facts", "exact_names", "fuzzy_names", "links", "passages")
@@ -281,18 +263,7 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "get_ontology",
         OntologyInput,
         "The graph's declared ontology: entity types with their properties and relation "
-        "types with their (source, target) patterns. Use it to write Cypher with the "
-        "right names.",
-    ),
-    ToolDef(
-        "cypher_query",
-        CypherQueryInput,
-        "Run one read-only Cypher query for what the other tools cannot express: "
-        "counts, sums, sorting, property filters. Entities are (:__Entity__:<Label>) "
-        "nodes with name/description; semantic relations are stored as "
-        "[:RELATES {rel_type: '<TYPE>', fact: '...'}]. Writes are rejected and the "
-        "rows returned are capped to max_rows; if 'truncated' is true, aggregate with "
-        "count() instead of reading rows. Use names from status/get_ontology." + _CITE,
+        "types with their (source, target) patterns.",
     ),
     ToolDef(
         "retrieve",
