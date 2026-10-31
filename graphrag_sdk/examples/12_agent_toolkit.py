@@ -3,8 +3,8 @@ GraphRAG SDK -- Agent Toolkit
 =============================
 The graph tools your own agent calls: wrap a GraphRAG in GraphRAGToolkit,
 ingest a few facts, then run each read tool an agent would use -- status,
-lookup_entity, cypher_query, retrieve --
-cite the evidence numbers they return, and check the citations.
+retrieve, cypher_query -- cite the evidence numbers they return, and check
+the citations.
 
 The same tools are served to MCP clients by ``graphrag-mcp``.
 
@@ -60,20 +60,14 @@ async def main():
         status = await session.status()
         print("=== status ===\n" + status.to_llm_text(max_chars=800), "\n")
 
-        names = await session.lookup_entity("Alice")
-        if not names.matches:
-            raise SystemExit("No entity named like 'Alice' was extracted; check the LLM setup.")
-        alice = names.matches[0].name
-        print(f"=== lookup_entity -> {alice} ===\n")
+        found = await session.retrieve("Who is the CTO of Acme Corp?", top_k=5)
+        print("=== retrieve ===\n" + found.to_llm_text(max_chars=1200), "\n")
 
         rows = await session.cypher_query(
             "MATCH ()-[r:RELATES]->() RETURN r.rel_type AS relation, count(*) AS edges "
             "ORDER BY edges DESC"
         )
         print("=== cypher_query ===\n" + rows.to_llm_text(max_chars=600), "\n")
-
-        found = await session.retrieve("Who is the CTO of Acme Corp?", top_k=5)
-        print("=== retrieve ===\n" + found.to_llm_text(max_chars=1200), "\n")
 
         # 3. The guard rejects writes, and errors carry a hint for the agent
         try:
@@ -86,7 +80,7 @@ async def main():
             edge = found.relations[0]
             draft = f"{edge.source} {edge.type} {edge.target} [{edge.n}]. Also [999]."
         else:
-            draft = f"{alice} is in the graph. Also [999]."
+            draft = "Bob Smith is the CTO of Acme Corp. Also [999]."
         check = await session.check_citations(draft)
         print(f"grounded={check.grounded} cited={check.cited} invalid={check.invalid}\n")
 

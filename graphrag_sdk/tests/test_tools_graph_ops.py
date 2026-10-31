@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from falkordb import Edge, Node, Path
 
-from graphrag_sdk.core.exceptions import GraphRAGError, LatencyBudgetExceededError
+from graphrag_sdk.core.exceptions import GraphRAGError
 from graphrag_sdk.tools import graph_ops as ops
 from graphrag_sdk.tools.errors import ToolError
 
@@ -50,10 +50,10 @@ def remaining(ms: int = 5000) -> Callable[[], int]:
 
 
 def test_tool_error_carries_a_hint():
-    err = ToolError("No entity is called 'X'.", hint="Call lookup_entity first.")
+    err = ToolError("No entity is called 'X'.", hint="Call retrieve first.")
     assert isinstance(err, GraphRAGError)
-    assert err.hint == "Call lookup_entity first."
-    assert str(err) == "No entity is called 'X'. Hint: Call lookup_entity first."
+    assert err.hint == "Call retrieve first."
+    assert str(err) == "No entity is called 'X'. Hint: Call retrieve first."
     plain = ToolError("boom")
     assert plain.hint == "" and str(plain) == "boom"
 
@@ -345,66 +345,3 @@ async def test_chunk_documents():
     store.calls.clear()
     assert await ops.chunk_documents(store, []) == {}
     assert store.calls == []
-
-
-# ── Entity lookup ────────────────────────────────────────────────
-
-
-def lookup_rows(c, p):
-    return result([["control_board_cx10", "Control Board CX-10", "Part", "A board"]])
-
-
-class TestFindEntities:
-    async def test_lists_candidates_with_normalised_parameters(self):
-        store = FakeGraphStore([("CONTAINS $needle", lookup_rows)])
-        found = await ops.find_entities(store, "  CX-10   Board ")
-        assert found == [
-            {
-                "id": "control_board_cx10",
-                "name": "Control Board CX-10",
-                "label": "Part",
-                "description": "A board",
-            }
-        ]
-        call = store.calls[0]
-        assert call["params"]["needle"] == "cx-10 board"
-        assert call["params"]["tokens"] == ["cx-10", "board"]
-        assert call["params"]["limit"] == ops.LOOKUP_DEFAULT_LIMIT
-        assert call["read_only"] and call["timeout"] == ops.LOOKUP_TIMEOUT_MS
-
-    async def test_short_and_stop_words_are_not_tokens(self):
-        store = FakeGraphStore()
-        await ops.find_entities(store, "what is the entity of ab Acme", limit=3, timeout_ms=200)
-        params = store.calls[0]["params"]
-        assert params["tokens"] == ["acme"] and params["limit"] == 3
-        assert store.calls[0]["timeout"] == 200
-
-    async def test_non_ascii_names_stay_whole(self):
-        store = FakeGraphStore()
-        await ops.find_entities(store, "Jürgen Müller of São-Paulo Ωmega_Labs")
-        assert store.calls[0]["params"]["tokens"] == ["jürgen", "müller", "são-paulo", "ωmega_labs"]
-
-    async def test_at_most_six_tokens(self):
-        store = FakeGraphStore()
-        await ops.find_entities(store, " ".join(f"word{i}" for i in range(10)))
-        assert len(store.calls[0]["params"]["tokens"]) == 6
-
-    async def test_no_match_and_empty_text(self):
-        store = FakeGraphStore()
-        assert await ops.find_entities(store, "zzz") == []
-        assert await ops.find_entities(store, "   ") == []
-        assert len(store.calls) == 1  # empty text runs no query
-
-    async def test_rows_without_a_name_are_skipped(self):
-        store = FakeGraphStore([("CONTAINS", lambda c, p: result([["x", None], ["y", "Y"]]))])
-        found = await ops.find_entities(store, "y name")
-        assert found == [{"id": "y", "name": "Y", "label": "", "description": ""}]
-
-    async def test_failure_returns_none(self):
-        store = FakeGraphStore([("CONTAINS", lambda c, p: RuntimeError("down"))])
-        assert await ops.find_entities(store, "acme") is None
-
-    async def test_budget_errors_propagate(self):
-        store = FakeGraphStore([("CONTAINS", lambda c, p: LatencyBudgetExceededError("late"))])
-        with pytest.raises(LatencyBudgetExceededError):
-            await ops.find_entities(store, "acme")

@@ -42,13 +42,11 @@ from graphrag_sdk.tools.models import (
     CypherRow,
     DocumentRef,
     EntityCard,
-    EntityMatch,
     EntityTypeInfo,
     EvidenceRef,
     Fact,
     FinalizeReport,
     IngestResult,
-    LookupResult,
     OntologyResult,
     RelationTriple,
     RelationTypeInfo,
@@ -61,7 +59,6 @@ from graphrag_sdk.tools.specs import (
     CheckCitationsInput,
     CypherQueryInput,
     IngestInput,
-    LookupEntityInput,
     RetrieveInput,
     ToolSpec,
     build_tool_specs,
@@ -142,8 +139,8 @@ def _mask(value: Any) -> Any:
 class GraphRAGToolkit:
     """The graph tools for an outside agent, over one :class:`GraphRAG`.
 
-    Read tools: ``status``, ``get_ontology``, ``lookup_entity``,
-    ``cypher_query``, ``retrieve``, ``check_citations``. Write tools:
+    Read tools: ``status``, ``get_ontology``, ``cypher_query``,
+    ``retrieve``, ``check_citations``. Write tools:
     ``ingest``, ``finalize``. Each is an async method; :meth:`tool_specs`
     describes them for an agent framework and :meth:`call` runs one by name
     with validated arguments.
@@ -386,7 +383,7 @@ class GraphRAGToolkit:
             f"Entity labels: {_names_hint(labels)}. Relations are "
             f"[:RELATES {{rel_type: ...}}] with rel_type in: "
             f"{_names_hint(schema.semantic_relations)}. "
-            "Use lookup_entity for exact entity names."
+            "Copy exact entity names from retrieve results."
         )
 
     # ── Read tools ───────────────────────────────────────────────
@@ -455,29 +452,6 @@ class GraphRAGToolkit:
             for label, count in sorted({**{r: 0 for r in declared_r}, **rel_counts}.items())
         ]
         return OntologyResult(entity_types=entity_types, relation_types=relation_types)
-
-    async def lookup_entity(
-        self, name: str, *, limit: int = ops.LOOKUP_DEFAULT_LIMIT
-    ) -> LookupResult:
-        """Entities whose name matches ``name`` (or its words), best first.
-
-        Not evidence: it finds names for the other tools, it does not state facts.
-        """
-        inp = LookupEntityInput(name=name, limit=limit)
-        await self._require_graph()
-        found = await ops.find_entities(self._store, inp.name.strip(), limit=inp.limit)
-        if found is None:
-            raise ToolError(
-                "The entity lookup failed.",
-                hint="Retry, or use retrieve to search by meaning.",
-            )
-        hint = None
-        if not found:
-            hint = (
-                "No entity name matches. Try a shorter or different part of the name, "
-                "or retrieve to search by meaning."
-            )
-        return LookupResult(query=inp.name, matches=[EntityMatch(**c) for c in found], hint=hint)
 
     async def cypher_query(
         self,
@@ -555,8 +529,8 @@ class GraphRAGToolkit:
             )
         elif not rows:
             hint = (
-                "No rows. Check exact names with lookup_entity; rel_type values are "
-                "case-sensitive (see get_ontology)."
+                "No rows. Use exact entity names from retrieve results; rel_type values "
+                "are case-sensitive (see get_ontology)."
             )
         return CypherResult(
             columns=columns,
@@ -733,8 +707,8 @@ class GraphRAGToolkit:
         hint = None
         if not (entities or relations or facts or chunks):
             hint = (
-                "Nothing relevant was found. Try lookup_entity with a name from the "
-                "question, or rephrase."
+                "Nothing relevant was found. Rephrase the question, or add the "
+                "fuzzy_names path for partial or misspelt names."
             )
             if inp.paths:
                 hint = (

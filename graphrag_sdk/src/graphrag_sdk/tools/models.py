@@ -253,38 +253,6 @@ class OntologyResult(ToolResult):
         return [("Entity types", ent_lines), ("Relation types", rel_lines)]
 
 
-class EntityMatch(BaseModel):
-    """An entity whose name matched a lookup."""
-
-    model_config = ConfigDict(extra="forbid")
-    id: str
-    name: str
-    label: str = ""
-    description: str = ""
-
-
-class LookupResult(ToolResult):
-    """Entities matching a name, best first."""
-
-    query: str
-    matches: list[EntityMatch] = Field(default_factory=list)
-    hint: str | None = None
-
-    def _preamble(self) -> list[str]:
-        lines = [f"Lookup: {_clean(self.query)}"]
-        if self.hint:
-            lines.append(f"Hint: {_clean(self.hint)}")
-        return lines
-
-    def _sections(self) -> list[tuple[str, list[str]]]:
-        def line(m: EntityMatch) -> str:
-            label = f"{_clean(m.label)}, " if m.label else ""
-            desc = f": {_snippet(m.description, 160)}" if m.description else ""
-            return f'- "{_clean(m.name)}" ({label}id {_clean(m.id)}){desc}'
-
-        return [("Matches", [line(m) for m in self.matches])]
-
-
 class CypherRow(BaseModel):
     """One numbered result row."""
 

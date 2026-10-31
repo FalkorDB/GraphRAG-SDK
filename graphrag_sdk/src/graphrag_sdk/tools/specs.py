@@ -11,8 +11,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from graphrag_sdk.tools import graph_ops as ops
-
 
 class _Input(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -24,18 +22,6 @@ class StatusInput(_Input):
 
 class OntologyInput(_Input):
     """Arguments for get_ontology (none)."""
-
-
-class LookupEntityInput(_Input):
-    """Arguments for lookup_entity."""
-
-    name: str = Field(min_length=1, max_length=500, description="A name or part of one.")
-    limit: int = Field(
-        default=ops.LOOKUP_DEFAULT_LIMIT,
-        ge=1,
-        le=ops.LOOKUP_MAX_LIMIT,
-        description="Most matches to return.",
-    )
 
 
 class CypherQueryInput(_Input):
@@ -69,7 +55,14 @@ class RetrieveInput(_Input):
     )
     top_k: int = Field(default=8, ge=1, le=25, description="Entities and passages to return.")
     expand_hops: int = Field(
-        default=1, ge=1, le=3, description="Relation hops to expand around found entities."
+        default=1,
+        ge=1,
+        le=3,
+        description=(
+            "Relation hops the links path follows from the entities found. Keep 1 "
+            "first; on a second call use 2 or 3 when the question chains several "
+            "relations."
+        ),
     )
     include_chunks: bool = Field(default=True, description="Include source text passages.")
     paths: list[RetrievePath] | None = Field(
@@ -165,13 +158,6 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "The graph's declared ontology: entity types with their properties and relation "
         "types with their (source, target) patterns. Use it to write Cypher with the "
         "right names.",
-    ),
-    ToolDef(
-        "lookup_entity",
-        LookupEntityInput,
-        "Find entities by (part of) their name: exact names, ids, labels and short "
-        "descriptions, best match first. Use it to turn a name from the question into "
-        "the exact name or id the other tools need. Not a source to cite.",
     ),
     ToolDef(
         "cypher_query",

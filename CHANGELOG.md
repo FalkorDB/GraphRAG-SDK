@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Graph tools for your own agent, and an MCP server (#274)
 
 - **`GraphRAGToolkit` gives an agent you already run read-only tools on the
-  graph**: `status`, `get_ontology`, `lookup_entity`, `cypher_query`, `retrieve`
+  graph**: `status`, `get_ontology`, `retrieve`, `cypher_query`
   and `check_citations`, plus `ingest` and
   `finalize` for agents allowed to write: wrap a `GraphRAG` in
   `GraphRAGToolkit(rag)`.
