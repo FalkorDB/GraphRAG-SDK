@@ -163,8 +163,7 @@ class ReadOnlyViolation(GraphRAGError):
 
     Raised by :mod:`graphrag_sdk.tools` when a write tool (``ingest``,
     ``finalize``) is called on a toolkit constructed with
-    ``read_only=True``. A ``cypher_query`` with a write clause is rejected
-    with a ``ToolError`` instead, before it reaches the database.
+    ``read_only=True``.
 
     Attributes:
         offending_token: The specific rejected token (e.g. ``"MERGE"``), or

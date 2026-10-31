@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -251,45 +250,6 @@ class OntologyResult(ToolResult):
                 line += f" — {_snippet(r.description, 100)}"
             rel_lines.append(line)
         return [("Entity types", ent_lines), ("Relation types", rel_lines)]
-
-
-class CypherRow(BaseModel):
-    """One numbered result row."""
-
-    model_config = ConfigDict(extra="forbid")
-    n: int | None = None
-    values: list[Any] = Field(default_factory=list)
-
-
-class CypherResult(ToolResult):
-    """Rows returned by a guarded read-only Cypher query."""
-
-    columns: list[str] = Field(default_factory=list)
-    rows: list[CypherRow] = Field(default_factory=list)
-    row_count: int = 0
-    truncated: bool = False
-    hint: str | None = None
-
-    def _preamble(self) -> list[str]:
-        suffix = " (truncated)" if self.truncated else ""
-        lines = [
-            f"Columns: {', '.join(_clean(c) for c in self.columns)}",
-            f"Rows: {self.row_count}{suffix}",
-        ]
-        if self.hint:
-            lines.append(f"Hint: {_clean(self.hint)}")
-        return lines
-
-    def _sections(self) -> list[tuple[str, list[str]]]:
-        return [
-            (
-                "Rows",
-                [
-                    f"- {_n(r.n)}{_clean(json.dumps(r.values, ensure_ascii=False, default=str))}"
-                    for r in self.rows
-                ],
-            )
-        ]
 
 
 class RetrieveResult(ToolResult):

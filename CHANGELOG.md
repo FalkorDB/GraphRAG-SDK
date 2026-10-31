@@ -12,23 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Graph tools for your own agent, and an MCP server (#274)
 
 - **`GraphRAGToolkit` gives an agent you already run read-only tools on the
-  graph**: `status`, `get_ontology`, `retrieve`, `cypher_query`
-  and `check_citations`, plus `ingest` and
+  graph**: `status`, `get_ontology`, `retrieve` and
+  `check_citations`, plus `ingest` and
   `finalize` for agents allowed to write: wrap a `GraphRAG` in
   `GraphRAGToolkit(rag)`.
   The SDK runs no agent loop: your agent plans, calls the tools and writes
   the answer. Every tool validates its input with a strict schema, runs
-  bounded (row and time limits), and returns a typed result
+  bounded (size and time limits), and returns a typed result
   whose `to_llm_text()` stays under a fixed size.
-- **Every piece of evidence is numbered.** Entities, relations, rows and passages
+- **Every piece of evidence is numbered.** Entities, relations, facts and passages
   carry an `[n]` from a per-session ledger
   (`toolkit.new_session()`), and `check_citations(answer)` reports which `[n]`
   in a draft answer are real and whether the answer cites anything at all.
-- **`cypher_query` only reads.** A guard parses the query and allows a single
-  `MATCH`/`OPTIONAL MATCH`/`UNWIND`/`WITH`/`RETURN` statement with no writes and
-  no procedure calls, injects a row limit and a timeout, and rejects labels,
-  relation types and properties the graph does not have, with a hint listing
-  the ones it does.
 - **`retrieve` runs every search path unless the agent names a few.**
   `paths` picks from `facts`, `exact_names`, `fuzzy_names`, `links` and
   `passages`, so a question that only needs the source text skips the entity
@@ -40,10 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GRAPHRAG_MCP_READ_ONLY=1`) hides the write tools. The server sends a usage
   guide as its instructions, keeps one evidence ledger per client connection,
   and works with `mcp` 1.x and 2.x.
-- **Tool results stay truthful when limited.** `cypher_query` caps only the
-  rows the final `RETURN` gives back, never a `LIMIT` inside the query, so
-  counts and collections stay correct; results never include internal
-  nodes or embedding vectors, and a path reads as names and relation types.
+- **Tool results never include internal nodes or embedding vectors**, and
+  every read runs as `GRAPH.RO_QUERY`, so the database refuses writes.
 - **Read tools on a graph that does not exist** raise an error naming it and
   create nothing.
 - **`check_citations`** accepts `[1, 2]` and `[1-3]`, and matches names as

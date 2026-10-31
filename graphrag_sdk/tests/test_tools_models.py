@@ -8,8 +8,6 @@ from pydantic import ValidationError
 from graphrag_sdk.tools.models import (
     ChunkRef,
     CitationCheckResult,
-    CypherResult,
-    CypherRow,
     DocumentRef,
     EntityCard,
     EntityTypeInfo,
@@ -46,11 +44,10 @@ def retrieve_result(n_entities: int = 3) -> RetrieveResult:
     )
 
 
-def big_cypher_result(rows: int = 50) -> CypherResult:
-    return CypherResult(
-        columns=["name", "n"],
-        rows=[CypherRow(n=i + 1, values=[f"name-{i}", i]) for i in range(rows)],
-        row_count=rows,
+def big_retrieve_result(rows: int = 50) -> RetrieveResult:
+    return RetrieveResult(
+        question="q",
+        entities=[EntityCard(n=i + 1, name=f"name-{i}", label="Person") for i in range(rows)],
     )
 
 
@@ -67,7 +64,6 @@ ALL_RESULTS: list[ToolResult] = [
         entity_types=[EntityTypeInfo(label="Person", description="A human", count=2)],
         relation_types=[RelationTypeInfo(label="WORKS_AT", patterns=[("Person", "Company")])],
     ),
-    big_cypher_result(5),
     retrieve_result(),
     CitationCheckResult(grounded=True, reason="cited", cited=[1], answer="x [1]"),
     IngestResult(document_id="doc-1", chunks_indexed=2),
@@ -105,7 +101,7 @@ def test_results_reject_unknown_fields(model):
     ("cls", "kwargs"),
     [
         (EntityCard, {"name": "A"}),
-        (CypherRow, {}),
+        (Fact, {"text": "t"}),
         (EvidenceRef, {"n": 1, "tool": "t", "kind": "k", "content": "c"}),
     ],
 )
@@ -115,11 +111,11 @@ def test_strict_item_models_reject_unknown_fields(cls, kwargs):
 
 
 def test_zero_budget_renders_nothing():
-    assert big_cypher_result().to_llm_text(max_chars=0) == ""
+    assert big_retrieve_result().to_llm_text(max_chars=0) == ""
 
 
 def test_truncation_happens_at_item_boundaries():
-    model = big_cypher_result(50)
+    model = big_retrieve_result(50)
     full = model.to_llm_text(max_chars=100_000)
     text = model.to_llm_text(max_chars=400)
     lines = text.splitlines()
@@ -209,20 +205,6 @@ def test_ontology_rendering():
 def test_a_section_that_does_not_fit_leaves_a_marker():
     text = _render(["x" * 30], [("Edges", ["- a"] * 3)], max_chars=45)
     assert text == "x" * 30 + "\n" + "…"
-
-
-def test_cypher_rendering():
-    model = CypherResult(
-        columns=["name", "n"],
-        rows=[CypherRow(n=1, values=["Älice", 2]), CypherRow(values=[None, {"k": 1}])],
-        row_count=2,
-        truncated=True,
-        hint="Raise max_rows.",
-    )
-    assert model.to_llm_text() == (
-        "Columns: name, n\nRows: 2 (truncated)\nHint: Raise max_rows.\n"
-        'Rows (2):\n- [1] ["Älice", 2]\n- [null, {"k": 1}]'
-    )
 
 
 def test_retrieve_rendering():

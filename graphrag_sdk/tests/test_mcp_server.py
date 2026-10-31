@@ -76,11 +76,11 @@ class TestToolList:
     def test_names_and_annotations(self, server: GraphRAGMCPServer):
         tools = {t["name"]: t for t in server.tool_dicts()}
         assert list(tools) == list(TOOL_NAMES)
-        assert tools["cypher_query"]["annotations"]["readOnlyHint"] is True
+        assert tools["retrieve"]["annotations"]["readOnlyHint"] is True
         for write_tool in ("ingest", "finalize"):
             assert tools[write_tool]["annotations"]["readOnlyHint"] is False
             assert tools[write_tool]["annotations"]["destructiveHint"] is True
-        assert tools["cypher_query"]["annotations"]["destructiveHint"] is False
+        assert tools["retrieve"]["annotations"]["destructiveHint"] is False
         for tool in tools.values():
             assert tool["inputSchema"]["type"] == "object"
             assert tool["inputSchema"].get("additionalProperties") is False
@@ -88,12 +88,12 @@ class TestToolList:
     def test_read_only_and_include(self):
         names = [t["name"] for t in GraphRAGMCPServer(FakeRAG(), read_only=True).tool_dicts()]
         assert "ingest" not in names and "finalize" not in names
-        only = GraphRAGMCPServer(FakeRAG(), include=["status", "cypher_query"])
-        assert [t["name"] for t in only.tool_dicts()] == ["status", "cypher_query"]
+        only = GraphRAGMCPServer(FakeRAG(), include=["status", "retrieve"])
+        assert [t["name"] for t in only.tool_dicts()] == ["status", "retrieve"]
 
     def test_guide_is_the_default_instructions(self, server: GraphRAGMCPServer):
         assert server.instructions == GUIDE
-        for word in ("expand_hops", "cypher_query", "truncated", "check_citations", "[n]"):
+        for word in ("expand_hops", "get_ontology", "check_citations", "[n]"):
             assert word in GUIDE
         assert GraphRAGMCPServer(FakeRAG(), instructions="x").instructions == "x"
 
@@ -108,8 +108,6 @@ class TestCallTool:
         assert is_error and "Unknown tool" in text and "Hint:" in text
         text, is_error = await server.call_tool("get_ontology", {"extra": 1})
         assert is_error and "Extra inputs are not permitted" in text
-        text, is_error = await server.call_tool("cypher_query", {"cypher": "MATCH (n) DELETE n"})
-        assert is_error and "rejected" in text and "Hint:" in text
 
     async def test_unexpected_errors_are_reported(self, server: GraphRAGMCPServer, caplog):
         with caplog.at_level("WARNING", logger="graphrag_sdk.mcp.server"):
@@ -339,9 +337,9 @@ class TestProtocol:
             if instructions is not None:
                 assert instructions == GUIDE
 
-            rejected = await client.call_tool("cypher_query", {"cypher": "CREATE (n) RETURN n"})
+            rejected = await client.call_tool("get_ontology", {"extra": 1})
             assert rejected.is_error if hasattr(rejected, "is_error") else rejected.isError
-            assert "rejected" in _text(rejected)
+            assert "Extra inputs are not permitted" in _text(rejected)
 
             checked = await client.call_tool("check_citations", {"answer": "x [3]"})
             assert json.loads(_text(checked))["invalid"] == [3]

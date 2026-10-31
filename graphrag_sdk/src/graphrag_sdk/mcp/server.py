@@ -63,11 +63,6 @@ To answer a question:
    made X).
 3. status or get_ontology: what the graph holds (entity labels, relation
    types, counts), for questions about the graph itself.
-4. cypher_query for counts, sums, sorting, property filters and the chain
-   between two named entities, using exact names from retrieve results.
-   When the question is only that, call get_ontology and cypher_query and
-   skip retrieve; otherwise use it last. When a result says truncated: true,
-   do not count its rows; aggregate in Cypher.
 
 Answer what was asked, briefly, and leave out evidence that does not answer
 it. Cite evidence as [n] after each claim, using only numbers the tools
@@ -132,7 +127,7 @@ def fit_json(data: dict[str, Any], max_chars: int = MAX_RESULT_CHARS) -> str:
     if len(text) <= max_chars:
         return text
     data = copy.deepcopy(data)
-    note = "The result was too large and was cut; narrow the call (fewer rows, smaller top_k)."
+    note = "The result was too large and was cut; narrow the call (smaller top_k, fewer paths)."
     base_hint = data.get("hint")
     cut: dict[str, int] = {}
 
@@ -224,13 +219,13 @@ def describe_error(name: str, exc: BaseException) -> str:
         exc, (LatencyBudgetExceededError, LLMTimeoutError, TimeoutError, asyncio.TimeoutError)
     ):
         message = f"{name} ran out of time ({kind})."
-        hint = "Narrow the call (smaller top_k or max_rows, fewer paths) and retry."
+        hint = "Narrow the call (smaller top_k, fewer paths) and retry."
     elif isinstance(exc, (LLMError, EmbeddingError)) or root in _PROVIDER_MODULES:
         message = f"{name} failed: the model provider returned an error ({kind})."
         hint = (
             "The server's LLM or embedding setup needs attention (API key, model, quota; "
-            "details are in the server log). cypher_query, status and get_ontology "
-            "need no model and still work."
+            "details are in the server log). status and get_ontology need no "
+            "model and still work."
         )
     elif isinstance(exc, (DatabaseUnavailableError, ConnectionError)) or root in _DATABASE_MODULES:
         message = f"{name} failed: the graph database could not be reached ({kind})."
@@ -240,7 +235,7 @@ def describe_error(name: str, exc: BaseException) -> str:
         hint = "Retry once; if it fails again, use another tool (details are in the server log)."
     elif isinstance(exc, RetrieverError):
         message = f"{name} failed during retrieval ({kind})."
-        hint = "Retry with fewer paths, or use cypher_query instead."
+        hint = "Retry with fewer paths."
     elif isinstance(exc, (ConfigError, SchemaValidationError)):
         message = f"{name} failed: the server is misconfigured ({kind})."
         hint = (
