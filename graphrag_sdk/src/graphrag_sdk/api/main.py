@@ -42,7 +42,6 @@ from graphrag_sdk.core.models import (
     Ontology,
     RagResult,
     RetrieverResult,
-    SkillResult,
     UpdateResult,
     ensure_no_pending_marker,
     reject_reserved_labels,
@@ -5983,39 +5982,6 @@ class GraphRAG:
     # IDE autocomplete and mypy enforcement on keyword arguments. When you
     # add a kwarg to an async method, also add it to the matching wrapper
     # below — the in-line "keep in sync with" notes mark the pairings.
-
-    async def run_skill(
-        self,
-        skill: str,
-        *,
-        ctx: Context | None = None,
-        **params: Any,
-    ) -> SkillResult:
-        """Run a high-level reasoning skill against the graph.
-
-        Args:
-            skill: Registered skill name (e.g. ``"entity_comparison"``,
-                ``"impact_analysis"``, ``"contradiction_detection"``,
-                ``"gap_analysis"``, ``"timeline_reconstruction"``).
-            ctx: Execution context.
-            **params: Skill-specific arguments.
-
-        Returns:
-            ``SkillResult`` with the skill's structured findings.
-        """
-        from graphrag_sdk.skills import build_skill
-        from graphrag_sdk.skills.base import check_arguments
-
-        if ctx is None:
-            ctx = Context()
-        ctx.ensure_budget(f"skill '{skill}' ontology initialization")
-        await self._ensure_ontology_initialized()
-        skill_impl = build_skill(skill, self._graph_store, self.llm)
-        problems = check_arguments(skill_impl.parameters, params)
-        if problems:
-            raise ValueError(f"Invalid arguments for skill '{skill}': {'; '.join(problems)}")
-        ctx.ensure_budget(f"skill '{skill}'")
-        return await skill_impl.run(ctx, **params)
 
     def retrieve_sync(
         self,

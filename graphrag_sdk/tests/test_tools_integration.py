@@ -383,22 +383,6 @@ async def test_retrieve_on_chosen_paths(toolkit: GraphRAGToolkit):
     assert any(r.type == "WORKS_AT" for r in names.relations)
 
 
-async def test_run_skill(toolkit: GraphRAGToolkit):
-    compared = await toolkit.call(
-        "run_skill",
-        {"skill": "entity_comparison", "params": {"entity_a": "Alice", "entity_b": "Bob"}},
-    )
-    assert compared.n and compared.data
-    impact = await toolkit.call(
-        "run_skill", {"skill": "impact_analysis", "params": {"entity": "Acme Corp"}}
-    )
-    assert impact.n
-    with pytest.raises(ToolError, match="Zebulon"):
-        await toolkit.call(
-            "run_skill", {"skill": "impact_analysis", "params": {"entity": "Zebulon"}}
-        )
-
-
 async def test_citations_across_tools(toolkit: GraphRAGToolkit):
     session = toolkit.new_session()
     walk = await session.call("traverse", {"start": "Alice", "max_depth": 1})

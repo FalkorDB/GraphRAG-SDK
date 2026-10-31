@@ -297,9 +297,9 @@ class TestFitJson:
         assert len(out) <= 5000 and json.loads(out)["truncated"] is True
 
     def test_nested_big_list_gives_valid_json_within_budget(self):
-        # A run_skill result: the big list sits under data, not at the top.
+        # A nested result: the big list sits under data, not at the top.
         data = {
-            "skill": "impact_analysis",
+            "name": "report",
             "n": 1,
             "data": {
                 "entity": "acme",
@@ -316,14 +316,14 @@ class TestFitJson:
             assert out["truncated"] is True and "data.impacted (was 3000 items)" in out["hint"]
             assert 0 < len(out["data"]["impacted"]) < 3000
             assert out["data"]["impacted"][0]["entity"] == "e0"
-            assert out["skill"] == "impact_analysis" and out["n"] == 1
+            assert out["name"] == "report" and out["n"] == 1
         assert len(data["data"]["impacted"]) == 3000  # input untouched
 
     def test_unshrinkable_result_keeps_its_short_fields(self):
-        data = {"skill": "x", "data": {f"k{i}": i for i in range(5000)}}
+        data = {"name": "x", "data": {f"k{i}": i for i in range(5000)}}
         text = fit_json(data, max_chars=1000)
         out = json.loads(text)
-        assert len(text) <= 1000 and out["truncated"] is True and out["skill"] == "x"
+        assert len(text) <= 1000 and out["truncated"] is True and out["name"] == "x"
 
 
 class TestProtocol:

@@ -61,15 +61,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`GraphRAGToolkit` gives an agent you already run read-only tools on the
   graph**: `status`, `get_ontology`, `lookup_entity`, `traverse`, `graph_walk`,
-  `cypher_query`, `retrieve`, `run_skill` and `check_citations`, plus `ingest`
-  and `finalize` for agents allowed to write: wrap a `GraphRAG` in
+  `cypher_query`, `retrieve` and `check_citations`, plus `ingest` and
+  `finalize` for agents allowed to write: wrap a `GraphRAG` in
   `GraphRAGToolkit(rag)`.
   The SDK runs no agent loop: your agent plans, calls the tools and writes
   the answer. Every tool validates its input with a strict schema, runs
   bounded (row, depth, expansion and time limits), and returns a typed result
   whose `to_llm_text()` stays under a fixed size.
-- **Every piece of evidence is numbered.** Entities, edges, rows, passages and
-  skill findings carry an `[n]` from a per-session ledger
+- **Every piece of evidence is numbered.** Entities, edges, rows and passages
+  carry an `[n]` from a per-session ledger
   (`toolkit.new_session()`), and `check_citations(answer)` reports which `[n]`
   in a draft answer are real and whether the answer cites anything at all.
 - **`cypher_query` only reads.** A guard parses the query and allows a single
@@ -82,9 +82,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `passages`, so a question that only needs the source text skips the entity
   searches and the graph walk. Leave it out to run them all; when the chosen
   paths find nothing, the result says to run again without them.
-- **Five built-in skills** run through `run_skill`: `impact_analysis`,
-  `entity_comparison`, `contradiction_detection`, `gap_analysis` and
-  `timeline_reconstruction`.
 - **`graphrag-mcp` serves the same tools over MCP** (`pip install
   "graphrag-sdk[mcp]"`) to Claude Code, Cursor and any other MCP client, on
   stdio or SSE with a bearer token. `--read-only` (or
@@ -95,10 +92,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows the final `RETURN` gives back, never a `LIMIT` inside the query, so
   counts and collections stay correct; results never include internal
   nodes or embedding vectors, and a path reads as names and relation types.
-  Skills report `truncated` when a list was capped (`gap_analysis` also
-  gives the real total). `contradiction_detection` sets `checked_by_llm` only
-  when the model's reply could be read, and gives `llm_error` otherwise.
-  A skill's evidence is its structured data, not the model's summary.
 - **`graph_walk` follows edges in their stored direction**
   (`(Acme)<-[WORKS_AT]-(Alice)`). With a `goal`, `max_depth` is the length
   of the whole path, each step keeps `beam_width` nodes, and the search
