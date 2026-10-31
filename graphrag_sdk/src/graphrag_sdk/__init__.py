@@ -56,7 +56,6 @@ from graphrag_sdk.core.models import (
     ScoredPath,
     SearchType,
     SetVerdict,
-    SkillResult,
     TextChunk,
     TextChunks,
     UpdateResult,
@@ -155,21 +154,6 @@ from graphrag_sdk.retrieval.strategies.path_router import (
     LLMPathRouter,
 )
 
-# ── Skills ──────────────────────────────────────────────────────
-from graphrag_sdk.skills import (
-    ENTITY_PARAM,
-    SKILL_REGISTRY,
-    ContradictionDetectionSkill,
-    EntityComparisonSkill,
-    GapAnalysisSkill,
-    ImpactAnalysisSkill,
-    Skill,
-    TimelineReconstructionSkill,
-    build_skill,
-    register_skill,
-    skill_parameters,
-)
-
 # ── Storage ─────────────────────────────────────────────────────
 from graphrag_sdk.storage.dedup_judges.base import DedupJudge
 from graphrag_sdk.storage.dedup_judges.llm_judge import LLMJudge
@@ -235,7 +219,6 @@ __all__ = [
     "RetrieverResultItem",
     "ScoredPath",
     "SearchType",
-    "SkillResult",
     "TextChunk",
     "TextChunks",
     "UpdateResult",
@@ -280,18 +263,6 @@ __all__ = [
     "RerankingStrategy",
     "RetrievalStrategy",
     "score_path",
-    # Skills
-    "Skill",
-    "SKILL_REGISTRY",
-    "build_skill",
-    "register_skill",
-    "skill_parameters",
-    "ENTITY_PARAM",
-    "ContradictionDetectionSkill",
-    "EntityComparisonSkill",
-    "GapAnalysisSkill",
-    "ImpactAnalysisSkill",
-    "TimelineReconstructionSkill",
     # Storage
     "DedupJudge",
     "DedupRunActiveError",

@@ -8,7 +8,6 @@ import jsonschema
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from graphrag_sdk.skills import SKILL_REGISTRY
 from graphrag_sdk.tools import graph_ops as ops
 from graphrag_sdk.tools.specs import (
     TOOL_NAMES,
@@ -21,13 +20,11 @@ from graphrag_sdk.tools.specs import (
     LookupEntityInput,
     OntologyInput,
     RetrieveInput,
-    RunSkillInput,
     StatusInput,
     ToolDef,
     ToolSpec,
     TraverseInput,
     build_tool_specs,
-    skill_catalog,
 )
 
 ALL_NAMES = (
@@ -38,7 +35,6 @@ ALL_NAMES = (
     "graph_walk",
     "cypher_query",
     "retrieve",
-    "run_skill",
     "check_citations",
     "ingest",
     "finalize",
@@ -52,7 +48,6 @@ VALID_INPUTS: dict[type[BaseModel], dict] = {
     GraphWalkInput: {"start": "Alice"},
     CypherQueryInput: {"cypher": "MATCH (n) RETURN n"},
     RetrieveInput: {"question": "Who?"},
-    RunSkillInput: {"skill": "impact_analysis"},
     CheckCitationsInput: {"answer": "x [1]"},
     IngestInput: {"text": "Alice works at Acme."},
     FinalizeInput: {},
@@ -70,7 +65,7 @@ def specs(**kwargs) -> list[ToolSpec]:
 # ── Registry ─────────────────────────────────────────────────────
 
 
-def test_registry_has_eleven_tools_in_order():
+def test_registry_has_ten_tools_in_order():
     assert TOOL_NAMES == ALL_NAMES
     assert [td.name for td in TOOL_REGISTRY] == list(ALL_NAMES)
     assert all(isinstance(td, ToolDef) for td in TOOL_REGISTRY)
@@ -173,31 +168,6 @@ def test_tools_that_return_evidence_say_so():
     assert "Not a source to cite" in by_name["lookup_entity"].description
 
 
-# ── Skill catalogue ──────────────────────────────────────────────
-
-
-def test_skill_catalog_lists_every_skill_with_its_arguments():
-    catalog = skill_catalog()
-    lines = catalog.splitlines()
-    assert len(lines) == len(SKILL_REGISTRY)
-    assert [line.split("(")[0] for line in lines] == [f"- {n}" for n in sorted(SKILL_REGISTRY)]
-    for name, cls in SKILL_REGISTRY.items():
-        line = next(ln for ln in lines if ln.startswith(f"- {name}("))
-        assert line.endswith(f"): {cls.description}")
-        props = (cls.parameters or {}).get("properties", {})
-        required = set((cls.parameters or {}).get("required", []))
-        for prop in props:
-            assert (prop if prop in required else f"{prop}?") in line
-
-
-def test_run_skill_description_embeds_the_catalog():
-    run_skill = next(s for s in specs() if s.name == "run_skill")
-    assert f"Skills:\n{skill_catalog()}\n" in run_skill.description
-    assert "params" in run_skill.description
-    for name in SKILL_REGISTRY:
-        assert f"- {name}(" in run_skill.description
-
-
 # ── Input models ─────────────────────────────────────────────────
 
 
@@ -285,7 +255,6 @@ def test_other_upper_bounds(model, base, field, ok, bad):
     [
         (LookupEntityInput, "name", 500),
         (RetrieveInput, "question", 2000),
-        (RunSkillInput, "skill", 64),
         (CheckCitationsInput, "answer", 50_000),
         (IngestInput, "text", 200_000),
     ],

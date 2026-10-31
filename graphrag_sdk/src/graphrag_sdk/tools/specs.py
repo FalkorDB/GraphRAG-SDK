@@ -158,15 +158,6 @@ class RetrieveInput(_Input):
     )
 
 
-class RunSkillInput(_Input):
-    """Arguments for run_skill."""
-
-    skill: str = Field(min_length=1, max_length=64, description="Skill name.")
-    params: dict[str, Any] = Field(
-        default_factory=dict, description="The skill's arguments (see the tool description)."
-    )
-
-
 class CheckCitationsInput(_Input):
     """Arguments for check_citations."""
 
@@ -269,11 +260,6 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
         "embedding model the graph was built with." + _CITE,
     ),
     ToolDef(
-        "run_skill",
-        RunSkillInput,
-        "Run a built-in multi-step analysis over the graph.",
-    ),
-    ToolDef(
         "check_citations",
         CheckCitationsInput,
         "Check your draft answer before you reply: every [n] must be evidence a tool "
@@ -304,29 +290,10 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
 TOOL_NAMES: tuple[str, ...] = tuple(td.name for td in TOOL_REGISTRY)
 
 
-def skill_catalog() -> str:
-    """The registered skills, one line each, for the run_skill description."""
-    from graphrag_sdk.skills import SKILL_REGISTRY
-
-    lines = []
-    for name in sorted(SKILL_REGISTRY):
-        cls = SKILL_REGISTRY[name]
-        props = (cls.parameters or {}).get("properties", {})
-        required = set((cls.parameters or {}).get("required", []))
-        args = ", ".join(f"{p}{'' if p in required else '?'}" for p in props)
-        lines.append(f"- {name}({args}): {cls.description}")
-    return "\n".join(lines)
-
-
 def _description(td: ToolDef, finalize_policy: str) -> str:
     if td.name == "ingest" and finalize_policy == "manual":
         # Only an agent that has the finalize tool is told to call it.
         return f"{td.description} Call finalize after a batch of ingests."
-    if td.name == "run_skill":
-        return (
-            f"{td.description} Pass the skill's arguments in params. Skills:\n"
-            f"{skill_catalog()}\nThe result is one piece of evidence [n] to cite."
-        )
     return td.description
 
 

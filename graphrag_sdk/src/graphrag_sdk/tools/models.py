@@ -446,32 +446,6 @@ class RetrieveResult(ToolResult):
         ]
 
 
-class SkillRunResult(ToolResult):
-    """A skill's findings, cited as one piece of evidence."""
-
-    skill: str
-    n: int | None = None
-    summary: str = ""
-    data: dict[str, Any] = Field(default_factory=dict)
-
-    def _preamble(self) -> list[str]:
-        lines = [f"{_n(self.n)}Skill {_clean(self.skill)}"]
-        if self.summary:
-            lines.append(_snippet(self.summary, 2000))
-        return lines
-
-    def _sections(self) -> list[tuple[str, list[str]]]:
-        return [
-            (
-                "Data",
-                [
-                    f"- {_clean(k)}: {_snippet(json.dumps(v, ensure_ascii=False, default=str))}"
-                    for k, v in self.data.items()
-                ],
-            )
-        ]
-
-
 class EvidenceRef(BaseModel):
     """A piece of evidence an answer cites."""
 

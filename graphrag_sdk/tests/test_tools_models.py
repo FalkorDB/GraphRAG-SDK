@@ -23,7 +23,6 @@ from graphrag_sdk.tools.models import (
     RelationTriple,
     RelationTypeInfo,
     RetrieveResult,
-    SkillRunResult,
     StatusResult,
     ToolResult,
     TraverseNode,
@@ -85,7 +84,6 @@ ALL_RESULTS: list[ToolResult] = [
     WalkResult(start="Alice", paths=[WalkPath(n=1, nodes=["Alice", "Acme"], edges=["WORKS_AT"])]),
     big_cypher_result(5),
     retrieve_result(),
-    SkillRunResult(skill="impact_analysis", n=1, summary="2 impacted", data={"k": [1, 2]}),
     CitationCheckResult(grounded=True, reason="cited", cited=[1], answer="x [1]"),
     IngestResult(document_id="doc-1", chunks_indexed=2),
     FinalizeReport(),
@@ -322,21 +320,6 @@ def test_retrieve_rendering():
         "Facts (1):\n- [11] Alice joined Acme in 2020.\n"
         "Passages (2):\n- [12] [hr.pdf] Alice works at Acme.\n- [13] [doc-2] Second passage."
     )
-
-
-def test_skill_rendering():
-    model = SkillRunResult(skill="impact", n=5, summary="Two hits.", data={"hits": ["a", "b"]})
-    assert model.to_llm_text() == '[5] Skill impact\nTwo hits.\nData (1):\n- hits: ["a", "b"]'
-    assert SkillRunResult(skill="s").to_llm_text() == "Skill s"
-
-
-def test_long_skill_summary_is_cut_not_dropped():
-    model = SkillRunResult(skill="impact", n=5, summary="word " * 400, data={"k": 1})
-    text = model.to_llm_text(max_chars=300)
-    head, summary = text.split("\n")
-    assert head == "[5] Skill impact"
-    assert summary.startswith("word word") and summary.endswith("…")
-    assert len(text) == 300
 
 
 def test_citation_check_rendering():

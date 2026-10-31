@@ -61,9 +61,7 @@ To answer a question:
    (strong paths; how A connects to B) to follow relations from them.
 4. status or get_ontology: what the graph holds (entity labels, relation
    types, counts), for questions about the graph itself.
-5. run_skill: built-in analyses (compare entities, impact, contradictions,
-   gaps, timeline).
-6. cypher_query for counts, sums, sorting and property filters. When the
+5. cypher_query for counts, sums, sorting and property filters. When the
    question is only that, call get_ontology and cypher_query and skip
    retrieve; otherwise use it last. When a result says truncated: true, do
    not count its rows; aggregate in Cypher.

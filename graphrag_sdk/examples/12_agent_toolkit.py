@@ -3,7 +3,7 @@ GraphRAG SDK -- Agent Toolkit
 =============================
 The graph tools your own agent calls: wrap a GraphRAG in GraphRAGToolkit,
 ingest a few facts, then run each read tool an agent would use -- status,
-lookup_entity, traverse, graph_walk, cypher_query, retrieve, run_skill --
+lookup_entity, traverse, graph_walk, cypher_query, retrieve --
 cite the evidence numbers they return, and check the citations.
 
 The same tools are served to MCP clients by ``graphrag-mcp``.
@@ -80,9 +80,6 @@ async def main():
 
         found = await session.retrieve("Who is the CTO of Acme Corp?", top_k=5)
         print("=== retrieve ===\n" + found.to_llm_text(max_chars=1200), "\n")
-
-        impact = await session.run_skill("impact_analysis", {"entity": "Acme Corp"})
-        print("=== run_skill ===\n" + impact.to_llm_text(max_chars=800), "\n")
 
         # 3. The guard rejects writes, and errors carry a hint for the agent
         try:

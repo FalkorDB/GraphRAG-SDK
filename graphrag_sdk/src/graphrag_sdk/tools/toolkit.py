@@ -55,7 +55,6 @@ from graphrag_sdk.tools.models import (
     RelationTriple,
     RelationTypeInfo,
     RetrieveResult,
-    SkillRunResult,
     StatusResult,
     TraverseNode,
     TraverseResult,
@@ -72,7 +71,6 @@ from graphrag_sdk.tools.specs import (
     IngestInput,
     LookupEntityInput,
     RetrieveInput,
-    RunSkillInput,
     ToolSpec,
     TraverseInput,
     build_tool_specs,
@@ -159,10 +157,9 @@ class GraphRAGToolkit:
 
     Read tools: ``status``, ``get_ontology``, ``lookup_entity``,
     ``traverse``, ``graph_walk``, ``cypher_query``, ``retrieve``,
-    ``run_skill``, ``check_citations``. Write tools: ``ingest``,
-    ``finalize``. Each is an async method; :meth:`tool_specs` describes them
-    for an agent framework and :meth:`call` runs one by name with validated
-    arguments.
+    ``check_citations``. Write tools: ``ingest``, ``finalize``. Each is an
+    async method; :meth:`tool_specs` describes them for an agent framework
+    and :meth:`call` runs one by name with validated arguments.
 
     Every tool result an answer may rely on carries an evidence number
     ``[n]``. Numbers run across all calls of one session (one toolkit, or one
@@ -1002,57 +999,6 @@ class GraphRAGToolkit:
             chunks=chunks,
             documents=documents,
             hint=hint,
-        )
-
-    async def run_skill(
-        self,
-        skill: str,
-        params: dict[str, Any] | None = None,
-        *,
-        ctx: Context | None = None,
-    ) -> SkillRunResult:
-        """Run a registered skill; its findings are one piece of evidence."""
-        from graphrag_sdk.skills import SKILL_REGISTRY, build_skill
-        from graphrag_sdk.skills.base import check_arguments
-
-        inp = RunSkillInput(skill=skill, params=params or {})
-        if inp.skill not in SKILL_REGISTRY:
-            raise ToolError(
-                f"Unknown skill {inp.skill!r}.",
-                hint=f"Skills: {', '.join(sorted(SKILL_REGISTRY))}.",
-            )
-        impl = build_skill(inp.skill, self._store, self._rag.llm)
-        problems = check_arguments(impl.parameters, inp.params)
-        if problems:
-            accepted = ", ".join((impl.parameters.get("properties") or {}).keys()) or "none"
-            raise ToolError(
-                f"Invalid arguments for skill {inp.skill!r}: {'; '.join(problems)}.",
-                hint=f"{inp.skill} accepts: {accepted}.",
-            )
-        await self._require_graph()
-        try:
-            result = await impl.run(ctx or self._new_ctx(), **inp.params)
-        except ValueError as exc:
-            raise ToolError(
-                f"Skill {inp.skill!r} could not run: {exc}.",
-                hint="Get exact entity names with lookup_entity, then call the skill again.",
-            ) from None
-        data = _mask(ops.to_jsonable(dict(result.data)))
-        # The evidence is the structured findings, so check_citations checks
-        # figures against the data; the LLM summary is kept beside it.
-        content = json.dumps(data, ensure_ascii=False, default=str)
-        n = self._evidence(
-            "run_skill",
-            "skill",
-            f"{inp.skill}: {content}",
-            skill=inp.skill,
-            summary=result.summary,
-        )
-        return SkillRunResult(
-            skill=inp.skill,
-            n=n,
-            summary=result.summary,
-            data=data if isinstance(data, dict) else {"value": data},
         )
 
     async def check_citations(self, answer: str) -> CitationCheckResult:

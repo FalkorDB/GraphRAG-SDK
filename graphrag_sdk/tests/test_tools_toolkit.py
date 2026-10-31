@@ -136,7 +136,7 @@ def toolkit(rag: FakeRAG, monkeypatch: pytest.MonkeyPatch) -> GraphRAGToolkit:
 class TestSpecsAndDispatch:
     def test_all_tools_advertised(self, toolkit: GraphRAGToolkit):
         assert [s.name for s in toolkit.tool_specs()] == list(TOOL_NAMES)
-        assert len(TOOL_NAMES) == 11
+        assert len(TOOL_NAMES) == 10
 
     def test_read_only_drops_writes(self, rag: FakeRAG):
         tk = GraphRAGToolkit(rag, read_only=True)  # type: ignore[arg-type]
@@ -837,7 +837,6 @@ class TestMissingGraph:
             ("lookup_entity", {"name": "Alice"}),
             ("traverse", {"start": "Alice"}),
             ("graph_walk", {"start": "Alice"}),
-            ("run_skill", {"skill": "gap_analysis"}),
         ],
     )
     async def test_read_tools_name_the_missing_graph(self, missing, tool, args):

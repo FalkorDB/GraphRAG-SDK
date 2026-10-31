@@ -1343,7 +1343,7 @@ class SearchType(str, Enum):
     HYBRID = "hybrid"
 
 
-# ── Graph-Walk / Skill Types ──────────────────────────────────────
+# ── Graph-Walk Types ──────────────────────────────────────
 
 
 class ScoredPath(DataModel):
@@ -1361,15 +1361,6 @@ class ScoredPath(DataModel):
     def length(self) -> int:
         """Number of hops (edges) in the path."""
         return max(0, len(self.nodes) - 1)
-
-
-class SkillResult(DataModel):
-    """Structured output of a high-level reasoning skill."""
-
-    skill: str
-    summary: str = ""
-    data: dict[str, Any] = Field(default_factory=dict)
-    sources: list[str] = Field(default_factory=list)
 
 
 # ── Deprecation aliases ──────────────────────────────────────────
