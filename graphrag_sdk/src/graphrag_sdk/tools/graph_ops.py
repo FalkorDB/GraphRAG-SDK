@@ -6,10 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from typing import Any
 
-from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.storage import system_store
 from graphrag_sdk.storage.graph_store import GraphStore
 
@@ -39,15 +37,6 @@ _PROCESSING_KINDS = frozenset(
 VECTOR_MIN_LENGTH = 64
 #: Longest string returned in one cell.
 MAX_CELL_CHARS = 2000
-
-
-LOOKUP_DEFAULT_LIMIT, LOOKUP_MAX_LIMIT = 5, 25
-LOOKUP_TIMEOUT_MS = 1000
-#: A name word: Unicode letters and digits ("müller"), joined by - _ . or /.
-_CANDIDATE_TOKEN_RE = re.compile(r"[^\W_]+(?:[-_./][^\W_]+)*")
-_CANDIDATE_STOP = frozenset(
-    {"the", "and", "for", "with", "from", "into", "that", "this", "what", "which", "entity"}
-)
 
 
 class NoGraph:
@@ -374,61 +363,3 @@ async def chunk_documents(store: Any, chunk_ids: list[str]) -> dict[str, tuple[s
         {"ids": chunk_ids},
     )
     return {str(row[0]): (str(row[1] or ""), str(row[2] or "")) for row in _rows(result) if row[0]}
-
-
-# ── Entity lookup ────────────────────────────────────────────────
-
-
-async def find_entities(
-    store: Any,
-    text: str,
-    *,
-    limit: int = LOOKUP_DEFAULT_LIMIT,
-    timeout_ms: int = LOOKUP_TIMEOUT_MS,
-) -> list[dict[str, str]] | None:
-    """Entities whose name contains ``text`` or its words, best match first.
-
-    An exact (case-insensitive) name ranks first, then a name containing the
-    whole text, then names sharing more of its words, then shorter names.
-    Returns ``None`` when the lookup itself failed (so a caller does not word
-    that as "no such entity").
-    """
-    needle = " ".join(str(text or "").lower().split())
-    if not needle:
-        return []
-    tokens = [
-        t
-        for t in dict.fromkeys(_CANDIDATE_TOKEN_RE.findall(needle))
-        if len(t) >= 3 and t not in _CANDIDATE_STOP
-    ][:6]
-    cypher = (
-        "MATCH (e:__Entity__) WHERE e.name IS NOT NULL "
-        "WITH e, toLower(toString(e.name)) AS n "
-        "WITH e, n, size([t IN $tokens WHERE n CONTAINS t]) AS hits, "
-        "n CONTAINS $needle AS whole, n = $needle AS exact "
-        "WHERE whole OR hits > 0 "
-        "RETURN e.id, e.name, [l IN labels(e) WHERE NOT l STARTS WITH '__'][0], e.description "
-        "ORDER BY exact DESC, whole DESC, hits DESC, size(n) ASC, e.name LIMIT $limit"
-    )
-    try:
-        result = await bounded_query(
-            store, cypher, {"needle": needle, "tokens": tokens, "limit": limit}, timeout_ms
-        )
-    except LatencyBudgetExceededError:
-        raise
-    except Exception as exc:
-        logger.warning("Entity lookup failed: %s", exc)
-        return None
-    found = []
-    for row in _rows(result)[:limit]:
-        if len(row) < 2 or row[1] is None:
-            continue
-        found.append(
-            {
-                "id": str(row[0]),
-                "name": str(row[1]),
-                "label": str(row[2]) if len(row) > 2 and row[2] else "",
-                "description": str(row[3]) if len(row) > 3 and row[3] else "",
-            }
-        )
-    return found

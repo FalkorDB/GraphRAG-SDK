@@ -58,13 +58,18 @@ To answer a question:
    to the searches this question needs, following each path's "Use when" in
    the retrieve schema. Leave paths out for broad questions; if your paths
    find nothing, run it again without them.
-2. lookup_entity: turn names in the question into exact entity names and ids.
+2. If retrieve did not answer it, run retrieve again, more precisely: with
+   the exact entity names from its results and paths exact_names and links
+   for what surrounds one entity, or with expand_hops 2 or 3 when the
+   question chains several relations (the company that owns the firm that
+   made X).
 3. status or get_ontology: what the graph holds (entity labels, relation
    types, counts), for questions about the graph itself.
-4. cypher_query for counts, sums, sorting and property filters. When the
-   question is only that, call get_ontology and cypher_query and skip
-   retrieve; otherwise use it last. When a result says truncated: true, do
-   not count its rows; aggregate in Cypher.
+4. cypher_query for counts, sums, sorting, property filters and the chain
+   between two named entities, using exact names from retrieve results.
+   When the question is only that, call get_ontology and cypher_query and
+   skip retrieve; otherwise use it last. When a result says truncated: true,
+   do not count its rows; aggregate in Cypher.
 
 Answer what was asked, briefly, and leave out evidence that does not answer
 it. Cite evidence as [n] after each claim, using only numbers the tools
@@ -327,8 +332,8 @@ def describe_error(name: str, exc: BaseException) -> str:
         message = f"{name} failed: the model provider returned an error ({kind})."
         hint = (
             "The server's LLM or embedding setup needs attention (API key, model, quota; "
-            "details are in the server log). lookup_entity, cypher_query, status "
-            "and get_ontology need no model and still work."
+            "details are in the server log). cypher_query, status and get_ontology "
+            "need no model and still work."
         )
     elif isinstance(exc, (DatabaseUnavailableError, ConnectionError)) or root in _DATABASE_MODULES:
         message = f"{name} failed: the graph database could not be reached ({kind})."
@@ -338,7 +343,7 @@ def describe_error(name: str, exc: BaseException) -> str:
         hint = "Retry once; if it fails again, use another tool (details are in the server log)."
     elif isinstance(exc, RetrieverError):
         message = f"{name} failed during retrieval ({kind})."
-        hint = "Retry with fewer paths, or use lookup_entity and cypher_query instead."
+        hint = "Retry with fewer paths, or use cypher_query instead."
     elif isinstance(exc, (ConfigError, SchemaValidationError)):
         message = f"{name} failed: the server is misconfigured ({kind})."
         hint = (

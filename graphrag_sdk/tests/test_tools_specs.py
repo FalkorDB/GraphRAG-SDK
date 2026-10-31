@@ -15,7 +15,6 @@ from graphrag_sdk.tools.specs import (
     CypherQueryInput,
     FinalizeInput,
     IngestInput,
-    LookupEntityInput,
     OntologyInput,
     PlanRuleInput,
     PreviewFilesInput,
@@ -31,7 +30,6 @@ from graphrag_sdk.tools.specs import (
 ALL_NAMES = (
     "status",
     "get_ontology",
-    "lookup_entity",
     "cypher_query",
     "retrieve",
     "check_citations",
@@ -40,12 +38,11 @@ ALL_NAMES = (
     "ingest",
     "finalize",
 )
-READ_NAMES = ALL_NAMES[:6]
+READ_NAMES = ALL_NAMES[:5]
 
 VALID_INPUTS: dict[type[BaseModel], dict] = {
     StatusInput: {},
     OntologyInput: {},
-    LookupEntityInput: {"name": "Acme"},
     CypherQueryInput: {"cypher": "MATCH (n) RETURN n"},
     RetrieveInput: {"question": "Who?"},
     CheckCitationsInput: {"answer": "x [1]"},
@@ -201,7 +198,6 @@ def test_tools_that_return_evidence_say_so():
     by_name = {s.name: s for s in specs()}
     for name in ("cypher_query", "retrieve"):
         assert "evidence numbers [n]" in by_name[name].description
-    assert "Not a source to cite" in by_name["lookup_entity"].description
 
 
 # ── Input models ─────────────────────────────────────────────────
@@ -241,7 +237,6 @@ def test_cypher_query_defaults_and_bounds():
 @pytest.mark.parametrize(
     ("model", "base", "field", "ok", "bad"),
     [
-        (LookupEntityInput, {"name": "a"}, "limit", 25, 26),
         (RetrieveInput, {"question": "q"}, "top_k", 25, 26),
         (RetrieveInput, {"question": "q"}, "expand_hops", 3, 4),
     ],
@@ -257,7 +252,6 @@ def test_other_upper_bounds(model, base, field, ok, bad):
 @pytest.mark.parametrize(
     ("model", "field", "limit"),
     [
-        (LookupEntityInput, "name", 500),
         (RetrieveInput, "question", 2000),
         (CheckCitationsInput, "answer", 50_000),
         (IngestInput, "text", 200_000),

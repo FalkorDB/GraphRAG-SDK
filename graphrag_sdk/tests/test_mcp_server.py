@@ -96,7 +96,7 @@ class TestToolList:
 
     def test_guide_is_the_default_instructions(self, server: GraphRAGMCPServer):
         assert server.instructions == GUIDE + TEXT_INGEST_GUIDE
-        for word in ("lookup_entity", "cypher_query", "truncated", "check_citations", "[n]"):
+        for word in ("expand_hops", "cypher_query", "truncated", "check_citations", "[n]"):
             assert word in GUIDE
         assert GraphRAGMCPServer(FakeRAG(), instructions="x").instructions == "x"
 
@@ -109,7 +109,7 @@ class TestCallTool:
     async def test_tool_errors_carry_hints(self, server: GraphRAGMCPServer):
         text, is_error = await server.call_tool("graph_search", {})
         assert is_error and "Unknown tool" in text and "Hint:" in text
-        text, is_error = await server.call_tool("lookup_entity", {"name": "x", "extra": 1})
+        text, is_error = await server.call_tool("get_ontology", {"extra": 1})
         assert is_error and "Extra inputs are not permitted" in text
         text, is_error = await server.call_tool("cypher_query", {"cypher": "MATCH (n) DELETE n"})
         assert is_error and "rejected" in text and "Hint:" in text

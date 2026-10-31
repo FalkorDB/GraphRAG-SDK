@@ -124,7 +124,7 @@ class TestSpecsAndDispatch:
         assert [s.name for s in toolkit.tool_specs()] == [
             n for n in TOOL_NAMES if n != "preview_files"
         ]
-        assert len(TOOL_NAMES) == 10
+        assert len(TOOL_NAMES) == 9
 
     def test_read_only_drops_writes(self, rag: FakeRAG):
         tk = GraphRAGToolkit(rag, read_only=True)  # type: ignore[arg-type]
@@ -138,8 +138,8 @@ class TestSpecsAndDispatch:
             assert "finalize" not in [s.name for s in tk.tool_specs()]
 
     def test_include_and_validation(self, rag: FakeRAG):
-        tk = GraphRAGToolkit(rag, include=["status", "lookup_entity"])  # type: ignore[arg-type]
-        assert [s.name for s in tk.tool_specs()] == ["status", "lookup_entity"]
+        tk = GraphRAGToolkit(rag, include=["status", "cypher_query"])  # type: ignore[arg-type]
+        assert [s.name for s in tk.tool_specs()] == ["status", "cypher_query"]
         with pytest.raises(ValueError, match="Unknown tool names"):
             GraphRAGToolkit(rag, include=["status", "graph_search"])  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="finalize_policy"):
@@ -148,13 +148,13 @@ class TestSpecsAndDispatch:
     async def test_call_unknown_tool(self, toolkit: GraphRAGToolkit):
         with pytest.raises(ToolError, match="Unknown tool 'graph_search'") as exc:
             await toolkit.call("graph_search", {})
-        assert "lookup_entity" in (exc.value.hint or "")
+        assert "cypher_query" in (exc.value.hint or "")
         assert "Hint:" in str(exc.value)
 
     async def test_call_disabled_tool(self, rag: FakeRAG):
         tk = GraphRAGToolkit(rag, include=["status"])  # type: ignore[arg-type]
         with pytest.raises(ToolError, match="not enabled"):
-            await tk.call("lookup_entity", {"name": "x"})
+            await tk.call("cypher_query", {"cypher": "MATCH (n) RETURN n"})
 
     async def test_call_write_on_read_only(self, rag: FakeRAG):
         tk = GraphRAGToolkit(rag, read_only=True)  # type: ignore[arg-type]
@@ -166,19 +166,17 @@ class TestSpecsAndDispatch:
 
     async def test_call_rejects_bad_arguments(self, toolkit: GraphRAGToolkit):
         with pytest.raises(ToolError, match="bogus: Extra inputs are not permitted"):
-            await toolkit.call("lookup_entity", {"name": "x", "bogus": 1})
-        with pytest.raises(ToolError, match="name"):
-            await toolkit.call("lookup_entity", {})
+            await toolkit.call("cypher_query", {"cypher": "MATCH (n) RETURN n", "bogus": 1})
+        with pytest.raises(ToolError, match="cypher"):
+            await toolkit.call("cypher_query", {})
         with pytest.raises(ToolError, match="max_rows"):
             await toolkit.call("cypher_query", {"cypher": "MATCH (n) RETURN n", "max_rows": 101})
 
-    async def test_call_dispatches(self, toolkit: GraphRAGToolkit, monkeypatch):
-        async def find(store, name, *, limit):
-            return [{"id": "e1", "name": name, "label": "Person", "description": ""}]
-
-        monkeypatch.setattr(ops, "find_entities", find)
-        result = await toolkit.call("lookup_entity", {"name": "Alice"})
-        assert result.matches[0].id == "e1"
+    async def test_call_dispatches(self, toolkit: GraphRAGToolkit, store):
+        store.rows = [["Alice"]]
+        store.header = ["name"]
+        result = await toolkit.call("cypher_query", {"cypher": "MATCH (p:Person) RETURN p.name"})
+        assert result.rows[0].values == ["Alice"]
 
 
 # ── Sessions and lifecycle ─────────────────────────────────────────
@@ -339,7 +337,7 @@ class TestCypherQuery:
 
     async def test_empty_hint(self, toolkit):
         result = await toolkit.cypher_query("MATCH (p:Person) RETURN p.name")
-        assert result.rows == [] and "lookup_entity" in (result.hint or "")
+        assert result.rows == [] and "retrieve" in (result.hint or "")
 
 
 # ── Other read tools ───────────────────────────────────────────────
@@ -376,23 +374,6 @@ class TestReadTools:
             r.levelno == logging.WARNING and "schema_counts failed" in r.getMessage()
             for r in caplog.records
         )
-
-    async def test_lookup_entity_is_not_evidence(self, toolkit, monkeypatch):
-        async def find(store, name, *, limit):
-            return []
-
-        monkeypatch.setattr(ops, "find_entities", find)
-        result = await toolkit.lookup_entity("Nobody")
-        assert result.matches == [] and "retrieve" in (result.hint or "")
-        assert toolkit.ledger.items == []
-
-    async def test_lookup_failure_is_a_tool_error(self, toolkit, monkeypatch):
-        async def find(store, name, *, limit):
-            return None
-
-        monkeypatch.setattr(ops, "find_entities", find)
-        with pytest.raises(ToolError, match="lookup failed"):
-            await toolkit.lookup_entity("x")
 
     async def test_retrieve_numbers_every_item(self, toolkit, rag, monkeypatch):
         rag.retrieve_result = RetrieverResult(
@@ -482,7 +463,7 @@ class TestReadTools:
         monkeypatch.setattr(ops, "expand_triples", no_triples)
         monkeypatch.setattr(ops, "chunk_documents", none)
         result = await toolkit.retrieve("anything")
-        assert "lookup_entity" in (result.hint or "")
+        assert "fuzzy_names" in (result.hint or "")
 
     @pytest.fixture
     def found(self, rag, monkeypatch):
@@ -610,7 +591,6 @@ class TestMissingGraph:
         [
             ("cypher_query", {"cypher": "MATCH (n) RETURN count(n) AS c"}),
             ("retrieve", {"question": "Who founded Acme?"}),
-            ("lookup_entity", {"name": "Alice"}),
         ],
     )
     async def test_read_tools_name_the_missing_graph(self, missing, tool, args):
@@ -628,8 +608,8 @@ class TestMissingGraph:
         assert status.entities == 0 and "Graph 'nope' does not exist" in status.hint
 
     async def test_existence_is_checked_once(self, toolkit: GraphRAGToolkit, store: FakeStore):
-        await toolkit.call("lookup_entity", {"name": "Alice"})
-        await toolkit.call("lookup_entity", {"name": "Alice"})
+        await toolkit.call("cypher_query", {"cypher": "MATCH (n) RETURN n.name AS name"})
+        await toolkit.call("cypher_query", {"cypher": "MATCH (n) RETURN n.name AS name"})
         assert [q for q, _ in store.queries].count("RETURN 1") == 1
 
     async def test_other_database_errors_are_left_to_the_tool(self, rag: FakeRAG):

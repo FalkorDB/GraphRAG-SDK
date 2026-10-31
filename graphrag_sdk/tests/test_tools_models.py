@@ -12,13 +12,11 @@ from graphrag_sdk.tools.models import (
     CypherRow,
     DocumentRef,
     EntityCard,
-    EntityMatch,
     EntityTypeInfo,
     EvidenceRef,
     Fact,
     FinalizeReport,
     IngestResult,
-    LookupResult,
     OntologyResult,
     RelationTriple,
     RelationTypeInfo,
@@ -69,7 +67,6 @@ ALL_RESULTS: list[ToolResult] = [
         entity_types=[EntityTypeInfo(label="Person", description="A human", count=2)],
         relation_types=[RelationTypeInfo(label="WORKS_AT", patterns=[("Person", "Company")])],
     ),
-    LookupResult(query="acme", matches=[EntityMatch(id="acme", name="Acme", label="Company")]),
     big_cypher_result(5),
     retrieve_result(),
     CitationCheckResult(grounded=True, reason="cited", cited=[1], answer="x [1]"),
@@ -107,7 +104,7 @@ def test_results_reject_unknown_fields(model):
 @pytest.mark.parametrize(
     ("cls", "kwargs"),
     [
-        (EntityMatch, {"id": "a", "name": "A"}),
+        (EntityCard, {"name": "A"}),
         (CypherRow, {}),
         (EvidenceRef, {"n": 1, "tool": "t", "kind": "k", "content": "c"}),
     ],
@@ -155,19 +152,21 @@ def test_section_that_cannot_fit_is_summarised():
 
 
 def test_preamble_that_cannot_fit_is_cut():
-    model = LookupResult(query="x" * 100)
+    model = RetrieveResult(question="x" * 100)
     text = model.to_llm_text(max_chars=20)
     assert len(text) == 20 and text.endswith("…")
 
 
 def test_control_characters_and_whitespace_are_cleaned():
-    model = LookupResult(
-        query="ac\x00me\x1b",
-        matches=[EntityMatch(id="a\x07", name="Ac\x00me\n  Corp", description="line1\r\nline2")],
+    model = RetrieveResult(
+        question="ac\x00me\x1b",
+        entities=[
+            EntityCard(label="Co\x07", name="Ac\x00me\n  Corp", description="line1\r\nline2")
+        ],
     )
     text = model.to_llm_text()
     assert "\x00" not in text and "\x1b" not in text and "\x07" not in text
-    assert 'Lookup: acme\nMatches (1):\n- "Acme Corp" (id a): line1 line2' == text
+    assert "Question: acme\nEntities (1):\n- Acme Corp [Co]: line1 line2" == text
 
 
 def test_long_snippets_are_capped():
@@ -204,21 +203,6 @@ def test_ontology_rendering():
     assert model.to_llm_text() == (
         "Entity types (1):\n- Person: 2 — A human (props: age)\n"
         "Relation types (1):\n- WORKS_AT: 0 [Person->Company] — Employment"
-    )
-
-
-def test_lookup_rendering():
-    model = LookupResult(
-        query="acme",
-        matches=[
-            EntityMatch(id="acme", name="Acme", label="Company", description="Maker"),
-            EntityMatch(id="acme2", name="Acme Labs"),
-        ],
-        hint="Pass an id to cypher_query.",
-    )
-    assert model.to_llm_text() == (
-        "Lookup: acme\nHint: Pass an id to cypher_query.\nMatches (2):\n"
-        '- "Acme" (Company, id acme): Maker\n- "Acme Labs" (id acme2)'
     )
 
 

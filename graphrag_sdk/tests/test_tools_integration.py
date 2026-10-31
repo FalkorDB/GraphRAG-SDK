@@ -124,16 +124,6 @@ async def test_status_and_ontology(toolkit: GraphRAGToolkit):
     assert "WORKS_AT" in {t.label for t in onto.relation_types}
 
 
-async def test_lookup_entity(toolkit: GraphRAGToolkit):
-    exact = await toolkit.call("lookup_entity", {"name": "alice"})
-    assert exact.matches[0].name == "Alice" and exact.matches[0].label == "Person"
-    partial = await toolkit.call("lookup_entity", {"name": "Acme"})
-    assert partial.matches and partial.matches[0].name == "Acme Corp"
-    none = await toolkit.call("lookup_entity", {"name": "Zebulon"})
-    assert none.matches == [] and none.hint
-    assert toolkit.ledger.items == []
-
-
 async def test_cypher_query_renders_paths_as_names(toolkit: GraphRAGToolkit):
     out = await toolkit.call(
         "cypher_query",
@@ -349,7 +339,8 @@ async def test_read_only_toolkit(toolkit: GraphRAGToolkit):
     assert "ingest" not in [s.name for s in ro.tool_specs()]
     with pytest.raises(ReadOnlyViolation):
         await ro.call("ingest", {"text": "x"})
-    assert (await ro.call("lookup_entity", {"name": "Bob"})).matches
+    bob = "MATCH (p:Person {name: 'Bob'}) RETURN p.name AS name"
+    assert (await ro.call("cypher_query", {"cypher": bob})).rows
 
 
 async def test_mcp_round_trip(toolkit: GraphRAGToolkit):
@@ -360,8 +351,8 @@ async def test_mcp_round_trip(toolkit: GraphRAGToolkit):
 
     server = GraphRAGMCPServer(toolkit.rag, read_only=True)
     async with connect(server) as (client, _):
-        listed = await client.call_tool("lookup_entity", {"name": "Bob"})
-        assert json.loads(listed.content[0].text)["matches"][0]["name"] == "Bob"
+        listed = await client.call_tool("status", {})
+        assert json.loads(listed.content[0].text)["entities"] > 0
         cypher = (
             "MATCH (:Person {name: 'Bob'})-[r:RELATES]->(c:Organization) "
             "RETURN r.rel_type AS type, c.name AS company"
@@ -415,10 +406,11 @@ async def test_for_tenant_isolated_graphs(embedder):
         assert tk_b.rag._conn.config.graph_name == f"{base.graph_name}__tenant-b"
         await tk_a.ingest("Alice is an engineer.", document_id="doc-a")
         await tk_a.finalize()
-        assert (await tk_a.lookup_entity("Alice")).matches
+        names = "MATCH (e:__Entity__) RETURN e.name AS name"
+        assert (await tk_a.cypher_query(names)).rows
         # Tenant b's graph was never written, so it cannot see a's entities.
         with pytest.raises(ToolError, match="__tenant-b' does not exist"):
-            await tk_b.lookup_entity("Alice")
+            await tk_b.cypher_query(names)
     finally:
         for tk in (tk_a, tk_b):
             try:
@@ -572,8 +564,8 @@ async def test_agent_ingests_a_folder(real_falkordb_rag_factory, tmp_path):
     relations = {t.label: t.count for t in status.relation_types}
     assert relations == {"TREATS": 2, "INHIBITS": 1}
     assert status.documents == 2
-    found = await tk.call("lookup_entity", {"name": "COX1"})
-    assert found.matches and found.matches[0].label == "Gene"
+    found = await tk.call("cypher_query", {"cypher": "MATCH (g:Gene) RETURN g.name AS name"})
+    assert [r.values for r in found.rows] == [["COX1"]]
 
 
 async def test_agent_ingestion_respects_the_root(real_falkordb_rag_factory, tmp_path):
@@ -607,7 +599,6 @@ async def test_read_tools_on_a_fresh_graph_create_no_keys(real_falkordb_rag_fact
     for tool, args in [
         ("retrieve", {"question": "Who founded Acme?"}),
         ("cypher_query", {"cypher": "MATCH (n) RETURN count(n) AS c"}),
-        ("lookup_entity", {"name": "Acme"}),
     ]:
         with pytest.raises(ToolError, match=f"Graph '{data_graph}' does not exist"):
             await tk.call(tool, args)
