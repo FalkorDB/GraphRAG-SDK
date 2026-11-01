@@ -76,6 +76,7 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     GraphExtraction,
     _coerce_attribute_value,
 )
+from graphrag_sdk.ingestion.lexical_graph import _reported_short
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
@@ -1784,7 +1785,14 @@ class GraphRAG:
                 filled += 1
             if new_nodes:
                 await self._graph_store.upsert_nodes(new_nodes)
-                await self._graph_store.upsert_relationships(new_mentions)
+                written = await self._graph_store.upsert_relationships(new_mentions)
+                if _reported_short(written, len(new_mentions)):
+                    # The edge is the record a delete takes the text off by;
+                    # without it the chunk must not be marked done.
+                    raise DatabaseError(
+                        f"backfill wrote {written} of {len(new_mentions)} mention edges "
+                        f"for chunk {ctx.chunk_id}"
+                    )
             return BackfillMergeStats(values_filled=filled, values_skipped=skipped)
 
         executor = BackfillExecutor(self.llm, self._graph_store, concurrency=concurrency)

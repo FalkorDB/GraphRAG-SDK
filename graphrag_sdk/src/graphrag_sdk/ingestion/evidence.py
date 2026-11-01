@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable
 
 #: Longest text cut for one mention, in characters.
@@ -118,30 +119,60 @@ def evidence_text(
     return _render(text, _merge(_with_table_headers(text, windows)), max_chars)
 
 
-def find_spans(text: str, name: str) -> list[tuple[int, int]]:
-    """Every occurrence of ``name`` in ``text`` as a whole name: not inside a
-    longer word ("US" is not found in "business", nor "Al" in "Algorithm").
-    Those written as the name is, when there are any ("Apple" the company,
-    not "apple" the fruit); otherwise every one, whatever its case."""
-    if not name.strip():
-        return []
-    pattern = r"(?<!\w)" + re.escape(name.strip()) + r"(?!\w)"
-    for flags in (0, re.IGNORECASE):
-        spans = [(m.start(), m.end()) for m in re.finditer(pattern, text, flags)]
-        if spans:
-            return spans
-    return []
+# Scripts written without spaces between words: a name inside a longer run of
+# them is still the name (杭州 in 在杭州成立), so no word boundary is asked for.
+_UNSPACED_SCRIPTS = (
+    "CJK",
+    "HIRAGANA",
+    "KATAKANA",
+    "HALFWIDTH KATAKANA",
+    "HANGUL",
+    "THAI",
+    "LAO",
+    "KHMER",
+    "MYANMAR",
+    "TIBETAN",
+)
+
+
+def _joins(a: str, b: str) -> bool:
+    """Whether ``a`` and ``b`` side by side are one word: both are word
+    characters of a script that separates words with spaces."""
+    return all(
+        (c.isalnum() or c == "_") and not unicodedata.name(c, "").startswith(_UNSPACED_SCRIPTS)
+        for c in (a, b)
+    )
 
 
 def is_whole_word(text: str, start: int, end: int) -> bool:
-    """Whether ``text[start:end]`` is not part of a longer word — a span a
-    model gave by its own offsets, checked as :func:`find_spans` matches."""
+    """Whether ``text[start:end]`` is not part of a longer word ("US" is in
+    "the US." but not in "business", nor "Al" in "Algorithm"). Where a script
+    puts no spaces between words, any neighbour will do."""
     if not 0 <= start < end <= len(text):
         return False
     return not (
-        (start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"))
-        or (end < len(text) and (text[end].isalnum() or text[end] == "_"))
+        (start > 0 and _joins(text[start - 1], text[start]))
+        or (end < len(text) and _joins(text[end - 1], text[end]))
     )
+
+
+def find_spans(text: str, name: str) -> list[tuple[int, int]]:
+    """Every occurrence of ``name`` in ``text``, whatever its case, as a whole
+    word (:func:`is_whole_word`). For a name written with capitals, its
+    all-lowercase occurrences are left out when there are others ("Apple" and
+    "APPLE" the company, not "apple" the fruit)."""
+    name = name.strip()
+    if not name:
+        return []
+    found = [
+        m.span(1)
+        for m in re.finditer(f"(?=({re.escape(name)}))", text, re.IGNORECASE)
+        if is_whole_word(text, *m.span(1))
+    ]
+    if any(c.isupper() for c in name):
+        cased = [(s, e) for s, e in found if not text[s:e].islower()]
+        return cased or found
+    return found
 
 
 def flat_spans(spans: Iterable[tuple[int, int]]) -> list[int]:

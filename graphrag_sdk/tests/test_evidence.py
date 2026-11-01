@@ -100,11 +100,22 @@ def test_a_name_is_found_only_as_a_whole_name():
     assert find_spans(text, "Ann") == [(17, 20)]
 
 
-def test_the_name_as_written_is_preferred_over_another_case():
+def test_a_capitalised_names_lowercase_occurrences_are_left_out():
     text = "Apple sells apple juice. APPLE stock rose."
-    assert find_spans(text, "Apple") == [(0, 5)]
-    # None as written: every one, whatever its case.
-    assert find_spans(text, "aPPle") == [(0, 5), (12, 17), (25, 30)]
+    # "apple" the fruit is not the company; "APPLE" in a heading still is.
+    assert find_spans(text, "Apple") == [(0, 5), (25, 30)]
+    # Only lowercase ones: those are the name.
+    assert find_spans("alice runs Acme.", "Alice") == [(0, 5)]
+    # A lowercase name: every case.
+    assert find_spans(text, "apple") == [(0, 5), (12, 17), (25, 30)]
+
+
+def test_a_name_in_a_script_without_spaces_is_found_inside_a_run():
+    assert find_spans("公司在杭州成立。", "杭州") == [(3, 5)]
+    assert find_spans("東京都に本社がある", "東京") == [(0, 2)]
+    assert find_spans("บริษัทในกรุงเทพฯ", "กรุงเทพ") == [(8, 15)]
+    # A Latin name inside such a run is a whole word too.
+    assert find_spans("在Apple公司工作", "Apple") == [(1, 6)]
 
 
 def test_a_models_own_offsets_count_only_on_a_whole_word():
@@ -112,6 +123,7 @@ def test_a_models_own_offsets_count_only_on_a_whole_word():
     assert not is_whole_word(text, 5, 7)  # "us" inside "business"
     assert is_whole_word(text, 31, 33)
     assert not is_whole_word(text, 31, 99)  # past the end
+    assert is_whole_word("公司在杭州成立", 3, 5)
 
 
 def test_a_span_given_twice_is_kept_once():

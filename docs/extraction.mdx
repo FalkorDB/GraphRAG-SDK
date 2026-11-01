@@ -31,7 +31,7 @@ GraphRAG SDK uses a **two-step hybrid approach**: a fast local NER model finds t
                      ┌──────────────────────────────────┐
                      │ LLM receives:                     │
                      │   - Pre-extracted entities         │
-                     │   - Original text                  │
+                     │   - Chunk text (coref-resolved)    │
                      │                                    │
                      │ LLM returns:                       │
                      │   - Verified entities (fixed/added) │

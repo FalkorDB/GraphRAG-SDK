@@ -402,6 +402,24 @@ class TestBackfillEntity:
         assert rel_call[0].start_node_id == node.id
 
     @pytest.mark.asyncio
+    async def test_a_short_mention_edge_write_leaves_the_chunk_unmarked(self, rag):
+        """The edge is the record a delete takes the backfilled text off by:
+        a chunk whose edge was not written must be retried, not marked done."""
+        rag.llm = MockLLM(
+            responses=[
+                json.dumps(
+                    {"entities": [{"name": "Bob", "description": "A founder", "attributes": {}}]}
+                )
+            ]
+        )
+        rag._graph_store.list_chunks_for_entity_backfill = AsyncMock(
+            return_value=[{"chunk_id": "c1", "chunk_text": "Bob runs Acme"}]
+        )
+        rag._graph_store.upsert_nodes = AsyncMock(return_value=1)
+        rag._graph_store.upsert_relationships = AsyncMock(return_value=0)
+        result = await rag.backfill_entity("Person", scope="all")
+        assert result.failed_chunks == ["c1"]
+
     async def test_date_gate_uses_the_ontology_not_the_target_label(self, rag):
         """Backfilling `Product` in a graph whose ontology declares `Date` must
         keep numeric names ("747") exactly as normal extraction would; only the
