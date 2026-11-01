@@ -541,7 +541,8 @@ class TestSetOntologyRestoresOnFailure:
         rag._ontology_store.register.reset_mock()
         await rag._ensure_ontology_initialized()
         assert rag._ontology_initialized is True
-        assert rag._ontology_store.register.await_count >= 1  # the previous one, again
+        registered = rag._ontology_store.register.await_args.args[0]
+        assert {e.label for e in registered.entities} == {"Person", "Company"}
 
     async def test_a_rejected_call_does_not_undo_a_concurrent_one(self, graphrag_evolving):
         # The rollback restored the init flag while another call waited, which
