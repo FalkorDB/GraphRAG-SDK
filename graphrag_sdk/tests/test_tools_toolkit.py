@@ -277,6 +277,34 @@ class TestReadTools:
         assert [e.id for e in result.entities] == ["a"] and walked == [["a"]]
         assert len(toolkit.ledger) == 1
 
+    @pytest.mark.parametrize("failing", ["expand_triples", "chunk_documents"])
+    async def test_a_failed_retrieve_leaves_nothing_citable(
+        self, toolkit, rag, monkeypatch, failing
+    ):
+        rag.retrieve_result = RetrieverResult(
+            items=[],
+            metadata={
+                "provenance": {
+                    "entities": [{"id": "a", "name": "Acme"}],
+                    "facts": ["Acme has 4321 staff"],
+                    "chunks": [{"id": "c1", "text": "Acme has 4321 staff."}],
+                }
+            },
+        )
+        card = {"id": "a", "name": "Acme", "label": "", "description": "4321 staff"}
+
+        async def boom(*a, **k):
+            raise RuntimeError("Query timed out")
+
+        monkeypatch.setattr(ops, "enrich_entities", lambda *a, **k: _const({"a": card}))
+        monkeypatch.setattr(ops, "expand_triples", lambda *a, **k: _const([]))
+        monkeypatch.setattr(ops, "chunk_documents", lambda *a, **k: _const({}))
+        monkeypatch.setattr(ops, failing, boom)
+        with pytest.raises(RuntimeError):
+            await toolkit.retrieve("How many staff does Acme have?")
+        assert len(toolkit.ledger) == 0
+        assert not (await toolkit.check_citations("Acme has 4321 staff [1].")).grounded
+
     async def test_an_empty_passage_gets_no_number(self, toolkit, rag, monkeypatch):
         rag.retrieve_result = RetrieverResult(
             items=[],

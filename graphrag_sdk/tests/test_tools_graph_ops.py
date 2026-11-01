@@ -292,7 +292,30 @@ async def test_expand_triples_gives_every_hop_a_share_of_the_cap():
 
     limits.clear()
     await ops.expand_triples(store, ["e1"], hops=5, cap=8)
-    assert limits == [5, 3]  # a small floor per hop, the rest rolls forward
+    assert limits == [1, 1, 2, 2, 2]  # every hop runs; the rest rolls forward
+
+
+async def test_expand_triples_runs_every_hop_on_a_small_cap():
+    limits: list[int] = []
+
+    def respond(cypher: str, params: dict) -> Any:
+        limits.append(params["limit"])
+        hop = len(limits)
+        return result(
+            [[f"N{hop}", "R", f"M{hop}-{i}", "", f"h{hop}-{i}", hop * 100 + i] for i in range(40)][
+                : params["limit"]
+            ]
+        )
+
+    store = FakeGraphStore([("r.src_name", respond)])
+    # retrieve's cap for top_k=2 is 8: all three hops must get rows.
+    triples = await ops.expand_triples(store, ["e1"], hops=3, cap=8)
+    assert len(limits) == 3 and all(limit > 0 for limit in limits)
+    assert sum(limits) == 8 and len(triples) == 8 and triples[-1]["source"] == "N3"
+
+    limits.clear()
+    await ops.expand_triples(store, ["e1"], hops=4, cap=2)
+    assert limits == [1, 1]  # the cap runs out before the last hops
 
 
 async def test_expand_triples_reads_table_edges_and_matches_seed_pairs_once():
@@ -300,8 +323,9 @@ async def test_expand_triples_reads_table_edges_and_matches_seed_pairs_once():
     await ops.expand_triples(store, ["e1", "e2"], hops=1)
     cypher = store.calls[0]["cypher"]
     # Edges written from tables carry no src_name/tgt_name: use the endpoints.
-    assert "coalesce(r.src_name, startNode(r).name) AS src" in cypher
-    assert "coalesce(r.tgt_name, endNode(r).name) AS tgt" in cypher
+    # Endpoints with no name (tables without a name column) show their id.
+    assert "coalesce(r.src_name, startNode(r).name, startNode(r).id) AS src" in cypher
+    assert "coalesce(r.tgt_name, endNode(r).name, endNode(r).id) AS tgt" in cypher
     assert "ORDER BY src, r.rel_type, tgt" in cypher
     # An edge between two seeds is matched from one side only.
     assert "(NOT b.id IN $ids OR a.id <= b.id)" in cypher

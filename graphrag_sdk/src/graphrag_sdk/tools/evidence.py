@@ -73,18 +73,41 @@ _FIGURE_RE = re.compile(r"\d+(?:[.,]\d+)*")
 _WORD_RE = re.compile(r"[^\W\d_][\w'’-]*")
 #: Sentences a check reports, at most, per kind.
 _MAX_FLAGGED = 10
+#: What the evidence is called when a sentence says it lacks something.
+_SOURCE = (
+    r"(?:the|these|this|those|my|our|any)\s+(?-i:[a-z]+\s+)?"
+    r"(?:knowledge graph|graph|evidence|sources?|context|data(?:set)?|documents?"
+    r"|records?|passages?|results?|facts?|search(?:es)?|lookups?|retrieval)"
+)
+_SAY = (
+    r"(?:say|mention|state|include|contain|cover|specify|give|list|show|answer|tell"
+    r"|indicate|describe|provide|name|identify|explain|confirm|reveal|have|hold)"
+)
 #: A sentence that says the evidence lacks something ("The graph does not say
-#: who founded Globex."). Saying so is honest, so it needs no citation.
+#: who founded Globex."). Saying so is honest, so it needs no citation. Only
+#: sentences about the evidence or a failed lookup count: a negative claim
+#: about the world ("Globex does not provide pensions.") still needs one.
 _GAP_RE = re.compile(
-    r"\b(?:not (?:found|mentioned|stated|given|listed|included|covered|specified|available)"
-    r"|not (?:in|part of) the (?:graph|evidence|data|documents?|sources?|passages?)"
-    r"|(?:does|do|did|is|are|was|were)(?: not|n['’]t) (?:say|mention|state|include|contain"
-    r"|cover|specify|give|list|show|answer|tell|indicate|describe|provide|name|identify"
-    r"|appear|mentioned|stated|given|listed|included|covered|specified|available)"
-    r"|(?:could|can|did)(?: not|n['’]t|not) (?:find|confirm|determine|tell|say)"
-    r"|no (?:information|evidence|mention|record|data|details?|source|passage|fact)s?\b"
-    r"|nothing (?:in|about|on)\b|not enough (?:information|evidence))",
-    re.I,
+    # The graph / the sources ... do not say, have no ..., none of them say.
+    rf"\b{_SOURCE}\s+(?-i:[a-z]+\s+)?(?:(?:does|do|did|is|are|was|were|has|have|had|can"
+    rf"|could)(?: not|n['’]t)\s+(?:be\s+)?{_SAY}"
+    r"|(?:has|have|had|holds?|contains?|gives?|provides?|returned|returns?|shows?)\s+no\b)"
+    rf"|\b(?:none|neither) of {_SOURCE}\s+{_SAY}"
+    # Not found / listed / mentioned in the graph.
+    rf"|\bnot\s+(?:\w+\s+){{0,2}}?(?:in|from|within|part of|among|by)\s+{_SOURCE}\b"
+    rf"|\bnothing\s+(?:in|from)\s+{_SOURCE}\b"
+    # A failed lookup: I could not find, could not be determined.
+    r"|\b(?:I|we)\s+(?:could|can|did|do)(?: not|n['’]t|not)\s+"
+    r"(?:find|locate|confirm|determine|verify|tell|see)\b"
+    r"|\b(?:I|we)\s+(?:found|find) (?:no|nothing)\b"
+    r"|\b(?:could|can)(?: not|n['’]t|not) be (?:found|determined|confirmed|verified)\b"
+    # No information about ... was found; not enough evidence.
+    r"|(?:^|[.!?]\s+)(?:there (?:is|are|was|were) )?no (?:information|evidence|mention"
+    r"|data|details?|records?|sources?|passages?|facts?|results?)\b"
+    r"|\bnot enough (?:information|evidence)"
+    # Who founded it is not stated.
+    r"|\bnot\s+(?:explicitly\s+)?(?:mentioned|stated|specified)\s*[.!]?\s*$",
+    re.I | re.M,
 )
 #: Trailing zeros of a decimal figure (``2.80``, ``40.0``), dropped before
 #: figures are compared.

@@ -496,9 +496,27 @@ class GraphRAGToolkit:
         prov: dict[str, Any] = rr.metadata.get("provenance") or {}
         found = list(dict.fromkeys(e["id"] for e in (prov.get("entities") or []) if e.get("id")))
         cards = await ops.enrich_entities(store, found)
-        # Only stored entities: the facts path names entities by a made-up id
-        # (the name, lower-cased) that matches no node.
+        # Only stored entities: a vector store that returns no endpoint ids
+        # leaves the facts path naming entities by a made-up id (the name,
+        # lower-cased) that matches no node.
         seed_ids = [eid for eid in found if eid in cards][: inp.top_k]
+        # Every query runs before any evidence is numbered, so a failing
+        # query leaves nothing citable that the agent was never shown.
+        triples = (
+            await ops.expand_triples(
+                store, seed_ids, hops=inp.expand_hops, cap=min(4 * inp.top_k, 40)
+            )
+            if "links" in wanted
+            else []
+        )
+        prov_chunks = (
+            [c for c in (prov.get("chunks") or []) if c.get("id")][: inp.top_k]
+            if inp.include_chunks
+            else []
+        )
+        doc_map = (
+            await ops.chunk_documents(store, [c["id"] for c in prov_chunks]) if prov_chunks else {}
+        )
 
         entities = []
         for seed_id in seed_ids:
@@ -516,13 +534,6 @@ class GraphRAGToolkit:
 
         relations = []
         shown: set[tuple[str, str, str]] = set()
-        triples = (
-            await ops.expand_triples(
-                store, seed_ids, hops=inp.expand_hops, cap=min(4 * inp.top_k, 40)
-            )
-            if "links" in wanted
-            else []
-        )
         for t in triples:
             text = f"{t['source']} -[{t['type']}]-> {t['target']}"
             if t["fact"]:
@@ -548,8 +559,6 @@ class GraphRAGToolkit:
         chunks: list[ChunkRef] = []
         documents: list[DocumentRef] = []
         if inp.include_chunks:
-            prov_chunks = [c for c in (prov.get("chunks") or []) if c.get("id")][: inp.top_k]
-            doc_map = await ops.chunk_documents(store, [c["id"] for c in prov_chunks])
             seen_docs: set[str] = set()
             for c in prov_chunks:
                 doc_id, doc_path = doc_map.get(c["id"], ("", c.get("document_path", "")))

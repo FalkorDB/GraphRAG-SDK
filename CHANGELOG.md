@@ -17,8 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `finalize` for agents allowed to write: wrap a `GraphRAG` in
   `GraphRAGToolkit(rag)`.
   The SDK runs no agent loop: your agent plans, calls the tools and writes
-  the answer. Every tool validates its input with a strict schema, runs
-  bounded (size and time limits), and returns a typed result
+  the answer. Every tool validates its input with a strict schema, caps its
+  result size (each database query it runs times out), and returns a typed result
   whose `to_llm_text()` stays under a fixed size (8,000 characters by
   default), shared across its sections so a long relation list cannot push
   out the passages; a cut section says how many items it omitted.
@@ -60,11 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RETRIEVAL_PATHS` (`relates`, `entity_cypher`, `entity_fulltext`,
   `expansion`, `chunks`), MultiPath's internal paths; the `retrieve` tool's
   agent-facing `paths` are `graphrag_sdk.tools.specs.RETRIEVE_PATHS`. An
-  empty plan or a failing router runs every path.
+  empty plan or a failing router runs every path, unless the latency budget
+  is exhausted. `enable_cypher` still runs its path whatever the plan.
 - **`ingest` and `finalize` are marked destructive** in their MCP
   annotations, so clients ask before running them. The MCP server keeps
-  every reply valid JSON within its size limit (evidence cut to fit cannot
-  be cited), and reports unexpected
+  every reply valid JSON within its size limit (evidence cut or shortened
+  to fit cannot be cited), and reports unexpected
   errors with a next step and with API keys and tokens masked.
 - `pip install "graphrag-sdk[all]"` includes the MCP server.
 - New example `graphrag_sdk/examples/12_agent_toolkit.py` and docs page

@@ -367,6 +367,11 @@ class TestGaps:
             "No information about Globex was found.",
             "Globex is not found in the graph.",
             "I could not find who audited Initech.",
+            "The sources do not say who founded Globex.",
+            "Globex's CEO John Smith is not listed in the graph.",
+            "None of the passages mention Globex's 2023 revenue.",
+            "There is no information on Globex's 2023 revenue.",
+            "Who founded Globex could not be determined.",
         ],
     )
     def test_a_sentence_stating_a_gap_needs_no_citation(self, sentence):
@@ -378,6 +383,21 @@ class TestGaps:
         assert not states_a_gap("Globex acquired Initech in 2019.")
         answer = "Initech was acquired in 2019 [1]. Globex paid 40 million."
         assert ground_answer(answer, contract_2019()).uncited == ["Globex paid 40 million."]
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "Globex does not provide pensions to its 40 employees.",
+            "The 2023 revenue of 500 million was not included in Acme's filing.",
+            "Globex is not listed on NASDAQ.",
+            "Acme did not include Initech in its 2019 report.",
+            "The sources say Globex does not provide pensions.",
+        ],
+    )
+    def test_a_negative_claim_about_the_world_needs_a_citation(self, sentence):
+        assert not states_a_gap(sentence)
+        g = ground_answer(f"Initech was acquired in 2019 [1]. {sentence}", contract_2019())
+        assert g.uncited == [sentence]
 
 
 def contract_2019() -> EvidenceLedger:

@@ -152,6 +152,57 @@ async def test_retrieve_on_chosen_paths(toolkit: GraphRAGToolkit):
     assert any(r.type == "WORKS_AT" for r in names.relations)
 
 
+async def test_links_walk_from_the_entities_facts_find(toolkit: GraphRAGToolkit):
+    # facts names its entities by their stored (typed) ids, so links can walk
+    # from them without a name search.
+    found = await toolkit.call(
+        "retrieve", {"question": "Who works at Acme Corp?", "paths": ["facts", "links"]}
+    )
+    assert found.entities and found.relations and not found.chunks
+    assert any(r.type == "WORKS_AT" for r in found.relations)
+
+
+async def test_multipath_expands_from_relates_seeds(toolkit: GraphRAGToolkit):
+    from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+
+    class Plan:
+        async def plan(self, query, ctx):
+            return {"relates", "expansion"}
+
+    rag = toolkit.rag
+    strategy = MultiPathRetrieval(
+        graph_store=rag._graph_store,
+        vector_store=rag._vector_store,
+        embedder=rag.embedder,
+        llm=rag.llm,
+        router=Plan(),
+    )
+    result = await strategy.search("Who works at Acme Corp?")
+    prov = result.metadata["provenance"]
+    stored = await rag._graph_store.query_raw("MATCH (e:__Entity__) RETURN collect(e.id)")
+    ids = set(stored.result_set[0][0])
+    assert prov["entities"] and all(e["id"] in ids for e in prov["entities"])
+    assert any("WORKS_AT" in r for r in prov["relationships"])
+
+
+async def test_links_show_endpoints_without_a_name(real_falkordb_rag_factory):
+    """Table rows mapped without a name column store no ``name``: links
+    shows them by id instead of dropping the edge."""
+    from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+    from graphrag_sdk.tools import graph_ops as ops
+
+    from .conftest import MockLLM
+
+    rag = real_falkordb_rag_factory(llm=MockLLM(), resolver=ExactMatchResolution())
+    store = rag._graph_store
+    await store.query_raw(
+        "CREATE (:__Entity__:Person {id: 'E-1'})-[:RELATES {rel_type: 'WORKS_AT'}]->"
+        "(:__Entity__:Organization {id: 'ORG-42', name: 'Acme Corp'})"
+    )
+    triples = await ops.expand_triples(store, ["ORG-42"], hops=1)
+    assert triples == [{"source": "E-1", "type": "WORKS_AT", "target": "Acme Corp", "fact": ""}]
+
+
 async def test_citations_across_calls(toolkit: GraphRAGToolkit):
     session = toolkit.new_session()
     found = await session.call(

@@ -36,7 +36,7 @@ async def search_relates_edges(
     Returns:
         fact_strings_with_scores: [("src -[type]-> tgt: fact_text", score), ...]
         entities: dict of entity_id -> {name, description} discovered
-                  from matched edge endpoints.
+                  from matched edge endpoints, keyed by stored entity id.
     """
     fact_strings: list[tuple[str, float]] = []
     entities: dict[str, dict] = {}
@@ -55,15 +55,15 @@ async def search_relates_edges(
                 if fact:
                     line += f": {fact}"
                 fact_strings.append((line, score))
-            # Add entities as graph entry points
-            if src:
-                src_id = src.strip().lower().replace(" ", "_")
-                if src_id not in entities:
-                    entities[src_id] = {"name": src, "description": ""}
-            if tgt:
-                tgt_id = tgt.strip().lower().replace(" ", "_")
-                if tgt_id not in entities:
-                    entities[tgt_id] = {"name": tgt, "description": ""}
+            # Add entities as graph entry points, by their stored ids (typed,
+            # e.g. "alice__person") so expansion can walk from them. A store
+            # that returns no ids gets ids made from the names.
+            for name, stored_id in ((src, rel.get("src_id")), (tgt, rel.get("tgt_id"))):
+                if not name:
+                    continue
+                eid = stored_id or name.strip().lower().replace(" ", "_")
+                if eid not in entities:
+                    entities[eid] = {"name": name, "description": ""}
     except LatencyBudgetExceededError:
         raise
     except Exception as exc:

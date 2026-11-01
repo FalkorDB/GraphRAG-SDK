@@ -228,6 +228,75 @@ class TestCallTool:
         assert json.loads(text)["truncated"] and 0 < len(shown) < 400
         assert sorted(ev.n for ev in toolkit.ledger.items) == [earlier.n, *shown]
 
+    async def test_evidence_shortened_in_a_reply_cannot_be_cited(self, server: GraphRAGMCPServer):
+        from pydantic import BaseModel
+
+        from graphrag_sdk.tools.evidence import ground_answer
+
+        class Found(BaseModel):
+            note: dict
+            passages: list[dict]
+
+        toolkit = server.toolkit
+        short = "Acme has 12 offices."
+
+        async def call(name: str, arguments: dict) -> Any:
+            body = "filler about the plant. " * 2000 + "The plant employs 7000 workers."
+            long = [toolkit.ledger.add(tool="retrieve", kind="passage", content=body)]
+            kept = toolkit.ledger.add(tool="retrieve", kind="passage", content=short)
+            return Found(
+                note={"n": kept.n, "text": short},
+                passages=[{"n": ev.n, "text": ev.content} for ev in long],
+            )
+
+        toolkit.call = call  # type: ignore[method-assign]
+        text, _ = await server.call_tool("retrieve", {"question": "q"})
+        out = json.loads(text)
+        cut = out["passages"][0]
+        assert out["truncated"] and "7000" not in cut["text"]
+        # The shortened passage is gone from the session; the one shown whole stays.
+        assert [ev.n for ev in toolkit.ledger.items] == [out["note"]["n"]]
+        assert not ground_answer(
+            f"The plant employs 7000 workers [{cut['n']}].", toolkit.ledger
+        ).grounded
+        assert ground_answer(f"Acme has 12 offices [{out['note']['n']}].", toolkit.ledger).grounded
+
+    async def test_a_cut_status_list_makes_the_status_uncitable(self, server: GraphRAGMCPServer):
+        from pydantic import BaseModel
+
+        class Status(BaseModel):
+            n: int
+            entity_types: list[dict]
+            hint: str | None = None
+
+        toolkit = server.toolkit
+
+        async def call(name: str, arguments: dict) -> Any:
+            types = [{"label": f"Type{i}" * 20, "count": i} for i in range(400)]
+            ev = toolkit.ledger.add(tool="status", kind="status", content=str(types))
+            return Status(n=ev.n, entity_types=types, hint="Graph is ready.")
+
+        toolkit.call = call  # type: ignore[method-assign]
+        text, _ = await server.call_tool("status", {})
+        assert json.loads(text)["truncated"] and len(toolkit.ledger) == 0
+
+    async def test_a_reply_that_fits_keeps_its_evidence(self, server: GraphRAGMCPServer):
+        from pydantic import BaseModel
+
+        class Status(BaseModel):
+            n: int
+            hint: str | None = None
+
+        toolkit = server.toolkit
+
+        async def call(name: str, arguments: dict) -> Any:
+            ev = toolkit.ledger.add(tool="status", kind="status", content="3 entities")
+            return Status(n=ev.n, hint="Graph is ready.")
+
+        toolkit.call = call  # type: ignore[method-assign]
+        text, _ = await server.call_tool("status", {})
+        assert "truncated" not in json.loads(text) and len(toolkit.ledger) == 1
+
     async def test_read_only_write_is_an_error(self):
         server = GraphRAGMCPServer(FakeRAG(), read_only=True)
         text, is_error = await server.call_tool("ingest", {"text": "x"})

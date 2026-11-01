@@ -260,9 +260,6 @@ def fact_body(fact: str, rel_type: str) -> str:
     return fact
 
 
-_MIN_HOP_SHARE = 5
-
-
 async def expand_triples(
     store: Any,
     seed_ids: list[str],
@@ -280,9 +277,11 @@ async def expand_triples(
     so walking back along them cannot use up a hop's budget, and an edge
     between two frontier entities is matched once, not twice.
 
-    Each hop gets an even share of what is left of ``cap`` (at least a few
-    rows), so the first hop cannot use up the whole cap; whatever a hop does
-    not use rolls forward to the next. ``per_hop_limit`` caps a hop further.
+    Each hop gets an even share of what is left of ``cap`` (at least one
+    row), so the first hop cannot use up the whole cap and every requested
+    hop gets to run; whatever a hop does not use rolls forward to the next.
+    ``per_hop_limit`` caps a hop further. An endpoint with no ``name`` is
+    shown by its stored id.
     """
     triples: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
@@ -294,7 +293,7 @@ async def expand_triples(
         left = cap - len(triples)
         if not frontier or left <= 0:
             break
-        limit = max(left // (hops - hop), min(_MIN_HOP_SHARE, left))
+        limit = max(1, left // (hops - hop))
         if per_hop_limit is not None:
             limit = min(limit, per_hop_limit)
         result = await _read(
@@ -302,8 +301,8 @@ async def expand_triples(
             "MATCH (a:__Entity__)-[r:RELATES]-(b:__Entity__) "
             "WHERE a.id IN $ids AND NOT ID(r) IN $seen_edges "
             "AND (NOT b.id IN $ids OR a.id <= b.id) "
-            "WITH r, b, coalesce(r.src_name, startNode(r).name) AS src, "
-            "coalesce(r.tgt_name, endNode(r).name) AS tgt "
+            "WITH r, b, coalesce(r.src_name, startNode(r).name, startNode(r).id) AS src, "
+            "coalesce(r.tgt_name, endNode(r).name, endNode(r).id) AS tgt "
             "RETURN src, r.rel_type, tgt, "
             "coalesce(r.fact, r.description, ''), b.id, ID(r) "
             "ORDER BY src, r.rel_type, tgt "

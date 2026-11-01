@@ -116,16 +116,19 @@ def _shorten_strings(value: Any, limit: int) -> Any:
     return value
 
 
-def _evidence_numbers(data: Any) -> Iterator[int]:
-    """Every evidence number (``n``) in a result, at any depth."""
+def _evidence_payloads(data: Any, top: bool = True) -> Iterator[tuple[int, Any]]:
+    """Every evidence number (``n``) in a result, at any depth, with the
+    object that carries it. The top level's ``hint`` and ``truncated``, which
+    ``fit_json`` rewrites, are left out."""
     if isinstance(data, dict):
         if isinstance(data.get("n"), int):
-            yield data["n"]
+            skip = ("hint", "truncated") if top else ()
+            yield data["n"], {k: v for k, v in data.items() if k not in skip}
         for value in data.values():
-            yield from _evidence_numbers(value)
+            yield from _evidence_payloads(value, False)
     elif isinstance(data, list):
         for value in data:
-            yield from _evidence_numbers(value)
+            yield from _evidence_payloads(value, False)
 
 
 def fit_json(data: dict[str, Any], max_chars: int = MAX_RESULT_CHARS) -> str:
@@ -489,10 +492,13 @@ class GraphRAGMCPServer:
         text = fit_json(data)
         fitted = json.loads(text) if '"truncated": true' in text else None
         if fitted is not None and fitted.get("truncated") is True:
-            # Evidence this call cut from the reply was never seen: not citable.
-            shown = set(_evidence_numbers(fitted))
+            # Evidence this call cut from the reply, or shortened, was never
+            # seen in full: not citable. Only an item shown unchanged stays.
+            shown = dict(_evidence_payloads(fitted))
             toolkit.ledger.discard(
-                n for n in _evidence_numbers(data) if n >= first and n not in shown
+                n
+                for n, payload in _evidence_payloads(data)
+                if n >= first and shown.get(n) != payload
             )
         return text, False
 
