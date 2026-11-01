@@ -87,6 +87,7 @@ from graphrag_sdk.ingestion.ingestion_planner import (
     build_chunker,
     build_extractor,
     build_resolver,
+    merge_plan_limits,
     with_chunk_budget,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
@@ -2246,9 +2247,10 @@ class GraphRAG:
             plan_limits: The options the default LLM planner may pick, as
                 keyword arguments for ``LLMIngestionPlanner`` (``chunkers``,
                 ``extractors``, ``resolvers``, ``max_llm_pairs``,
-                ``tune_params``, ``max_chunks``). Default
-                ``CHEAP_PLAN_LIMITS``; ``max_chunks`` stays 1000 unless given
-                (``None`` removes it). Passing it turns ``auto`` on; not
+                ``tune_params``, ``max_chunks``), merged over
+                ``CHEAP_PLAN_LIMITS``: a key you leave out keeps its cheap
+                value (``max_chunks`` stays 1000 unless given; ``None``
+                removes it). Passing it turns ``auto`` on; not
                 combined with ``planner``, which carries its own limits.
             max_concurrency: Max parallel ingestions (list source only).
             ctx: Execution context.
@@ -2279,15 +2281,12 @@ class GraphRAG:
                     f"planner must be an instance with an async plan() method, got {planner!r}"
                 )
             auto = True
-            self._planned_ingest = True
         elif plan_limits is not None or auto:
             auto = True
-            self._planned_ingest = True
             # The document sample is in the planner's prompt, so its options
             # are the caller's ceiling, never the document's: cheap unless
             # plan_limits allows more.
-            limits = dict(CHEAP_PLAN_LIMITS if plan_limits is None else plan_limits)
-            limits.setdefault("max_chunks", CHEAP_PLAN_LIMITS["max_chunks"])
+            limits = merge_plan_limits(plan_limits)
             try:
                 planner = LLMIngestionPlanner(self.llm, **limits)
             except TypeError as exc:
@@ -2404,6 +2403,11 @@ class GraphRAG:
         # Catches dim/model mismatches up-front instead of mid-ingest, where
         # FalkorDB would reject vectors with a less-actionable error.
         await self._validate_graph_config()
+
+        # Set past the structured branch: a table is never planned, so it must
+        # not make update() warn about a plan it cannot reuse.
+        if auto:
+            self._planned_ingest = True
 
         # ── Dispatch ──
         if isinstance(source, list):
@@ -3805,16 +3809,21 @@ class GraphRAG:
             _raise_load_failure(load_error)
         try:
             # The planner gets what is left of the latency budget; running out
-            # raises as an exhausted budget does everywhere else.
+            # raises as an exhausted budget does everywhere else. A
+            # TimeoutError the planner raises itself is an ordinary planner
+            # failure, so the budget is enforced by asyncio.wait, not wait_for.
             remaining = ctx.remaining_budget_seconds if ctx is not None else None
+            task = asyncio.ensure_future(active.plan(sample_text, source=source, ctx=ctx))
             try:
-                plan = await asyncio.wait_for(
-                    active.plan(sample_text, source=source, ctx=ctx), remaining
-                )
-            except asyncio.TimeoutError:
+                done, _ = await asyncio.wait({task}, timeout=remaining)
+            finally:
+                if not task.done():
+                    task.cancel()
+            if not done:
                 raise LatencyBudgetExceededError(
                     "Latency budget exceeded while the ingestion planner was running"
-                ) from None
+                )
+            plan = task.result()
             if plan is None:
                 raise ValueError("planner returned no plan")
             if not isinstance(plan, IngestionPlan):

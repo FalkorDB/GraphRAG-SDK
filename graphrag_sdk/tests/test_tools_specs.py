@@ -124,7 +124,8 @@ def test_ingest_description_lists_the_allowed_plan_options_and_their_cost():
     assert "gliner (local model, no extra LLM call)" in options
     assert "llm_verified" not in options and "contextual" not in options
     assert "Every chunk also costs one extraction LLM call" in options
-    assert "cheap defaults" in options and "over 1000 chunks" in options
+    assert "get the default (sentence / gliner / exact)" in options
+    assert "first allowed option" in options and "over 1000 chunks" in options
     wide = next(
         s
         for s in specs(
@@ -140,8 +141,26 @@ def test_ingest_description_lists_the_allowed_plan_options_and_their_cost():
     options = wide.description.split("Plan options allowed")[1]
     assert "contextual (+1 LLM call per chunk, each sending the whole document)" in options
     assert "llm (+1 LLM call per chunk)" in options
-    assert "llm_verified (up to 40 LLM pair checks per entity type)" in options
-    assert "chunks fails" not in options  # no max_chunks given
+    assert "llm_verified (up to 40 LLM pair checks per entity type, plus up to 200" in options
+    assert "each asked twice" in options and "LLM summary" in options
+    assert "over 1000 chunks" in options  # max_chunks left out keeps the cheap ceiling
+
+
+def test_an_unset_pair_ceiling_renders_the_resolver_maximum():
+    ingest = next(
+        s
+        for s in specs(plan_limits={"resolvers": ("llm_verified",), "max_llm_pairs": None})
+        if s.name == "ingest"
+    )
+    assert "up to 5000 LLM pair checks" in ingest.description
+    assert "None" not in ingest.description
+
+
+def test_a_partial_plan_limits_lists_the_cheap_rest():
+    ingest = next(s for s in specs(plan_limits={"extractors": ("llm",)}) if s.name == "ingest")
+    options = ingest.description.split("Plan options allowed")[1]
+    assert "extractor: llm (" in options
+    assert "resolver: exact (no LLM call)" in options and "llm_verified" not in options
 
 
 def test_ingest_offers_files_only_with_a_files_root():
@@ -151,6 +170,9 @@ def test_ingest_offers_files_only_with_a_files_root():
     assert "$defs" not in text_only.input_schema
     assert "files root" not in text_only.description
     assert "Plan options" not in text_only.description
+    reextract = text_only.input_schema["properties"]["reextract"]["description"]
+    assert "document_id" in reextract
+    assert "file" not in reextract and "plan" not in reextract
     with_files = next(s for s in specs(files=True) if s.name == "ingest")
     assert {"files", "plan"} <= set(with_files.input_schema["properties"])
     assert "files root" in with_files.description

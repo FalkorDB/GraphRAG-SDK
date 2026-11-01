@@ -19,17 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first rule matching its path. Paths stay inside the root and are read under
   their real on-disk spelling (symlinks resolved), so two spellings of one
   file, or a link and its target, ingest as one document; a file's document id
-  is that path relative to the root (`reports/q1.pdf`). Each file is opened
-  folder by folder without following symlinks (`O_NOFOLLOW`, and `O_NONBLOCK`
-  so a FIFO cannot block), checked with `fstat` to be a regular file, and read
-  from that open handle, so a symlink swapped in after the check cannot read
-  outside the root. `preview_files` reads only a window around the middle of
-  each file (a few pages of a PDF), marks estimated lengths
-  (`chars_estimated`) and shortens a page to fit the result size, with
-  `next_offset` naming the first file left out; `ingest` refuses files over
-  `max_file_bytes` (default 50 MiB). The `files` and `plan` arguments are
-  offered only when a files root is set, and each `files` entry is capped at
-  1,024 characters.
+  is `file:` and that path relative to the root (`file:reports/q1.pdf`). On
+  POSIX each file is opened folder by folder without following symlinks
+  (`O_NOFOLLOW`, and `O_NONBLOCK` so a FIFO cannot block), from a root checked
+  to be the folder recorded at start, checked with `fstat` to be a regular
+  file, and read from that open handle, so a symlink swapped in after the
+  check cannot read outside the root. On Windows the path is checked under the
+  root and then reopened by name, so this guarantee is POSIX-only.
+  `preview_files` reads only a window around the middle of each file (a few
+  pages of a PDF), marks estimated lengths (`chars_estimated`) and shortens a
+  page to fit the result size, with `next_offset` naming the first file left
+  out; `ingest` refuses files over `max_file_bytes` (default 50 MiB). The
+  `files` and `plan` arguments are offered only when a files root is set, and
+  each `files` entry is capped at 1,024 characters.
 - **Agent plans stay cheap.** Plan choices are limited by `plan_limits`
   (default `CHEAP_PLAN_LIMITS`: sentence, fixed or structural chunking, GLiNER
   extraction, exact resolution, and at most 1,000 chunks per file); anything
@@ -37,11 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   description and the server's guide tell the agent what each allowed option
   costs (`contextual`: +1 LLM call per chunk, each sending the whole document;
   `llm` extractor: +1 LLM call per chunk; `llm_verified`: up to `max_llm_pairs`
-  LLM pair checks per entity type), so it chooses per file within the limits.
+  LLM pair checks per entity type, plus up to 200 cross-type checks asked
+  twice and description summaries), so it chooses per file within the limits.
 - **`GraphRAG.ingest(auto=True)` is cheap by default.** Without `plan_limits`,
   the default `LLMIngestionPlanner` may pick only `CHEAP_PLAN_LIMITS`, with
   `max_chunks=1000`; pass `plan_limits={...}` (which turns `auto` on) to allow
-  contextual chunking, the `llm` extractor or `llm_verified` resolution.
+  contextual chunking, the `llm` extractor or `llm_verified` resolution. It is
+  merged over `CHEAP_PLAN_LIMITS` (in `GraphRAGToolkit(plan_limits=...)` too): a
+  key left out keeps its cheap value.
   `plan_limits` and `planner` together raise `ValueError`. The planner prompt
   quotes the document sample in a `<document>` block marked as data, whose
   instructions are to be ignored. `CHEAP_PLAN_LIMITS` (read-only) and
@@ -70,8 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restart the plan's `reason` says none was remembered. A file already in the
   graph whose content changed goes through `update()` (`status: "updated"`)
   instead of adding new chunks beside the old ones. Updates run one at a time
-  across every session of a toolkit. Text re-extraction refuses a document
-  read from a file, so text cannot overwrite it.
+  across every session of a toolkit. Text ingest and re-extraction refuse a
+  document read from a file, so text cannot overwrite or extend it: a text's
+  `document_id` cannot start with `file:`, even without a files root.
 - **`set_ontology` is atomic across sessions**: its load, merge and write run
   under one lock, an ontology given to `GraphRAG(...)` and not registered yet
   is registered first, and the extractor's ontology is refreshed from the

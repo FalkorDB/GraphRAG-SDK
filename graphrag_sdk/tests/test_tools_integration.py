@@ -415,6 +415,7 @@ async def test_agent_ingests_a_folder(real_falkordb_rag_factory, tmp_path):
     docs = {d.path: d for d in first.documents}
     assert [d.status for d in first.documents] == ["ingested", "ingested"]
     assert docs["notes/aspirin.md"].plan["chunker"] == "structural"
+    assert docs["notes/aspirin.md"].document_id == "file:notes/aspirin.md"
     assert docs["reports/ibuprofen.txt"].plan["chunker"] == "fixed"
     # Extraction is told the declared types, so COX1 is kept as Unknown and
     # its relation type is dropped: both point at what the ontology misses.
@@ -475,6 +476,64 @@ async def test_agent_ingestion_respects_the_root(real_falkordb_rag_factory, tmp_
         await GraphRAGToolkit(rag, files_root=root, read_only=True).call(
             "ingest", {"files": ["*.md"]}
         )
+
+
+async def test_file_documents_have_file_ids_text_cannot_take(real_falkordb_rag_factory, tmp_path):
+    from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "aspirin.md").write_text(FOLDER["notes/aspirin.md"])
+    rag = real_falkordb_rag_factory(llm=_routing_llm(), resolver=ExactMatchResolution())
+    tk = GraphRAGToolkit(rag, files_root=tmp_path, plan_limits=OFFLINE_LIMITS)
+    plan = [{"match": "*"}]
+    first = await tk.call("ingest", {"files": ["notes/aspirin.md"], "plan": plan})
+    assert first.documents[0].document_id == "file:notes/aspirin.md"
+    record = await rag._graph_store.get_document_record("file:notes/aspirin.md")
+    assert record is not None and record.path == "notes/aspirin.md"  # no host path stored
+    chunks = sorted(await rag._graph_store.get_document_chunk_ids("file:notes/aspirin.md"))
+    assert chunks
+
+    # The same file again is unchanged.
+    again = await tk.call("ingest", {"files": ["notes/aspirin.md"], "plan": plan})
+    assert [(d.status, d.document_id) for d in again.documents] == [
+        ("unchanged", "file:notes/aspirin.md")
+    ]
+
+    # Text cannot take a file's id, with or without a files root.
+    text_only = GraphRAGToolkit(rag, plan_limits=OFFLINE_LIMITS)
+    for toolkit_ in (tk, text_only):
+        for reextract in (True, False):
+            with pytest.raises(ToolError, match="starts with 'file:'") as err:
+                await toolkit_.call(
+                    "ingest",
+                    {
+                        "text": "Other text.",
+                        "document_id": "file:notes/aspirin.md",
+                        "reextract": reextract,
+                    },
+                )
+            assert "ingest(files=[...], reextract=true)" in (err.value.hint or "")
+
+    # Text under the file's path is a document of its own; the file's is untouched.
+    memo = await tk.call(
+        "ingest", {"text": "Ibuprofen treats fever.", "document_id": "notes/aspirin.md"}
+    )
+    assert memo.status == "ingested" and memo.document_id == "notes/aspirin.md"
+    after = await rag._graph_store.get_document_record("file:notes/aspirin.md")
+    assert after is not None and after.content_hash == record.content_hash
+    assert sorted(await rag._graph_store.get_document_chunk_ids("file:notes/aspirin.md")) == chunks
+    assert (await tk.call("status", {})).documents == 2
+
+    # A changed file re-extracted is replaced under the same id.
+    (tmp_path / "notes" / "aspirin.md").write_text("# Aspirin\n\nAspirin treats headache.")
+    redo = await tk.call("ingest", {"files": ["notes/aspirin.md"], "reextract": True})
+    assert [(d.status, d.document_id) for d in redo.documents] == [
+        ("reextracted", "file:notes/aspirin.md")
+    ]
+    replaced = await rag._graph_store.get_document_record("file:notes/aspirin.md")
+    assert replaced is not None and replaced.content_hash != record.content_hash
+    assert replaced.path == "notes/aspirin.md"
+    assert (await tk.call("status", {})).documents == 2
 
 
 async def test_read_tools_on_a_fresh_graph_create_no_keys(real_falkordb_rag_factory):

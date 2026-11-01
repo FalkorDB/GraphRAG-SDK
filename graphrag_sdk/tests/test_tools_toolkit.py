@@ -42,6 +42,9 @@ class FakeStore:
             raise self.error
         return FakeResult(self.rows, self.header)
 
+    async def get_document_record(self, document_id: str):
+        return None  # no stored document: text ingest is never refused
+
 
 class FakeRAG:
     def __init__(self, store: FakeStore | None = None):

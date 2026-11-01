@@ -121,7 +121,8 @@ class SentenceTokenCapChunking(ChunkingStrategy):
                     metadata={
                         "strategy": "sentence_token_cap",
                         "max_tokens": self.max_tokens,
-                        "overlap_sentences": self.overlap_sentences,
+                        # Sentences the next chunk repeats; set below.
+                        "overlap_sentences": 0,
                         "token_count": buf_tokens,
                         "sentence_count": len(buf),
                         "char_count": len(chunk_text),
@@ -145,6 +146,7 @@ class SentenceTokenCapChunking(ChunkingStrategy):
                     kept += 1
                 overlap = kept
             start = max(j - overlap, start + 1)
+            chunks[-1].metadata["overlap_sentences"] = j - start
 
         ctx.log(f"SentenceTokenCapChunking produced {len(chunks)} chunks")
         return TextChunks(chunks=chunks)

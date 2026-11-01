@@ -2,9 +2,12 @@
 # The ingestion tools read only files below one root the server operator
 # chose. Paths from the agent are relative; absolute paths, ".." and symlinks
 # that leave the root are refused, and hidden files and folders are skipped.
+# That a file is read from under the root even if the folder changes during
+# the read is guaranteed on POSIX only (see open_confined).
 
 from __future__ import annotations
 
+import errno
 import io
 import os
 import stat
@@ -38,6 +41,12 @@ _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _BINARY = getattr(os, "O_BINARY", 0)
 #: Open each path component relative to its folder, never following a symlink.
 _FD_WALK = bool(_NOFOLLOW and _DIRECTORY) and os.open in os.supports_dir_fd
+#: What opening a path refused because it is gone, not a folder, or a symlink
+#: (``O_NOFOLLOW`` fails with ``ELOOP``, or ``EMLINK`` on FreeBSD).
+_GONE_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.EMLINK})
+#: ``(st_dev, st_ino)`` of each files root, recorded when it is resolved, so a
+#: root folder replaced afterwards (or moved behind a symlink) is refused.
+_ROOT_IDS: dict[Path, tuple[int, int]] = {}
 
 
 def resolve_root(root: str | os.PathLike[str]) -> Path:
@@ -57,6 +66,8 @@ def resolve_root(root: str | os.PathLike[str]) -> Path:
             f"files_root {str(root)!r} is the filesystem root or the home folder; "
             "choose the folder that holds the documents"
         )
+    info = path.stat()
+    _ROOT_IDS[path] = (info.st_dev, info.st_ino)
     return path
 
 
@@ -301,23 +312,69 @@ def _gone(rel: str) -> ToolError:
     )
 
 
+def _open_failed(rel: str, exc: OSError) -> ToolError:
+    if exc.errno in _GONE_ERRNOS:
+        return _gone(rel)
+    if exc.errno in (errno.EACCES, errno.EPERM):
+        return ToolError(
+            f"{rel!r} cannot be read: permission denied.",
+            hint="Ask the server operator to make the file readable, or leave it out.",
+        )
+    return ToolError(f"{rel!r} could not be opened: {exc.strerror or exc}.")
+
+
+def _root_replaced() -> ToolError:
+    return ToolError(
+        "The files root is no longer the folder it was when the server started; "
+        "nothing is read from it.",
+        hint="Ask the server operator to restart it with the intended files_root.",
+    )
+
+
+def _open_root(root: Path) -> int:
+    """``root`` opened as a folder, refused if it is a symlink now or not the
+    folder :func:`resolve_root` recorded (a folder above it swapped for a
+    symlink leads elsewhere)."""
+    try:
+        folder = os.open(root, os.O_RDONLY | _DIRECTORY | _NOFOLLOW)
+    except OSError as exc:
+        if exc.errno not in _GONE_ERRNOS:
+            raise
+        raise _root_replaced() from None
+    try:
+        info = os.fstat(folder)
+        if _ROOT_IDS.setdefault(root, (info.st_dev, info.st_ino)) != (info.st_dev, info.st_ino):
+            raise _root_replaced()
+    except BaseException:
+        os.close(folder)
+        raise
+    return folder
+
+
 def open_confined(root: Path, rel: str, max_bytes: int | None = None) -> BinaryIO:
     """The file ``rel`` under ``root``, opened for reading after checking it is still there.
 
-    Each folder on the way is opened relative to the one above it and nothing
-    is followed through a symlink (``O_NOFOLLOW``), so a symlink swapped in
-    after the paths were validated cannot lead outside the root; ``fstat`` on
-    the open file then checks it is a regular file (not a FIFO or a device,
-    opened with ``O_NONBLOCK`` so it cannot block) within ``max_bytes``. The
-    caller reads that same open file. ``rel`` must be canonical (see
-    :func:`canonical_file`). Blocking: call it from a worker thread.
+    On POSIX the root is opened without following a symlink and checked to be
+    the folder :func:`resolve_root` recorded; each folder on the way is then
+    opened relative to the one above it, again without following a symlink
+    (``O_NOFOLLOW``), so a symlink swapped in after the paths were validated
+    cannot lead outside the root. ``fstat`` on the open file then checks it is
+    a regular file (not a FIFO or a device, opened with ``O_NONBLOCK`` so it
+    cannot block) within ``max_bytes``. The caller reads that same open file.
+    ``rel`` must be canonical (see :func:`canonical_file`).
+
+    Without ``dir_fd`` support (Windows) the path is resolved, checked to be
+    under the root and then reopened by name, so a symlink or junction
+    swapped in between the check and the open is followed: there, the
+    guarantee that nothing outside the root is read does not hold against a
+    folder changed during the read. Blocking: call it from a worker thread.
     """
     pure = PurePosixPath(rel)
     if pure.is_absolute() or not pure.parts or ".." in pure.parts:
         raise _gone(rel)
     try:
         if _FD_WALK:
-            folder = os.open(root, os.O_RDONLY | _DIRECTORY)
+            folder = _open_root(root)
             try:
                 for name in pure.parts[:-1]:
                     inner = os.open(name, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=folder)
@@ -331,8 +388,8 @@ def open_confined(root: Path, rel: str, max_bytes: int | None = None) -> BinaryI
             if not _inside(root, real):
                 raise _gone(rel)
             fd = os.open(real, os.O_RDONLY | _BINARY | _NONBLOCK)
-    except OSError:
-        raise _gone(rel) from None
+    except OSError as exc:
+        raise _open_failed(rel, exc) from None
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
@@ -442,9 +499,13 @@ def sample_file(path: Path, max_chars: int) -> tuple[str, int, bool]:
     """``(sample, chars, estimated)``: a middle sample of a file, read in part.
 
     Text files are read only in a window around their middle (about
-    ``4 * max_chars`` bytes) and PDFs only in a few middle pages, so a huge
-    file costs no more than a small one. ``chars`` is the text length,
-    estimated from the part read when ``estimated`` is True.
+    ``4 * max_chars`` bytes), so a huge one costs no more than a small one.
+    PDFs are sampled from a few middle pages, but PyMuPDF loads the whole
+    file into memory (pypdf reads only the pages asked for). This function
+    sets no size cap; :func:`sample_confined`, which the tools use, refuses a
+    PDF above ``max_file_bytes`` first, so its memory is unbounded only when
+    that cap is ``None``. ``chars`` is the text
+    length, estimated from the part read when ``estimated`` is True.
     Blocking: call it from a worker thread in async code.
     """
     with path.open("rb") as fh:

@@ -500,7 +500,7 @@ class FakeRAG:
     _chunk_budget = staticmethod(GraphRAG._chunk_budget)
 
     # ingest
-    def _result(self, path: str, plan: dict | None) -> IngestionResult:
+    def _result(self, path: str, plan: dict | None, uid: str | None = None) -> IngestionResult:
         name = os.path.basename(path)
         meta: dict[str, Any] = {"pruned": self.pruned.get(name, {})}
         if plan is not None:
@@ -508,7 +508,7 @@ class FakeRAG:
         if name in self.unchanged:
             meta["skipped_unchanged"] = True
         return IngestionResult(
-            document_info=DocumentInfo(uid=path),
+            document_info=DocumentInfo(uid=uid or path),
             nodes_created=0 if name in self.unchanged else 2,
             relationships_created=0 if name in self.unchanged else 1,
             chunks_indexed=0 if name in self.unchanged else 1,
@@ -521,25 +521,12 @@ class FakeRAG:
             res = self._result(document_id or "doc", None)
             res.metadata["pruned"] = self.pruned.get("text", {})
             return res
-        self.calls.append(("ingest_files", list(source)))
-        out: list[Any] = []
-        for path in source:
-            if os.path.basename(path) in self.fail:
-                out.append(LoaderError(f"cannot read {path}"))
-                continue
-            p = await planner.plan(None, source=path)
-            out.append(
-                self._result(
-                    path,
-                    {
-                        "chunker": p.chunker,
-                        "extractor": p.extractor,
-                        "resolver": p.resolver,
-                        "reason": p.reason,
-                    },
-                )
-            )
-        return out
+        self.calls.append(("ingest_file", (source, document_id)))
+        if os.path.basename(source) in self.fail:
+            raise LoaderError(f"cannot read {source}")
+        p = await planner.plan(None, source=source)
+        plan = {"chunker": p.chunker, "extractor": p.extractor, "resolver": p.resolver}
+        return self._result(source, {**plan, "reason": p.reason}, document_id)
 
     async def update(
         self,
@@ -560,7 +547,7 @@ class FakeRAG:
         self.update_strategies = (loader, chunker, extractor, resolver)
         if os.path.basename(key) in self.fail:
             raise RuntimeError("update failed")
-        base = self._result(key, None)
+        base = self._result(key, None, document_id)
         if text is not None:
             base.metadata["pruned"] = self.pruned.get("text", {})
         no_op = not force and os.path.basename(key) in self.unchanged
@@ -622,6 +609,19 @@ class TestToolkitConfig:
         with pytest.raises(ValueError):
             toolkit(FakeRAG(), plan_limits={"chunkers": ("semantic",)})
 
+    def test_partial_plan_limits_keep_the_cheap_rest(self):
+        tk = toolkit(
+            FakeRAG(),
+            plan_limits={"chunkers": ("sentence", "contextual"), "extractors": ("gliner", "llm")},
+        )
+        assert tk._plan_limits == {
+            **CHEAP_PLAN_LIMITS,
+            "chunkers": ("sentence", "contextual"),
+            "extractors": ("gliner", "llm"),
+        }
+        assert tk._plan_limits["resolvers"] == ("exact",)
+        assert tk._plan_limits["max_llm_pairs"] == 0
+
     async def test_read_only_refuses_every_ingestion_tool(self, corpus):
         tk = toolkit(FakeRAG(), corpus, read_only=True)
         assert {"preview_files", "set_ontology", "ingest"}.isdisjoint(
@@ -677,6 +677,7 @@ class TestPreviewFiles:
         (corpus / "broken.pdf").write_bytes(b"not a pdf")
         bad = await tk.preview_files("*.pdf")
         assert bad.total == 1 and bad.files[0].error
+        assert bad.files[0].size_bytes == len(b"not a pdf")  # known even when sampling fails
         with pytest.raises(ToolError, match="outside"):
             await tk.preview_files("../*")
 
@@ -969,7 +970,7 @@ class TestFileErrorsAreRedacted:
         secret = self.SECRET
 
         async def ingest(source=None, **kw):
-            return [RuntimeError(f"Pipeline failed: {secret}") for _ in source]
+            raise RuntimeError(f"Pipeline failed: {secret}")
 
         rag.ingest = ingest
         result = await toolkit(rag, corpus).ingest(files=["notes/b.md"])
@@ -987,7 +988,7 @@ class TestFileErrorsAreRedacted:
         rag = FakeRAG()
 
         async def ingest(source=None, **kw):
-            return [error for _ in source]
+            raise error
 
         rag.ingest = ingest
         result = await toolkit(rag, corpus).ingest(files=["notes/b.md"])
@@ -1001,7 +1002,7 @@ class TestFileErrorsAreRedacted:
         budget = planner_mod.ChunkBudgetExceededError("The document makes 900 chunks")
 
         async def ingest(source=None, **kw):
-            return [LoaderError(f"Failed to read {secret}"), budget]
+            raise budget if source.endswith("b.md") else LoaderError(f"Failed to read {secret}")
 
         rag.ingest = ingest
         result = await toolkit(rag, corpus).ingest(files=["notes/a.md", "notes/b.md"])
@@ -1056,9 +1057,10 @@ class TestIngestFiles:
             },
         )
         wanted = ("notes/a.md", "notes/b.md", "reports/2024/q1.txt")
-        # Document ids are paths relative to the files root.
-        assert rag.calls[0] == ("ingest_files", list(wanted))
+        # Document ids are "file:" and the path relative to the files root.
+        assert rag.calls == [("ingest_file", (p, f"file:{p}")) for p in wanted]
         docs = {d.path: d for d in result.documents}
+        assert [d.document_id for d in result.documents] == [f"file:{p}" for p in wanted]
         assert docs["notes/a.md"].plan["chunker"] == "structural"
         # extractor "llm" is outside the cheap limits, so it was restricted.
         assert docs["reports/2024/q1.txt"].plan["extractor"] == "gliner"
@@ -1298,11 +1300,9 @@ class TestIngestFiles:
         ingest = rag.ingest
 
         async def failing(source=None, **kw):
-            out = await ingest(source, **kw)
-            return [
-                IngestionError("write failed") if str(p).endswith("b.md") else r
-                for p, r in zip(source, out)
-            ]
+            if source.endswith("b.md"):
+                raise IngestionError("write failed")
+            return await ingest(source, **kw)
 
         rag.ingest = failing
         result = await toolkit(rag, corpus, finalize_policy="on_write").ingest(files=["notes/*"])
@@ -1425,6 +1425,42 @@ class TestOpenConfined:
         with pytest.raises(ToolError, match="no longer a file"):
             fs.read_confined(corpus, real)
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX-only guarantee; symlinks need privileges")
+    def test_a_root_swapped_for_a_symlink_is_refused(self, corpus):
+        root = fs.resolve_root(corpus)
+        assert fs.read_confined(root, "notes/b.md") == b"# Beta\n\nBeta body."
+        outside = corpus.parent / "outside_root"
+        (outside / "notes").mkdir(parents=True)
+        (outside / "notes" / "b.md").write_text("OUTSIDE SECRET")
+        corpus.rename(corpus.parent / "old_docs")
+        corpus.symlink_to(outside, target_is_directory=True)
+        with pytest.raises(ToolError, match="files root is no longer the folder"):
+            fs.read_confined(root, "notes/b.md")
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX-only guarantee; symlinks need privileges")
+    def test_a_folder_above_the_root_swapped_for_a_symlink_is_refused(self, tmp_path):
+        (tmp_path / "parent" / "docs").mkdir(parents=True)
+        (tmp_path / "parent" / "docs" / "a.md").write_text("inside")
+        root = fs.resolve_root(tmp_path / "parent" / "docs")
+        (tmp_path / "other" / "docs").mkdir(parents=True)
+        (tmp_path / "other" / "docs" / "a.md").write_text("OUTSIDE SECRET")
+        (tmp_path / "parent").rename(tmp_path / "old_parent")
+        (tmp_path / "parent").symlink_to(tmp_path / "other", target_is_directory=True)
+        with pytest.raises(ToolError, match="files root is no longer the folder"):
+            fs.read_confined(root, "a.md")
+
+    @pytest.mark.skipif(
+        os.name == "nt" or os.geteuid() == 0, reason="root reads any file; no POSIX modes"
+    )
+    def test_an_unreadable_file_says_permission_denied(self, corpus):
+        os.chmod(corpus / "notes" / "b.md", 0)
+        try:
+            with pytest.raises(ToolError, match="permission denied") as caught:
+                fs.read_confined(corpus, "notes/b.md")
+            assert "no longer a file" not in str(caught.value)
+        finally:
+            os.chmod(corpus / "notes" / "b.md", 0o644)
+
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs here")
     def test_a_fifo_is_refused_without_blocking(self, corpus):
         os.mkfifo(corpus / "pipe.md")
@@ -1532,8 +1568,8 @@ class TestUpdatesRunOneAtATime:
 class TestStoredFilesGoThroughUpdate:
     async def test_edited_new_and_unchanged_files(self, corpus, fake_strategies):
         rag = FakeRAG()
-        rag.records["notes/a.md"] = DocumentRecord(path="notes/a.md", content_hash="old")
-        rag.records["readme.rst"] = DocumentRecord(path="readme.rst", content_hash="same")
+        rag.records["file:notes/a.md"] = DocumentRecord(path="notes/a.md", content_hash="old")
+        rag.records["file:readme.rst"] = DocumentRecord(path="readme.rst", content_hash="same")
         rag.unchanged = {"readme.rst"}
         result = await toolkit(rag, corpus).ingest(files=["notes/*", "readme.rst"])
         status = {d.path: d.status for d in result.documents}
@@ -1544,34 +1580,71 @@ class TestStoredFilesGoThroughUpdate:
         }
         updates = sorted(c[1] for c in rag.calls if c[0] == "update")
         assert updates == [("notes/a.md", False, "ingest"), ("readme.rst", False, "ingest")]
-        assert ("ingest_files", ["notes/b.md"]) in rag.calls
+        assert ("ingest_file", ("notes/b.md", "file:notes/b.md")) in rag.calls
+        ids = {d.path: d.document_id for d in result.documents}
+        assert ids["notes/a.md"] == "file:notes/a.md" and ids["readme.rst"] == "file:readme.rst"
 
-    async def test_document_ids_are_relative_to_the_root(self, corpus, fake_strategies):
+    async def test_document_ids_are_file_and_the_path_under_the_root(self, corpus, fake_strategies):
         rag = FakeRAG()
         result = await toolkit(rag, corpus).ingest(files=["reports/2024/q1.txt"])
-        assert result.documents[0].path == "reports/2024/q1.txt"
-        assert ("ingest_files", ["reports/2024/q1.txt"]) in rag.calls
-        rag._graph_store.get_document_record.assert_awaited_with("reports/2024/q1.txt")
+        doc = result.documents[0]
+        assert doc.path == "reports/2024/q1.txt" and doc.document_id == "file:reports/2024/q1.txt"
+        assert ("ingest_file", ("reports/2024/q1.txt", "file:reports/2024/q1.txt")) in rag.calls
+        rag._graph_store.get_document_record.assert_awaited_with("file:reports/2024/q1.txt")
+
+    async def test_a_file_id_is_accepted_as_its_path(self, corpus, fake_strategies):
+        rag = FakeRAG()
+        result = await toolkit(rag, corpus).ingest(files=["file:notes/b.md"])
+        assert result.documents[0].path == "notes/b.md"
+        assert result.documents[0].document_id == "file:notes/b.md"
+
+    async def test_a_failed_file_reports_its_id(self, corpus):
+        rag = FakeRAG()
+        rag.fail.add("b.md")
+        result = await toolkit(rag, corpus).ingest(files=["notes/b.md"])
+        assert result.documents[0].status == "failed"
+        assert result.documents[0].document_id == "file:notes/b.md"
 
 
 class TestTextReextractOfAFile:
     @pytest.mark.parametrize(
         "record",
         [
-            DocumentRecord(path="notes/a.md"),  # a file under the root
-            DocumentRecord(path="/elsewhere/a.md"),  # an absolute path
+            DocumentRecord(path="/elsewhere/a.md"),  # read by the SDK from a file
+            DocumentRecord(path="reports/q1.txt"),  # a path other than its id
             DocumentRecord(path="notes/a.md", kind="structured"),
         ],
     )
-    async def test_is_refused(self, corpus, record):
+    @pytest.mark.parametrize("reextract", [True, False])
+    async def test_is_refused(self, corpus, record, reextract):
         rag = FakeRAG()
         rag.records["notes/a.md"] = record
         with pytest.raises(ToolError, match="was read from a file") as err:
             await toolkit(rag, corpus).ingest(
-                text="replacement", document_id="notes/a.md", reextract=True
+                text="replacement", document_id="notes/a.md", reextract=reextract
             )
         assert "ingest(files=[...], reextract=true)" in (err.value.hint or "")
-        assert not [c for c in rag.calls if c[0] == "update"]
+        assert not [c for c in rag.calls if c[0] in ("update", "ingest_text")]
+
+    @pytest.mark.parametrize("root", [True, False])
+    @pytest.mark.parametrize("reextract", [True, False])
+    async def test_a_file_id_is_refused(self, corpus, root, reextract):
+        # Refused whether or not it is stored, and without a files root too.
+        rag = FakeRAG()
+        with pytest.raises(ToolError, match="starts with 'file:'") as err:
+            await toolkit(rag, corpus if root else None).ingest(
+                text="replacement", document_id="file:notes/a.md", reextract=reextract
+            )
+        assert err.value.hint == "To extract a file again, use ingest(files=[...], reextract=true)."
+        assert not [c for c in rag.calls if c[0] in ("update", "ingest_text")]
+        rag._graph_store.get_document_record.assert_not_awaited()
+
+    async def test_a_text_under_a_files_path_is_its_own_document(self, corpus):
+        rag = FakeRAG()
+        rag.records["file:notes/a.md"] = DocumentRecord(path="notes/a.md")
+        result = await toolkit(rag, corpus).ingest(text="memo", document_id="notes/a.md")
+        assert result.status == "ingested" and result.document_id == "notes/a.md"
+        assert rag.calls == [("ingest_text", ("memo", "notes/a.md"))]
 
     async def test_a_path_that_differs_from_the_id_is_refused(self):
         rag = FakeRAG()

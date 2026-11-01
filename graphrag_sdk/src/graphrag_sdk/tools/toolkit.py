@@ -108,6 +108,9 @@ _NO_PLAN = (
     " (no plan remembered for this file: plans are kept in memory only, so after"
     " a restart pass plan=[...] to repeat a custom plan)"
 )
+#: A file's document id is this prefix and its path relative to the files root
+#: ("file:reports/q1.pdf"); text cannot be ingested under such an id.
+FILE_ID_PREFIX = "file:"
 #: retrieve's search paths and the MultiPath path behind each. ``links`` has
 #: none: retrieve walks the relations itself, so MultiPath's own expansion,
 #: whose output it never reads, is not run.
@@ -282,6 +285,14 @@ def _may_have_written(exc: BaseException) -> bool:
     return not isinstance(exc, (ToolError, LoaderError, ChunkingError))
 
 
+def _lstat_size(root: Path, rel: str) -> int:
+    """Size of ``rel`` under ``root`` without following a symlink; 0 if unknown."""
+    try:
+        return os.lstat(root / rel).st_size
+    except OSError:
+        return 0
+
+
 def _file_error(exc: BaseException) -> str:
     """One file's error for a tool result.
 
@@ -305,6 +316,17 @@ def _file_error(exc: BaseException) -> str:
 
 def _as_dict(value: Any) -> Any:
     return value.model_dump() if isinstance(value, BaseModel) else value
+
+
+def _file_id(rel: str) -> str:
+    """The document id of the file at ``rel`` (relative to the files root)."""
+    return FILE_ID_PREFIX + rel
+
+
+def _failed(rel: str, exc: BaseException) -> IngestedDocument:
+    return IngestedDocument(
+        path=rel, document_id=_file_id(rel), status="failed", error=_file_error(exc)
+    )
 
 
 def _ingested(path: str, res: Any, status: str, plan: dict[str, Any] | None) -> IngestedDocument:
@@ -354,9 +376,10 @@ class GraphRAGToolkit:
         plan_limits: The strategies an agent's ingest plan may use, as
             :class:`~graphrag_sdk.ingestion.ingestion_planner.RuleBasedIngestionPlanner`
             keyword arguments (``chunkers``, ``extractors``, ``resolvers``,
-            ``max_llm_pairs``, ``tune_params``). Default
-            :data:`~graphrag_sdk.ingestion.ingestion_planner.CHEAP_PLAN_LIMITS`:
-            no strategy that adds LLM calls.
+            ``max_llm_pairs``, ``tune_params``), merged over
+            :data:`~graphrag_sdk.ingestion.ingestion_planner.CHEAP_PLAN_LIMITS`
+            (no strategy that adds LLM calls): a key you leave out keeps its
+            cheap value.
         max_file_bytes: Largest file ``ingest(files=...)`` reads (default
             50 MiB); a larger one is refused with a hint. ``None``: no cap.
             ``preview_files`` reads only part of each file, whatever its size.
@@ -377,8 +400,8 @@ class GraphRAGToolkit:
         max_file_bytes: int | None = fs.MAX_FILE_BYTES,
     ) -> None:
         from graphrag_sdk.ingestion.ingestion_planner import (
-            CHEAP_PLAN_LIMITS,
             RuleBasedIngestionPlanner,
+            merge_plan_limits,
         )
 
         if finalize_policy not in _POLICIES:
@@ -406,7 +429,7 @@ class GraphRAGToolkit:
         ):
             raise ValueError("max_file_bytes must be a positive int or None")
         self._max_file_bytes = max_file_bytes
-        limits = dict(CHEAP_PLAN_LIMITS if plan_limits is None else plan_limits)
+        limits = merge_plan_limits(plan_limits)
         RuleBasedIngestionPlanner((), **limits)  # validate now, not at the first ingest
         self._plan_limits: dict[str, Any] = limits
         # Shared by every session copy of this toolkit.
@@ -974,7 +997,7 @@ class GraphRAGToolkit:
 
         async def sample(rel: str) -> DocSample:
             kind = Path(rel).suffix.lower().lstrip(".")
-            size = 0
+            real = None
             async with gate:
                 try:
                     real = await asyncio.to_thread(fs.canonical_file, root, rel)
@@ -982,6 +1005,7 @@ class GraphRAGToolkit:
                         fs.sample_confined, root, real, per_file, self._max_file_bytes
                     )
                 except Exception as exc:  # one unreadable file must not fail the page
+                    size = 0 if real is None else await asyncio.to_thread(_lstat_size, root, real)
                     return DocSample(path=rel, type=kind, size_bytes=size, error=_file_error(exc))
             return DocSample(
                 path=rel,
@@ -1155,7 +1179,8 @@ class GraphRAGToolkit:
         """Extract ``text``, or ``files`` under the files root, into the graph.
 
         ``files`` takes paths and globs relative to the files root (at most
-        50 files per call). ``plan`` is a list of rules, each a glob
+        50 files per call); each file is stored under the document id
+        ``file:<path>``, which text cannot use. ``plan`` is a list of rules, each a glob
         (``match``) with the chunker / extractor / resolver for the files it
         matches; the first matching rule wins, and the allowed options are
         those of ``plan_limits``. A file whose content is unchanged is
@@ -1180,8 +1205,10 @@ class GraphRAGToolkit:
         ctx = ctx or self._new_ctx()
         failed_after_write = False
         if inp.text is not None:
+            # Text would replace a file's document (reextract) or add a chunk to
+            # it and replace its content hash (a plain ingest): refused either way.
+            await self._refuse_file_document(inp.document_id)
             if inp.reextract:
-                await self._refuse_file_document(inp.document_id)
                 async with self._lock("update"):
                     result = await self._rag.update(
                         text=inp.text,
@@ -1230,29 +1257,32 @@ class GraphRAGToolkit:
         return out
 
     async def _refuse_file_document(self, document_id: str | None) -> None:
-        """Refuse to re-extract text over a document that was read from a file.
+        """Refuse to ingest text under the id of a document read from a file.
 
-        ``reextract`` replaces the stored document with the text given, so
-        without this check it could overwrite any file the operator ingested.
+        ``reextract`` replaces the stored document with the text given, and a
+        plain ingest adds the text to it, so without this check text could
+        overwrite any file the operator ingested. This toolkit's files have
+        ids starting with ``file:``; a document the SDK read from a file
+        stores a path other than its id, or is a table.
         """
         if document_id is None:
             return
-        record = await self._rag._graph_store.get_document_record(document_id)
-        if record is None:
-            return
-        from_file = (
-            record.kind == "structured"
-            or (record.path is not None and record.path != document_id)
-            or os.path.isabs(record.path or "")
-        )
-        if not from_file and self._files_root is not None:
-            under = self._files_root / document_id
-            from_file = await asyncio.to_thread(
-                lambda: under.is_file() and fs._inside(self._files_root, under)
+        from_file = document_id.startswith(FILE_ID_PREFIX)
+        if not from_file:
+            record = await self._rag._graph_store.get_document_record(document_id)
+            from_file = record is not None and (
+                record.kind == "structured"
+                or (record.path is not None and record.path != document_id)
+                or os.path.isabs(record.path or "")
             )
         if from_file:
+            message = (
+                f"Document id {document_id!r} starts with 'file:', which is kept for files."
+                if document_id.startswith(FILE_ID_PREFIX)
+                else f"Document {document_id!r} was read from a file; text cannot replace it."
+            )
             raise ToolError(
-                f"Document {document_id!r} was read from a file; text cannot replace it.",
+                message,
                 hint="To extract a file again, use ingest(files=[...], reextract=true).",
             )
 
@@ -1310,9 +1340,12 @@ class GraphRAGToolkit:
         )
 
         root = self._require_root("ingest(files=...)")
+        # A file's document id ("file:a.md") is accepted as its path.
+        entries = [e.removeprefix(FILE_ID_PREFIX) for e in entries]
         try:
             rels = await asyncio.to_thread(fs.resolve_files, root, entries)
-            # Sources (and so document ids) are paths relative to the root.
+            # Sources are paths relative to the root; document ids are those
+            # paths under FILE_ID_PREFIX, so text cannot take a file's id.
             planner = RuleBasedIngestionPlanner(
                 [PlanRule.from_dict(r.model_dump(exclude_none=True)) for r in rules],
                 **self._plan_limits,
@@ -1323,40 +1356,47 @@ class GraphRAGToolkit:
         loader = _ConfinedLoader(root, self._max_file_bytes)
         errors: list[BaseException] = []
         found: dict[str, IngestedDocument] = {}
+        gate = asyncio.Semaphore(_FILE_CONCURRENCY)
         # A file already in the graph goes through update(): re-ingesting an
         # edited file would otherwise add its new chunks beside the old ones.
         if reextract:
             stored = list(rels)
         else:
             records = await asyncio.gather(
-                *(self._rag._graph_store.get_document_record(rel) for rel in rels)
+                *(self._rag._graph_store.get_document_record(_file_id(rel)) for rel in rels)
             )
             stored = [rel for rel, rec in zip(rels, records) if rec is not None]
         fresh = [rel for rel in rels if rel not in frozenset(stored)]
-        if fresh:
-            results = await self._rag.ingest(
-                fresh,
-                planner=planner,
-                loader=loader,
-                max_concurrency=_FILE_CONCURRENCY,
-                ctx=ctx,
+
+        async def first(rel: str) -> Any:
+            async with gate:
+                try:
+                    return await self._rag.ingest(
+                        rel,
+                        document_id=_file_id(rel),
+                        planner=planner,
+                        loader=loader,
+                        ctx=ctx.child(),
+                    )
+                except Exception as exc:  # one bad file must not fail the batch
+                    logger.warning("ingest of a file failed (%s)", type(exc).__name__)
+                    return exc
+
+        for rel, res in zip(fresh, await asyncio.gather(*(first(rel) for rel in fresh))):
+            if isinstance(res, BaseException):
+                errors.append(res)
+                found[rel] = _failed(rel, res)
+                continue
+            meta = res.metadata or {}
+            used = (meta.get("plan") or {}).get("plan")
+            if used:
+                self._remember_plan(rel, used)
+            found[rel] = _ingested(
+                rel,
+                res,
+                "unchanged" if meta.get("skipped_unchanged") else "ingested",
+                used,
             )
-            for rel, res in zip(fresh, results):
-                if isinstance(res, BaseException):
-                    errors.append(res)
-                    found[rel] = IngestedDocument(path=rel, status="failed", error=_file_error(res))
-                    continue
-                meta = res.metadata or {}
-                used = (meta.get("plan") or {}).get("plan")
-                if used:
-                    self._remember_plan(rel, used)
-                found[rel] = _ingested(
-                    rel,
-                    res,
-                    "unchanged" if meta.get("skipped_unchanged") else "ingested",
-                    used,
-                )
-        gate = asyncio.Semaphore(_FILE_CONCURRENCY)
         # update() runs one at a time across every session, as apply_changes()
         # does: one document's orphan cleanup can delete an entity another
         # document's update has just written but not yet linked.
@@ -1391,6 +1431,7 @@ class GraphRAGToolkit:
                 async with writer:
                     res = await self._rag.update(
                         rel,
+                        document_id=_file_id(rel),
                         force=reextract,
                         if_missing="ingest",
                         loader=_Loaded(document) if document is not None else loader,
@@ -1401,7 +1442,7 @@ class GraphRAGToolkit:
                     )
             except Exception as exc:  # one bad file must not fail the batch
                 errors.append(exc)
-                return IngestedDocument(path=rel, status="failed", error=_file_error(exc))
+                return _failed(rel, exc)
             if res.no_op:
                 return _ingested(rel, res, "unchanged", None)
             plan_info = report.get("plan")

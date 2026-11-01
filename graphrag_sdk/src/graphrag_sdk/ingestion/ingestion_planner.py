@@ -519,10 +519,14 @@ _MAX_REPLY_CHARS = 20_000
 
 
 def _names_strategy(obj: Mapping[str, Any]) -> bool:
-    return (
-        obj.get("chunker") in _CHUNKER_SET
-        or obj.get("extractor") in _EXTRACTOR_SET
-        or obj.get("resolver") in _RESOLVER_SET
+    # A list or dict value is an invalid field, not a crash: it is unhashable.
+    return any(
+        isinstance(obj.get(key), str) and obj[key] in names
+        for key, names in (
+            ("chunker", _CHUNKER_SET),
+            ("extractor", _EXTRACTOR_SET),
+            ("resolver", _RESOLVER_SET),
+        )
     )
 
 
@@ -849,6 +853,12 @@ CHEAP_PLAN_LIMITS: Mapping[str, Any] = MappingProxyType(
         "max_chunks": 1000,
     }
 )
+
+
+def merge_plan_limits(plan_limits: Mapping[str, Any] | None) -> dict[str, Any]:
+    """``plan_limits`` over :data:`CHEAP_PLAN_LIMITS`: a key not given keeps its cheap value."""
+    return {**CHEAP_PLAN_LIMITS, **(plan_limits or {})}
+
 
 _RULE_KEYS = frozenset(
     {

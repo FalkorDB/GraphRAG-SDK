@@ -523,6 +523,7 @@ class TestGraphRAGIngest:
         result = await g.ingest(str(csv), auto=True, planner=MustNotRun())
         assert result is sentinel
         assert planned == []
+        assert g._planned_ingest is False  # update() has no plan to warn about
 
 
 class TestGraphRAGDeduplicateEntities:

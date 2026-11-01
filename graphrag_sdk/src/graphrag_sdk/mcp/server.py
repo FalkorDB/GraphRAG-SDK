@@ -137,7 +137,8 @@ def _files_guide(*, ontology: bool, finalize: bool) -> str:
     return (
         "\nTo build or extend the graph from documents:\n"
         f"{body}\n"
-        "To add a single text instead, call ingest(text=..., document_id=...).\n"
+        "A file's document_id is 'file:<path>'. To add a single text instead, call\n"
+        "ingest(text=..., document_id=...) with an id that does not start with 'file:'.\n"
     )
 
 

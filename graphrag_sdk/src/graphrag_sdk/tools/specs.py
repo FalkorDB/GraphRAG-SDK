@@ -181,7 +181,10 @@ class IngestInput(_Input):
     document_id: str | None = Field(
         default=None,
         max_length=500,
-        description="Stable id for text; generated when omitted.",
+        description=(
+            "Stable id for text; generated when omitted. Cannot start with 'file:' "
+            "(the ids of files)."
+        ),
     )
     files: list[Annotated[str, Field(min_length=1, max_length=1024)]] | None = Field(
         default=None,
@@ -215,7 +218,7 @@ class IngestInput(_Input):
         if self.text is not None and self.reextract and self.document_id is None:
             raise ValueError("reextract on text needs the document_id it was stored under")
         if self.files is not None and self.document_id is not None:
-            raise ValueError("document_id applies to text only; a file's id is its path")
+            raise ValueError("document_id applies to text only; a file's id is 'file:<path>'")
         return self
 
 
@@ -340,7 +343,8 @@ _INGEST_FILES = (
     f"({', '.join(SUPPORTED_SUFFIXES)}), at most {MAX_FILES_PER_CALL} per call, with "
     "an optional plan, one rule per kind of file, e.g. [{match: '*.md', chunker: "
     "'structural'}, {match: '*.pdf', chunker: 'fixed', chunker_params: {chunk_size: "
-    "1500}}]. Unchanged files are skipped; reextract=true runs them again (with "
+    "1500}}]. A file is stored under document_id 'file:<path>'. Unchanged files are "
+    "skipped; reextract=true runs them again (with "
     "their last plan unless you pass one); a file that changed is updated in place. The "
     "result gives each file's plan and the types dropped because the ontology lacks "
     "them."
@@ -355,20 +359,30 @@ _OPTION_COSTS: dict[str, str] = {
     "gliner": "local model, no extra LLM call",
     "llm": "+1 LLM call per chunk",
     "exact": "no LLM call",
-    "llm_verified": "up to {pairs} LLM pair checks per entity type",
+    "llm_verified": (
+        "up to {pairs} LLM pair checks per entity type, plus up to 200 cross-type "
+        "checks each asked twice, and an LLM summary per entity with 3+ descriptions"
+    ),
 }
 
 
 def _plan_options(plan_limits: Mapping[str, Any] | None) -> str:
     from graphrag_sdk.ingestion.ingestion_planner import (
-        CHEAP_PLAN_LIMITS,
         CHUNKERS,
+        DEFAULT_CHUNKER,
+        DEFAULT_EXTRACTOR,
+        DEFAULT_RESOLVER,
         EXTRACTORS,
+        PARAM_SPECS,
         RESOLVERS,
+        merge_plan_limits,
     )
 
-    limits = CHEAP_PLAN_LIMITS if plan_limits is None else plan_limits
-    pairs = limits.get("max_llm_pairs", 500)
+    limits = merge_plan_limits(plan_limits)
+    pairs = limits.get("max_llm_pairs")
+    if pairs is None:
+        # No ceiling: a plan may raise the pair budget to the resolver's maximum.
+        pairs = int(PARAM_SPECS["resolver"]["llm_verified"]["max_llm_pairs"][2])
     parts = []
     for slot, key, default in (
         ("chunker", "chunkers", CHUNKERS),
@@ -384,8 +398,10 @@ def _plan_options(plan_limits: Mapping[str, Any] | None) -> str:
     cap = f" A file over {chunks} chunks fails before extraction." if chunks else ""
     return (
         f" Plan options allowed, with their cost: {'; '.join(parts)}. Every chunk also "
-        "costs one extraction LLM call. Files no rule matches use the cheap defaults; "
-        f"options outside these fall back to them.{cap}"
+        "costs one extraction LLM call. Files no rule matches, and options outside "
+        f"these, get the default ({DEFAULT_CHUNKER} / {DEFAULT_EXTRACTOR} / "
+        f"{DEFAULT_RESOLVER}), or the first allowed option where the default is not "
+        f"allowed.{cap}"
     )
 
 
@@ -405,6 +421,12 @@ def _description(
     return td.description
 
 
+_TEXT_REEXTRACT = (
+    "Re-extract text that is unchanged (after extending the ontology); pass the "
+    "document_id it was stored under."
+)
+
+
 def _schema(td: ToolDef, files: bool) -> dict[str, Any]:
     schema = td.input_model.model_json_schema()
     if td.name == "ingest" and not files:
@@ -412,6 +434,8 @@ def _schema(td: ToolDef, files: bool) -> dict[str, Any]:
         props = schema.get("properties", {})
         for name in ("files", "plan"):
             props.pop(name, None)
+        if "reextract" in props:
+            props["reextract"]["description"] = _TEXT_REEXTRACT
         schema.get("$defs", {}).pop("PlanRuleInput", None)
         if not schema.get("$defs"):
             schema.pop("$defs", None)
