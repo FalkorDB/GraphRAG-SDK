@@ -171,7 +171,7 @@ def test_inputs_reject_unknown_arguments(model):
     ("model", "base", "field", "ok", "bad"),
     [
         (RetrieveInput, {"question": "q"}, "top_k", 25, 26),
-        (RetrieveInput, {"question": "q"}, "expand_hops", 3, 4),
+        (RetrieveInput, {"question": "q"}, "expand_hops", 5, 6),
     ],
 )
 def test_other_upper_bounds(model, base, field, ok, bad):
