@@ -17,7 +17,6 @@ import pytest
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import (
     EntityMention,
     GraphData,
@@ -29,6 +28,7 @@ from graphrag_sdk.core.providers.base import LLMBatchItem
 from graphrag_sdk.ingestion.lexical_graph import LexicalGraphWriter
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.storage.graph_store import (
+    _DESCRIPTION_READS,
     MAX_DESCRIPTION_MEMBERS,
     MAX_SUMMARY_CHARS,
     SUMMARISE_OVER_MEMBERS,
@@ -148,7 +148,7 @@ class TestSummaries:
         )
         await GraphStore(mock_connection).summarise_long_descriptions(SummaryLLM("word " * 500))
         (write,) = _writes(mock_connection)
-        assert len(write[0][1]["members"][0]) <= MAX_SUMMARY_CHARS + 1
+        assert len(write[0][1]["members"][0]) <= MAX_SUMMARY_CHARS
 
     async def test_nothing_over_the_limit_makes_no_llm_call(self, mock_connection):
         llm = SummaryLLM()
@@ -240,19 +240,23 @@ class TestTakingARemovedDocumentOff:
         assert await store.rebuild_entity_descriptions(["alice"], {"alice": {"From C"}}) == 1
         assert _writes(mock_connection)[-1][0][1]["members"] == ["Legacy", "New"]
 
-    async def test_one_that_keeps_changing_keeps_the_cleanup_state(self, mock_connection):
-        """Raising leaves the cleanup state in place, so the cleanup runs again."""
+    async def test_one_that_keeps_changing_is_logged_not_raised(
+        self, mock_connection, monkeypatch, caplog
+    ):
+        """The delete or update has already taken effect: failing it would
+        report a failure for a change that happened."""
+        monkeypatch.setattr("graphrag_sdk.storage.graph_store._DESCRIPTION_READ_WAIT_S", 0)
         mock_connection.query = AsyncMock(
             side_effect=[
                 _result([["alice", "Legacy | From C", ["Legacy", "From C"], False, False]]),
                 _result([]),
                 _result([[0]]),
             ]
-            * 3
+            * _DESCRIPTION_READS
         )
         store = GraphStore(mock_connection)
-        with pytest.raises(DatabaseError, match="kept changing"):
-            await store.rebuild_entity_descriptions(["alice"], {"alice": {"From C"}})
+        assert await store.rebuild_entity_descriptions(["alice"], {"alice": {"From C"}}) == 0
+        assert "kept changing" in caplog.text and "alice" in caplog.text
 
 
 class TestMentionEdges:
@@ -536,6 +540,47 @@ class TestOnRealFalkorDB:
         await _remove(store, "docB", ["cB"])
         desc, descs, _, _, summarised = await _entity(store)
         assert (desc, descs, summarised) == ("A said this.", None, None)
+
+    async def test_the_text_beside_a_kept_summary_still_goes(self, store):
+        """Naseem's repro: the resolver marks a node summarised while list
+        members stay beside the summary. An undescribed edge keeps the summary,
+        but the deleted chunk's own member must still go."""
+        for d in ("Summary.", "A said.", "B said."):
+            await store.upsert_nodes([_alice(d)])
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) SET e.description_summarised = true"
+        )
+        await _mentions(store, ("c0", None), ("cA", "A said."), ("cB", "B said."))
+        assert await _remove(store, "docA", ["cA"]) == 1
+        _, descs, _, _, summarised = await _entity(store)
+        assert (descs, summarised) == (["Summary.", "B said."], True)
+
+    async def test_a_table_rows_edge_does_not_keep_a_summary(self, store):
+        """A table row's edge never says anything and holds no text: a
+        summarised entity with one is still rebuilt from its described edges."""
+        await store.upsert_nodes([_alice("x")])
+        await store.query_raw(
+            "CREATE (c:Chunk {id: 'row1', record_key: 'E-1'}) WITH c "
+            "MATCH (e:__Entity__ {id: 'alice'}) CREATE (e)-[:MENTIONED_IN]->(c)"
+        )
+        await _mentions(store, ("cA", "A said this."), ("cB", "B said this."))
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) "
+            "SET e.description = 'Summary of A and B.', e.description_summarised = true"
+        )
+        await _remove(store, "docB", ["cB"])
+        desc, descs, _, _, summarised = await _entity(store)
+        assert (desc, descs, summarised) == ("A said this.", None, None)
+
+    async def test_what_two_chunks_said_alike_is_recorded_once(self, store):
+        await store.upsert_nodes([_alice("CEO")])
+        await _mentions(store, ("c1", "CEO"), ("c2", "CEO"))
+        await store.query_raw("CREATE (:Document {id: 'doc'})")
+        await store.capture_cleanup_said("doc", ["c1", "c2"])
+        rows = (
+            await store.query_raw("MATCH (d:Document {id: 'doc'}) RETURN d.cleanup_said")
+        ).result_set
+        assert rows == [[["CEO"]]]
 
     async def test_a_summary_with_an_undescribed_edge_left_is_kept(self, store):
         await store.upsert_nodes([_alice("x")])

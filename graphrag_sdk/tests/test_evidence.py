@@ -4,6 +4,7 @@ from graphrag_sdk.ingestion.evidence import (
     evidence_text,
     find_spans,
     flat_spans,
+    is_whole_word,
 )
 
 TEXT = (
@@ -97,6 +98,20 @@ def test_a_name_is_found_only_as_a_whole_name():
     assert find_spans(text, "US") == [(0, 2), (71, 73)]
     assert find_spans(text, "Al") == [(45, 47)]
     assert find_spans(text, "Ann") == [(17, 20)]
+
+
+def test_the_name_as_written_is_preferred_over_another_case():
+    text = "Apple sells apple juice. APPLE stock rose."
+    assert find_spans(text, "Apple") == [(0, 5)]
+    # None as written: every one, whatever its case.
+    assert find_spans(text, "aPPle") == [(0, 5), (12, 17), (25, 30)]
+
+
+def test_a_models_own_offsets_count_only_on_a_whole_word():
+    text = "Our business is booming in the US."
+    assert not is_whole_word(text, 5, 7)  # "us" inside "business"
+    assert is_whole_word(text, 31, 33)
+    assert not is_whole_word(text, 31, 99)  # past the end
 
 
 def test_a_span_given_twice_is_kept_once():

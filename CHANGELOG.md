@@ -249,7 +249,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exactly that text off the entities' descriptions (no LLM call), keeping what
   a remaining chunk still says and refilling a full node from the remaining
   edges; a summarised entity is rebuilt from its edges when all of them say
-  something. On the Verdantix benchmark (57 documents, a
+  something, and otherwise keeps its summary with the removed text beside it
+  dropped. On the Verdantix benchmark (57 documents, a
   `finalize()` after every 10, the same three extractions for both): dedup F1
   0.53 → 0.70, precision 0.955 → 0.987, wrong merges 1.8 → 0.7 per run,
   answers unchanged; at most 5 descriptions per node after `finalize()` (was

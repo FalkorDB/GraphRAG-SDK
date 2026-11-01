@@ -26,7 +26,12 @@ from graphrag_sdk.core.models import (
     reject_reserved_labels,
 )
 from graphrag_sdk.core.providers import LLMInterface
-from graphrag_sdk.ingestion.evidence import evidence_text, find_spans, flat_spans
+from graphrag_sdk.ingestion.evidence import (
+    evidence_text,
+    find_spans,
+    flat_spans,
+    is_whole_word,
+)
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import CorefResolver
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
@@ -949,9 +954,12 @@ class GraphExtraction(ExtractionStrategy):
         read = chunk_text if read_text is None else read_text
         same_text = read == chunk_text
         for ent in entities:
+            # A model's own offsets can land inside a word ("US" in
+            # "business"); only whole words stand in for a name not found.
             step1 = [
                 (o["start"], o["end"])
                 for o in (getattr(ent, "spans", None) or {}).get(chunk_id, [])
+                if is_whole_word(read, o["start"], o["end"])
             ]
             spans = find_spans(chunk_text, ent.name) or (step1 if same_text else [])
             read_spans = spans if same_text else (find_spans(read, ent.name) or step1)
@@ -971,7 +979,8 @@ class GraphExtraction(ExtractionStrategy):
 
         Matches by normalized name. Step 1 spans (from GLiNER2) are used
         directly. For entities the LLM discovered (not in step 1), spans
-        are computed via ``str.find()`` on the chunk text.
+        are where the chunk text names them as a whole name
+        (:func:`find_spans`).
 
         ``chunk_text`` is the text the models read (coreference-resolved when
         a resolver is set), so these spans index it; ``_record_mentions``
@@ -995,11 +1004,11 @@ class GraphExtraction(ExtractionStrategy):
                 if s1_conf is not None:
                     ent.confidence = s1_conf  # type: ignore[attr-defined]
             else:
-                # Entity is new from step 2 — compute spans via case-insensitive search
-                idx = chunk_text.lower().find(ent.name.lower())
-                if idx >= 0:
+                # Entity is new from step 2 — where the text names it
+                found = find_spans(chunk_text, ent.name)
+                if found:
                     ent.spans = {  # type: ignore[attr-defined]
-                        source_chunk_id: [{"start": idx, "end": idx + len(ent.name)}]
+                        source_chunk_id: [{"start": s, "end": e} for s, e in found]
                     }
 
     # ── Step 2 Response Parsing ──────────────────────────────────
@@ -1125,7 +1134,8 @@ class GraphExtraction(ExtractionStrategy):
     def _aggregate_entities(
         entities: list[ExtractedEntity],
     ) -> list[ExtractedEntity]:
-        """Deduplicate entities by (normalized name, type), keeping longer descriptions.
+        """Deduplicate entities by (normalized name, type), keeping what each
+        chunk said (``chunk_descriptions``) and the longer description.
 
         Merges ``spans`` dicts across chunks so the final entity carries
         character offsets from every chunk it appeared in.

@@ -3605,7 +3605,11 @@ class GraphRAG:
                 mapping, [eid for eid in candidate_ids if eid not in gone], document_id
             )
         said = await self._graph_store.get_cleanup_said(document_id)
-        described = await self._graph_store.rebuild_entity_descriptions(candidate_ids, said)
+        # The entities the removed chunks' edges named too: a merge that moved
+        # an edge onto a survivor outside the candidates moved its text there.
+        described = await self._graph_store.rebuild_entity_descriptions(
+            list(dict.fromkeys([*candidate_ids, *said])), said
+        )
         await self._graph_store.clear_cleanup_state(document_id)
         if described:
             ctx.log(

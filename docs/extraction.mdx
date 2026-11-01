@@ -160,7 +160,7 @@ The second step uses the LLM to do two things at once:
 A structured prompt (`VERIFY_EXTRACT_RELS_PROMPT`) containing:
 - The list of entity types
 - The pre-extracted entities from step 1 (as JSON)
-- The original chunk text
+- The chunk text, with pronouns resolved when coreference is on
 
 ### What the LLM Returns
 
@@ -348,7 +348,7 @@ extractor = GraphExtraction(
 3. Replace pronouns with canonical mentions, right-to-left to preserve offsets
 4. Handles possessives: "her" becomes "Voss's"
 
-The resolved text is what both steps read, and the sentence that stands in for a missing description is cut from it. The chunk node stores the original text, so the spans on `MENTIONED_IN` edges are found in the original; a chunk coreference rewrote keeps no `RELATES` evidence offsets, since the model gave them for the resolved text.
+The resolved text is what both steps read, and the sentence that stands in for a missing description is cut from it. The chunk node stores the original text, so the spans on `MENTIONED_IN` edges are found in the original. `RELATES` evidence offsets are omitted when coreference rewrites a chunk, because the model gave them for the resolved text.
 
 **When to use:** When your documents have heavy pronoun usage and extraction is missing entities because of it. Adds ~1-2 seconds per chunk.
 

@@ -575,6 +575,20 @@ class TestSpansMerging:
         }
         assert len(acme.spans["c0"]) == 2
 
+    def test_a_fallback_span_inside_a_word_is_not_kept(self):
+        """Naseem's repro: "US" is not in "Our business is booming." as a
+        name, and the step-1 offsets (5, 7) are the "us" inside "business"."""
+        text = "Our business is booming."
+        us = ExtractedEntity(name="US", type="Location", source_chunk_ids=["c0"])
+        us.spans = {"c0": [{"start": 5, "end": 7}]}  # type: ignore[attr-defined]
+        GraphExtraction._record_mentions([us], text, "c0")
+        assert us.spans == {"c0": []}
+        assert us.chunk_descriptions == {}
+        # A name the LLM added (not in step 1) gets whole-name spans only.
+        new = ExtractedEntity(name="US", type="Location", source_chunk_ids=["c0"])
+        GraphExtraction._merge_step1_metadata([new], [], text, "c0")
+        assert getattr(new, "spans", None) is None
+
     def test_the_same_entity_twice_in_one_chunk_keeps_both_descriptions(self):
         text = "Alice is CEO. alice also founded Acme."
         first = ExtractedEntity(

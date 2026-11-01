@@ -119,13 +119,29 @@ def evidence_text(
 
 
 def find_spans(text: str, name: str) -> list[tuple[int, int]]:
-    """Every case-insensitive occurrence of ``name`` in ``text`` as a whole
-    name: not inside a longer word ("US" is not found in "business", nor "Al"
-    in "Algorithm")."""
+    """Every occurrence of ``name`` in ``text`` as a whole name: not inside a
+    longer word ("US" is not found in "business", nor "Al" in "Algorithm").
+    Those written as the name is, when there are any ("Apple" the company,
+    not "apple" the fruit); otherwise every one, whatever its case."""
     if not name.strip():
         return []
     pattern = r"(?<!\w)" + re.escape(name.strip()) + r"(?!\w)"
-    return [(m.start(), m.end()) for m in re.finditer(pattern, text, re.IGNORECASE)]
+    for flags in (0, re.IGNORECASE):
+        spans = [(m.start(), m.end()) for m in re.finditer(pattern, text, flags)]
+        if spans:
+            return spans
+    return []
+
+
+def is_whole_word(text: str, start: int, end: int) -> bool:
+    """Whether ``text[start:end]`` is not part of a longer word — a span a
+    model gave by its own offsets, checked as :func:`find_spans` matches."""
+    if not 0 <= start < end <= len(text):
+        return False
+    return not (
+        (start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"))
+        or (end < len(text) and (text[end].isalnum() or text[end] == "_"))
+    )
 
 
 def flat_spans(spans: Iterable[tuple[int, int]]) -> list[int]:

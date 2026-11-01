@@ -147,7 +147,7 @@ DeleteDocumentResult(
 | `__Entity__` nodes that the doc referenced and have **no** remaining `MENTIONED_IN` | Scoped to candidates from this document; entities still cited elsewhere are kept. |
 | `RELATES` edges whose `source_chunk_ids` are entirely from this Document's chunks | Stale-fact cleanup. Edges with multi-document provenance survive.    |
 
-The surviving entities' descriptions are rewritten: what this document's chunks said about them is taken off, unless another chunk still says it (no LLM call). A summarised entity cannot have text taken out of its summary: it is rebuilt from its remaining `MENTIONED_IN` edges when every one of them has a description, and otherwise kept as it is. An entity still holding more than five descriptions is summarised by the next `finalize()`. `update()` does the same for the chunks a new version replaces. Text a document ingested by an earlier SDK version wrote cannot be told apart, and is kept.
+The surviving entities' descriptions are rewritten: what this document's chunks said about them is taken off, unless another chunk still says it (no LLM call). A summarised entity cannot have text taken out of its summary: it is rebuilt from its remaining `MENTIONED_IN` edges when every one of them has a description (a table row's edge does not count), and otherwise its summary is kept and the removed text beside it is still dropped. An entity still holding more than five descriptions is summarised by the next `finalize()`. `update()` does the same for the chunks a new version replaces. Text a document ingested by an earlier SDK version wrote cannot be told apart, and is kept.
 
 ### Crash safety
 
@@ -265,6 +265,8 @@ FinalizeResult(
     entities_deduplicated:  int,
     judge_calls:            int,
     judge_stats:            dict[str, int | str],
+    descriptions_summarised:      int,
+    description_summary_failures: list[str],
     entities_embedded:      int,
     relationships_embedded: int,
     indexes:                dict[str, bool],
@@ -277,6 +279,7 @@ FinalizeResult(
 
 1. Removes NULL-name stub entities (legacy cleanup).
 2. `deduplicate_entities()` — incremental: the pending entities (added since the last `finalize()`, or left pending by it) are checked against the whole graph (exact-name and acronym match, then one judge pass over their nearest names). Dedup also writes every entity's name embedding.
+   Then every entity holding more than five descriptions gets one LLM summary of them (`descriptions_summarised`); one whose summary fails keeps them and is listed in `description_summary_failures`, to be tried again by the next run.
 3. `embed_relationships()` — embeds fact text on `RELATES` edges.
 4. `ensure_indices()` — rebuilds/verifies all indexes.
 

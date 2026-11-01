@@ -137,8 +137,10 @@ SUMMARY_PAGE = 200
 SUMMARISED_KEY = "description_summarised"
 #: Reads of an entity's description before a cleanup gives up taking a removed
 #: document's text off it: the write is skipped when something else wrote the
-#: description since the read, and the entity is read again.
-_DESCRIPTION_READS = 3
+#: description since the read, and the entity is read again, after a wait that
+#: grows by ``_DESCRIPTION_READ_WAIT_S`` each time.
+_DESCRIPTION_READS = 5
+_DESCRIPTION_READ_WAIT_S = 0.05
 
 _DESCRIPTION_SUMMARY_PROMPT = (
     "Summarise the following descriptions of the entity '{name}' into a single "
@@ -936,7 +938,7 @@ class GraphStore:
                     if not text:
                         failed.append(f"{eid} ({item.error or 'empty reply'})")
                     if len(text) > MAX_SUMMARY_CHARS:
-                        text = text[:MAX_SUMMARY_CHARS].rsplit(" ", 1)[0].rstrip() + "…"
+                        text = text[: MAX_SUMMARY_CHARS - 1].rsplit(" ", 1)[0].rstrip() + "…"
                     if text:
                         written += await self._write_description(
                             eid, current, [text], summarised=True
@@ -963,6 +965,7 @@ class GraphStore:
         cleanup state, so a resumed cleanup still has it."""
         ids: list[str] = []
         said: list[str] = []
+        seen: set[tuple[str, str]] = set()
         for start in range(0, len(chunk_ids), self._BATCH_SIZE):
             rows = (
                 await self._conn.query(
@@ -974,8 +977,10 @@ class GraphStore:
             ).result_set or []
             for eid, description, descriptions in rows:
                 for d in self._members(description, descriptions):
-                    ids.append(eid)
-                    said.append(d)
+                    if (eid, d) not in seen:
+                        seen.add((eid, d))
+                        ids.append(eid)
+                        said.append(d)
         await self._conn.query(
             "MATCH (d:Document {id: $id}) SET d.cleanup_said_ids = $ids, d.cleanup_said = $said",
             {"id": document_id, "ids": ids, "said": said},
@@ -1000,8 +1005,9 @@ class GraphStore:
     async def rebuild_entity_descriptions(self, ids: list[str], said: dict[str, set[str]]) -> int:
         """After a delete or an update cut some chunks away: take what those
         chunks said (``said``, from :meth:`capture_cleanup_said`) off the
-        descriptions of the entities in ``ids``, so nothing a removed document
-        said stays on them. No LLM call.
+        descriptions of the entities in ``ids`` (only those ``said`` has text
+        for are read), so nothing a removed document said stays on them. No
+        LLM call.
 
         - A description only a removed chunk said is dropped; one a remaining
           mention edge still says (an unchanged chunk an update kept) stays.
@@ -1011,30 +1017,36 @@ class GraphStore:
           later mention's description on its edge only; the places the
           removed text frees are filled from the remaining edges.
         - An entity whose description holds an LLM summary cannot have the
-          removed text taken out of it. When all of its remaining mention
-          edges say something, it is rebuilt from them
+          removed text taken out of the summary. When every remaining mention
+          edge says something, it is rebuilt from them
           (``MAX_DESCRIPTION_MEMBERS`` of them, in chunk-id order, summarised
-          again by the next finalize()); otherwise it is kept.
+          again by the next finalize()); otherwise its summary is kept and the
+          removed text is dropped from beside it, as above. A table row's
+          edge never says anything and holds no text, so it does not count.
 
         Each entity is written only if unchanged since read, and read again
-        when something else wrote it meanwhile. Raises ``DatabaseError`` if
-        one still changes after ``_DESCRIPTION_READS`` reads, so the cleanup
-        state that holds ``said`` is kept and the cleanup runs again.
+        when something else wrote it meanwhile. One that still changes after
+        ``_DESCRIPTION_READS`` reads is logged and left: this runs after the
+        delete or update has taken effect, so it does not fail it.
         Returns how many were replaced.
         """
         ids = list(dict.fromkeys(eid for eid in ids if said.get(eid)))
         written = 0
         for start in range(0, len(ids), self._BATCH_SIZE):
             batch = ids[start : start + self._BATCH_SIZE]
-            for _ in range(_DESCRIPTION_READS):
+            for attempt in range(_DESCRIPTION_READS):
+                if attempt:
+                    await asyncio.sleep(_DESCRIPTION_READ_WAIT_S * attempt)
                 batch, n = await self._take_said_off(batch, said)
                 written += n
                 if not batch:
                     break
             else:
-                raise DatabaseError(
-                    f"{len(batch)} entity description(s) kept changing while a "
-                    f"removed document's text was taken off them: {batch[:10]}"
+                logger.warning(
+                    "%d entity description(s) kept changing while a removed "
+                    "document's text was taken off them; it may remain on: %s",
+                    len(batch),
+                    batch[:10],
                 )
         return written
 
@@ -1047,9 +1059,9 @@ class GraphStore:
         rows = (
             await self._conn.query(
                 "UNWIND $ids AS eid MATCH (e:__Entity__ {id: eid}) "
-                "CALL { WITH e OPTIONAL MATCH (e)-[u:MENTIONED_IN]->(:Chunk) "
-                "RETURN collect(CASE WHEN u.description IS NULL THEN 1 END)[..1] "
-                "AS undescribed } "
+                "CALL { WITH e OPTIONAL MATCH (e)-[u:MENTIONED_IN]->(c:Chunk) "
+                "RETURN collect(CASE WHEN u.description IS NULL "
+                "AND c.record_key IS NULL THEN 1 END)[..1] AS undescribed } "
                 "RETURN e.id, coalesce(e.description, ''), e.descriptions, "
                 f"coalesce(e.{SUMMARISED_KEY}, false), size(undescribed) > 0",
                 {"ids": ids},
@@ -1060,9 +1072,8 @@ class GraphStore:
         for eid, current, held, summarised, undescribed in rows:
             gone = said.get(eid, set())
             members = self._members(current, held)
-            if summarised:
-                if undescribed:
-                    continue
+            rebuild = summarised and not undescribed
+            if rebuild:
                 kept = await self._remaining_said(eid, limit=MAX_DESCRIPTION_MEMBERS)
             else:
                 dropped = [m for m in members if m in gone]
@@ -1077,7 +1088,7 @@ class GraphStore:
             if kept == members:
                 continue
             if await self._write_description(
-                eid, current, kept, summarised=False if summarised else None
+                eid, current, kept, summarised=False if rebuild else None
             ):
                 written += 1
             else:
