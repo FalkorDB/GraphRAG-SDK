@@ -2714,7 +2714,9 @@ class TestFinalizeReminder:
         g._write_graph_config = AsyncMock()
 
     @staticmethod
-    def _stub_structured_pipeline(g, monkeypatch, *, fail: bool = False):
+    def _stub_structured_pipeline(
+        g, monkeypatch, *, fail: bool = False, incomplete_writes: tuple[str, ...] = ()
+    ):
         from graphrag_sdk.api import main as api_main
         from graphrag_sdk.ingestion.structured_pipeline import StructuredIngestionResult
 
@@ -2725,7 +2727,9 @@ class TestFinalizeReminder:
             async def run(self, source, mapping, ctx, *, document_id=None, strict=False):
                 if fail:
                     raise RuntimeError("row write failed")
-                return StructuredIngestionResult(document_id)
+                result = StructuredIngestionResult(document_id)
+                result.incomplete_writes = list(incomplete_writes)
+                return result
 
         monkeypatch.setattr(api_main, "StructuredIngestionPipeline", FakeStructuredPipeline)
         g._validate_graph_config = AsyncMock()
@@ -2868,6 +2872,23 @@ class TestFinalizeReminder:
         with pytest.raises(RuntimeError, match="row write failed"):
             await graphrag._write_structured_source("orgs.csv", mapping, document_id="orgs.csv")
         assert graphrag._docs_since_dedup == 0
+
+    async def test_partially_written_table_still_arms_the_reminder(self, graphrag, monkeypatch):
+        """``incomplete_writes`` reports a short edge or chunk write; the entity
+        writes raise on failure, so by the time it is returned every entity is in
+        the graph, unresolved. Leaving the content hash unset (for repair) does
+        not undo that, and the prose path counts its partial writes too."""
+        from graphrag_sdk import TableMapping
+
+        self._stub_structured_pipeline(graphrag, monkeypatch, incomplete_writes=("edges 1/2",))
+        mapping = TableMapping(source="orgs.csv", label="Organization", key="org_id")
+
+        result = await graphrag._write_structured_source(
+            "orgs.csv", mapping, document_id="orgs.csv"
+        )
+
+        assert result.incomplete_writes == ["edges 1/2"]
+        assert graphrag._docs_since_dedup == 1
 
 
 class TestDefaultResolver:
