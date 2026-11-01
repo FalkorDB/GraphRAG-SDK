@@ -5178,13 +5178,17 @@ class GraphRAG:
             strategy
             if strategy is not None
             and strategy is not self._retrieval_strategy
-            and (key in self._lent_ontology or getattr(strategy, "_ontology", None) is None)
+            and (
+                key in self._lent_ontology
+                or (hasattr(strategy, "_ontology") and strategy._ontology is None)
+            )
             else None
         )
         if borrower is not None:
-            # A per-call strategy without an ontology of its own never saw the
+            # A per-call strategy with an empty ontology slot never saw the
             # facade's; lend it the current one for this call only (an ontology
             # the caller set is left alone, and so is the strategy afterwards).
+            # A strategy without the slot manages its own ontology.
             if key not in self._lent_ontology:
                 borrower.set_ontology(self._global_ontology)
             self._lent_ontology[key] = self._lent_ontology.get(key, 0) + 1

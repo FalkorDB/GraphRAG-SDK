@@ -3140,6 +3140,13 @@ class TestRetrievalEdges:
         await rag.retrieve("q", strategy=strategy)
         strategy.set_ontology.assert_not_called()
 
+    async def test_strategy_without_an_ontology_slot_is_left_alone(self, rag):
+        strategy = MagicMock(spec=RetrievalStrategy)
+        assert not hasattr(strategy, "_ontology")
+        strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
+        await rag.retrieve("q", strategy=strategy)
+        strategy.set_ontology.assert_not_called()
+
     async def test_per_call_strategy_without_ontology_gets_the_facades(self, rag):
         strategy = MagicMock()
         strategy._ontology = None

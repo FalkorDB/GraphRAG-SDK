@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from collections import OrderedDict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,8 +44,26 @@ _LEADING_MARKERS_RE = re.compile(rf"^(?:\s*\[\s*{_CITE}(?:\s*[,;]\s*{_CITE})*\s*
 _GLUED_END_RE = re.compile(rf"([.!?])((?:\[\s*{_CITE}(?:\s*[,;]\s*{_CITE})*\s*\])+)\s+")
 #: Sentence openers that are capitalised without being part of a name.
 _OPENERS = frozenset(
-    "The A An This That These Those It Its Our Their His Her Both Each All Some "
-    "After Before When While In On At For From With By As If So But And Then".split()
+    """The A An This That These Those It Its Our Their His Her Both Each All Some
+    After Before When While In On At For From With By As If So But And Then
+    I We You He She They My Your Me Us Him Them There Here Who What Which Where
+    Why How Whose Whom Is Are Was Were Be Been Do Does Did Has Have Had Can Could
+    Will Would Should Shall May Might Must Not No Yes None Neither Nor Either Or
+    Any Every Such Same Other Another Most Many Much More Less Few Several One
+    Only Also Just Even Still Yet Already Now Today Currently Since Because
+    Although Though However Unlike Like During Under Over Between Among Without
+    Within Through Per About Around Above Below Into Onto Upon Across Along
+    Against Toward Towards Beyond Despite Except Including Regarding Following
+    Given Due According Based Overall Additionally Furthermore Moreover
+    Meanwhile Therefore Thus Hence Instead Otherwise Finally First Second Third
+    Last Later Earlier Recently Initially Originally Previously Subsequently
+    Eventually Ultimately Specifically Notably Importantly Similarly Likewise
+    Conversely Alternatively Unfortunately Fortunately Interestingly Apparently
+    Clearly Generally Typically Usually Often Sometimes Never Always Approximately
+    Nearly Almost Roughly Please Note See Answer Summary Sources Source Evidence
+    Graph Total Unknown Whether Once Until Unless Whereas Where Nothing Everything
+    Something Anything Nobody Everyone Someone Anyone To Of Up Out Off Very
+    Two Three Four Five Six Seven Eight Nine Ten""".split()
 )
 #: A list bullet, numbered item, quote or heading prefix on a line.
 _LINE_PREFIX_RE = re.compile(r"^\s*(?:[-*+>]|\d+[.)]|#{1,6})\s+")
@@ -54,6 +73,22 @@ _FIGURE_RE = re.compile(r"\d+(?:[.,]\d+)*")
 _WORD_RE = re.compile(r"[^\W\d_][\w'’-]*")
 #: Sentences a check reports, at most, per kind.
 _MAX_FLAGGED = 10
+#: A sentence that says the evidence lacks something ("The graph does not say
+#: who founded Globex."). Saying so is honest, so it needs no citation.
+_GAP_RE = re.compile(
+    r"\b(?:not (?:found|mentioned|stated|given|listed|included|covered|specified|available)"
+    r"|not (?:in|part of) the (?:graph|evidence|data|documents?|sources?|passages?)"
+    r"|(?:does|do|did|is|are|was|were)(?: not|n['’]t) (?:say|mention|state|include|contain"
+    r"|cover|specify|give|list|show|answer|tell|indicate|describe|provide|name|identify"
+    r"|appear|mentioned|stated|given|listed|included|covered|specified|available)"
+    r"|(?:could|can|did)(?: not|n['’]t|not) (?:find|confirm|determine|tell|say)"
+    r"|no (?:information|evidence|mention|record|data|details?|source|passage|fact)s?\b"
+    r"|nothing (?:in|about|on)\b|not enough (?:information|evidence))",
+    re.I,
+)
+#: Trailing zeros of a decimal figure (``2.80``, ``40.0``), dropped before
+#: figures are compared.
+_TRAILING_ZEROS_RE = re.compile(r"(?<![\d.])(\d+)\.(\d*?)0+(?![\d.]?\d)")
 
 
 @dataclass
@@ -99,6 +134,7 @@ class EvidenceLedger:
         self._capacity = capacity
         self._items: OrderedDict[int, Evidence] = OrderedDict()
         self._next = 1
+        self._common: tuple[int, frozenset[str]] = (0, frozenset())
 
     def add(
         self,
@@ -125,6 +161,26 @@ class EvidenceLedger:
 
     def get(self, n: int) -> Evidence | None:
         return self._items.get(n)
+
+    @property
+    def next_number(self) -> int:
+        """The number the next item will get."""
+        return self._next
+
+    def discard(self, numbers: Iterable[int]) -> None:
+        """Forget items, e.g. ones cut from a result the agent never saw."""
+        for n in numbers:
+            if self._items.pop(n, None) is not None:
+                self._common = (0, frozenset())
+
+    def common_words(self) -> frozenset[str]:
+        """Words the evidence writes in lower case: ordinary words, not names."""
+        if self._common[0] != self._next:  # numbers only grow: a new one means new items
+            words = frozenset(
+                w for ev in self._items.values() for w in re.findall(r"(?<!\w)[a-z]+", ev.content)
+            )
+            self._common = (self._next, words)
+        return self._common[1]
 
     @property
     def items(self) -> list[Evidence]:
@@ -211,8 +267,8 @@ def _names_a_year(body: str, valid: set[int] | EvidenceLedger | None) -> bool:
 
 
 def _clean_markers(text: str, valid: set[int] | EvidenceLedger) -> tuple[str, list[int], list[int]]:
-    cited: list[int] = []
-    invalid: list[int] = []
+    cited: dict[int, None] = {}
+    invalid: dict[int, None] = {}
 
     def replace(match: re.Match[str]) -> str:
         numbers = _marker_numbers(match.group(1), valid)
@@ -222,10 +278,9 @@ def _clean_markers(text: str, valid: set[int] | EvidenceLedger) -> tuple[str, li
         for n in numbers:
             if n in valid:
                 keep.append(n)
-                if n not in cited:
-                    cited.append(n)
-            elif n not in invalid:
-                invalid.append(n)
+                cited[n] = None
+            else:
+                invalid[n] = None
         if keep == numbers and re.search(r"[-–]", match.group(1)):
             return match.group(0)  # a range that is all valid stays as written
         return f"[{', '.join(str(n) for n in keep)}]" if keep else _REMOVED
@@ -249,8 +304,18 @@ def _clean_markers(text: str, valid: set[int] | EvidenceLedger) -> tuple[str, li
             return ""
         return " " if (match.group(1) or match.group(2)) else ""
 
-    cleaned = re.sub(rf"([ \t]*){_REMOVED}(?:[ \t]*{_REMOVED})*([ \t]*)", tidy, cleaned)
-    return cleaned.strip(), cited, invalid
+    if _REMOVED in cleaned:
+        # Anchored at the start of a whitespace run, so a long run of spaces
+        # is scanned once rather than once per space.
+        cleaned = re.sub(
+            rf"(?<![ \t])([ \t]*){_REMOVED}(?:[ \t]*{_REMOVED})*([ \t]*)", tidy, cleaned
+        )
+    return cleaned.strip(), list(cited), list(invalid)
+
+
+def states_a_gap(text: str) -> bool:
+    """Whether ``text`` says the evidence lacks something ("not found")."""
+    return _GAP_RE.search(text) is not None
 
 
 def ground_answer(answer: str, ledger: EvidenceLedger) -> GroundedAnswer:
@@ -306,12 +371,16 @@ def _merge_abbreviations(pieces: list[str]) -> list[str]:
     return out
 
 
-def _claim_terms(sentence: str) -> list[str]:
+def _claim_terms(sentence: str, common: frozenset[str] = frozenset()) -> list[str]:
     """The figures and names a sentence states, in order, without repeats.
 
     A name is a run of capitalised words ("Corvane Systems"). A sentence's
-    first word counts only when the next word is capitalised too and it is
-    not an opener such as "The", so "It ships" names nothing.
+    capitalised first word counts too when the sentence names something
+    else ("Globex acquired Initech") or starts a run ("Corvane Systems
+    ships"), unless it is an opener such as "The" or "However"; a word
+    ``common`` holds (written in lower case elsewhere) only counts as the
+    start of a run. Alone in its sentence ("Penalty: 2% a week", "Version
+    2.8 ships") it is taken as an ordinary word.
     """
     terms: list[str] = []
     for figure in _FIGURE_RE.findall(sentence):
@@ -321,9 +390,11 @@ def _claim_terms(sentence: str) -> list[str]:
     run: list[str] = []
     for i, word in enumerate(words):
         capital = word[:1].isupper()
-        if i == 0:
+        if i == 0 and capital:
             follows = len(words) > 1 and words[1][:1].isupper()
-            capital = capital and follows and word not in _OPENERS
+            names_more = any(w[:1].isupper() and len(w) >= 3 for w in words[2:])
+            ordinary = word.lower() in common
+            capital = word not in _OPENERS and (follows or (names_more and not ordinary))
         if capital:
             run.append(word)
             continue
@@ -335,17 +406,22 @@ def _claim_terms(sentence: str) -> list[str]:
     return terms
 
 
+def _drop_trailing_zeros(text: str) -> str:
+    """``2.80`` -> ``2.8`` and ``40.0`` -> ``40``, so equal figures compare equal."""
+    return _TRAILING_ZEROS_RE.sub(lambda m: m[1] + (f".{m[2]}" if m[2] else ""), text)
+
+
 def _in_evidence(term: str, text: str) -> bool:
-    """A figure must appear as a number. A name must have at least half of
-    its words of three or more letters in the text as whole words (either
-    word of "Corvane Systems", two of "Sofia Marquez Rivera"); case is
-    ignored, ``text`` is already lower-case."""
+    """A figure must appear as a number (``2.8`` matches ``2.80``). A name
+    must have every word of three or more letters in the text as a whole
+    word ("Corvane Systems" needs both; "Smith" alone still needs "smith").
+    Case is ignored; ``text`` is already lower-case, with figures
+    normalised by :func:`_drop_trailing_zeros`."""
     if term[0].isdigit():
-        figure = re.escape(term.replace(",", ""))
+        figure = re.escape(_drop_trailing_zeros(term.replace(",", "")))
         return re.search(rf"(?<![\d.]){figure}(?!\d|[.,]\d)", text) is not None
     words = [w.lower() for w in term.split() if len(w) >= 3]
-    found = sum(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", text) is not None for w in words)
-    return found * 2 >= len(words)
+    return all(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", text) is not None for w in words)
 
 
 def _check_claims(answer: str, ledger: EvidenceLedger) -> tuple[list[str], list[UnsupportedClaim]]:
@@ -355,33 +431,40 @@ def _check_claims(answer: str, ledger: EvidenceLedger) -> tuple[list[str], list[
     questions and lead-ins ending in ``:`` are not claims. A claim with no
     marker of its own is uncited. A cited claim whose figures or names are in
     none of the evidence it cites is unsupported. The check is literal, with
-    no LLM: a figure written as a word ("two") counts as missing.
+    no LLM: a figure written as a word ("two") counts as missing. A sentence
+    that says the evidence lacks something ("The graph does not say who
+    founded Globex.") needs no marker. Figures and names are checked against
+    the cited evidence's content, not its source path.
     """
     uncited: list[str] = []
     unsupported: list[UnsupportedClaim] = []
+    # Words written in lower case in the evidence or the answer are ordinary
+    # words, not names, when they open a sentence.
+    common = ledger.common_words() | frozenset(re.findall(r"(?<!\w)[a-z]+", answer))
     for sentence in _sentences(answer):
         if sentence.endswith(("?", ":")):
             continue
-        numbers: list[int] = []
-        for marker in _MARKER_RE.findall(sentence):
-            numbers.extend(_marker_numbers(marker, ledger) or [])
+        cites: dict[int, None] = {}
+        for marker in dict.fromkeys(_MARKER_RE.findall(sentence)):
+            cites.update(dict.fromkeys(_marker_numbers(marker, ledger) or []))
+        numbers = list(cites)
         # A bracketed year stays in the claim as a figure; every other marker
         # (a citation, ``[0]``, a page span ``[1-200]``) is blanked.
         bare = _MARKER_RE.sub(
             lambda m: m.group(0) if _names_a_year(m.group(1), ledger) else " ", sentence
         )
         bare = " ".join(bare.split())
-        terms = _claim_terms(bare)
+        terms = _claim_terms(bare, common)
         if not terms or len(bare.split()) < 3:
             continue
         if not numbers:
-            if len(uncited) < _MAX_FLAGGED:
+            if len(uncited) < _MAX_FLAGGED and not _GAP_RE.search(bare):
                 uncited.append(sentence)
             continue
         cited_text = " ".join(
-            f"{ev.content} {ev.source}" for n in numbers if (ev := ledger.get(n)) is not None
+            ev.content for n in numbers if (ev := ledger.get(n)) is not None
         ).lower()
-        cited_text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", cited_text)
+        cited_text = _drop_trailing_zeros(re.sub(r"(?<=\d),(?=\d{3}\b)", "", cited_text))
         missing = [t for t in terms if not _in_evidence(t, cited_text)]
         if missing and len(unsupported) < _MAX_FLAGGED:
             unsupported.append(UnsupportedClaim(sentence, missing))

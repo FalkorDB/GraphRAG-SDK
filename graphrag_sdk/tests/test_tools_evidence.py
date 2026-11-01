@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from graphrag_sdk.tools.evidence import (
@@ -10,6 +12,7 @@ from graphrag_sdk.tools.evidence import (
     EvidenceLedger,
     GroundedAnswer,
     ground_answer,
+    states_a_gap,
 )
 
 
@@ -241,15 +244,50 @@ class TestClaimChecks:
         g = ground_answer("The Kestrel sensors are capped at 20% [1].", contract())
         assert [u.missing for u in g.unsupported] == [["Kestrel"]]
 
-    def test_a_two_word_name_is_found_by_either_word(self):
+    def test_a_name_needs_every_word(self):
         g = ground_answer("Corvane Systems pays 2% a week [1].", contract())
-        assert g.unsupported == []
-
-    def test_a_longer_name_needs_half_of_its_words(self):
+        assert [u.missing for u in g.unsupported] == [["Corvane Systems"]]
         g = ground_answer("Sofia Marquez Rivera signed HG-2025-118 [2].", contract())
-        assert g.unsupported == []
-        g = ground_answer("Sofia Alvarez Rivera signed HG-2025-118 [2].", contract())
-        assert [u.missing for u in g.unsupported] == [["Sofia Alvarez Rivera"]]
+        assert [u.missing for u in g.unsupported] == [["Sofia Marquez Rivera"]]
+        assert ground_answer("Sofia Marquez signed HG-2025-118 [2].", contract()).unsupported == []
+
+    def test_a_different_first_name_is_flagged(self):
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="passage", content="John Doe signed the lease.")
+        g = ground_answer("Then John Smith signed the lease [1].", led)
+        assert [u.missing for u in g.unsupported] == [["John Smith"]]
+
+    def test_a_lone_surname_still_needs_support(self):
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="passage", content="John Doe signed the lease.")
+        assert ground_answer("Then Doe signed the lease [1].", led).unsupported == []
+        g = ground_answer("Then Smith signed the lease [1].", led)
+        assert [u.missing for u in g.unsupported] == [["Smith"]]
+
+    def test_a_sentences_first_name_is_checked(self):
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="passage", content="Initech was acquired in 2019.")
+        g = ground_answer("Globex acquired Initech in 2019 [1].", led)
+        assert [u.missing for u in g.unsupported] == [["Globex"]]
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            "Revenue grew to 40 million in 2019 [1].",
+            "Penalty: 2% per week [1].",
+            "However, Initech was acquired in 2019 [1].",
+            "Acquisition of Initech closed in 2019 [1].",
+        ],
+    )
+    def test_an_ordinary_first_word_is_not_a_name(self, answer):
+        led = EvidenceLedger()
+        led.add(
+            tool="retrieve",
+            kind="passage",
+            content="Initech was acquired in 2019; revenue grew to 40 million. "
+            "The acquisition carried a penalty of 2% per week.",
+        )
+        assert ground_answer(answer, led).unsupported == []
 
     @pytest.mark.parametrize("name", ["Ann", "Kest", "Order Kest Systems"])
     def test_names_match_whole_words_only(self, name):
@@ -298,6 +336,79 @@ class TestClaimChecks:
     def test_flagged_claims_are_capped(self):
         answer = "Fact [1]. " + " ".join(f"Item {i} costs {i + 100} EUR." for i in range(30))
         assert len(ground_answer(answer, contract()).uncited) == 10
+
+    @pytest.mark.parametrize(
+        ("answer", "content"),
+        [
+            ("The rate is 2.80 percent [1].", "The rate is 2.8 percent."),
+            ("The rate is 2.8 percent [1].", "The rate is 2.80 percent."),
+            ("It weighs 40 kg [1].", "It weighs 40.0 kg."),
+            ("It weighs 40.0 kg [1].", "It weighs 40 kg."),
+        ],
+    )
+    def test_trailing_zeros_do_not_matter(self, answer, content):
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="passage", content=content)
+        assert ground_answer(answer, led).unsupported == []
+
+    def test_the_source_path_is_not_evidence(self):
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="passage", content="Sales rose.", source="report_2024.pdf")
+        g = ground_answer("Sales rose in 2024 [1].", led)
+        assert [u.missing for u in g.unsupported] == [["2024"]]
+
+
+class TestGaps:
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "The graph does not say who audited Initech.",
+            "The evidence does not mention Globex.",
+            "No information about Globex was found.",
+            "Globex is not found in the graph.",
+            "I could not find who audited Initech.",
+        ],
+    )
+    def test_a_sentence_stating_a_gap_needs_no_citation(self, sentence):
+        assert states_a_gap(sentence)
+        g = ground_answer(f"Initech was acquired in 2019 [1]. {sentence}", contract_2019())
+        assert g.grounded and g.uncited == []
+
+    def test_a_claim_is_not_a_gap(self):
+        assert not states_a_gap("Globex acquired Initech in 2019.")
+        answer = "Initech was acquired in 2019 [1]. Globex paid 40 million."
+        assert ground_answer(answer, contract_2019()).uncited == ["Globex paid 40 million."]
+
+
+def contract_2019() -> EvidenceLedger:
+    led = EvidenceLedger()
+    led.add(tool="retrieve", kind="passage", content="Initech was acquired in 2019.")
+    return led
+
+
+class TestPerformance:
+    def test_many_repeated_markers_are_checked_quickly(self):
+        led = EvidenceLedger()
+        for i in range(49):
+            led.add(tool="retrieve", kind="passage", content=f"Fact {i + 1} holds. " * 100)
+        answer = f"Fact 7 holds {'[1-49]' * 8000}."
+        start = time.perf_counter()
+        g = ground_answer(answer, led)
+        assert time.perf_counter() - start < 2.0
+        assert g.grounded and sorted(g.cited) == list(range(1, 50))
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            "Fact" + " " * 40_000 + "x [1].",
+            "Fact [99]" + " " * 40_000 + "[98] x [1].",
+        ],
+    )
+    def test_a_long_run_of_spaces_is_tidied_quickly(self, answer):
+        start = time.perf_counter()
+        g = ground_answer(answer, ledger(3))
+        assert time.perf_counter() - start < 1.0
+        assert g.grounded and g.cited == [1]
 
 
 class TestLargeNumbersAndAbbreviations:

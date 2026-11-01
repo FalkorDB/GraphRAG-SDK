@@ -42,7 +42,12 @@ from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 from graphrag_sdk.tools import files as fs
 from graphrag_sdk.tools import graph_ops as ops
 from graphrag_sdk.tools.errors import ToolError
-from graphrag_sdk.tools.evidence import DEFAULT_LEDGER_CAPACITY, EvidenceLedger, ground_answer
+from graphrag_sdk.tools.evidence import (
+    DEFAULT_LEDGER_CAPACITY,
+    EvidenceLedger,
+    ground_answer,
+    states_a_gap,
+)
 from graphrag_sdk.tools.models import (
     ChunkRef,
     CitationCheckResult,
@@ -442,7 +447,7 @@ class GraphRAGToolkit:
         constructs a dedicated GraphRAG the toolkit owns (closed by
         :meth:`aclose` / ``async with``).
         """
-        if not _TENANT_RE.match(tenant_id):
+        if not _TENANT_RE.fullmatch(tenant_id):
             raise ValueError(
                 "tenant_id must match ^[A-Za-z0-9_-]{1,64}$ (it becomes part "
                 f"of the graph name); got {tenant_id!r}"
@@ -540,9 +545,14 @@ class GraphRAGToolkit:
     def _store(self) -> Any:
         return self._rag._graph_store
 
-    def _evidence(self, tool: str, kind: str, content: str, source: str = "", **meta: Any) -> int:
+    def _evidence(
+        self, tool: str, kind: str, content: str, source: str = "", **meta: Any
+    ) -> int | None:
         # The full text the agent was shown, so check_citations checks the
-        # same text the agent cited from.
+        # same text the agent cited from. Nothing to cite gets no number, so
+        # an empty passage cannot make an answer grounded.
+        if not content.strip():
+            return None
         return self._ledger.add(
             tool=tool, kind=kind, content=content, source=source, metadata=meta
         ).n
@@ -562,38 +572,50 @@ class GraphRAGToolkit:
         )
 
     async def _require_graph(self) -> None:
-        """Raise a ToolError if the graph was never written. Checked
-        read-only (asking never creates it) until it is found to exist."""
-        if self._shared.get("graph_exists"):
-            return
-        exists = await ops.graph_exists(self._store)
-        if exists is False:
+        """Raise a ToolError unless the graph exists and can be reached.
+
+        Checked read-only on every call (asking never creates the graph), so
+        a graph deleted after an earlier call is reported missing.
+        """
+        if not await self._graph_exists():
             raise self._missing_graph()
-        if exists:
-            self._shared["graph_exists"] = True
+
+    async def _graph_exists(self) -> bool:
+        """Whether the graph exists; a ToolError if the store cannot be reached."""
+        exists = await ops.graph_exists(self._store)
+        if exists is None:
+            raise ToolError(
+                f"Could not reach the graph store to read graph '{self._graph_name}'.",
+                hint="Check that FalkorDB is running and reachable, then call the tool again.",
+            )
+        return exists
 
     # ── Read tools ───────────────────────────────────────────────
 
     async def status(self) -> StatusResult:
         """What the graph holds: counts, entity labels and relation types."""
+        exists = await self._graph_exists()
         counts = await ops.graph_counts(self._store)
         label_counts, rel_counts = await ops.schema_counts(self._store)
         hint = None
-        if counts["entities"] == 0 and await ops.graph_exists(self._store) is False:
+        if counts["entities"] == 0 and not exists:
             hint = f"{self._missing_graph()}"
         elif counts["entities"] == 0:
             hint = "The graph is empty: ingest documents (and finalize) before querying."
         elif counts["relations"] == 0:
             hint = "The graph has entities but no relations."
-        return StatusResult(
+        result = StatusResult(
             entities=counts["entities"],
             relations=counts["relations"],
             documents=counts["documents"],
             chunks=counts["chunks"],
             entity_types=[EntityTypeInfo(label=k, count=v) for k, v in label_counts.items()],
             relation_types=[RelationTypeInfo(label=k, count=v) for k, v in rel_counts.items()],
-            hint=hint,
         )
+        # The counts are evidence too: an answer about them can cite [n].
+        result.n = self._evidence("status", "status", result.to_llm_text(max_chars=100_000))
+        result.hint = hint
+        return result
 
     async def _declared_ontology(self) -> Ontology:
         """The persisted ontology, read without registering anything.
@@ -613,6 +635,11 @@ class GraphRAGToolkit:
 
     async def get_ontology(self) -> OntologyResult:
         """The declared ontology with live counts (undeclared stored types too)."""
+        await self._require_graph()
+        return await self._ontology_result()
+
+    async def _ontology_result(self) -> OntologyResult:
+        # No existence check: set_ontology may run before the first ingest.
         ontology = await self._declared_ontology()
         label_counts, rel_counts = await ops.schema_counts(self._store)
         declared_e = {e.label: e for e in ontology.entities}
@@ -637,7 +664,9 @@ class GraphRAGToolkit:
             )
             for label, count in sorted({**{r: 0 for r in declared_r}, **rel_counts}.items())
         ]
-        return OntologyResult(entity_types=entity_types, relation_types=relation_types)
+        result = OntologyResult(entity_types=entity_types, relation_types=relation_types)
+        result.n = self._evidence("get_ontology", "ontology", result.to_llm_text(max_chars=100_000))
+        return result
 
     def _make_strategy(
         self,
@@ -670,17 +699,17 @@ class GraphRAGToolkit:
         ``GraphRAG.retrieve`` first initialises the ontology, which on a graph
         nothing was declared on yet registers the default entity types: a
         write, from a read tool. Until the GraphRAG has done that itself, run
-        the strategy directly on the declared ontology instead.
+        the strategy directly instead. MultiPath reads the ontology only for
+        text-to-Cypher, which retrieve never enables, so the persisted one is
+        not loaded for it.
         """
         if getattr(self._rag, "_ontology_initialized", True):
             return await self._rag.retrieve(
                 question, strategy=self._make_strategy(top_k, plan=plan), ctx=ctx
             )
-        declared = await self._declared_ontology()
-        ontology = declared if (declared.entities or declared.relations) else None
         await self._rag._validate_graph_config(ctx=ctx)
         ctx.ensure_budget("retrieval strategy search")
-        return await self._make_strategy(top_k, ontology, plan).search(question, ctx)
+        return await self._make_strategy(top_k, plan=plan).search(question, ctx)
 
     async def retrieve(
         self,
@@ -723,19 +752,15 @@ class GraphRAGToolkit:
         store = self._store
         rr = await self._search(inp.question, inp.top_k, ctx, plan)
         prov: dict[str, Any] = rr.metadata.get("provenance") or {}
-        seeds = [e for e in (prov.get("entities") or []) if e.get("id")][: inp.top_k]
-        seed_ids = [e["id"] for e in seeds]
-        cards = await ops.enrich_entities(store, seed_ids)
+        found = list(dict.fromkeys(e["id"] for e in (prov.get("entities") or []) if e.get("id")))
+        cards = await ops.enrich_entities(store, found)
+        # Only stored entities: the facts path names entities by a made-up id
+        # (the name, lower-cased) that matches no node.
+        seed_ids = [eid for eid in found if eid in cards][: inp.top_k]
 
         entities = []
-        for seed in seeds:
-            card = cards.get(seed["id"]) or {
-                "id": seed["id"],
-                "name": seed.get("name", ""),
-                "label": "",
-                "description": seed.get("description") or None,
-                "properties": {},
-            }
+        for seed_id in seed_ids:
+            card = cards[seed_id]
             text = card["name"] + (f" ({card['label']})" if card["label"] else "")
             if card.get("description"):
                 text += f": {card['description']}"
@@ -833,7 +858,9 @@ class GraphRAGToolkit:
         Grounded means at least one real piece of evidence is cited. On a
         grounded answer it also lists claims (sentences stating a figure or a
         name) with no [n] of their own, and cited claims whose figures or names
-        the cited evidence does not contain; neither changes ``grounded``.
+        the cited evidence does not contain; neither changes ``grounded``. A
+        sentence that says the evidence lacks something ("The graph does not
+        say who founded Globex.") is not a claim and needs no [n].
         """
         inp = CheckCitationsInput(answer=answer)
         checked = ground_answer(inp.answer, self._ledger)
@@ -842,7 +869,12 @@ class GraphRAGToolkit:
             for ev in checked.citations(self._ledger)
         ]
         hints: list[str] = []
-        if checked.reason == "no_citations":
+        if checked.reason == "no_citations" and states_a_gap(checked.answer):
+            hints.append(
+                "Saying the evidence does not answer needs no citation; cite [n] only "
+                "for the claims the answer makes."
+            )
+        elif checked.reason == "no_citations":
             hints.append("Cite the evidence numbers [n] from tool results after each claim.")
         elif checked.reason == "invalid_citations":
             hints.append(
@@ -1065,7 +1097,7 @@ class GraphRAGToolkit:
                 f"The ontology was not accepted: {_short(str(exc), 500)}",
                 hint="Existing types cannot change their properties; add new types instead.",
             ) from None
-        return await self.get_ontology()
+        return await self._ontology_result()
 
     async def ingest(
         self,
