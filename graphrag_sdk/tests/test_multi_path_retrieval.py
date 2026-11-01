@@ -123,6 +123,26 @@ class TestMultiPathRetrieval:
         assert list(entities) == ["alice__person", "acme_corp__organization", "bob", "alice"]
         assert entities["alice__person"]["name"] == "Alice"
 
+    async def test_relates_search_keeps_endpoints_without_a_name(self):
+        vector = MagicMock()
+        vector.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": None,
+                    "type": "EMPLOYS",
+                    "tgt_name": "",
+                    "score": 0.9,
+                    "src_id": "e-1__company",
+                    "tgt_id": "p-7__person",
+                },
+                {"src_name": None, "type": "KNOWS", "tgt_name": None, "score": 0.5},
+            ]
+        )
+        _, entities = await search_relates_edges(vector, [0.1], rel_top_k=3)
+        # A table row without a name column still seeds expansion by its id.
+        assert list(entities) == ["e-1__company", "p-7__person"]
+        assert entities["e-1__company"]["name"] == "e-1__company"
+
     async def test_relates_search_checks_budget_before_vector_call(self):
         vector = MagicMock()
         vector.search_relationships = AsyncMock(return_value=[])

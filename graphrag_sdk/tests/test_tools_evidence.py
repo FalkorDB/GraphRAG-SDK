@@ -372,6 +372,10 @@ class TestGaps:
             "None of the passages mention Globex's 2023 revenue.",
             "There is no information on Globex's 2023 revenue.",
             "Who founded Globex could not be determined.",
+            "The graph could not find any record of Globex.",
+            "The graph cannot say who founded Globex.",
+            "The sources can't say who founded Globex.",
+            "I can't find who founded Globex.",
         ],
     )
     def test_a_sentence_stating_a_gap_needs_no_citation(self, sentence):
@@ -392,6 +396,8 @@ class TestGaps:
             "Globex is not listed on NASDAQ.",
             "Acme did not include Initech in its 2019 report.",
             "The sources say Globex does not provide pensions.",
+            "Globex could not find a buyer in 2021.",
+            "Bob can't attend the 2021 meeting.",
         ],
     )
     def test_a_negative_claim_about_the_world_needs_a_citation(self, sentence):
