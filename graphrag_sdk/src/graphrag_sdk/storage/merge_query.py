@@ -360,10 +360,11 @@ _CARRIED = f"{_TICKED}, d, s, present, fresh, unhandled, ok"
 
 def description_members(edge: str) -> str:
     """A mention edge's descriptions as a list: its ``descriptions``, else its
-    ``description`` as one member (as on a node)."""
+    ``description`` as one member, blank ones left out (as on a node)."""
     return (
-        f"coalesce({edge}.descriptions, "
-        f"CASE WHEN {edge}.description IS NULL THEN [] ELSE [{edge}.description] END)"
+        f"[x IN coalesce({edge}.descriptions, "
+        f"CASE WHEN {edge}.description IS NULL THEN [] ELSE [{edge}.description] END) "
+        "WHERE trim(x) <> '']"
     )
 
 
@@ -380,6 +381,8 @@ def mention_update(edge: str, new: str) -> str:
         f"i IN range(0, size({spans}) - 2, 2) | "
         "CASE WHEN any(j IN range(0, size(old_spans) - 2, 2) "
         f"WHERE old_spans[j] = {new}.spans[i] AND old_spans[j + 1] = {new}.spans[i + 1]) "
+        "OR any(k IN range(0, size(acc) - 2, 2) "
+        f"WHERE acc[k] = {new}.spans[i] AND acc[k + 1] = {new}.spans[i + 1]) "
         f"THEN acc ELSE acc + [{new}.spans[i], {new}.spans[i + 1]] END) END, "
         f"{edge}.description = CASE WHEN size(all_ds) = 0 THEN null "
         "ELSE reduce(acc = head(all_ds), x IN tail(all_ds) | acc + ' | ' + x) END, "

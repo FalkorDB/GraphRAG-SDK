@@ -521,6 +521,40 @@ class TestOnRealFalkorDB:
             ]
         ]
 
+    async def test_one_call_writing_a_mention_edge_twice_keeps_every_span_once(self, store):
+        await store.upsert_nodes([_alice("CEO")])
+        await store.query_raw(
+            "CREATE (c:Chunk {id: 'c1'}) WITH c MATCH (e:__Entity__ {id: 'alice'}) "
+            "CREATE (e)-[:MENTIONED_IN {description: ''}]->(c)"
+        )
+
+        def edge(**props):
+            return GraphRelationship(
+                start_node_id="alice", end_node_id="c1", type="MENTIONED_IN", properties=props
+            )
+
+        # Two writes of the edge in one call, one repeating a pair of its own.
+        await store.upsert_relationships(
+            [edge(spans=[0, 5], description="CEO"), edge(spans=[9, 14, 9, 14, 0, 5])]
+        )
+        rows = (
+            await store.query_raw(
+                "MATCH (:__Entity__ {id: 'alice'})-[m:MENTIONED_IN]->(:Chunk {id: 'c1'}) "
+                "RETURN m.spans, m.description, m.descriptions"
+            )
+        ).result_set
+        # The blank description the edge held is not joined in as " | CEO".
+        assert rows == [[[0, 5, 9, 14], "CEO", None]]
+        # One write (nothing to fold) repeating a pair: the query keeps it once.
+        await store.upsert_relationships([edge(spans=[20, 25, 20, 25])])
+        rows = (
+            await store.query_raw(
+                "MATCH (:__Entity__ {id: 'alice'})-[m:MENTIONED_IN]->(:Chunk {id: 'c1'}) "
+                "RETURN m.spans"
+            )
+        ).result_set
+        assert rows == [[[0, 5, 9, 14, 20, 25]]]
+
     async def test_text_a_remaining_chunk_still_says_stays(self, store):
         """An update keeps an unchanged chunk under a new id: what it says is
         removed with the old chunk and said again by the new one."""

@@ -1232,6 +1232,7 @@ class GraphStore:
                         union_provenance=is_relates,
                         seen=seen,
                         join_descriptions=rel_type == "MENTIONED_IN",
+                        union_spans=rel_type == "MENTIONED_IN",
                     )
                     folded[key] = (first, props, weight + 1, seen)
                 else:
@@ -3057,6 +3058,7 @@ class GraphStore:
         union_provenance: bool,
         seen: set[Any] | None = None,
         join_descriptions: bool = False,
+        union_spans: bool = False,
     ) -> tuple[dict[str, Any], set[Any] | None]:
         """Apply a later write of the same key on top of an earlier one.
 
@@ -3098,6 +3100,18 @@ class GraphStore:
                 merged["description"] = " | ".join(members)
                 if len(members) > 1:
                     merged["descriptions"] = members
+        # A mention edge's flat ``[start, end, ...]`` spans: both writes' pairs,
+        # each once, as the edge write itself combines them.
+        if union_spans:
+            pairs: list[tuple[Any, Any]] = []
+            for side in (acc, props):
+                flat = side.get("spans")
+                if isinstance(flat, list):
+                    for pair in zip(flat[0::2], flat[1::2]):
+                        if pair not in pairs:
+                            pairs.append(pair)
+            if pairs:
+                merged["spans"] = [x for pair in pairs for x in pair]
         old = acc.get("source_chunk_ids")
         contrib = props.get("source_chunk_ids")
         if union_provenance and isinstance(old, list):
