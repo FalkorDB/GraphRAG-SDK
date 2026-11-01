@@ -4,15 +4,17 @@ sidebarTitle: "Ingestion"
 description: "How GraphRAG SDK turns raw documents into a knowledge graph through a 9-step ingestion pipeline, from chunking to entity resolution."
 ---
 
-When you call `rag.ingest("document.txt")`, the SDK transforms your raw text into a structured knowledge graph through a **9-step sequential pipeline**. Think of it as an assembly line: each step takes the output of the previous one, refines it, and passes it forward.
+When you call `rag.ingest("document.txt")`, the SDK transforms your raw text into a structured knowledge graph through a **9-step pipeline** (steps 1-7 in sequence, steps 8 and 9 in parallel). Think of it as an assembly line: each step takes the output of the previous one, refines it, and passes it forward.
 
 This document explains what each step does, why it exists, and how to tune it.
 
 <Note>
-This pipeline is built for prose. For CSVs and other tabular sources, see
-[Structured Ingestion](/structured-ingestion): you declare what the columns mean
-and the graph is written deterministically, with no model in the loop, into the
-same graph your documents live in.
+This pipeline is built for prose. A file ending in `.csv`, `.tsv`, `.psv` or
+`.tab` never reaches it: `ingest()` routes it by extension to the record path
+described in [Structured Ingestion](/structured-ingestion), where you declare
+what the columns mean and the graph is written deterministically, with no model
+in the loop, into the same graph your documents live in. Pass
+`loader=TextLoader()` to read such a file as prose instead.
 </Note>
 
 ---
@@ -26,6 +28,8 @@ same graph your documents live in.
                     v                    v
               1. Load Text         (or pass text= directly)
                     |
+              Unchanged content? ──yes──> return, nothing written
+                    |
               2. Chunk Text
                     |
               3. Build Lexical Graph
@@ -36,8 +40,8 @@ same graph your documents live in.
               4b. Quality Filter
               (remove bad nodes/dangling edges)
                     |
-              5. Prune Against Schema
-              (keep only schema-conforming data)
+              5. Prune Against Ontology
+              (keep only ontology-conforming data)
                     |
               6. Resolve Duplicates
               (merge same-entity mentions)
@@ -51,7 +55,7 @@ same graph your documents live in.
    (MENTIONED_IN edges)  (embed + store vectors)
          └─────────┬─────────┘
                    v
-            Done — IngestionResult
+         Record content_hash — Done, IngestionResult
 ```
 
 Steps 1-7 run **sequentially** (each depends on the previous). Steps 8-9 run **in parallel** since they're independent.
@@ -62,14 +66,44 @@ Steps 1-7 run **sequentially** (each depends on the previous). Steps 8-9 run **i
 
 ### Step 1 — Load
 
-**What it does:** Reads raw text from a file, URL, or string.
+**What it does:** Reads raw text from a file, or takes the string you pass as `text=`.
 
-**How:** The `LoaderStrategy` ABC handles this. The SDK auto-detects the loader based on file extension:
-- `.pdf` files use `PdfLoader`
-- Everything else uses `TextLoader`
+**How:** The `LoaderStrategy` ABC handles this. When you pass no `loader=`, the SDK picks one from the file extension:
+- `.pdf` uses `PdfLoader` (PyMuPDF when it is installed via `graphrag-sdk[pdf-fast]`, otherwise `pypdf` from `graphrag-sdk[pdf]`)
+- `.md` uses `MarkdownLoader`, which also parses headers and paragraphs into structural elements (needs `graphrag-sdk[markdown]`)
+- `.csv`, `.tsv`, `.psv` and `.tab` leave this pipeline for the [record path](/structured-ingestion)
+- Everything else uses `TextLoader` (UTF-8 by default)
 - If you pass `text=` directly, the loader step is skipped entirely
 
-**Output:** `DocumentOutput` containing the raw text and a `DocumentInfo` with a unique ID and file path.
+**Output:** `DocumentOutput` containing the raw text and a `DocumentInfo` with the document's id and path.
+
+#### Document identity
+
+Every document gets a stable id, which is the handle `update()` and `delete_document()` take later:
+
+| Input | Default `document_id` |
+|-------|-----------------------|
+| `ingest("docs/a.md")` | the normalised path (`os.path.normpath`), so `./docs/a.md` and `docs/a.md` are one document |
+| `ingest("s3://bucket/a.md")` | a URI is kept verbatim |
+| `ingest(text="...")` | `text-<16 hex>`, a SHA-256 prefix of the text |
+
+Pass `document_id=` to choose your own. An id may not contain the reserved substring `__pending__` (`ValueError`), and an id already bound to a different path is refused rather than silently rebound.
+
+Because a text-mode id is derived from the text, two `ingest(text=...)` calls with identical text and no `document_id` address **one** document: the second call is a no-op. Pass a distinct `document_id` per call to store identical texts as separate documents.
+
+#### Unchanged content is skipped
+
+Before chunking, the pipeline hashes the loaded text (SHA-256). If the graph already holds a Document with this id and the same `content_hash`, `ingest()` returns at once: no chunking, NER, LLM or graph writes. The result says so:
+
+```python
+result = await rag.ingest("docs/a.md")       # second time, file unchanged
+result.chunks_indexed                         # 0
+result.metadata["skipped_unchanged"]          # True
+```
+
+The hash is written **last**, and only when every write of the run was reported complete. A chunk that failed extraction, a `RELATES` or `MENTIONED_IN` edge the store dropped after a transient error, or a chunk left without an embedding all withhold it; `result.metadata["incomplete_writes"]` lists what came up short, and the next `ingest()` of the same file re-runs in full and repairs the document instead of skipping it. Deployments without an embedder are not penalised: no embedder means nothing was attempted, which still counts as complete.
+
+To re-chunk or re-extract text that has not changed — after changing the ontology, chunker, extractor or model — use `update(..., force=True)`. See [Incremental Updates](/incremental-updates).
 
 **Code:** `LoaderStrategy.load()` in [`ingestion/loaders/base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/loaders/base.py)
 
@@ -77,16 +111,38 @@ Steps 1-7 run **sequentially** (each depends on the previous). Steps 8-9 run **i
 
 ### Step 2 — Chunk
 
-**What it does:** Splits the document text into smaller overlapping windows called chunks. Each chunk is small enough for the LLM to process, but large enough to contain meaningful context.
+**What it does:** Splits the document text into smaller pieces called chunks. Each chunk is small enough for the LLM to process, but large enough to contain meaningful context.
 
-**How:** The default `FixedSizeChunking` uses a sliding window:
-- Window size: 1000 characters (configurable)
-- Overlap: 100 characters between consecutive chunks
-- Step size: `chunk_size - chunk_overlap` = 900 characters
+**How:** The default is `SentenceTokenCapChunking(max_tokens=384, overlap_sentences=2)`:
+- Text is split at sentence endings (`.`, `!` or `?` followed by whitespace), so a chunk never ends mid-sentence and never splits an entity name
+- Sentences are packed greedily into a chunk while its token count, measured with tiktoken's `cl100k_base` encoding, stays within `max_tokens`
+- Consecutive chunks share `overlap_sentences` sentences, so a fact that spans a boundary appears whole in at least one chunk
+- A single sentence longer than the cap becomes a chunk of its own
 
-**Why overlap?** Without overlap, an entity mentioned right at the boundary between two chunks might be split across them and lost. Overlap ensures entities near boundaries appear in at least one complete chunk.
+**Why 384 tokens?** The relationship extractor returns a roughly fixed number of facts per call, however much text it is given, so smaller chunks mean more calls and more extracted facts. On the benchmark corpus, 384 against 768 measured entity F1 0.574 vs 0.563 and relation F1 0.237 vs 0.223. The cost is more extraction calls: 103 → 157 (+52 %) on the 11-document benchmark corpus, +35 % on a 53k-token corpus, and about 19 % more input tokens, since the extraction instructions are re-sent with every chunk. Raising the cap trades recall for lower cost:
 
-**Output:** `TextChunks` — a list of `TextChunk` objects, each with a unique ID (`uid`), the text content, and an index number.
+```python
+from graphrag_sdk import SentenceTokenCapChunking, FixedSizeChunking
+
+await rag.ingest("report.txt", chunker=SentenceTokenCapChunking(max_tokens=512))
+
+# Character windows instead of sentences
+await rag.ingest("report.txt", chunker=FixedSizeChunking(chunk_size=1000, chunk_overlap=100))
+```
+
+`StructuralChunking`, `ContextualChunking` and the documented `CallableChunking` example default to 384 tokens as well. `StructuralChunking` (in `graphrag_sdk.ingestion.chunking_strategies`) groups the headers and paragraphs `MarkdownLoader` parses, and `update()` hands it the same parsed structure that `ingest()` does.
+
+#### Deterministic chunk ids
+
+A chunk's id is derived from the document id, its position and its text: `chunk-` followed by a SHA-256 prefix. Re-ingesting the same document therefore `MERGE`s onto the chunks already there instead of adding a second copy. `ContextualChunking` hashes the original chunk text, not the LLM-enriched one, so a differently worded summary does not mint a new id.
+
+Because position is part of the id, inserting a paragraph into an edited document re-ids every chunk after it; only byte-identical files are a no-op. Use `update()` to replace an edited document cleanly. Chunks written by `update()` are keyed on its transient pending id, so the live and pending versions never share chunk nodes during the cutover.
+
+<Note>
+Graphs written before chunk ids were deterministic hold random chunk ids. The first re-ingest of such a document adds one more copy of its chunk layer (it matches nothing); from the second re-ingest on it is stable.
+</Note>
+
+**Output:** `TextChunks` — a list of `TextChunk` objects, each with its id (`uid`), the text content, an index number and strategy metadata.
 
 **Code:** `ChunkingStrategy.chunk()` in [`ingestion/chunking_strategies/base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/chunking_strategies/base.py)
 
@@ -114,23 +170,25 @@ Chunk 0 ──NEXT_CHUNK──> Chunk 1 ──NEXT_CHUNK──> Chunk 2
 
 **Why mandatory?** This is the Zero-Loss Data principle — every piece of source material is traceable in the graph. When the retrieval system finds a chunk, it can always trace back to the source document.
 
-**Code:** `IngestionPipeline._build_lexical_graph()` in [`ingestion/pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
+The Document is written here without its `content_hash`; the hash is added only at the end of a complete run (see [Step 1](#unchanged-content-is-skipped)).
+
+**Code:** `LexicalGraphWriter._build_lexical_graph()` in [`ingestion/lexical_graph.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/lexical_graph.py)
 
 ---
 
 ### Step 4 — Extract Entities & Relationships
 
-**What it does:** The most important step — an LLM reads each chunk and extracts structured knowledge: entities (people, places, organizations, etc.) and the relationships between them.
+**What it does:** The most important step — the text of each chunk is turned into structured knowledge: entities (people, places, organizations, etc.) and the relationships between them.
 
 **How:** The default `GraphExtraction` strategy uses a 2-step process:
 
-1. **Step 1 (NER):** A pluggable entity extractor identifies entities in the text. Default: GLiNER (a local transformer model, no API calls needed). Alternative: `LLMExtractor` (uses the LLM for NER).
+1. **Step 1 (NER):** A pluggable entity extractor identifies entities in the text. Default: `GLiNERExtractor` (a local transformer model, no API calls). Alternatives: `LLMExtractor`, the opt-in `SpacyExtractor`, or a `CompositeExtractor` that runs several at once.
 
-2. **Step 2 (Verify + Relationships):** The LLM receives the pre-extracted entities and the original text. It verifies the entities (fixing errors, adding missed ones) and extracts all relationships between them.
+2. **Step 2 (Verify + Relationships):** The LLM receives the pre-extracted entities and the original text. It verifies the entities (fixing errors, adding missed ones, re-typing or dropping low-confidence `Unknown` ones) and extracts the relationships between them, using the relation vocabulary it is given: required when the ontology declares relations, preferred otherwise.
 
 For a detailed explanation of the extraction process, see [Extraction](/extraction).
 
-**Output:** `GraphData` containing nodes (entities), relationships, and mention records.
+**Output:** `GraphData` containing nodes (entities), relationships, mention records, and a per-chunk report. A chunk whose extraction call fails does not fail the ingest: the report lands in `result.metadata["extraction"]` (`chunks_attempted`, `chunks_skipped`, `failed_chunks`, `relation_failed_chunks`, `extraction_failed`), and the content hash is withheld so the next ingest retries the document.
 
 **Code:** `ExtractionStrategy.extract()` in [`ingestion/extraction_strategies/base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/base.py)
 
@@ -138,25 +196,31 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 
 ### Step 4b — Quality Filter
 
-**What it does:** Removes bad data that slipped through extraction — nodes with empty or `None` IDs, and relationships whose endpoints don't exist.
+**What it does:** Removes bad data that slipped through extraction — nodes with an empty id or label, and relationships whose endpoints don't exist.
 
-**Why:** LLMs sometimes produce malformed output (empty entity names, references to entities that weren't extracted). This step catches those before they reach the graph.
+**Why:** LLMs sometimes produce malformed output (empty entity names, references to entities that weren't extracted). This step catches those before they reach the graph. Entity names have already passed the name checks described in [Extraction](/extraction#entity-name-validation) by this point.
 
 **Code:** `IngestionPipeline._filter_quality()` in [`ingestion/pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
 
 ---
 
-### Step 5 — Prune Against Schema
+### Step 5 — Prune Against Ontology
 
-**What it does:** Filters extracted data to only keep entities and relationships that match your schema definition.
+**What it does:** Filters extracted data to only keep entities and relationships that match the working ontology.
 
 **How it works:**
-- If your schema defines entity types (e.g., Person, Organization, Location), only entities with those labels pass through
-- If your schema defines relationship types, only those relationship types pass through
+- If the ontology declares entity types, only entities with those labels pass through, plus `Unknown` (the NER model's low-confidence band, which the step-2 LLM had the chance to re-type)
+- If the ontology declares relations, only edges whose `rel_type` is declared pass through, and a relation with `patterns` also keeps only edges whose `(source label, target label)` matches one. A pattern mismatch is logged as a WARNING naming the declared patterns and a sample of what was observed — usually an inverted direction
 - Relationships whose endpoints were pruned are also removed
-- **Special cases:** `"Unknown"` entities (low-confidence NER) and `"RELATES"` edges (the unified relationship type) always pass through
 
-**Open schema mode:** If you define no entity or relationship types (empty `GraphSchema()`), this step is skipped entirely — everything passes through.
+**Open ontology:** When the ontology declares neither entities nor relations, this step is skipped and everything passes through. Note that a `GraphRAG` created with no ontology on an empty graph seeds the 11 default entity types into its ontology, so entity pruning applies to those labels; with no declared relations, relationships are not pruned by type.
+
+<Note>
+A table mapping's `Link` declares a relation in the ontology. Once a graph holds
+one, `Ontology.relations` is non-empty, so prose extraction is restricted to the
+declared relations and this step prunes everything else. Declare the relations
+your documents need alongside the ones your tables add.
+</Note>
 
 **Code:** `IngestionPipeline._prune()` in [`ingestion/pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
 
@@ -164,22 +228,35 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 
 ### Step 6 — Resolve Duplicates
 
-**What it does:** Merges entities that refer to the same real-world thing. When the LLM extracts "Alice" from chunk 1 and "Alice" from chunk 5, this step recognizes they're the same entity and merges them.
+**What it does:** Merges entities within the document that refer to the same real-world thing. When the extractor finds "Alice" in chunk 1 and "  alice " in chunk 5, this step recognizes they're the same entity and merges them.
 
 **Default at ingest: ExactMatchResolution**
-- Groups by `(normalized name, label)` only — same name but different labels stay separate (e.g., Person "Paris" vs Location "Paris"); the judge decides those at `finalize()`
-- Survivor keeps every member's description joined with `" | "` (no LLM summary); all relationship endpoints are re-pointed to the survivor before the write, so no edge is lost
+- Groups by `(normalized name, label)` — the name lower-cased and trimmed. Same name but different labels stay separate (e.g., Person "Paris" vs Location "Paris"); the judge decides those at `finalize()`
+- The survivor keeps every member's description: the list is stored in `descriptions` and joined with `" | "` in `description`, which is what search and prompts read. `source_chunk_ids` are unioned, and every relationship endpoint is re-pointed to the survivor before the write, so no edge is lost
 - No embeddings, no LLM calls; zero added cost
-- Ingest is per document, so a resolver here can only compare one file's entities with each other — the cross-document duplicates that matter are handled once, at `finalize()`
+- Ingest is per document, so a resolver here can only compare one file's entities with each other — the cross-document duplicates that matter (`Airbus` in one file, `Airbus SE` in another) are handled once, at `finalize()`
+
+The facade's default is `ExactMatchResolution(llm=None, cross_label_merge=False)`. Given an `llm`, `ExactMatchResolution` replaces the joined `description` with a single LLM-written summary once a group has `force_summary_threshold` (default 3) descriptions or more; the `descriptions` list is kept either way. `cross_label_merge=True` additionally puts same-name groups spanning two labels to the LLM, once they have `cross_label_min_descriptions` (default 3) descriptions between them.
 
 **Alternative: LLMVerifiedResolution**
-- Runs the same exact-match pass first, then compares the surviving names by embedding similarity within each label
-- Pairs at or above `hard_threshold` (0.95) merge outright; pairs down to `soft_threshold` (0.65) go to the LLM for a YES/NO verdict
-- Useful when the same entity is named inconsistently within a document (e.g., "Acme Corp" vs "Acme Corporation")
+- Runs the same exact-match pass first, then embeds each surviving entity's `name: description`, finds candidate pairs by similarity (floor `unified_threshold`, default 0.65), merges pairs at or above `hard_threshold` (default 0.95) outright and asks the LLM about the rest
+- Pairs whose names are equal once digits are removed and different with them (`GPT-3` / `GPT-4`, `Q1 2024` / `Q2 2024`) are never merged, without asking
+- Useful when the same entity is named inconsistently within a document (e.g., "Acme Corp" vs "Acme Corporation"). Costs embedding calls plus LLM calls for ambiguous pairs. See [Strategies](/strategies) for its parameters
+
+<Warning>
+`SemanticResolution` and `DescriptionMergeResolution` have been removed, along
+with their exports from `graphrag_sdk` and
+`graphrag_sdk.ingestion.resolution_strategies`, so importing either raises `ImportError`.
+Replace `DescriptionMergeResolution` with `LLMVerifiedResolution` (it runs the
+same exact-match pass first, then the embedding + LLM tier), or with
+`ExactMatchResolution` — the `ingest()` default — if you relied only on
+name-exact merging. Replace `SemanticResolution` with `LLMVerifiedResolution`,
+which also forms candidates across labels.
+</Warning>
 
 **At `finalize()`: incremental cross-document dedup**
 - Ingest writes a new entity without a name vector and marks nothing on it: having no vector is what makes it pending. A table row a re-sync renames or folds into another node loses its vector, so it is checked under its new name
-- `finalize()` checks only the pending entities, against the whole graph through FalkorDB indexes — it never reads every entity. It lists each one in a system record, then embeds its name once (stored as `e.embedding`, the vector search also uses), and the `__Entity__` vector index returns its nearest names (no LLM)
+- `finalize()` checks only the pending entities, against the whole graph through FalkorDB indexes — it never reads every entity. It lists each one in a system record, then embeds its name once (stored as `e.embedding`, which vector search also uses), and the `__Entity__` vector index returns its nearest names (no LLM)
 - Same spelling once normalised, or a unique acronym of it, as a same-label **table row** → merged into the row by rule, no LLM (an extracted entity under a guessed label can also be adopted by a declared label of the same name). Same spelling between extracted mentions only, an acronym that spells several long forms, and the 5 nearest names at cosine ≥ 0.5, become candidate pairs; candidates form dense sets of ≤ 8
 - The judge — `LLMJudge` by default, or any [`DedupJudge`](/strategies#7-dedupjudge) — partitions each set **once** into same-referent groups, reading names, labels, descriptions, existing aliases and declared attribute values, and may name each merged group
 - Same → **merge**, by the same rules as every finalize merge: a table's row survives a mention, every member's description is kept in `descriptions` (joined with `" | "` in `description`), other names kept in `aliases`, every edge moved in the same query that deletes the loser; the survivor gains every member's label and takes the judge's name for the group (a table row keeps its declared name). Groups chain: A = B and B = C become one node
@@ -203,7 +280,10 @@ For details on resolution strategies, see [Strategies](/strategies).
 - Nodes are written via `UNWIND $batch AS item MERGE (n:Label {id: item.id}) SET n += item.properties`
 - Relationships are written similarly, using label hints for efficient MATCH operations
 - Batch size: 500 items per query
-- Entity nodes automatically get the `__Entity__` secondary label (structural nodes like Chunk and Document do not)
+- Before writing into a label, the SDK creates range indexes on `id` and `entity_key` for it (and on `id` for `Document`, `Chunk` and `__Entity__`). A `MERGE` can only use an index on the label in its own pattern, so without these a large ingest grew quadratically; existing indexes are read once per process and only missing ones are created
+- Writes that share a key within one batch are folded before sending, as if written one at a time: later properties win, and an entity's or `RELATES` edge's `source_chunk_ids` are combined. An entity's `source_chunk_ids` on the graph is likewise a union across ingests, not the last writer's list
+- String values have control characters (other than tab, newline and carriage return) stripped, `None` values are dropped, and dict values are stored as JSON strings
+- Entity nodes automatically get the `__Entity__` secondary label (structural nodes like Chunk and Document do not). `Document` and `Chunk` are reserved and refused as entity types
 
 For details on the storage layer, see [Storage](/storage).
 
@@ -213,13 +293,13 @@ For details on the storage layer, see [Storage](/storage).
 
 ### Steps 8 & 9 — Mentions + Index Chunks (Parallel)
 
-These two steps run simultaneously since they're independent:
+These two steps run simultaneously since they're independent. Both finish before `ingest()` returns.
 
 #### Step 8 — Write Mentions
 
 **What it does:** Creates `MENTIONED_IN` edges linking every entity to every chunk it was extracted from. These edges are critical for retrieval — they let the system find text passages for any entity.
 
-**Details:** Uncapped — every entity-chunk pair gets an edge. Duplicates are deduplicated by `(entity_id, chunk_id)`.
+**Details:** Uncapped — every entity-chunk pair gets an edge. Duplicates are deduplicated by `(entity_id, chunk_id)`. Mentions are rewritten through the resolver's merges first, so an entity merged in step 6 keeps its mentions on the survivor.
 
 #### Step 9 — Index Chunks
 
@@ -230,9 +310,33 @@ These two steps run simultaneously since they're independent:
 2. Write vectors to Chunk nodes via `SET c.embedding = vecf32(vector)`
 3. Falls back to sequential embedding if the batch call fails
 
+A chunk left without an embedding (for example by a rate-limited embedder) is reported in `incomplete_writes` and withholds the content hash.
+
 **Code:**
-- Mentions: `IngestionPipeline._write_mentions()` in [`ingestion/pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
+- Mentions: `LexicalGraphWriter._write_mentions()` in [`ingestion/lexical_graph.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/lexical_graph.py)
 - Chunk indexing: `VectorStore.index_chunks()` in [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py)
+
+---
+
+## What ingest() Returns
+
+| Call | Returns |
+|------|---------|
+| `ingest("a.pdf")` or `ingest(text=...)` | `IngestionResult` |
+| `ingest("employees.csv")` | `StructuredIngestionResult` — it reports `records`, `entities`, `edges` and the like instead of chunk counts; see [Structured Ingestion](/structured-ingestion#keeping-a-table-in-sync) |
+| `ingest(["a.pdf", "b.md"])` | `list[IngestionResult \| Exception]`, aligned by index; one failing source does not abort the batch. A list may not contain a table: `ValueError` is raised before anything is ingested |
+
+```python
+result = await rag.ingest("report.pdf")
+result.document_info.uid          # the document id
+result.nodes_created              # entities written
+result.relationships_created      # RELATES + MENTIONED_IN edges written
+result.chunks_indexed             # chunks written (0 when skipped as unchanged)
+result.metadata["extraction"]     # per-chunk extraction report
+result.metadata.get("incomplete_writes")   # present only when something came up short
+```
+
+`ingest_sync()` mirrors `ingest()` for synchronous code, tables included.
 
 ---
 
@@ -244,10 +348,10 @@ After all documents are ingested, call `finalize()` to prepare the graph for que
 
 | Step | What it does | Why |
 |------|-------------|-----|
-| 1. NULL cleanup | Removes entities with `NULL` names | Legacy edge cases from MERGE operations |
+| 1. NULL cleanup | Removes extracted entities with `NULL` names (never a table's rows) | Legacy edge cases from MERGE operations |
 | 2. Deduplicate | The pending entities: exact-name match, then one judge pass over nearest names; also writes each entity's name embedding | "Alice" from doc 1 and "Alice Smith" from doc 5 become one node; the name vectors power entity vector search |
 | 3. Relationship embeddings | Embeds fact text on RELATES edges | Powers RELATES edge vector search during retrieval |
-| 4. Ensure indexes | Creates all 5 standard indexes | Vector + fulltext indexes for search |
+| 4. Ensure indexes | Creates the `id` range indexes and the 5 standard vector and fulltext indexes, and waits until they are built | Vector + fulltext indexes for search |
 
 ```python
 # After ingesting ALL documents:
@@ -255,7 +359,7 @@ stats = await rag.finalize()  # a FinalizeResult
 stats.entities_deduplicated   # 142
 stats.entities_embedded       # 3200
 stats.relationships_embedded  # 8500
-stats.indexes                 # {"vector_Chunk": True, "vector___Entity__": True, ...}
+stats.indexes                 # {"range_ids": True, "vector_Chunk": True, "vector_Entity": True, ...}
 ```
 
 **Important:** Do not call `finalize()` after each document — call it once after all ingestion is complete: one run judges the whole batch's new entities together, in fewer judge calls than a run per document.
@@ -266,10 +370,12 @@ stats.indexes                 # {"vector_Chunk": True, "vector___Entity__": True
 
 ### Chunking
 
-| Parameter | Default | Benchmark Value | Effect |
-|-----------|---------|-----------------|--------|
-| `chunk_size` | 1000 | 1500 | Larger = richer extraction context, more LLM tokens |
-| `chunk_overlap` | 100 | 200 | Larger = fewer boundary losses, more redundancy |
+| Strategy | Default | Effect |
+|----------|---------|--------|
+| `SentenceTokenCapChunking` (default) | `max_tokens=384`, `overlap_sentences=2` | Sentence-aware; smaller chunks extract more relationships at more LLM calls |
+| `FixedSizeChunking` | `chunk_size=1000`, `chunk_overlap=100` (characters) | Character windows; the GraphRAG-Bench configuration used `chunk_size=1500, chunk_overlap=200` |
+| `StructuralChunking` | `max_tokens=384` | Groups Markdown headers and paragraphs |
+| `ContextualChunking` | `max_tokens=384` | Prepends an LLM-written context to each chunk |
 
 ### Extraction
 
@@ -277,8 +383,9 @@ stats.indexes                 # {"vector_Chunk": True, "vector___Entity__": True
 |-----------|---------|--------|
 | `entity_extractor` | `GLiNERExtractor()` | Local NER model (fast, no API calls) |
 | `coref_resolver` | `None` | Optional coreference resolution (resolves pronouns) |
-| `entity_types` | 11 defaults | Custom ontology for your domain |
-| `max_concurrency` | LLM default (12) | Parallel LLM calls during extraction |
+| `entity_types` | 11 defaults | Custom entity types for your domain. An ontology's entities override it, and a `GraphRAG` on a new graph with no declared entities stores the 11 defaults as its ontology, so through `GraphRAG` it takes effect only when the stored ontology has no entity types |
+| `relation_types` | `DEFAULT_RELATION_TYPES` (31 labels) | Preferred relation vocabulary; `[]` for open vocabulary (an ontology's relations override it) |
+| `max_concurrency` | `None` (12 for local NER; the LLM's own limit for LLM calls) | Parallel extraction calls |
 
 ### Resolution
 
@@ -293,8 +400,8 @@ stats.indexes                 # {"vector_Chunk": True, "vector___Entity__": True
 
 - **Slowest step:** Extraction (Step 4) — involves LLM calls for every chunk. Expect ~2-5 seconds per chunk.
 - **Fastest step:** Quality filter, prune, and resolve — all in-memory, sub-second.
-- **Parallelism:** Steps 8-9 run in parallel. Step 1 NER uses a semaphore (default 12 concurrent calls).
-- **Batch size:** The benchmark uses 1500-character chunks. 20 documents (~4.7 MB total) take ~47 minutes to ingest.
+- **Unchanged documents:** a re-ingest of byte-identical content costs one graph lookup and no provider calls.
+- **Parallelism:** Steps 8-9 run in parallel. Step 1 NER uses a semaphore (default 12 concurrent chunks). One GLiNER model is loaded per model name and shared by every extractor in the process, and inference takes no lock, so concurrent ingests run NER in parallel without loading extra copies.
 
 ---
 
@@ -302,10 +409,13 @@ stats.indexes                 # {"vector_Chunk": True, "vector___Entity__": True
 
 | File | What it contains |
 |------|-----------------|
-| [`pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py) | The 9-step pipeline orchestrator |
+| [`pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py) | The 9-step pipeline orchestrator, deterministic chunk ids, unchanged-content skip |
+| [`lexical_graph.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/lexical_graph.py) | Document/Chunk provenance and `MENTIONED_IN` writes, shared with the record path |
 | [`api/main.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/api/main.py) | `GraphRAG.ingest()` and `finalize()` — user-facing API |
 | [`loaders/text_loader.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/loaders/text_loader.py) | TextLoader implementation |
+| [`loaders/markdown_loader.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/loaders/markdown_loader.py) | MarkdownLoader implementation |
 | [`loaders/pdf_loader.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/loaders/pdf_loader.py) | PdfLoader implementation |
+| [`chunking_strategies/sentence_token_cap.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/chunking_strategies/sentence_token_cap.py) | SentenceTokenCapChunking (the default) |
 | [`chunking_strategies/fixed_size.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/chunking_strategies/fixed_size.py) | FixedSizeChunking implementation |
 | [`extraction_strategies/graph_extraction.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/graph_extraction.py) | 2-step extraction (NER + LLM verify/rels) |
 | [`resolution_strategies/exact_match.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/exact_match.py) | ExactMatchResolution |

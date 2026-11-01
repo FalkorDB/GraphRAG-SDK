@@ -21,7 +21,7 @@ The invariant covers attributes only. Declaring a new entity type or relation pa
 
 ## The API at a Glance
 
-15 methods on `GraphRAG`, grouped by what they touch.
+15 methods on `GraphRAG`, grouped by what they touch. All of them are async: call each with `await` (the listings below show the signatures).
 
 ### Group 1 — Pure declarations (cheap, no LLM)
 
@@ -42,15 +42,23 @@ Return: `Ontology`. Data migration runs first; the ontology graph is updated sec
 ```python
 rag.rename_entity(old, new)
 rag.rename_attribute(owner_label, old_name, new_name)
-rag.rename_relation(old, new)
+rag.rename_relation(old, new)                     # warns above 10k edges
 rag.drop_entity(label)                            # cascades to relation patterns
 rag.drop_relation(label)
 rag.drop_relation_pattern(rel_label, source, target)
 ```
 
+`rename_relation`, `drop_relation` and `drop_relation_pattern` act on edges typed with the relation label itself, which is what `backfill_relation_pattern()` writes. Extracted and table facts are `RELATES` edges with a `rel_type` property; these calls leave them unchanged.
+
+Every call checks its labels first and raises `ValueError` for an unknown label, or for a rename onto a label (or attribute) that already exists: merging two types is not a rename.
+
+- **`rename_entity()`** follows through to the table mappings that name the label, as the type of their rows or the target of a `Link`, so the stored ontology stays valid and the table's next re-sync finds its rows under the new label.
+- **`drop_entity()`** refuses (`ValueError`) a label a table mapping maps rows to or links to, naming the table. The mapping registers the label again on the next start, so the drop could only be undone. Drop the table first with `drop_table()`, or rename the label.
+- Both may run while `finalize()` deduplicates. A drop records the entities it deletes for the running dedup, and a rename changes the labels a planned merge was read with, so either way the merge is skipped or read again rather than applied to a changed node.
+
 ### Group 3 — Atomic attribute evolution (LLM, invariant-enforcing)
 
-Return: `EvolutionResult`. The ontology graph write is the **commit point** — backfill runs first, schema change last.
+`add_attribute` returns an `EvolutionResult`; `drop_attribute` returns the `Ontology`. The ontology graph write is the **commit point** — data first, schema change last.
 
 ```python
 rag.add_attribute(owner_label, attribute, *, concurrency=4, dry_run=False)
@@ -64,7 +72,7 @@ rag.drop_attribute(owner_label, name)
 # declaration. Cheap, no LLM.
 ```
 
-Entity owners only in v1. Relation-attribute mutation raises `NotImplementedError`.
+Entity owners only. `add_attribute`, `drop_attribute` and `rename_attribute` on a relation owner raise `NotImplementedError`. `add_attribute` on an attribute the owner already declares raises `ValueError`; to change its type, see [Type Changes](#type-changes).
 
 ### Group 4 — Opportunistic discovery (opt-in, not invariant-enforcing)
 
@@ -147,6 +155,8 @@ await rag.drop_attribute("Person", "age")
 result = await rag.add_attribute("Person", Attribute(name="age", type="INTEGER"))
 ```
 
+The new type is what makes the second call re-scan: the chunk markers are keyed on the attribute's owner, name and type, and `drop_attribute` leaves them on the chunks. Dropping an attribute and adding it back with the *same* type therefore scans no chunk and leaves the attribute unset on every entity.
+
 This is the only honest move when the source of truth is the corpus. A mechanical `toInteger` coercion of `"around thirty"` would either drop the value or fabricate one; the LLM can re-extract `30` from the surrounding text.
 
 ---
@@ -158,9 +168,42 @@ This is the only honest move when the source of truth is the corpus. A mechanica
 The constraint has two sources:
 
 - **`add_attribute` / `drop_attribute`** — the extractor reads the persisted ontology to decide what to extract from new chunks. While `add_attribute` is mid-flight, the ontology hasn't been committed yet, and any concurrent `ingest()` would produce entities without the new attribute. The invariant would silently break the moment the schema commits.
-- **Mechanical Group 2 calls and `backfill_*`** — internally use a count-then-mutate pattern across two Cypher statements. Concurrent writes can change the count between the two queries.
+- **Mechanical Group 2 calls and `backfill_*`** — `rename_relation`, `drop_entity`, `drop_relation` and `drop_relation_pattern` count first and mutate in a second Cypher statement, and `backfill_*` lists its chunks before it writes. Concurrent writes can change the graph between those queries.
 
 For multi-process deployments where this matters, gate evolution behind an application-level lock (Redis, etc.) that also blocks `ingest()`.
+
+Every evolution call republishes the working ontology to the retrieval strategy (through `RetrievalStrategy.set_ontology()`), so text-to-Cypher retrieval sees a renamed label or a new attribute on the next question.
+
+---
+
+## Changing the Ontology Outside the Evolution API
+
+The evolution methods are the way to change a label that already exists. The other ways an ontology reaches the graph — `GraphRAG(ontology=...)`, `set_ontology()` and `ingest()` — only add:
+
+- **A new label or relation** is registered with its properties and patterns.
+- **An existing label** may be re-declared with the same or fewer properties, which means "use what is stored". Adding a property or a relation pattern to it this way raises `OntologyModificationNotAllowedError`; use `add_attribute` or `add_relation_pattern` instead.
+- **A different type** for a property that is already declared raises `OntologyContradictionError`.
+- `Document` and `Chunk` are reserved for the graph's own nodes and refused as entity labels.
+
+Both errors are raised before anything is stored.
+
+### Tables Extend the Ontology Additively
+
+A [table mapping](/structured-ingestion) declares types for its columns, and those types reach the ontology, which is how text-to-Cypher knows that `age` is an `INTEGER`. A table is the one source allowed to extend an existing label on the ingest path: prose usually creates `Organization` first with only a name and a description, and a CSV then contributes `employee_count`. Registration is additive:
+
+- A label the table introduces is registered whole. A label that already exists is extended through the same primitives the evolution API uses, and its description is kept: the table's generated description fills a gap but never replaces one you wrote.
+- Each column is stored signed with its table, `employees__age` rather than `age`, and reaches the ontology as `Attribute(structured=True)`. The signed properties are left out of the extraction prompt, so a document cannot write under a table's name. The flag survives a reload, on relation properties too.
+- A table that declares a property already registered with another type raises `OntologyContradictionError` before anything is written. Change a type deliberately with `drop_attribute()` then `add_attribute()`.
+- A label a `Link` points at may have only one key column. Two tables may key `Person` by different columns, but a link to `Person` could not tell which one it means, so the declaration that completes that shape is refused with `OntologyContradictionError`.
+- A redeclared mapping that drops a column takes the column off the nodes as well as out of the ontology, and is reported in `FinalizeResult.mapping_changed`.
+
+Because the mapping lives in the ontology you pass to `GraphRAG(ontology=...)`, its labels exist before any document is extracted, and the extractor uses the real labels instead of guessing from the built-in list. If a document was extracted first anyway, `finalize()` lets the **declared type beat the guessed one**: a `Concept` the extractor guessed for a name is absorbed by the `MitigationPractice` a mapping declared for it, while two declared labels sharing a name stay apart (see [Storage](/storage#phase-1-exact-name-match-always-runs)).
+
+`drop_table(source)` is the evolution counterpart for a table: it removes the table's rows, the columns it signed, the identity it gave, and its stored mapping. The label stays, since a document or another table may still use it; `drop_entity()` removes a label nothing else uses.
+
+### Relation Patterns and Descriptions
+
+A relation with several `(source, target)` patterns keeps its first description: when the patterns carry different descriptions, the oldest one is reported, so a description a table derived never replaces the one you declared. A new pattern added with `add_relation_pattern` copies its properties, including the `structured` flag, from the oldest sibling pattern.
 
 ---
 
@@ -228,11 +271,11 @@ async def main():
               f"{result.chunks_scanned} chunks scanned, "
               f"{result.llm_calls} LLM calls")
 
-        # 3. Type change via drop + add.
+        # 3. Type change via drop + add (STRING -> LIST).
         await rag.drop_attribute("Person", "role")
         result = await rag.add_attribute(
-            "Person", Attribute(name="role", type="STRING",
-                                description="Their job title"),
+            "Person", Attribute(name="role", type="LIST",
+                                description="Their job titles"),
         )
 
         # 4. Declare a new entity type — cheap, no LLM.
@@ -292,4 +335,4 @@ The exception subclasses `RuntimeError` so it propagates through `await` paths c
 | `backfill_attribute` (public) | Folded into `add_attribute`. Exposing it as a separate call would re-introduce the drift it's designed to prevent. |
 | `backfill_attribute_semantic` | Supported `retype_attribute`. Gone with it. |
 
-Relation-attribute mutation (`add_attribute("WORKS_AT", ...)` etc.) raises `NotImplementedError` in v1. The workaround is `delete_all()` followed by a fresh `ingest()` with the updated ontology — that's a heavy hammer, but it's the only way to keep edge properties aligned without an edge-property migration primitive. A follow-up PR can lift this.
+Relation-attribute mutation (`add_attribute("WORKS_AT", ...)` etc.) raises `NotImplementedError`. The workaround is `delete_all()` followed by a fresh `ingest()` with the updated ontology — that's a heavy hammer, but it's the only way to keep edge properties aligned without an edge-property migration primitive.

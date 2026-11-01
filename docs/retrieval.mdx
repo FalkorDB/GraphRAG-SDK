@@ -4,7 +4,7 @@ sidebarTitle: "Retrieval"
 description: "How GraphRAG SDK's multi-path retrieval combines vector search, Cypher generation, and entity discovery -- run concurrently where possible -- into one grounded context."
 ---
 
-When you ask GraphRAG a question, it doesn't just search for keywords. It uses **multiple retrieval paths** in parallel — like asking five different experts to find relevant information, then combining their best findings into one answer.
+When you ask GraphRAG a question, it doesn't just search for keywords. It uses **multiple retrieval paths** — like asking five different experts to find relevant information, then combining their best findings into one answer.
 
 This document explains how each path works, what it contributes, and how they perform individually and together. See [Reducing LLM Hallucinations](/reducing-llm-hallucinations) for how this multi-path strategy grounds answers in retrieved evidence and how to inspect that evidence at answer time.
 
@@ -15,16 +15,21 @@ This document explains how each path works, what it contributes, and how they pe
 ```
                           Your Question
                                |
+                               v
+                     1. Extract Keywords
+                               |
+                               v
+                      2. Embed Question
+                               |
                     ┌──────────┴──────────┐
                     v                      v
-            1. Extract Keywords      2. Embed Question
+          3a. RELATES Vector       3b. Text-to-Cypher
+          (fact search)            (opt-in, concurrent with 3a)
                     |                      |
-         ┌─────────┴──────────────────────┴─────────┐
-         v                   v                       v
-   3a. RELATES Vector   3b. Text-to-Cypher    4. Entity Discovery
-   (fact search)        (graph queries)       (name matching)
-         |                   |                       |
-         └───────────────────┴───────────────────────┘
+                    └──────────┬──────────┘
+                               v
+                    4. Entity Discovery
+                    (name matching + entities from 3a/3b)
                              |
                     5. Relationship Expansion
                              |
@@ -62,6 +67,8 @@ This document explains how each path works, what it contributes, and how they pe
 - **Simple filter:** Removes common words ("the", "is", "what") and keeps meaningful terms
 - **LLM extraction:** Asks the language model to identify proper nouns, names, places, and specific terms
 
+The simple filter keeps words longer than two characters, up to 12. Of the LLM keywords, the first 8 are used, ahead of the simple ones.
+
 **Example:**
 > Question: "What did Professor Harmon discover at the lighthouse?"
 >
@@ -84,12 +91,14 @@ This document explains how each path works, what it contributes, and how they pe
 
 ### Step 3a — RELATES Vector Search (Knowledge Graph Facts)
 
-**What it does:** Searches the relationship edges in the graph by meaning similarity. Every relationship between entities (like "Alice WORKS_AT Acme Corp") has been embedded as a vector during ingestion. This step finds the relationships most relevant to the question.
+**What it does:** Searches the relationship edges in the graph by meaning similarity. `finalize()` embeds the `fact` text of every relationship between entities (like "Alice WORKS_AT Acme Corp"); an edge ingested since the last `finalize()` has no vector yet and cannot be found here. This step finds the relationships most relevant to the question.
 
-**Returns:** Fact strings like:
+**Returns:** Fact strings like the following, where the text after the arrow is the edge's stored `fact`:
 ```
-Alice —[WORKS_AT]→ Acme Corp: Alice is a senior engineer at Acme Corp
+Alice —[WORKS_AT]→ Acme Corp: (Alice, WORKS_AT, Acme Corp): Alice is a senior engineer at Acme Corp
 ```
+
+The edge endpoints' names are also merged into the entity list in step 4. A hit becomes a fact line only when the edge stores `src_name`, `rel_type` and `tgt_name`; edges written from a [table mapping](/structured-ingestion) store no `src_name` or `tgt_name`, so they can take `rel_top_k` slots without producing a fact line or an entry point.
 
 **Important:** Facts are **scored** by their vector similarity to the question. Low-scoring facts are filtered out (see Step 8b) to reduce noise.
 
@@ -97,22 +106,36 @@ Alice —[WORKS_AT]→ Acme Corp: Alice is a senior engineer at Acme Corp
 
 ---
 
-### Step 3b — Text-to-Cypher (Graph Queries)
+### Step 3b — Text-to-Cypher (Graph Queries, opt-in)
 
 **What it does:** Asks the LLM to write a database query (in the Cypher language) that can directly answer the question from the graph structure.
 
-**Why it matters:** Some questions need structural information that text search can't provide:
+**Off by default.** It costs an extra LLM call on every question, up to 3 when a generated query fails validation and is regenerated. Turn it on with `GraphRAG(..., enable_cypher=True)` (or `MultiPathRetrieval(enable_cypher=True)` for a strategy you build yourself).
+
+**Why it matters:** Some questions are answered by no passage, only by the structure or the values in the graph:
 - "How many organizations are in the story?" → needs `COUNT`
-- "What connects Alice and the castle?" → needs graph path traversal
+- "What is the average age of the engineers at Acme?" → needs `avg()` over a typed column
 - "List all locations mentioned" → needs `MATCH (l:Location) RETURN l.name`
 
 **How it works:**
-1. The LLM receives a description of the graph schema (what node types exist, how edges work)
-2. It generates a Cypher query tailored to the question
-3. The query is validated (read-only, valid labels) and sanitized (adds LIMIT, removes unsupported FalkorDB patterns)
-4. If the query executes successfully, the results go **directly** to the final LLM context — they are NOT filtered by the reranker
+1. The LLM receives the ontology as a schema block: every entity label with its properties and their types, the `RELATES` edge with its `rel_type` values, and the provenance edges.
+2. It generates a Cypher query tailored to the question.
+3. The query is validated (it must be read-only and use known labels) and sanitized (a `LIMIT 25` is added when missing, unsupported FalkorDB patterns removed). A query that fails validation is regenerated, up to 3 attempts.
+4. If the query executes successfully, up to 20 rows go **directly** to the final LLM context in their own section — they are NOT filtered by the reranker. If generation or execution fails, the path returns nothing and the other paths still produce results.
 
-**Runs in parallel** with step 3a to avoid adding latency. If it fails, the other paths still produce results.
+**Typed columns from tables.** A [table mapping](/structured-ingestion) declares each column's type, and those types reach the ontology as signed properties (`employees__age` as an `INTEGER`). That is what lets a generated query aggregate over a column instead of treating it as text, and it is the main reason to turn this path on.
+
+**Rows carry their column names.** Each row reaches the answering model as `column: value` pairs (`average_age: 39.5`), not bare values, with the columns of one row joined by ` | `; a node, list or map value is passed through without its column name. The section names the question the query was generated from, so an aggregate is attributable to what was asked:
+
+```
+## Graph Query Results
+Rows a graph query returned for the question: 'What is the average age at Acme?'. Any aggregate below is already scoped to that question.
+- average_age: 39.5
+```
+
+**Always the current ontology.** `GraphRAG` passes every ontology change to its retrieval strategy through `RetrievalStrategy.set_ontology()`: the first load, `set_ontology()`, each [evolution](/ontology-evolution) method, and a table declaring typed columns during `ingest()`. Generated Cypher sees a new column the moment a table declares it, with no restart. A strategy you pass only per call (`completion(..., strategy=s)`) is not updated; construct it with `ontology=await rag.get_ontology()`.
+
+**Runs in parallel** with step 3a to avoid adding latency.
 
 **Code:** `execute_cypher_retrieval()` in [`cypher_generation.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/cypher_generation.py)
 
@@ -123,10 +146,14 @@ Alice —[WORKS_AT]→ Acme Corp: Alice is a senior engineer at Acme Corp
 **What it does:** Finds entities (people, places, organizations, etc.) in the graph that match the question's keywords.
 
 **Two paths:**
-- **Path A — Name matching:** Searches entity names using `CONTAINS` (e.g., "lighthouse" matches "The Old Lighthouse"). Runs as a single batched database query for efficiency.
-- **Path B — Fulltext search:** Uses the text search index on entity names and descriptions. Good for partial matches and stemming.
+- **Path A — Name matching**, as two batched database queries over the first 8 LLM keywords (case-insensitively deduplicated):
+  1. **Exact name** (case-insensitive), up to 3 entities per keyword. These are added first, so an exact match survives the later caps.
+  2. **Name `CONTAINS`** (e.g., "lighthouse" matches "The Old Lighthouse"), up to 5 per keyword, shortest names first, then alphabetical, then by id. A broad keyword cannot crowd out a rare one.
+- **Path B — Fulltext search:** Uses the `__Entity__` fulltext index on names and descriptions, up to 3 entities for each of the first 6 keywords. **Name matches come first:** results are ordered by exact name match, then a name containing the keyword (both case-insensitive, ignoring surrounding spaces), then fulltext score, then id. Without that order, a common term scores every hit alike, and a search for "Northwind Robotics" could return dates whose descriptions mention the company instead of the company itself.
 
-Entities found in steps 3a and 3b are also merged in here.
+Entities found in steps 3a and 3b are also merged in here, after the two paths above. They are keyed by their lowercased name (`acme_corp`) rather than the stored entity id, so they appear in the Key Entities section but usually match no node in the id-based graph queries of steps 5 and 6 (extracted entities carry their type in the id, as in `acme_corp__organization`).
+
+**Enumeration questions** (containing phrases such as "list all", "every", "each", "name all" or "all the") also add up to 20 *siblings*: the other neighbours of a hub entity that is connected to two or more of the entities already found, ordered by name.
 
 **Code:** `discover_entities()` in [`entity_discovery.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py)
 
@@ -136,14 +163,16 @@ Entities found in steps 3a and 3b are also merged in here.
 
 **What it does:** Starting from the discovered entities, traverses the graph to find their relationships.
 
-**Two depths:**
-- **1-hop:** Direct relationships (Alice → WORKS_AT → Acme Corp)
-- **2-hop:** Indirect connections through an intermediate entity (Alice → WORKS_AT → Acme → LOCATED_IN → New York)
+**Two depths**, both following `RELATES` edges in their stored direction only (outgoing from the discovered entity):
+- **1-hop:** Direct relationships (Alice → WORKS_AT → Acme Corp), from the first 15 discovered entities, up to 150 rows
+- **2-hop:** Indirect connections through an intermediate entity (Alice → WORKS_AT → Acme → LOCATED_IN → New York), from the first 5 discovered entities, up to 25 paths
 
-**Returns:** Formatted relationship strings with evidence, like:
+Neither query orders its rows before its `LIMIT`. Duplicate lines are dropped, 1-hop lines come before 2-hop lines, and the list is cut to `max_relationships` (20 by default).
+
+**Returns:** Formatted relationship strings. A 1-hop line carries the edge's `fact`; a 2-hop line is the path alone:
 ```
-Alice —[WORKS_AT]→ Acme Corp: Alice joined Acme as a senior engineer in 2019
-Acme Corp —[LOCATED_IN]→ New York: Acme Corp headquarters is in Manhattan
+Alice —[WORKS_AT]→ Acme Corp: (Alice, WORKS_AT, Acme Corp): Alice joined Acme as a senior engineer in 2019
+Alice —[WORKS_AT]→ Acme Corp —[LOCATED_IN]→ New York
 ```
 
 **Code:** `expand_relationships()` in [`relationship_expansion.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/relationship_expansion.py)
@@ -158,10 +187,10 @@ Acme Corp —[LOCATED_IN]→ New York: Acme Corp headquarters is in Manhattan
 
 | Path | Method | What it finds |
 |------|--------|---------------|
-| **A — Fulltext** | Keyword search on chunk text | Passages containing exact keyword matches |
-| **B — Vector** | Embedding similarity search | Passages with similar meaning (even without shared keywords) |
-| **C — MENTIONED_IN** | Graph traversal from entities to their source chunks | Passages where discovered entities were originally extracted |
-| **D — 2-hop** | Entity → related entity → chunk | Passages containing entities that are connected to the question's entities |
+| **A — Fulltext** | Keyword search on chunk text: the whole question, the first 6 LLM keywords and the first 4 simple keywords, 5 chunks each | Passages containing exact keyword matches |
+| **B — Vector** | Embedding similarity search, top 15 | Passages with similar meaning (even without shared keywords) |
+| **C — MENTIONED_IN** | Graph traversal from the first 15 entities to their source chunks, the 3 closest to the question per entity | Passages where discovered entities were originally extracted |
+| **D — 2-hop** | Entity → related entity (`RELATES`, either direction) → chunk, from the first 10 entities, up to 20 chunks | Passages containing entities that are connected to the question's entities |
 
 All four paths contribute to a single pool of candidate chunks.
 
@@ -183,9 +212,9 @@ Facts and passages are ranked by **different criteria** because they have differ
 
 #### 8a — Passage Reranking (Stored Embeddings)
 
-**What it does:** Ranks the candidate chunks by how similar their meaning is to the question, keeping only the top 15.
+**What it does:** Ranks the candidate chunks by how similar their meaning is to the question, keeping the top `chunk_top_k` (15 by default).
 
-**How:** Each chunk already has an embedding vector stored in the graph from ingestion. Instead of re-computing embeddings (which would require an expensive API call), we fetch the stored vectors and compute cosine similarity locally. This makes reranking **instant** instead of taking 2-3 seconds.
+**How:** Each chunk already has an embedding vector stored in the graph from ingestion. Instead of re-computing embeddings (which would require an expensive API call), we fetch the stored vectors and compute cosine similarity locally. This makes reranking **instant** instead of taking 2-3 seconds. When fewer than 90 % of the candidates have a stored vector, the candidates are re-embedded instead.
 
 **Code:** `rerank_chunks()` in [`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)
 
@@ -193,7 +222,7 @@ Facts and passages are ranked by **different criteria** because they have differ
 
 **What it does:** Filters knowledge graph facts by their vector similarity score from step 3a.
 
-**Why separate?** Facts are short structured strings ("Alice —[WORKS_AT]→ Acme") while passages are long prose paragraphs. Short text has higher cosine similarity variance — a threshold that works for passages would let too many irrelevant facts through. Facts use a higher threshold (0.25) and always keep at least 3 top facts.
+**Why separate?** Facts are short structured strings ("Alice —[WORKS_AT]→ Acme") while passages are long prose paragraphs. Short text has higher cosine similarity variance — a threshold that works for passages would let too many irrelevant facts through. Facts use a threshold of 0.25, keep at most 12, and always keep at least the top 3.
 
 **Code:** `filter_facts_by_relevance()` in [`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)
 
@@ -204,16 +233,34 @@ Facts and passages are ranked by **different criteria** because they have differ
 **What it does:** Combines everything into a structured context document that the LLM uses to generate the final answer.
 
 **Sections (in order):**
-1. **Answer format hint** — e.g., "This is a yes/no question" for yes/no questions
-2. **Graph Query Results** — Direct results from text-to-cypher (bypasses reranking)
-3. **Key Entities** — Names and descriptions of relevant entities
-4. **Entity Relationships** — How entities connect to each other
-5. **Knowledge Graph Facts** — Evidence from relationship embeddings
-6. **Source Document Passages** — Ranked text passages with source attribution
 
-The final LLM receives this structured context and generates a natural language answer.
+| Section (`item.metadata["section"]`) | Content | Cap |
+|---|---|---|
+| `hint` | Answer format hint, e.g. "This is a yes/no question" | -- |
+| `cypher_results` | Graph Query Results from text-to-Cypher, rows labelled with column names (bypasses reranking) | 20 rows |
+| `entities` | Key Entities: names and descriptions | 25 |
+| `relationships` | Entity Relationships: how entities connect | 20 |
+| `facts` | Knowledge Graph Facts from relationship embeddings | 12 after filtering |
+| `passages` | Source Document Passages, each prefixed with `[Source: <document path>]` when the document resolves | `chunk_top_k`, at most 15 |
+
+`retrieve()` returns one `RetrieverResultItem` per section. The final LLM receives this structured context and generates a natural language answer.
 
 **Code:** `assemble_raw_result()` in [`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)
+
+---
+
+## Scores and Ordering
+
+**Scores are similarities: higher means closer.** Chunk, entity and relationship vector searches return `1 - cosine distance` and order by it descending. A threshold such as the fact filter's `min_score=0.25` is a floor on similarity.
+
+**Most searches do not depend on the engine's row order.** FalkorDB 4.x and 6.0.x list unordered rows differently, so these searches order their rows before the `LIMIT` or cap:
+- chunk and entity vector search break ties between equally close nodes by id, fetching more rows while the cut is still a tie;
+- chunk fulltext search orders by score, then id;
+- entity fulltext search orders by name match, then score, then id;
+- the name `CONTAINS` match orders by name length, then name, then id;
+- `GraphStore.get_connected_entities()` (used by `LocalRetrieval`) orders before its cap for 1-hop traversals.
+
+Some cuts still take the engine's order: the relationship expansion queries in step 5, the exact-name match in step 4 (3 per keyword), the 2-hop chunk path in step 6 (20 chunks), ties between equally close chunks on the MENTIONED_IN path in step 6 (ordered by distance only), the sibling expansion in step 4 (ordered by name only), and ties between equally close edges in the `RELATES` vector search (ordered by score only). Where one of those limits is reached, the same question can retrieve different rows on FalkorDB 4.x and 6.0.x.
 
 ---
 
@@ -271,29 +318,39 @@ Each retrieval path was tested **in isolation** (only that path, no others) to m
 
 ### Toggling Text-to-Cypher
 
-```python
-from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+For the default strategy, one flag on `GraphRAG`:
 
-# Without text-to-cypher (default)
-strategy = MultiPathRetrieval(
-    graph_store=rag.graph_store,
-    vector_store=rag.vector_store,
-    embedder=embedder,
+```python
+rag = GraphRAG(
+    connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
     llm=llm,
-    enable_cypher=False,  # default
+    embedder=embedder,
+    ontology=ontology,       # typed properties and tables make generated Cypher useful
+    enable_cypher=True,      # extra LLM call(s) per question
 )
 
-# With text-to-cypher (opt-in, adds ~1.5s latency)
+result = await rag.completion("What is the average age of Acme's employees?")
+```
+
+For a strategy you construct yourself, set it on the strategy and pass the strategy to `GraphRAG`, which then keeps its ontology current:
+
+```python
+from graphrag_sdk import (
+    ConnectionConfig, FalkorDBConnection, GraphRAG, GraphStore, MultiPathRetrieval, VectorStore,
+)
+
+conn = FalkorDBConnection(ConnectionConfig(host="localhost", graph_name="my_graph"))
 strategy = MultiPathRetrieval(
-    graph_store=rag.graph_store,
-    vector_store=rag.vector_store,
+    graph_store=GraphStore(conn),
+    vector_store=VectorStore(conn, embedder=embedder, embedding_dimension=256),
     embedder=embedder,
     llm=llm,
     enable_cypher=True,
 )
-
-result = await rag.completion("Your question", strategy=strategy)
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, retrieval_strategy=strategy)
 ```
+
+`GraphRAG(enable_cypher=...)` is ignored when you pass `retrieval_strategy`.
 
 ### Tuning Parameters
 
@@ -303,7 +360,9 @@ result = await rag.completion("Your question", strategy=strategy)
 | `max_entities` | 30 | Maximum entities to keep from discovery |
 | `max_relationships` | 20 | Maximum relationships to include |
 | `rel_top_k` | 15 | RELATES edge vector search results |
+| `keyword_limit` | 10 | Accepted but not read: keyword caps are fixed (8 LLM keywords, 12 simple keywords) |
 | `enable_cypher` | False | Toggle text-to-cypher path (opt-in) |
+| `ontology` | None | The ontology generated Cypher is written against; `GraphRAG` keeps it current on its configured strategy |
 
 ### Using the External Reranker
 
@@ -327,7 +386,7 @@ result = await rag.completion("Your question", reranker=reranker)
 | [`chunk_retrieval.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/chunk_retrieval.py) | 4-path chunk retrieval + document mapping |
 | [`relationship_expansion.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/relationship_expansion.py) | 1-hop and 2-hop relationship traversal |
 | [`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py) | Reranking, fact filtering, question hints, context assembly |
-| [`cypher_generation.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/cypher_generation.py) | Text-to-Cypher: schema prompt, generation, validation, execution |
+| [`cypher_generation.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/cypher_generation.py) | Text-to-Cypher: ontology prompt, generation, validation, execution, column-labelled rows |
 | [`base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/base.py) | RetrievalStrategy abstract base class |
 | [`local.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/local.py) | Simple vector + 1-hop retrieval (alternative strategy) |
 | [`cosine.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/reranking_strategies/cosine.py) | External cosine reranker |

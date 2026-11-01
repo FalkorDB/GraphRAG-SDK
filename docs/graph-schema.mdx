@@ -36,10 +36,10 @@ Looking to *change* an existing ontology — add/drop attributes, rename labels,
 ```
 
 The graph has two layers:
-1. **Lexical layer** — Document and Chunk nodes with provenance edges (the text you ingested)
-2. **Knowledge layer** — Entity nodes with relationship edges (the structured knowledge extracted from that text)
+1. **Lexical layer** — Document and Chunk nodes with provenance edges (the text you ingested, and one chunk per row of every table)
+2. **Knowledge layer** — Entity nodes with relationship edges (the knowledge extracted from text, and the entities a table's rows declare)
 
-The layers are connected by `MENTIONED_IN` edges, which link entities to the chunks where they were found.
+The layers are connected by `MENTIONED_IN` edges, which link entities to the chunks where they were found. A table is stored in exactly the same shapes as a document — see [Structured Ingestion](/structured-ingestion#mental-model) — so both halves are queried the same way.
 
 ---
 
@@ -51,9 +51,15 @@ The layers are connected by `MENTIONED_IN` edges, which link entities to the chu
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `id` | `string` | Unique ID (auto-generated UUID) |
+| `id` | `string` | Stable document id: the `document_id` you passed, else the normalised file path (a URI verbatim), `text-<16 hex>` from the text's SHA-256 in text mode, or the table's name (the basename of its mapping's `source`) for a table |
 | `path` | `string` | Original file path or source identifier |
-| Any metadata | varies | Custom metadata passed via `DocumentInfo` |
+| `content_hash` | `string` | SHA-256 of the loaded text (for a table, of the mapping and the rows). Written last, only after a run whose every write completed; a re-ingest with the same hash is skipped |
+| `ready_to_commit` | `boolean` | Set on the pending Document during an `update()` cutover; the commit point of the crash-safe state machine |
+| `cleanup_candidates`, `cleanup_old_chunk_ids` | `list[string]` | Transient: the entity ids and old chunk ids an `update()` or `delete_document()` still has to clean up, kept on the Document so the cleanup survives a crash; removed when it finishes |
+| `pending_delete` | `boolean` | Transient: the commit point of `delete_document()` |
+| `kind` | `string` | `"structured"` for a table. `update()` refuses to re-read a table as prose or a document as records |
+| `table` | `string` | A table's property signature (e.g. `employees`), which `drop_table()` and re-syncs find it by |
+| Loader metadata | varies | e.g. `loader`, `size_bytes`, `suffix` from the text and Markdown loaders, `delimiter` from `CsvRecordLoader`, plus anything passed via `DocumentInfo.metadata` |
 
 **Created in:** Step 3 (Lexical Graph) of the ingestion pipeline.
 
@@ -63,39 +69,57 @@ The layers are connected by `MENTIONED_IN` edges, which link entities to the chu
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `id` | `string` | Unique ID (auto-generated UUID) |
+| `id` | `string` | Deterministic: `chunk-` plus a SHA-256 prefix of the document id, the chunk's position and its text, so re-ingesting the same document finds the same chunks |
 | `text` | `string` | The chunk's text content |
 | `index` | `integer` | Position within the document (0-based) |
 | `embedding` | `vecf32` | Vector embedding for semantic search (added in Step 9) |
-| `start_char` | `integer` | Start character offset in the source document (if `FixedSizeChunking`) |
-| `end_char` | `integer` | End character offset |
-| `chunk_size` | `integer` | Configured chunk size |
-| `chunk_overlap` | `integer` | Configured overlap |
+| Chunker metadata | varies | Written by the chunking strategy. The default `SentenceTokenCapChunking` writes `strategy`, `max_tokens`, `overlap_sentences`, `token_count`, `sentence_count` and `char_count`; `FixedSizeChunking` writes `start_char`, `end_char`, `chunk_size` and `chunk_overlap` |
+| `extracted_ops` | `list[string]` | Ids of the ontology-evolution backfills that have already processed this chunk, so an interrupted backfill resumes where it stopped |
 
 **Created in:** Step 3 (Lexical Graph). Embedding added in Step 9.
 
-### Entity Nodes (Person, Organization, etc.)
+#### Record chunks
 
-**Purpose:** Extracted knowledge entities. Each entity node has **two labels**: its domain type (e.g., `Person`) and `__Entity__` (a secondary label shared by all extracted entities).
+A table's rows are chunks too, one per row, under the table's Document:
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `id` | `string` | Deterministic: `"name__type"` (e.g., `"alice__person"`) |
-| `name` | `string` | Entity name as extracted |
+| `id` | `string` | `rec_` plus a SHA-256 prefix of the document id and the row's key (and, for a second or later row repeating a key, its occurrence number) |
+| `index` | `integer` | The row's position in the source (0-based) |
+| `kind` | `string` | Always `"record"` |
+| `record_key` | `string` | The row's key cell |
+| `text` | `string` | The row rendered as a sentence (`full name Alice Smith, age 34.`) |
+| One property per cell | varies | The raw cells, under the column name, or a `col_` name when the header is not an identifier, contains `__`, or is one the chunk owns (`id`, `text`, `index`, `kind`, `record_key`, `embedding`) |
+
+Record chunks are not chained with `NEXT_CHUNK` (rows have no reading order) and are not embedded.
+
+### Entity Nodes (Person, Organization, etc.)
+
+**Purpose:** Knowledge entities, extracted from prose or written from a table's rows. Each entity node has **two labels**: its domain type (e.g., `Person`) and `__Entity__` (a secondary label shared by all entities).
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | `string` | Deterministic: `"name__type"` (e.g., `"alice__person"`), derived from the name the same way for a prose mention and a table row. A table row with no name, or whose name another row of the file shares under a different key, derives it from its key instead |
+| `name` | `string` | Entity name as extracted, or the row's `name=` column |
+| `type` | `string` | The entity type the extractor assigned (prose-extracted entities only) |
 | `description` | `string` | Rich description from LLM extraction |
-| `source_chunk_ids` | `list[string]` | Chunks where this entity was found |
+| `source_chunk_ids` | `list[string]` | Chunks where this entity was found — a union across every document that mentions it |
 | `spans` | `string` (JSON) | Character offsets: `{chunk_id: [{start, end}]}` |
 | `embedding` | `vecf32` | Vector embedding of the entity name, written by `finalize()`'s dedup. Its absence marks a new entity pending dedup (a `pending` system record marks the rest); nothing else is written on an entity for dedup |
 | `aliases` | `list[string]` | Other names the entity was merged under |
 | `descriptions` | `list[string]` | Every merged member's description (`description` joins them with `" \| "`) |
 | `merged_labels` | `string` | Labels a merge added, joined with `" \| "` |
 | `<property>__dropped` | `list` | Values of `<property>` a dedup merge displaced: the two merged entities held different values, and the one that stayed is the judge's choice or the survivor's (e.g. `born__dropped: [1961]`) |
+| Declared attributes | varies | Values for the `Attribute`s your ontology declares on the label, coerced to their declared type |
+| `<signature>__<property>` | varies | A typed column a table wrote, signed with its source: `age` from `employees.csv` is `employees__age`. The table's key column is signed the same way (`employees__employee_id`) |
+| `entity_key` | `string` | The key a table row (or a link's placeholder) is keyed by, unsigned; what links and re-syncs resolve through |
+| `is_stub` | `boolean` | `true` on a node a `Link` points at that its owning table has not yet written as a row: a placeholder the link created, or an entity prose had already created; `false` on a table's own row |
 
 **Created in:** Step 7 (Write). `__Entity__` label is automatically added. Embedding is written during `finalize()`.
 
 **Default entity types (11):** Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method
 
-Entities below the NER confidence threshold get the special label `Unknown`.
+Entities the NER model scored just below its confidence threshold carry the special label `Unknown` until the step-2 LLM re-types or drops them; one it kept without a type stays `Unknown`. `Document` and `Chunk` are reserved and cannot be entity labels.
 
 ### SDK system nodes
 
@@ -107,7 +131,7 @@ Besides your data, the graph holds a small, fixed set of the SDK's own nodes und
 
 ### PART_OF (Document -> Chunk)
 
-**Purpose:** Provenance — tracks which document a chunk came from.
+**Purpose:** Provenance — tracks which document a chunk came from. A table's record chunks hang off its Document the same way.
 
 | Property | Type | Description |
 |----------|------|-------------|
@@ -115,38 +139,40 @@ Besides your data, the graph holds a small, fixed set of the SDK's own nodes und
 
 ### NEXT_CHUNK (Chunk -> Chunk)
 
-**Purpose:** Sequential ordering — preserves the reading order of chunks within a document. Used to fetch neighboring chunks for context expansion.
+**Purpose:** Sequential ordering — preserves the reading order of chunks within a document. Used to fetch neighboring chunks for context expansion. Prose only: a table's record chunks are never chained.
 
 No additional properties.
 
 ### MENTIONED_IN (Entity -> Chunk)
 
-**Purpose:** Co-occurrence — links entities to the chunks where they were extracted. This is a critical edge for retrieval: when you find an entity, you can traverse to its source chunks.
+**Purpose:** Co-occurrence — links entities to the chunks where they were extracted, and a table row's entity to its record chunk. This is a critical edge for retrieval: when you find an entity, you can traverse to its source chunks.
 
 No additional properties. Deduplicated by `(entity_id, chunk_id)`.
 
 ### RELATES (Entity -> Entity)
 
-**Purpose:** All extracted relationships between entities. This is the **only** relationship type used for knowledge edges.
+**Purpose:** All relationships between entities, whether extracted from prose or declared by a table's `Link`. This is the **only** relationship type used for extracted and table knowledge edges. The one exception is `backfill_relation_pattern()` (see [Ontology Evolution](/ontology-evolution)): it writes edges typed with the relation label itself (for example `[:WORKS_AT]`), with a `description` but no `fact`, `embedding` or `source_chunk_ids`, so RELATES vector search and relationship expansion do not see them.
 
 | Property | Type | Description |
 |----------|------|-------------|
 | `rel_type` | `string` | Original relationship type (e.g., `"WORKS_AT"`, `"LOCATED_IN"`) |
-| `fact` | `string` | Human-readable fact: `"(Alice, WORKS_AT, Acme Corp): Alice is a senior engineer"` |
-| `description` | `string` | Relationship description from LLM |
-| `keywords` | `string` | Comma-separated terms for fulltext search |
-| `weight` | `float` | Confidence: 1.0 = explicit, 0.5 = implied, 0.2 = weak inference |
-| `src_name` | `string` | Source entity name |
-| `tgt_name` | `string` | Target entity name |
-| `source_chunk_ids` | `list[string]` | Chunks containing evidence for this relationship |
+| `fact` | `string` | Human-readable fact: `"(Alice, WORKS_AT, Acme Corp): Alice is a senior engineer"`. A table edge's fact names the labels: `"(Person, WORKS_AT, Organization)"` |
+| `description` | `string` | Relationship description from LLM (extracted edges only) |
+| `src_name` | `string` | Source entity name (extracted edges only) |
+| `tgt_name` | `string` | Target entity name (extracted edges only) |
+| `source_chunk_ids` | `list[string]` | Chunks containing evidence for this relationship (a table edge: the row's record chunk) |
 | `spans` | `string` (JSON) | Character offsets of the evidence sentence |
+| Declared attributes | varies | Values for the `Attribute`s your ontology declares on the relation |
+| `<signature>__<property>` | varies | A `Link`'s own properties, always signed with the declaring table (`employees__since`) |
 | `embedding` | `vecf32` | Vector embedding of the `fact` text (added during `finalize()`) |
+
+Edge identity includes `rel_type`: two facts of different types between the same two entities are two edges, and a dedup merge keeps both.
 
 ---
 
 ## Why a Single RELATES Edge Type?
 
-You might expect separate edge types like `WORKS_AT`, `LOCATED_IN`, and `MARRIED_TO`. Instead, all relationships use the single `RELATES` type with the original type stored in the `rel_type` property. Here's why:
+You might expect separate edge types like `WORKS_AT`, `LOCATED_IN`, and `MARRIED_TO`. Instead, extracted and table relationships use the single `RELATES` type with the original type stored in the `rel_type` property. Here's why:
 
 1. **Index efficiency.** Each edge type in FalkorDB needs its own vector index. With potentially hundreds of LLM-generated relationship types, you'd need hundreds of indexes. One `RELATES` type means one vector index that covers all relationships.
 
@@ -194,6 +220,20 @@ CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.description)
 
 FalkorDB keeps one fulltext index per label, so the two `__Entity__` statements build a single index over `name` and `description`. They are separate statements so that an existing index on one field cannot stop the other from being added.
 
+`ensure_indices()` returns only once FalkorDB reports every index built (it waits up to 10 minutes, logging progress every 10 seconds), so a search right after it does not run against a half-built index.
+
+### Range Indexes on the Write Path
+
+Every write is a `MERGE` on `id`, and a `MERGE` can only use an index on the label in its own pattern. So before writing, the ingestion paths create range indexes:
+
+| Target | Property |
+|--------|----------|
+| `Document`, `Chunk`, `__Entity__` | `id` |
+| Every entity label a write touches (`Person`, `Organization`, …) | `id` and `entity_key` |
+| A table's own label, which every table write looks its rows up on by key | the table's signed key column (e.g. `employees__employee_id`) |
+
+Without them, writing *n* nodes cost O(n²). Existing indexes are read once per process and only the missing ones are created.
+
 ---
 
 ## The Provenance Chain
@@ -218,55 +258,80 @@ This is the **Zero-Loss Data** principle: every piece of source material is trac
 
 ---
 
-## Defining Your Own Schema
+## Defining Your Own Ontology
 
-A `GraphSchema` tells the extraction pipeline which entity and relationship types to look for, and the pruning step uses it to filter non-conforming data.
+An `Ontology` tells the extraction pipeline which entity and relationship types to look for, and the pruning step uses it to filter non-conforming data. Pass it as `GraphRAG(ontology=...)`; it is persisted in a paired `<graph_name>__ontology` graph.
 
-### Basic Schema
+<Note>
+`GraphSchema`, `EntityType`, `RelationType` and `PropertyType` are deprecated
+aliases of `Ontology`, `Entity`, `Relation` and `Attribute`, and the `schema=`
+keyword is a deprecated alias of `ontology=`. They still work and emit a
+`DeprecationWarning`.
+</Note>
+
+### Basic Ontology
 
 ```python
-from graphrag_sdk import GraphSchema, EntityType, RelationType
+from graphrag_sdk import Entity, Ontology, Relation
 
-schema = GraphSchema(
+ontology = Ontology(
     entities=[
-        EntityType(label="Person", description="A human being"),
-        EntityType(label="Organization", description="A company or institution"),
+        Entity(label="Person", description="A human being"),
+        Entity(label="Organization", description="A company or institution"),
     ],
     relations=[
-        RelationType(label="WORKS_AT", description="Employment relationship"),
+        Relation(label="WORKS_AT", description="Employment relationship"),
     ],
 )
 ```
 
-### Schema with Patterns
+### Ontology with Patterns
 
 Patterns define which source-target pairs are valid for each relationship type.
-They are specified directly on `RelationType`:
+They are specified directly on `Relation`:
 
 ```python
-schema = GraphSchema(
+ontology = Ontology(
     entities=[
-        EntityType(label="Person"),
-        EntityType(label="Organization"),
-        EntityType(label="Location"),
+        Entity(label="Person"),
+        Entity(label="Organization"),
+        Entity(label="Location"),
     ],
     relations=[
-        RelationType(label="WORKS_AT", patterns=[("Person", "Organization")]),
-        RelationType(label="LOCATED_IN", patterns=[("Organization", "Location")]),
+        Relation(label="WORKS_AT", patterns=[("Person", "Organization")]),
+        Relation(label="LOCATED_IN", patterns=[("Organization", "Location")]),
     ],
 )
 ```
 
 A relationship with an empty `patterns` list is allowed between any entity types.
 
-### Open Schema Mode
+### Typed Attributes
 
-If you create an empty schema (`GraphSchema()`), the pipeline operates in **open schema mode**:
+`Attribute(name, type, description)` declares a typed property on an entity or relation (`STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`). The extractor asks the LLM for declared attributes and coerces each value to its type:
+
+```python
+from graphrag_sdk import Attribute, Entity
+
+Entity(label="Person", properties=[Attribute(name="born", type="INTEGER")])
+```
+
+Avoid the names the SDK writes itself (`name`, `description`, `source_chunk_ids`, `spans`, `id`, and on edges `rel_type`, `fact`, `src_name`, `tgt_name`). An attribute a table declared is marked `Attribute(structured=True)` and carries the table's signature in its name (`employees__age`); it is never asked of the LLM.
+
+### Tables in the Ontology
+
+`Ontology(tables=[TableMapping(...)])` declares how a CSV or other tabular source becomes entities and edges. A mapping's labels, typed columns and links are registered in the ontology before any document is extracted. See [Structured Ingestion](/structured-ingestion).
+
+### Open Ontology Mode
+
+When the working ontology declares neither entities nor relations, the pipeline operates in **open mode**:
 - The LLM extracts any entities and relationships it finds
 - The pruning step is skipped entirely
-- The 11 default entity types are used for NER
+- The 11 default entity types are used for NER, and the 31 `DEFAULT_RELATION_TYPES` are offered as preferred (not enforced) relation labels
 
-This is good for exploration. For production, a defined schema produces cleaner, more consistent graphs.
+A `GraphRAG` created with no ontology on an empty graph seeds the 11 default entity types into its stored ontology, so entities outside those labels (other than `Unknown`) are pruned, while relations stay open.
+
+This is good for exploration. For production, a defined ontology produces cleaner, more consistent graphs.
 
 ---
 
@@ -275,7 +340,7 @@ This is good for exploration. For production, a defined schema produces cleaner,
 ### Statistics
 
 ```python
-stats = await rag.graph_store.get_statistics()
+stats = await rag.get_statistics()
 # Returns: node_count, edge_count, entity_types, relationship_types,
 #          graph_density, embedded_relationship_count, mention_edge_count,
 #          relates_edge_count
@@ -283,24 +348,28 @@ stats = await rag.graph_store.get_statistics()
 
 ### Raw Cypher Queries
 
+`rag.query(cypher, params)` runs Cypher against your graph and returns the rows as lists. It runs exactly what you pass, so use `params` for values rather than formatting them into the string:
+
 ```python
 # Find all Person entities
-result = await rag.graph_store.query_raw(
-    "MATCH (p:Person) RETURN p.name, p.description LIMIT 10"
-)
+rows = await rag.query("MATCH (p:Person) RETURN p.name, p.description LIMIT 10")
 
 # Find relationships between two entities
-result = await rag.graph_store.query_raw(
-    "MATCH (a:Person {name: 'Alice'})-[r:RELATES]->(b) "
-    "RETURN a.name, r.rel_type, b.name, r.fact"
+rows = await rag.query(
+    "MATCH (a:Person {name: $name})-[r:RELATES]->(b) "
+    "RETURN a.name, r.rel_type, b.name, r.fact",
+    {"name": "Alice"},
 )
 
 # Count mentions per entity
-result = await rag.graph_store.query_raw(
+rows = await rag.query(
     "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(c:Chunk) "
     "RETURN e.name, count(m) AS mentions "
     "ORDER BY mentions DESC LIMIT 20"
 )
+
+# A table's typed columns are signed with their source
+rows = await rag.query("MATCH (p:Person) RETURN avg(p.employees__age)")
 ```
 
 ---
@@ -309,7 +378,8 @@ result = await rag.graph_store.query_raw(
 
 | File | What it contains |
 |------|-----------------|
-| [`core/models.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/core/models.py) | GraphSchema, EntityType, RelationType, PropertyType |
+| [`core/models.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/core/models.py) | Ontology, Entity, Relation, Attribute |
+| [`core/tables.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/core/tables.py) | TableMapping, Column, Link, reserved property names |
 | [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | Node/relationship upserts, label hints, statistics |
 | [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | Index creation, vector search, fulltext search |
 | [`ingestion/pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py) | Lexical graph construction, pruning logic |

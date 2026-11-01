@@ -55,7 +55,9 @@ llm = LiteLLM(
 | `api_base` | `str \| None` | `None` | Base URL (required for Azure) |
 | `api_version` | `str \| None` | `None` | API version (required for Azure) |
 | `temperature` | `float` | `0.0` | Sampling temperature |
-| `max_tokens` | `int \| None` | `None` | Max output tokens |
+| `max_tokens` | `int \| None` | `None` | Max output tokens. A call may pass its own `max_tokens`, which wins; the dedup judge uses that to raise a low limit to 4,096 for its answers |
+
+Other keyword arguments are forwarded to LiteLLM.
 
 ### Embedder
 
@@ -70,10 +72,11 @@ embedder = LiteLLMEmbedder(
     api_version="2024-12-01-preview",
 )
 
-# OpenAI direct
+# OpenAI direct, 256-dimension vectors (the GraphRAG default embedding_dimension)
 embedder = LiteLLMEmbedder(
-    model="text-embedding-3-small",
+    model="text-embedding-3-large",
     api_key="your-openai-key",
+    dimensions=256,
 )
 ```
 
@@ -85,6 +88,9 @@ embedder = LiteLLMEmbedder(
 | `api_key` | `str \| None` | `None` | API key |
 | `api_base` | `str \| None` | `None` | Base URL |
 | `api_version` | `str \| None` | `None` | API version |
+| `batch_size` | `int` | `2048` | Maximum texts per batch call (`500` for Azure) |
+
+Other keyword arguments (such as `dimensions`) are forwarded to LiteLLM. The vectors must match `GraphRAG(embedding_dimension=...)`, which defaults to `256`; a mismatch raises `ConfigError` before any extraction work.
 
 ## OpenRouter
 
@@ -112,6 +118,7 @@ from graphrag_sdk import OpenRouterEmbedder
 embedder = OpenRouterEmbedder(
     model="openai/text-embedding-ada-002",
     api_key="your-openrouter-key",
+    batch_size=2048,                     # default
     extra_headers={},
 )
 ```
@@ -141,13 +148,16 @@ class MyLLM(LLMInterface):
 
 | Method | Default Behavior | Override When |
 |--------|-----------------|--------------|
-| `ainvoke(prompt, max_retries=3)` | Runs `invoke()` in a thread pool with retry | You have a native async client |
-| `ainvoke_messages(messages, max_retries=3)` | Concatenates messages into a single prompt and calls `ainvoke()` | You have a native multi-turn chat API |
+| `ainvoke(prompt, *, max_retries=3, timeout=None)` | Runs `invoke()` in a thread pool with retry | You have a native async client |
+| `ainvoke_messages(messages, *, max_retries=3, timeout=None)` | Concatenates messages into a single prompt and calls `ainvoke()` | You have a native multi-turn chat API |
+| `astream(prompt, *, timeout=None)` | Yields the full `ainvoke()` response | Your provider streams tokens |
 | `invoke_with_model(prompt, response_model)` | Calls `invoke()` and parses JSON into Pydantic model | Your provider has native structured output |
-| `ainvoke_with_model(prompt, response_model)` | Calls `ainvoke()` and parses JSON | Same, async version |
-| `abatch_invoke(prompts, max_concurrency)` | Concurrent `ainvoke()` with semaphore | You have a native batch API |
+| `ainvoke_with_model(prompt, response_model, *, max_retries=3, timeout=None)` | Calls `ainvoke()` and parses JSON | Same, async version |
+| `abatch_invoke(prompts, *, max_concurrency=None, max_retries=3, timeout=None)` | Concurrent `ainvoke()` with a semaphore; returns `LLMBatchItem`s | You have a native batch API |
 
-`ainvoke_messages()` is called by `completion()` when conversation history is provided. Override it to pass messages natively to your LLM's chat API for proper multi-turn handling:
+`timeout` is set by the SDK from the `Context` latency budget; honour it if your client supports one.
+
+`completion()` generates every answer through `ainvoke_messages()`, with or without conversation history. Override it to pass messages natively to your LLM's chat API for proper multi-turn handling:
 
 ```python
 from graphrag_sdk.core.models import ChatMessage, LLMResponse
@@ -157,7 +167,7 @@ class MyLLM(LLMInterface):
         response = my_client.generate(prompt)
         return LLMResponse(content=response.text)
 
-    async def ainvoke_messages(self, messages: list[ChatMessage], *, max_retries=3, **kwargs) -> LLMResponse:
+    async def ainvoke_messages(self, messages: list[ChatMessage], *, max_retries=3, timeout=None, **kwargs) -> LLMResponse:
         """Native multi-turn — pass messages directly to your chat API."""
         response = await my_client.chat(
             messages=[m.to_dict() for m in messages],
@@ -199,9 +209,9 @@ The `model_name` property is used by the graph config node to validate that the 
 
 | Method | Default Behavior | Override When |
 |--------|-----------------|--------------|
-| `aembed_query(text)` | Runs `embed_query()` in thread pool | You have async embedding |
+| `aembed_query(text, *, timeout=None)` | Runs `embed_query()` in thread pool | You have async embedding |
 | `embed_documents(texts)` | Sequential `embed_query()` per text | You can batch embeddings |
-| `aembed_documents(texts)` | Runs `embed_documents()` in thread pool | You have async batch |
+| `aembed_documents(texts, *, timeout=None)` | Runs `embed_documents()` in thread pool | You have async batch |
 
 ### Batch Embedding
 
@@ -227,9 +237,13 @@ For convenience, you can configure providers via environment variables instead o
 | `AZURE_API_KEY`, `AZURE_API_BASE`, `AZURE_API_VERSION` | Azure OpenAI |
 | `ANTHROPIC_API_KEY` | Anthropic |
 | `COHERE_API_KEY` | Cohere |
-| `OPENROUTER_API_KEY` | OpenRouter |
+| `OPENROUTER_API_KEY` | OpenRouter (read by `OpenRouterLLM` and `OpenRouterEmbedder` when `api_key` is not passed) |
 
 See the [LiteLLM documentation](https://docs.litellm.ai/) for the full list of supported providers and their environment variables.
+
+## One LLM, Several Jobs
+
+`GraphRAG(llm=...)` is used for extraction, keyword extraction at query time, text-to-Cypher (when enabled), answer generation, and by default the dedup judge in `finalize()`. Give the judge a stronger model if your main one is small: `finalize(judge=LLMJudge(LiteLLM(model="openai/gpt-4.1")))`. On the benchmark corpus a gpt-4.1-class judge made 9 wrong merges where gpt-4o-mini made 51. See [Configuration](/configuration#which-model-does-what).
 
 ## Choosing a Provider
 

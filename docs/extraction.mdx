@@ -8,6 +8,12 @@ Extraction is the heart of the ingestion pipeline. It takes raw text chunks and 
 
 GraphRAG SDK uses a **two-step hybrid approach**: a fast local NER model finds the entities first, then an LLM verifies them and extracts relationships. This gives you the speed of local models with the reasoning power of LLMs.
 
+<Note>
+Extraction applies to prose only. A table ingested through
+[Structured Ingestion](/structured-ingestion) is never sent to a model: its
+entities, properties and edges come from the mapping you declare.
+</Note>
+
 ---
 
 ## The Big Picture
@@ -18,24 +24,29 @@ GraphRAG SDK uses a **two-step hybrid approach**: a fast local NER model finds t
      ┌──────────┴──────────┐
      v                      v
   (Optional)           Step 1: Entity NER
-  Coreference          ┌─────────────────┐
-  Resolution           │  GLiNERExtractor │  (default, local)
-  (resolve pronouns)   │  LLMExtractor    │  (API-based)
-     |                 │  Custom          │  (your own)
-     v                 └────────┬────────┘
-  Resolved Text                 |
+  Coreference          ┌──────────────────────┐
+  Resolution           │  GLiNERExtractor     │  (default, local)
+  (resolve pronouns)   │  LLMExtractor        │  (API-based)
+     |                 │  SpacyExtractor      │  (opt-in, local)
+     v                 │  CompositeExtractor  │  (several at once)
+  Resolved Text        │  Custom              │  (your own)
+                       └──────────┬───────────┘
+                                  |
                         List of entities
-                        (name, type, confidence, spans)
-                                |
+                        (name, type, confidence, spans;
+                         low-confidence ones typed "Unknown")
+                                  |
                      Step 2: LLM Verify + Relationships
                      ┌──────────────────────────────────┐
                      │ LLM receives:                     │
-                     │   - Pre-extracted entities         │
-                     │   - Original text                  │
-                     │                                    │
-                     │ LLM returns:                       │
-                     │   - Verified entities (fixed/added) │
-                     │   - Relationships with evidence     │
+                     │   - Entity types (+ descriptions) │
+                     │   - Relation vocabulary           │
+                     │   - Pre-extracted entities        │
+                     │   - Original text                 │
+                     │                                   │
+                     │ LLM returns:                      │
+                     │   - Verified entities (fixed/added)│
+                     │   - Relationships with evidence   │
                      └──────────────┬───────────────────┘
                                     |
                           Aggregate across chunks
@@ -68,7 +79,7 @@ class EntityExtractor(ABC):
 
 Each extracted entity has:
 - **name** — the entity's name as it appears in the text (e.g., "Professor Harmon")
-- **type** — one of the allowed entity types (e.g., "Person")
+- **type** — one of the allowed entity types (e.g., "Person"), or `"Unknown"`
 - **description** — a brief description
 - **confidence** — how confident the model is (0.0 to 1.0)
 - **spans** — character offsets where the entity appears: `{chunk_id: [{start, end}]}`
@@ -82,24 +93,49 @@ A local transformer model that runs on your machine — no API calls needed.
 from graphrag_sdk import GLiNERExtractor
 
 extractor = GLiNERExtractor(
-    threshold=0.75,                          # at or above: typed entity (default: None = per-model value)
-    candidate_threshold=0.5625,              # band below threshold kept as "Unknown" (default: 25 % below threshold)
+    threshold=None,                          # default: the measured value for model_name
     model_name="urchade/gliner_medium-v2.1", # HuggingFace model (default)
     window_tokens=None,                      # words per inference window (default: derived from the model's max_len)
     window_overlap=48,                       # words shared by consecutive windows
+    # candidate_threshold: floor of the "Unknown" band (default: 25 % below threshold)
 )
 ```
 
 **How it works:**
-1. The model is loaded lazily on first use (thread-safe via `threading.Lock`)
+1. The model is loaded lazily on first use into a process-wide cache, one copy per model name, shared by every `GLiNERExtractor` in the process. Only the load is locked; inference takes no lock, so concurrent ingests run NER in parallel without holding several copies of the model in memory
 2. Runs inference via `asyncio.to_thread()` to avoid blocking the event loop
-3. Text longer than the model's input limit (`config.max_len`, 384 words for the default model) is processed as overlapping windows and merged back into non-overlapping spans, so the tail of a long chunk is not truncated. Short text takes a single-pass fast path.
+3. Text longer than the model's input limit (`config.max_len`, 384 words for the default model) is processed as overlapping windows and merged back into non-overlapping spans, so the tail of a long chunk is not silently truncated. The window defaults to `max_len` minus a safety margin; short text takes a single-pass fast path
 4. Returns predictions with character-level spans — more precise than LLM spans
-5. Entities in the band just below the confidence threshold (default: 25 % below it, e.g. 0.5625–0.75) are labeled `"Unknown"` and handed to the step-2 LLM, which re-types or drops them against the text; anything below the band is discarded. Pass `candidate_threshold=None` to disable the band.
+5. Spans scoring at or above `threshold` are typed. Spans in the band just below it — from `candidate_threshold` up to `threshold` — are kept but labeled `"Unknown"` (see [The Unknown band](#the-unknown-band)); anything below the band is discarded
 
-Thresholds are model-specific: `threshold=None` (the default) selects the measured value for `model_name` (`0.75` for the `urchade/gliner_*` models, `0.5` for the `knowledgator/gliner-bi-*` bi-encoders); unknown models fall back to `0.5` with a warning. Invalid configurations raise `ValueError`: `threshold` outside `[0, 1]`, `candidate_threshold` outside `[0, threshold]`, `window_tokens` not a positive integer, or `window_overlap` not a non-negative integer — all at construction. `window_overlap` must also be smaller than the window; that is checked at construction when `window_tokens` is given explicitly, otherwise on the first inference call, once the window has been derived from the model.
+#### Thresholds are model-specific
+
+Confidence scores are on different scales for different models, so a threshold tuned for one model is meaningless for another. `threshold=None` (the default) selects the measured value for `model_name`:
+
+| Model | Default `threshold` | Default `Unknown` band |
+|-------|---------------------|------------------------|
+| `urchade/gliner_medium-v2.1` (default), `urchade/gliner_large-v2.1`, `gliner-community/gliner_medium-v2.5` | `0.75` | 0.5625–0.75 |
+| `knowledgator/gliner-bi-small-v2.0`, `knowledgator/gliner-bi-base-v2.0` | `0.5` | 0.375–0.5 |
+| any other model | `0.5`, with a warning to tune it | 0.375–0.5 |
+
+<Warning>
+Do not carry an explicit threshold over from one model to another. The
+bi-encoder models return almost nothing at the 0.75 that suits
+`gliner_medium-v2.1`, and nothing raises an error.
+</Warning>
+
+Invalid configurations raise `ValueError` at construction: `threshold` outside `[0, 1]`, `candidate_threshold` outside `[0, threshold]`, `window_tokens` not a positive integer, or `window_overlap` not a non-negative integer. `window_overlap` must also be smaller than the window; that is checked at construction when `window_tokens` is given explicitly, otherwise on the first inference call, once the window has been derived from the model. Keep the overlap above the model's longest representable entity (12 words by default), or an entity on a window boundary can be lost.
 
 **Best for:** Production pipelines where you want fast, cheap NER without API costs.
+
+### The Unknown band
+
+Entities just below the confidence threshold are often real, so they are not thrown away. They are labeled `"Unknown"` and handed to the step-2 LLM, which re-types each one against the text or drops it. The rest of the pipeline is built for that label:
+
+- Ontology pruning keeps `Unknown` entities, so the ones the LLM did not re-type are not pruned
+- Entity resolution prefers any specific type over `Unknown` when merging duplicates
+
+By default the band is 25 % of the threshold, so it follows whichever threshold is in effect. Measured on the 11-document benchmark against the same code with the band off: entity recall 0.535 → 0.571 at precision 0.605 → 0.572 (F1 0.568 → 0.572), QA 30.4 % → 32.4 %, for 8 % more ingest cost; no `Unknown` node reached the graph. Pass `candidate_threshold=None` to turn the band off, or a number below `threshold` to set the floor yourself.
 
 ### LLMExtractor
 
@@ -110,13 +146,57 @@ from graphrag_sdk import LLMExtractor
 
 extractor = LLMExtractor(
     llm=my_llm,
-    threshold=0.75,
+    threshold=0.75,   # entities the LLM scores below this are typed "Unknown"
 )
 ```
 
-**How it works:** Sends a `NER_PROMPT` to the LLM asking it to extract entities with names, types, descriptions, confidence scores, and character offsets. The response is parsed as JSON.
+**How it works:** Sends a `NER_PROMPT` to the LLM asking it to extract entities with names, types, descriptions, confidence scores, and character offsets. The response is parsed as JSON. `GraphExtraction` batches these prompts through the LLM's `abatch_invoke`, with the entity type descriptions from your ontology.
 
 **Best for:** When you need richer entity descriptions or when GLiNER doesn't perform well on your domain.
+
+### SpacyExtractor (opt-in)
+
+A classic, supervised spaCy NER model. It is reliable on plain proper nouns (`Baghdad`, `Madrid`, `Paris Observatory`) but its label set is fixed, so it cannot represent custom types such as `Method` or `Technology`. Its value is as the second half of a `CompositeExtractor`.
+
+```bash
+pip install "graphrag-sdk[spacy]"
+python -m spacy download en_core_web_lg
+```
+
+```python
+from graphrag_sdk import SpacyExtractor
+
+extractor = SpacyExtractor(
+    model_name=None,   # default: "en_core_web_lg"
+    labels=None,       # default: {"PERSON", "ORG", "GPE", "FAC"}
+    confidence=None,   # default: 0.75, the default GLiNER model's threshold
+)
+```
+
+- Each spaCy label is mapped onto the first matching type your schema allows: `PERSON` → `Person`; `ORG` → `Organization`, `Institution` or `Company`; `GPE` → `Location`, `Place` or `GeographicLocation`; `FAC` → `Building`, `Facility`, `Location` or `Place`. A label your schema has no home for is dropped rather than guessed
+- spaCy gives no per-span probability, so `confidence` is a fixed value recorded on every entity; it does not change which entities are emitted
+- `labels` must be an iterable of labels; a bare string raises `TypeError`. Widening the label set buys recall at the cost of precision: on the 11-document benchmark, adding every usable label dropped F1 from 0.550 to 0.458
+- The model is loaded once per process and shared, like GLiNER's. A missing package raises `ImportError` and a missing model `OSError`, naming the install command
+
+### CompositeExtractor
+
+Runs several extractors over the same text concurrently and merges their entities.
+
+```python
+from graphrag_sdk import CompositeExtractor, GLiNERExtractor, GraphExtraction, SpacyExtractor
+
+extractor = GraphExtraction(
+    llm=llm,
+    entity_extractor=CompositeExtractor([GLiNERExtractor(), SpacyExtractor()]),
+)
+```
+
+Measured on the 11-document benchmark (157 chunks), GLiNER plus `SpacyExtractor` at its default labels: recall 0.494 → 0.613 and F1 0.522 → 0.550, for about 5 extra seconds; precision falls 0.554 → 0.499.
+
+- **Order matters.** Duplicates are merged by normalised name, and the **earliest** extractor in the list decides the type, unless it typed the entity `Unknown` and a later one gives a specific type. Put your most trusted, most schema-aware extractor first. Chunk provenance and spans are unioned
+- **Overlapping spans** (`suppress_overlaps=True`, the default): when one extractor's span strictly contains another's and adds a content word, the longer one wins — `Paris Observatory` replaces an earlier `Paris` at the same position. An extension that only adds an article (`The Paris Observatory` over `Paris Observatory`), a partial overlap, or an identical span leaves the earlier extractor's entity in place
+- **Failures:** one extractor raising does not stop the others; its results are skipped with a warning, and the error is re-raised only if every extractor fails. `ImportError` and `OSError` (a missing dependency or model) always propagate, since they would otherwise repeat on every chunk
+- An empty list raises `ValueError`. `LLMExtractor` members are refused with `TypeError`: inside a composite, it would lose the batching, `max_concurrency` and type descriptions `GraphExtraction` gives it directly
 
 ### Custom Extractors
 
@@ -126,23 +206,18 @@ Subclass `EntityExtractor` to plug in any NER backend:
 from graphrag_sdk import EntityExtractor
 from graphrag_sdk.core.models import ExtractedEntity
 
-class SpaCyExtractor(EntityExtractor):
-    def __init__(self, model_name="en_core_web_sm"):
-        import spacy
-        self._nlp = spacy.load(model_name)
-
+class MyExtractor(EntityExtractor):
     async def extract_entities(self, text, entity_types, source_chunk_id):
-        import asyncio
-        doc = await asyncio.to_thread(self._nlp, text)
+        predictions = await my_ner_service(text)
         return [
             ExtractedEntity(
-                name=ent.text,
-                type=ent.label_,
+                name=p.text,
+                type=p.label if p.label in entity_types else "Unknown",
                 description="",
                 source_chunk_ids=[source_chunk_id],
-                spans={source_chunk_id: [{"start": ent.start_char, "end": ent.end_char}]},
+                spans={source_chunk_id: [{"start": p.start, "end": p.end}]},
             )
-            for ent in doc.ents
+            for p in predictions
         ]
 ```
 
@@ -152,15 +227,21 @@ class SpaCyExtractor(EntityExtractor):
 
 The second step uses the LLM to do two things at once:
 
-1. **Verify entities** — remove false positives from step 1, fix naming errors, and add any entities the NER model missed
+1. **Verify entities** — remove false positives from step 1 (including operator and symbol tokens, shell abbreviations, and short tokens that are not a recognised name or acronym), fix naming errors, re-type or drop `Unknown` entities, and add any entities the NER model missed
 2. **Extract relationships** — identify all factual connections between the verified entities
 
 ### What the LLM Receives
 
 A structured prompt (`VERIFY_EXTRACT_RELS_PROMPT`) containing:
-- The list of entity types
+- The list of entity types, each with its ontology description when one is declared
+- The relation vocabulary (see [Relation Types](#relation-types))
+- The declared attributes to fill, when the ontology declares any
 - The pre-extracted entities from step 1 (as JSON)
 - The original chunk text
+
+The prompt asks for an **exhaustive** extraction, not a summary: there is no maximum, and a dense paragraph often yields 20 or more relationships. Measured: +15 % relations for +4 % ingest time. Relationship endpoints must come from the *verified* entity list the model returns, so an edge is never anchored to an entity it removed.
+
+Each entity description is used later to decide whether two entities from different documents are the same, so the prompt asks the model to use only facts the text states about *this* entity, to include the fact that tells similarly named entities apart (role, place, date), and to describe only the referent the entity denotes when a name is shared.
 
 ### What the LLM Returns
 
@@ -169,16 +250,14 @@ A JSON object with two arrays:
 ```json
 {
   "entities": [
-    {"name": "Alice", "type": "Person", "description": "Senior engineer at Acme Corp", "span_start": 0, "span_end": 5}
+    {"name": "Alice", "type": "Person", "description": "Senior engineer at Acme Corp"}
   ],
   "relationships": [
     {
       "source": "Alice",
       "target": "Acme Corp",
-      "type": "WORKS_AT",
-      "description": "Alice is a senior engineer at Acme Corp",
-      "keywords": "employment, career",
-      "weight": 1.0,
+      "type": "EMPLOYED_AT",
+      "description": "Alice is a senior engineer at Acme Corp.",
       "span_start": 0,
       "span_end": 42
     }
@@ -186,50 +265,56 @@ A JSON object with two arrays:
 }
 ```
 
+When the ontology declares attributes, each entity and relationship also carries an `attributes` object; values are coerced to the declared type, and a value that cannot be coerced is left unset. Attributes a table declared (`Attribute(structured=True)`, such as `employees__age`) are never put in the prompt, so a document cannot write under a table's property name. `name` is never asked for as an attribute either: it comes from the entity itself.
+
 ### Metadata Merging
 
-After step 2, GLiNER spans from step 1 are **carried forward** into the verified entities. GLiNER character offsets are more precise than LLM-generated offsets, so step 1 spans take priority. If the LLM found a new entity that GLiNER missed, the LLM's own spans are kept.
+After step 2, GLiNER spans from step 1 are **carried forward** into the verified entities. GLiNER character offsets are more precise than LLM-generated offsets, so step 1 spans take priority. If the LLM found a new entity that GLiNER missed, its span is found by searching the chunk text for the name.
 
 ### Fallback Behavior
 
-If step 2 fails for a chunk (bad JSON, API error), the pipeline falls back to using step 1 entities without relationships — you still get entities, just no relationships for that chunk.
+If step 2 fails for a chunk (bad JSON, API error), the pipeline falls back to using step 1 entities without relationships — you still get entities, just no relationships for that chunk. A failed call is not silent: `result.metadata["extraction"]` lists `failed_chunks` (step 1 failed, no entities) and `relation_failed_chunks` (entities kept, relationships lost), both are logged at WARNING, and the document's content hash is withheld so the next `ingest()` retries it. A reply that arrives but is not valid JSON is only logged at WARNING: it is not listed in `relation_failed_chunks` and does not withhold the hash.
 
 ---
 
 ## The Ontology — Entity Types
 
-Every extracted entity is mapped to one of the allowed entity types. The SDK ships with 11 default types:
+Every extracted entity is mapped to one of the allowed entity types. The SDK ships with 11 default types (`DEFAULT_ENTITY_TYPES`):
 
 ```
 Person, Organization, Technology, Product, Location,
 Date, Event, Concept, Law, Dataset, Method
 ```
 
-Entities that don't match any type (or score in the band just below the confidence threshold) are labeled `"Unknown"`.
+Entities that don't match any allowed type, or that score in the band just below the confidence threshold, are labeled `"Unknown"`. A type the LLM writes with a `/` or parentheses (`Person/Organization`) is not a type, and the entity is dropped.
 
 ### Customizing the Ontology
 
 There are three ways to define entity types, listed by priority:
 
-**1. GraphSchema entities (highest priority):**
+**1. Ontology entities (highest priority):**
 ```python
-from graphrag_sdk import GraphSchema, EntityType
+from graphrag_sdk import Entity, GraphRAG, Ontology
 
-schema = GraphSchema(entities=[
-    EntityType(label="Gene", description="A gene or genetic locus"),
-    EntityType(label="Disease", description="A disease or condition"),
+ontology = Ontology(entities=[
+    Entity(label="Gene", description="A gene or genetic locus"),
+    Entity(label="Disease", description="A disease or condition"),
 ])
-rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
-# Extraction uses: ["Gene", "Disease"]
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)
+# Extraction uses: ["Gene", "Disease"], with their descriptions in the prompt
 ```
 
 **2. `entity_types` parameter on GraphExtraction:**
 ```python
+from graphrag_sdk import GraphExtraction
+
 extractor = GraphExtraction(
     llm=llm,
     entity_types=["Gene", "Protein", "Disease", "Drug"],
 )
 ```
+
+Used only when the ontology has no entity types. A `GraphRAG` on a new graph with no declared entities stores the 11 defaults as its ontology, so an extractor passed to `rag.ingest(extractor=...)` there still extracts the defaults; declare the types in the ontology instead.
 
 **3. Defaults (lowest priority):**
 ```python
@@ -237,34 +322,72 @@ extractor = GraphExtraction(llm=llm)
 # Uses the 11 default types
 ```
 
+`Document` and `Chunk` are reserved for the lexical graph and are refused as entity types with `ValueError`, whichever way they are passed.
+
+A [table mapping](/structured-ingestion) declares its label in the ontology before any document is extracted, so the extractor uses the table's real labels instead of guessing one from the defaults.
+
 ### Relation Types
 
 Relations resolve the same way, with one difference in strictness:
 
-1. **`Ontology.relations`** (highest priority). The prompt lists them under *Allowed Relationships* and says the type MUST be one of them, and `IngestionPipeline` prunes any edge whose `rel_type` is not declared.
-2. **`relation_types` parameter on GraphExtraction.** Guidance, not a filter: the prompt lists them under *Preferred Relationships* and asks the LLM to prefer one, falling back to a descriptive `UPPER_SNAKE_CASE` label when none fits. Off-list edges are kept. Blank labels are rejected.
-3. **`DEFAULT_RELATION_TYPES`** (lowest priority). A 31-label domain-neutral vocabulary (`LOCATED_IN`, `PART_OF`, `CONTAINS`, `MEMBER_OF`, `EMPLOYED_AT`, `FOUNDED`, `CREATED`, `AUTHORED`, `BORN_IN`, `MARRIED_TO`, `USES`, ...) used when neither of the above is given. Without it the model invented a fresh label for almost every edge (447 distinct labels against 30 in the benchmark answer key); with it the vocabulary shrinks ~4x and exact triple F1 doubles.
+1. **`Ontology.relations`** (highest priority). The prompt lists them under *Allowed Relationships*, with their patterns and descriptions, and says the type MUST be one of them, and `IngestionPipeline` prunes any edge whose `rel_type` is not declared or whose endpoints do not match a declared pattern.
+2. **`relation_types` parameter on GraphExtraction.** Guidance, not a filter: the prompt lists them under *Preferred Relationships* and asks the LLM to prefer one, falling back to a descriptive `UPPER_SNAKE_CASE` label when none fits. Off-list edges are kept. Blank labels are rejected with `ValueError`.
+3. **`DEFAULT_RELATION_TYPES`** (lowest priority). A 31-label domain-neutral vocabulary, used when neither of the above is given:
+
+```
+LOCATED_IN, PART_OF, CONTAINS, OCCURRED_IN,
+MEMBER_OF, EMPLOYED_AT, FOUNDED, OWNS, SUBSIDIARY_OF,
+CREATED, AUTHORED, DESIGNED_BY, DEVELOPED_BY, MANUFACTURED, PUBLISHED_IN, SUPPLIED_TO,
+BORN_IN, DIED_IN, MARRIED_TO, CHILD_OF, SIBLING_OF, STUDENT_OF, COLLEAGUE_OF,
+PARTICIPATED_IN, DIRECTED, AWARDED, NAMED_AFTER, SUCCEEDED_BY, INFLUENCED,
+USES, BASED_ON
+```
+
+Without a vocabulary, the model invented a fresh label for almost every edge: 447 distinct labels on the benchmark corpus. With one, the vocabulary shrinks to about 100 labels and exact triple F1 doubles. The gain comes from consistency, not from guessing the right words.
 
 ```python
+from graphrag_sdk import DEFAULT_RELATION_TYPES, GraphExtraction
+
 extractor = GraphExtraction(llm=llm, relation_types=["INHIBITS", "ACTIVATES", "BINDS"])
+
+# Extend the default vocabulary
+extractor = GraphExtraction(llm=llm, relation_types=[*DEFAULT_RELATION_TYPES, "TREATS"])
 
 # Open vocabulary -- the model names every edge itself:
 extractor = GraphExtraction(llm=llm, relation_types=[])
 ```
 
+<Note>
+A table mapping's `Link` (for example `Link("WORKS_AT", to="Organization",
+by="org_id")`) registers a relation in the ontology. From then on
+`Ontology.relations` is non-empty, so prose extraction switches to the strict
+*Allowed Relationships* list for that graph. If your documents need other
+relations, declare them in the ontology too.
+</Note>
+
 ---
 
 ## Entity Name Validation
 
-Not every string the NER model produces is a valid entity. The SDK filters names through quality gates:
+Not every string the NER model or the LLM produces is a valid entity. Names are filtered through quality gates in both steps:
 
 | Rule | Rejected Examples |
 |------|------------------|
 | Length 2-80 characters | Single characters, descriptions masquerading as names |
-| Not a pronoun | he, she, they, it, him, her, his, them, who |
-| Not a generic reference | narrator, author, reader, person, someone, story, chapter |
+| Not a pronoun | he, she, they, it, him, her, his, them, who, we, you, our, their |
+| Not a generic or meta-textual reference | narrator, the author, reader, person, someone, people, story, chapter, document |
+| Not a shell or system abbreviation | cd, ls, rm, grep, sudo, ssh, tmp, usr, etc |
+| Contains at least one letter or digit | `+=`, `->`, `==`, `!=` |
+| Not a specific date, unless the ontology declares `Date` | `1823`, `14 January 1904`, `1904-01-14` |
 
-The full stoplist includes ~50 pronouns and generic references. See `_ENTITY_STOPLIST` in `entity_extractors.py`.
+Some names are deliberately kept:
+
+- **Short all-caps acronyms are not pronouns.** `US` is a country and `us` a pronoun, so a token of up to three capital letters is excused from the pronoun list: `US` and `IT` stay. It is not excused from the other lists, so `CD` or `ETC` in an all-caps heading are still rejected. Well-known two-letter acronyms such as `AI`, `UK`, `EU` and `UN` are not on any list
+- **Periods are kept.** A date that names a span of time — `the 1820s`, `the 19th century`, `the Abbasid era` — is a valid entity even when the ontology has no `Date` type. A specific date belongs on the relation that mentions it. The default entity types include `Date`, so this rule only affects ontologies that leave `Date` out. One cost: a product named for a number (`747`, `1984`) reads as a year and is dropped in that case
+
+The full stoplist is `_ENTITY_STOPLIST` in `entity_extractors.py`.
+
+Name hygiene continues when entities are compared for deduplication. At `finalize()`, names are matched on a canonical form in which a symbol glued to a word is part of the name: `C` ≠ `C#` ≠ `C++`, `F` ≠ `F#` and `A` ≠ `A+`, while `C#` still equals `C Sharp`. `LLMVerifiedResolution` never merges two names that are equal once digits are removed and different with them (`GPT-3` / `GPT-4`, `Q1 2024` / `Q2 2024`, `P-011` / `P-021`).
 
 ---
 
@@ -276,6 +399,7 @@ After extraction runs on all chunks, entities are **deduplicated across chunks**
 - `source_chunk_ids` are merged (the entity knows every chunk it appeared in)
 - `spans` are merged (character offsets from every chunk)
 - Capitalized names are preferred over lowercase
+- Declared attribute values are merged per attribute, the later chunk winning — including a later chunk that does not state the attribute, whose empty value replaces an earlier one
 
 **Example:** "Alice" appears in chunks 3, 7, and 12. After aggregation, there's one entity with `source_chunk_ids = ["chunk_3", "chunk_7", "chunk_12"]` and spans from all three chunks.
 
@@ -295,9 +419,9 @@ Relationships are similarly deduplicated by `(source.lower(), type.lower(), targ
 
 After aggregation, each entity becomes a `GraphNode`:
 
-- **ID:** `compute_entity_id(name, type)` — deterministic: `"alice__person"` (lowercase, spaces replaced with underscores, type-qualified to prevent collisions)
+- **ID:** `compute_entity_id(name, type)` — deterministic: `"alice__person"` (lowercase, spaces replaced with underscores, type-qualified to prevent collisions). A table row's id is derived the same way from its name, which is why a row and a mention of the same name are one node
 - **Label:** The entity type (e.g., `Person`, `Organization`)
-- **Properties:** `name`, `description`, `source_chunk_ids`, and optionally `spans`
+- **Properties:** `name`, `type`, `description`, `source_chunk_ids`, optionally `spans`, and any declared attribute values
 
 ---
 
@@ -307,14 +431,13 @@ All relationships become `GraphRelationship` objects with type `"RELATES"`:
 
 - **Type:** Always `"RELATES"` — a single unified edge type
 - **Properties:**
-  - `rel_type` — the original relationship type (e.g., `"WORKS_AT"`)
-  - `fact` — a human-readable fact string: `"(Alice, WORKS_AT, Acme Corp): Alice is a senior engineer at Acme Corp"`
+  - `rel_type` — the original relationship type (e.g., `"EMPLOYED_AT"`)
+  - `fact` — a human-readable fact string: `"(Alice, EMPLOYED_AT, Acme Corp): Alice is a senior engineer at Acme Corp."`
   - `description` — the relationship description
-  - `keywords` — comma-separated terms for fulltext search
-  - `weight` — confidence (1.0 = explicitly stated, 0.5 = implied)
   - `src_name`, `tgt_name` — endpoint entity names
   - `source_chunk_ids` — provenance
   - `spans` — character offsets of the evidence
+  - any declared attribute values
 
 **Why a single edge type?** Using one `RELATES` type with a `rel_type` property avoids creating dozens of relationship types in the graph (each needing its own index). The original type is preserved in the `rel_type` property and is used for display and filtering.
 
@@ -332,7 +455,7 @@ After:  "Voss went to the store. Voss bought milk."
 ### FastCorefResolver
 
 ```python
-from graphrag_sdk import FastCorefResolver
+from graphrag_sdk import FastCorefResolver, GraphExtraction
 
 extractor = GraphExtraction(
     llm=llm,
@@ -340,7 +463,7 @@ extractor = GraphExtraction(
 )
 ```
 
-**Model:** `"biu-nlp/lingmess-coref"` (LingMessCoref)
+**Model:** `"biu-nlp/lingmess-coref"` (LingMessCoref), configurable with `model_name=`
 
 **How it works:**
 1. Predict coreference clusters (groups of spans referring to the same entity)
@@ -348,15 +471,18 @@ extractor = GraphExtraction(
 3. Replace pronouns with canonical mentions, right-to-left to preserve offsets
 4. Handles possessives: "her" becomes "Voss's"
 
+If coreference fails for a chunk, the original text is used and a warning is logged.
+
 **When to use:** When your documents have heavy pronoun usage and extraction is missing entities because of it. Adds ~1-2 seconds per chunk.
 
 ---
 
 ## Concurrency
 
-- **GLiNER/custom extractors:** Use `asyncio.Semaphore(max_concurrency or 12)` for parallel chunk processing
+- **GLiNER/spaCy/composite/custom extractors:** Use `asyncio.Semaphore(max_concurrency or 12)` for parallel chunk processing
 - **LLM extractors:** Use `llm.abatch_invoke(max_concurrency=...)` for batched LLM calls
 - **Step 2 (verify + rels):** Always uses `llm.abatch_invoke()` regardless of step 1 backend
+- **Latency budget:** when the request `Context`'s budget runs out, the remaining chunks are not attempted; they are reported as `chunks_skipped` and the content hash is withheld
 
 ---
 
@@ -364,7 +490,7 @@ extractor = GraphExtraction(
 
 | File | What it contains |
 |------|-----------------|
-| [`graph_extraction.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/graph_extraction.py) | 2-step extraction orchestrator, entity/relation aggregation, GraphData conversion |
-| [`entity_extractors.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/entity_extractors.py) | EntityExtractor ABC, GLiNERExtractor, LLMExtractor, entity utilities |
+| [`graph_extraction.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/graph_extraction.py) | 2-step extraction orchestrator, `DEFAULT_RELATION_TYPES`, entity/relation aggregation, GraphData conversion |
+| [`entity_extractors.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/entity_extractors.py) | EntityExtractor ABC, GLiNERExtractor, LLMExtractor, SpacyExtractor, CompositeExtractor, name validation |
 | [`coref_resolvers.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/coref_resolvers.py) | CorefResolver ABC, FastCorefResolver |
 | [`base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/base.py) | ExtractionStrategy ABC |
