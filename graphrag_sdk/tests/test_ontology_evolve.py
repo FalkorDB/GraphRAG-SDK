@@ -520,7 +520,28 @@ class TestSetOntologyRestoresOnFailure:
         with pytest.raises(ValueError, match="contradiction"):
             await rag.set_ontology(Ontology(entities=[Entity(label="Gene")]))
         assert rag.ontology is previous
+        assert rag._ontology_initialized is False  # reloaded from the graph next time
+
+    async def test_a_partly_registered_ontology_is_reloaded(self, graphrag_evolving):
+        rag = graphrag_evolving
+        previous, working = rag.ontology, rag._global_ontology
+        partial = Ontology(entities=[Entity(label="Gene")])
+        initialize = rag._initialize_ontology
+
+        async def fails_halfway():
+            rag._global_ontology = partial  # the new types were registered
+            raise ValueError("mapping refused")
+
+        rag._initialize_ontology = fails_halfway
+        with pytest.raises(ValueError, match="mapping refused"):
+            await rag.set_ontology(Ontology(entities=[Entity(label="Gene")]))
+        assert rag.ontology is previous and rag._global_ontology is working
+        assert rag._ontology_initialized is False
+        rag._initialize_ontology = initialize
+        rag._ontology_store.register.reset_mock()
+        await rag._ensure_ontology_initialized()
         assert rag._ontology_initialized is True
+        assert rag._ontology_store.register.await_count >= 1  # the previous one, again
 
     async def test_a_rejected_call_does_not_undo_a_concurrent_one(self, graphrag_evolving):
         # The rollback restored the init flag while another call waited, which
