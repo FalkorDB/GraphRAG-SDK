@@ -3,12 +3,16 @@
 Unit tests use a fake graph store + recording inner extractor and cover the
 full split/remap/merge/fallback matrix. Integration tests (RUN_INTEGRATION=1,
 real FalkorDB) prove end-to-end that unchanged chunks skip LLM extraction —
-the scripted LLM is strict, so any unexpected extraction raises loudly.
+the scripted LLM records any unexpected extraction and the tests assert
+there was none.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
+import threading
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -26,6 +30,7 @@ from graphrag_sdk.core.models import (
     GraphData,
     GraphNode,
     GraphRelationship,
+    LLMResponse,
     Ontology,
     TextChunk,
     TextChunks,
@@ -35,6 +40,8 @@ from graphrag_sdk.ingestion.extraction_strategies.cached_chunk_extraction import
     CachedChunkExtraction,
 )
 from graphrag_sdk.storage.graph_store import GraphStore
+
+from .conftest import MockLLM
 
 
 def _sha(text: str) -> str:
@@ -704,12 +711,67 @@ def _first_n_chars_stable(part1: str, size: int) -> str:
     return part1
 
 
+class _ChunkScriptedLLM(MockLLM):
+    """Step-2 LLM that answers by the chunk a prompt carries, not by call order.
+
+    ``GraphExtraction`` sends every chunk's step-2 prompt through
+    ``abatch_invoke``, which runs each call on a worker thread, so which
+    chunk reaches ``invoke`` first changes from run to run. The ``scripted_llm``
+    fixture answers in call order, so with two chunks per document it handed
+    chunk 1's entities to chunk 2 on some runs, and the update then
+    orphan-cleaned them along with chunk 2.
+
+    ``script`` maps a phrase found in exactly one chunk to that chunk's
+    answers, one per extraction, in order. A call for a chunk with no answer
+    left (an update extracting the unchanged chunk again) or for no single
+    known chunk is recorded in ``unexpected_calls`` and raises. The raise alone
+    does not fail a test: ``ainvoke`` retries it, ``abatch_invoke`` turns it
+    into a failed chunk and extraction keeps the step-1 entities. So each test
+    asserts ``unexpected_calls`` is empty.
+    """
+
+    def __init__(self, script: dict[str, list[list[tuple[str, str, str]]]]) -> None:
+        super().__init__(strict=True)
+        self._answers = {
+            phrase: [
+                json.dumps(
+                    {
+                        "entities": [
+                            {"name": n, "type": t, "description": d} for (n, t, d) in entities
+                        ],
+                        "relationships": [],
+                    }
+                )
+                for entities in answers
+            ]
+            for phrase, answers in script.items()
+        }
+        # invoke() runs on abatch_invoke's worker threads.
+        self._lock = threading.Lock()
+        self.unexpected_calls: list[str] = []
+
+    @property
+    def unused_answers(self) -> dict[str, int]:
+        with self._lock:
+            return {phrase: len(left) for phrase, left in self._answers.items() if left}
+
+    def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+        with self._lock:
+            phrases = [phrase for phrase in self._answers if phrase in prompt]
+            if len(phrases) == 1 and self._answers[phrases[0]]:
+                return LLMResponse(content=self._answers[phrases[0]].pop(0))
+            call = f"{phrases[0]!r} again" if len(phrases) == 1 else f"chunk matching {phrases}"
+            self.unexpected_calls.append(call)
+        raise AssertionError(f"unscripted LLM call: {call}")
+
+
 @pytest.mark.asyncio
 @pytest.mark.integration
 class TestCachedUpdateIntegration:
-    """End-to-end proof against real FalkorDB. The scripted LLM is strict:
-    an LLM call for an unchanged chunk raises, so passing tests ARE the
-    proof that caching skips extraction."""
+    """End-to-end proof against real FalkorDB. The scripted LLM answers each
+    chunk only as many times as the test expects it to be extracted and
+    records any other call, which the tests assert never happened: passing
+    tests ARE the proof that caching skips extraction."""
 
     CHUNK = 64
 
@@ -732,23 +794,26 @@ class TestCachedUpdateIntegration:
 
         return FixedSizeChunking(chunk_size=self.CHUNK, chunk_overlap=0)
 
-    async def test_cached_update_skips_llm_for_unchanged_chunk(
-        self, real_falkordb_rag_factory, scripted_llm
-    ):
+    async def test_cached_update_skips_llm_for_unchanged_chunk(self, real_falkordb_rag_factory):
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
             ExactMatchResolution,
         )
 
         v1, v2 = self._texts()
-        # Scripted responses: 2 for ingest (2 chunks), 1 for update (only
-        # the changed chunk). strict=True → a 4th call raises.
-        llm = scripted_llm(
-            [
-                ("Alice", "Person", "Engineer at Acme"),
-                ("Acme Corporation", "Organization", "Tech company"),
-            ],
-            [("Carol", "Person", "Manager in Berlin")],
-            [("Dave", "Person", "Manager in Munich")],
+        # One answer per chunk: the ingest extracts chunk 1 and chunk 2, the
+        # update only the changed chunk 2. Extracting chunk 1 again is
+        # recorded as unexpected.
+        llm = _ChunkScriptedLLM(
+            {
+                "Alice works": [
+                    [
+                        ("Alice", "Person", "Engineer at Acme"),
+                        ("Acme Corporation", "Organization", "Tech company"),
+                    ]
+                ],
+                "Carol manages": [[("Carol", "Person", "Manager in Berlin")]],
+                "Dave now manages": [[("Dave", "Person", "Manager in Munich")]],
+            }
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution())
 
@@ -761,6 +826,7 @@ class TestCachedUpdateIntegration:
             cache_unchanged_chunks=True,
         )
 
+        assert llm.unexpected_calls == [], "the LLM was called for an already-extracted chunk"
         assert result.no_op is False
         assert result.metadata["cache_stats"] == {
             "cached_chunks": 1,
@@ -799,18 +865,18 @@ class TestCachedUpdateIntegration:
         )
         assert set(r.result_set[0][0] or []) <= live_chunk_ids
 
-    async def test_manually_deleted_entity_not_resurrected(
-        self, real_falkordb_rag_factory, scripted_llm
-    ):
+    async def test_manually_deleted_entity_not_resurrected(self, real_falkordb_rag_factory):
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
             ExactMatchResolution,
         )
 
         v1, v2 = self._texts()
-        llm = scripted_llm(
-            [("Alice", "Person", "Engineer"), ("Bob", "Person", "Colleague")],
-            [("Carol", "Person", "Manager")],
-            [("Dave", "Person", "Manager")],
+        llm = _ChunkScriptedLLM(
+            {
+                "Alice works": [[("Alice", "Person", "Engineer"), ("Bob", "Person", "Colleague")]],
+                "Carol manages": [[("Carol", "Person", "Manager")]],
+                "Dave now manages": [[("Dave", "Person", "Manager")]],
+            }
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution())
         await rag.ingest(text=v1, document_id="doc-del", chunker=self._chunker())
@@ -827,6 +893,7 @@ class TestCachedUpdateIntegration:
             cache_unchanged_chunks=True,
         )
 
+        assert llm.unexpected_calls == [], "the LLM was called for an already-extracted chunk"
         r = await rag._graph_store.query_raw(
             "MATCH (e:__Entity__) WHERE e.name = 'Bob' RETURN count(e)"
         )
@@ -839,7 +906,7 @@ class TestCachedUpdateIntegration:
         )
         assert r.result_set[0][0] == 1
 
-    async def test_default_off_extracts_all_chunks(self, real_falkordb_rag_factory, scripted_llm):
+    async def test_default_off_extracts_all_chunks(self, real_falkordb_rag_factory):
         """cache_unchanged_chunks defaults to False → both chunks hit the
         LLM on update (4 scripted responses, all consumed)."""
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
@@ -847,24 +914,30 @@ class TestCachedUpdateIntegration:
         )
 
         v1, v2 = self._texts()
-        llm = scripted_llm(
-            [("Alice", "Person", "Engineer")],
-            [("Carol", "Person", "Manager")],
-            [("Alice", "Person", "Engineer")],
-            [("Dave", "Person", "Manager")],
+        llm = _ChunkScriptedLLM(
+            {
+                "Alice works": [
+                    [("Alice", "Person", "Engineer")],
+                    [("Alice", "Person", "Engineer")],
+                ],
+                "Carol manages": [[("Carol", "Person", "Manager")]],
+                "Dave now manages": [[("Dave", "Person", "Manager")]],
+            }
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution())
         await rag.ingest(text=v1, document_id="doc-off", chunker=self._chunker())
 
         result = await rag.update(text=v2, document_id="doc-off", chunker=self._chunker())
 
+        assert llm.unexpected_calls == []
+        assert llm.unused_answers == {}
         assert "cache_stats" not in result.metadata
         r = await rag._graph_store.query_raw(
             "MATCH (e:__Entity__) WHERE e.name = 'Dave' RETURN count(e)"
         )
         assert r.result_set[0][0] == 1
 
-    async def test_no_op_short_circuit_unaffected(self, real_falkordb_rag_factory, scripted_llm):
+    async def test_no_op_short_circuit_unaffected(self, real_falkordb_rag_factory):
         """An unchanged re-``update()`` short-circuits on the stored hash.
 
         The hash is only stamped when every write completed, and a chunk
@@ -889,9 +962,11 @@ class TestCachedUpdateIntegration:
                 return []
 
         v1, _ = self._texts()
-        llm = scripted_llm(
-            [("Alice", "Person", "Engineer")],
-            [("Carol", "Person", "Manager")],
+        llm = _ChunkScriptedLLM(
+            {
+                "Alice works": [[("Alice", "Person", "Engineer")]],
+                "Carol manages": [[("Carol", "Person", "Manager")]],
+            }
         )
         extractor = GraphExtraction(llm, entity_extractor=_NoLocalNER())
         rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution())
