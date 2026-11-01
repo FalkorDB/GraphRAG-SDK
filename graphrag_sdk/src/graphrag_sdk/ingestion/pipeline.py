@@ -28,7 +28,11 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
-from graphrag_sdk.ingestion.lexical_graph import LexicalGraphWriter, _reported_short
+from graphrag_sdk.ingestion.lexical_graph import (
+    LexicalGraphWriter,
+    _reported_short,
+    merge_mentions,
+)
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
@@ -649,35 +653,14 @@ class IngestionPipeline(LexicalGraphWriter):
 
         A mention keeps its ``spans`` and ``descriptions``: its MENTIONED_IN
         edge is the only record of them. Two mentions that land on one
-        (entity, chunk) become one, with both mentions' spans and
-        descriptions, each once.
+        (entity, chunk) become one holding both (``merge_mentions``).
         """
-        rewritten: dict[tuple[str, str], EntityMention] = {}
+        remapped: list[EntityMention] = []
         for m in graph_data.mentions:
             new_id = m.entity_id
             visited: set[str] = set()
             while new_id in remap and new_id not in visited:
                 visited.add(new_id)
                 new_id = remap[new_id]
-            key = (new_id, m.chunk_id)
-            held = rewritten.get(key)
-            if held is None:
-                rewritten[key] = EntityMention(
-                    entity_id=new_id,
-                    chunk_id=m.chunk_id,
-                    spans=list(m.spans),
-                    descriptions=list(m.descriptions),
-                )
-                continue
-            pairs = list(zip(held.spans[0::2], held.spans[1::2]))
-            for pair in zip(m.spans[0::2], m.spans[1::2]):
-                if pair not in pairs:
-                    pairs.append(pair)
-            rewritten[key] = held.model_copy(
-                update={
-                    "spans": [x for pair in pairs for x in pair],
-                    "descriptions": held.descriptions
-                    + [d for d in m.descriptions if d not in held.descriptions],
-                }
-            )
-        return graph_data.model_copy(update={"mentions": list(rewritten.values())})
+            remapped.append(m.model_copy(update={"entity_id": new_id}))
+        return graph_data.model_copy(update={"mentions": merge_mentions(remapped)})

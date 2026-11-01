@@ -388,6 +388,8 @@ class TestBackfillEntity:
         rel_call = rag._graph_store.upsert_relationships.await_args.args[0]
         assert rel_call[0].type == "MENTIONED_IN"
         assert rel_call[0].end_node_id == "c1"
+        # What the chunk said is on its edge too, so a delete can take it off.
+        assert rel_call[0].properties == {"description": "A founder"}
         assert result.values_filled == 1
         # Same (name, type) id as the extraction path, so the backfilled node
         # merges with an extracted "Bob" instead of living in its own namespace.

@@ -22,6 +22,34 @@ from graphrag_sdk.core.models import (
 )
 
 
+def merge_mentions(mentions: list[EntityMention]) -> list[EntityMention]:
+    """One mention per (entity, chunk). Two that land on one — two names with
+    one entity id, or a remap onto a survivor — become one holding both
+    mentions' spans and descriptions, each once, in order: its MENTIONED_IN
+    edge is the only record of them."""
+    spans: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    said: dict[tuple[str, str], list[str]] = {}
+    for m in mentions:
+        key = (m.entity_id, m.chunk_id)
+        pairs = spans.setdefault(key, [])
+        for pair in zip(m.spans[0::2], m.spans[1::2]):
+            if pair not in pairs:
+                pairs.append(pair)
+        held = said.setdefault(key, [])
+        for d in m.descriptions:
+            if d not in held:
+                held.append(d)
+    return [
+        EntityMention(
+            entity_id=entity_id,
+            chunk_id=chunk_id,
+            spans=[x for pair in pairs for x in pair],
+            descriptions=said[(entity_id, chunk_id)],
+        )
+        for (entity_id, chunk_id), pairs in spans.items()
+    ]
+
+
 def _reported_short(reported: Any, expected: int) -> bool:
     """True when a store reported writing fewer items than it was handed.
 
@@ -172,13 +200,8 @@ class LexicalGraphWriter:
         if not mentions:
             return 0, None
 
-        seen: set[tuple[str, str]] = set()
         mention_rels: list[GraphRelationship] = []
-        for m in mentions:
-            key = (m.entity_id, m.chunk_id)
-            if key in seen:
-                continue
-            seen.add(key)
+        for m in merge_mentions(mentions):
             props: dict = {}
             if m.spans:
                 props["spans"] = list(m.spans)

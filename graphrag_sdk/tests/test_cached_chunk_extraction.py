@@ -499,7 +499,8 @@ class TestFailOpen:
 class TestMerge:
     async def test_entity_in_cached_and_extracted_chunk_unions_provenance(self, ontology, ctx):
         """Same entity in an unchanged chunk (cached) and a changed chunk
-        (extracted): fresh properties win, provenance is the union."""
+        (extracted): fresh properties win, provenance is the union, and so
+        are the descriptions — both chunks are in the new version."""
         store = FakeGraphStore(
             chunk_texts=[("old-1", "unchanged")],
             entity_rows=[
@@ -537,9 +538,31 @@ class TestMerge:
 
         assert len(result.nodes) == 1
         node = result.nodes[0]
-        assert node.properties["description"] == "New description"  # fresh wins
+        assert node.properties["name"] == "Alice"
+        assert node.properties["descriptions"] == ["Old description", "New description"]
+        assert node.properties["description"] == "Old description | New description"
         assert set(node.properties["source_chunk_ids"]) == {"new-1", "new-2"}  # union
         assert {m.chunk_id for m in result.mentions} == {"new-1", "new-2"}
+
+    def test_a_fresh_description_is_added_to_a_cached_list(self):
+        """A cached part hands a ``descriptions`` list, which the store reads
+        before ``description``: overlaid, the fresh description never reached
+        the node."""
+        cached = GraphData(
+            nodes=[
+                GraphNode(
+                    id="e1",
+                    label="Person",
+                    properties={"description": "CEO | Founder", "descriptions": ["CEO", "Founder"]},
+                )
+            ]
+        )
+        fresh = GraphData(
+            nodes=[GraphNode(id="e1", label="Person", properties={"description": "Investor"})]
+        )
+        (node,) = CachedChunkExtraction._merge([cached, fresh]).nodes
+        assert node.properties["descriptions"] == ["CEO", "Founder", "Investor"]
+        assert node.properties["description"] == "CEO | Founder | Investor"
 
     async def test_extracted_entities_and_relations_pass_through(self, ontology, ctx):
         from graphrag_sdk.core.models import ExtractedEntity

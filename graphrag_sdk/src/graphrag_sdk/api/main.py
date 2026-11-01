@@ -1761,10 +1761,8 @@ class GraphRAG:
                 # (name, type) -- the same id the extraction path assigns, so a
                 # backfilled entity merges with its extracted twin.
                 ent_id = compute_entity_id(ent_name, label)
-                props: dict[str, Any] = {
-                    "name": ent_name,
-                    "description": ent.get("description", ""),
-                }
+                said = str(ent.get("description") or "").strip()
+                props: dict[str, Any] = {"name": ent_name, "description": said}
                 for attr in entity.properties:
                     raw = (ent.get("attributes") or {}).get(attr.name)
                     if raw is None:
@@ -1773,12 +1771,14 @@ class GraphRAG:
                     if ok:
                         props[attr.name] = coerced
                 new_nodes.append(GraphNode(id=ent_id, label=label, properties=props))
+                # What this chunk said goes on its mention edge too, as an
+                # extraction's does, so deleting the document takes it off.
                 new_mentions.append(
                     GraphRelationship(
                         start_node_id=ent_id,
                         end_node_id=ctx.chunk_id,
                         type="MENTIONED_IN",
-                        properties={},
+                        properties={"description": said} if said else {},
                     )
                 )
                 filled += 1

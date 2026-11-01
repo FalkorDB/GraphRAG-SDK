@@ -358,12 +358,32 @@ _ABSORB_HEAD = (
 _CARRIED = f"{_TICKED}, d, s, present, fresh, unhandled, ok"
 
 
-def _description_members(edge: str) -> str:
+def description_members(edge: str) -> str:
     """A mention edge's descriptions as a list: its ``descriptions``, else its
     ``description`` as one member (as on a node)."""
     return (
         f"coalesce({edge}.descriptions, "
         f"CASE WHEN {edge}.description IS NULL THEN [] ELSE [{edge}.description] END)"
+    )
+
+
+def mention_update(edge: str, new: str) -> str:
+    """The SET items that combine what mention edge ``edge`` holds with what
+    ``new`` (an edge or a map) brings: the spans, each pair once, and the
+    descriptions, each once and each whole, stored as on a node. Needs
+    ``old_spans`` (``edge``'s spans) and ``all_ds`` (``edge``'s descriptions
+    plus ``new``'s it lacks) in scope."""
+    spans = f"coalesce({new}.spans, [])"
+    return (
+        f"{edge}.spans = CASE WHEN size(old_spans) + size({spans}) = 0 "
+        "THEN null ELSE old_spans + reduce(acc = [], "
+        f"i IN range(0, size({spans}) - 2, 2) | "
+        "CASE WHEN any(j IN range(0, size(old_spans) - 2, 2) "
+        f"WHERE old_spans[j] = {new}.spans[i] AND old_spans[j + 1] = {new}.spans[i + 1]) "
+        f"THEN acc ELSE acc + [{new}.spans[i], {new}.spans[i + 1]] END) END, "
+        f"{edge}.description = CASE WHEN size(all_ds) = 0 THEN null "
+        "ELSE reduce(acc = head(all_ds), x IN tail(all_ds) | acc + ' | ' + x) END, "
+        f"{edge}.descriptions = CASE WHEN size(all_ds) > 1 THEN all_ds ELSE null END"
     )
 
 
@@ -416,22 +436,11 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
         read_old = (
             f"OPTIONAL MATCH {existing} "
             f"WITH {carried}, e, b, coalesce(ex.spans, []) AS old_spans, "
-            f"{_description_members('ex')} AS old_ds "
+            f"{description_members('ex')} AS old_ds "
             f"WITH {carried}, e, b, old_spans, "
-            f"old_ds + [x IN {_description_members('e')} WHERE NOT x IN old_ds] AS all_ds "
+            f"old_ds + [x IN {description_members('e')} WHERE NOT x IN old_ds] AS all_ds "
         )
-        update = (
-            "SET nr += properties(e) "
-            "SET nr.spans = CASE WHEN size(old_spans) + size(coalesce(e.spans, [])) = 0 "
-            "THEN null ELSE old_spans + reduce(acc = [], "
-            "i IN range(0, size(coalesce(e.spans, [])) - 2, 2) | "
-            "CASE WHEN any(j IN range(0, size(old_spans) - 2, 2) "
-            "WHERE old_spans[j] = e.spans[i] AND old_spans[j + 1] = e.spans[i + 1]) "
-            "THEN acc ELSE acc + [e.spans[i], e.spans[i + 1]] END) END, "
-            "nr.description = CASE WHEN size(all_ds) = 0 THEN null "
-            "ELSE reduce(acc = head(all_ds), x IN tail(all_ds) | acc + ' | ' + x) END, "
-            "nr.descriptions = CASE WHEN size(all_ds) > 1 THEN all_ds ELSE null END"
-        )
+        update = f"SET nr += properties(e) SET {mention_update('nr', 'e')}"
     else:
         read_old, update = "", "SET nr += properties(e)"
     return (

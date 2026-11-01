@@ -26,8 +26,10 @@ from graphrag_sdk.core.models import (
 from graphrag_sdk.storage.deduplicator import properties_to_carry
 from graphrag_sdk.storage.merge_query import (
     copy_on_server,
+    description_members,
     fold_query,
     handled,
+    mention_update,
     read_for_merge,
     snapshot_params,
 )
@@ -101,6 +103,20 @@ _JOIN_DESCRIPTION = (
     "ELSE reduce(acc = head(d_all), d IN tail(d_all) | acc + ' | ' + d) END, "
     "n.descriptions = CASE WHEN size(d_all) > 1 THEN d_all ELSE null END"
 )
+
+
+def _mention_union(props: str) -> str:
+    """What a mention-edge write does after its MERGE of ``r``: set the
+    write's ``props``, then combine its spans and descriptions with what the
+    edge held, as a merge does (``merge_query.mention_update``)."""
+    return (
+        f"WITH r, {props} AS props, coalesce(r.spans, []) AS old_spans, "
+        f"{description_members('r')} AS old_ds "
+        "WITH r, props, old_spans, "
+        f"old_ds + [x IN {description_members('props')} WHERE NOT x IN old_ds] AS all_ds "
+        f"SET r += props SET {mention_update('r', 'props')}"
+    )
+
 
 #: A node with more descriptions than this is summarised into one by finalize().
 SUMMARISE_OVER_MEMBERS = 5
@@ -885,7 +901,9 @@ class GraphStore:
         concurrency limit applies within a page), cut to ``MAX_SUMMARY_CHARS``,
         and each written only if the description is unchanged since it was
         read. Returns how many were replaced; ``failures``, when given, gets
-        each entity whose summary failed, with its error."""
+        each entity whose summary failed, with its error. A page whose LLM
+        call or write raises is listed there and the pass goes on, so it
+        raises only when its scan fails, before anything is written."""
         rows = (
             await self._conn.query(
                 "MATCH (e:__Entity__) WHERE size(coalesce(e.descriptions, [])) > $over "
@@ -908,15 +926,24 @@ class GraphStore:
                 )
                 for _, name, _, members in page
             ]
-            replies = await llm.abatch_invoke(prompts)
-            for (eid, _name, current, _members), item in zip(page, replies):
-                text = (item.response.content or "").strip() if item.ok and item.response else ""
-                if not text:
-                    failed.append(f"{eid} ({item.error or 'empty reply'})")
-                if len(text) > MAX_SUMMARY_CHARS:
-                    text = text[:MAX_SUMMARY_CHARS].rsplit(" ", 1)[0].rstrip() + "…"
-                if text:
-                    written += await self._write_description(eid, current, [text], summarised=True)
+            done = 0
+            try:
+                replies = await llm.abatch_invoke(prompts)
+                for (eid, _name, current, _members), item in zip(page, replies):
+                    text = (
+                        (item.response.content or "").strip() if item.ok and item.response else ""
+                    )
+                    if not text:
+                        failed.append(f"{eid} ({item.error or 'empty reply'})")
+                    if len(text) > MAX_SUMMARY_CHARS:
+                        text = text[:MAX_SUMMARY_CHARS].rsplit(" ", 1)[0].rstrip() + "…"
+                    if text:
+                        written += await self._write_description(
+                            eid, current, [text], summarised=True
+                        )
+                    done += 1
+            except Exception as exc:
+                failed.extend(f"{eid} ({exc})" for eid, *_ in page[done:])
         if failed:
             # Still over the limit, so the next finalize() tries them again.
             logger.warning(
@@ -1189,7 +1216,11 @@ class GraphStore:
                 if key in folded:
                     first, acc, weight, seen = folded[key]
                     props, seen = self._fold_properties(
-                        acc, props, union_provenance=is_relates, seen=seen
+                        acc,
+                        props,
+                        union_provenance=is_relates,
+                        seen=seen,
+                        join_descriptions=rel_type == "MENTIONED_IN",
                     )
                     folded[key] = (first, props, weight + 1, seen)
                 else:
@@ -1244,6 +1275,18 @@ class GraphStore:
                         f"[s IN sources WHERE NOT s IN old_sources]"
                         f"{batch_snapshot}"
                     )
+                elif rel_type == "MENTIONED_IN":
+                    # A mention edge is the only record of what its chunk
+                    # said: a second write of one (a backfill of an entity
+                    # extraction already found there) adds its spans and
+                    # descriptions instead of replacing them.
+                    query = (
+                        f"UNWIND $batch AS item "
+                        f"MATCH (a:`{safe_src}` {{id: item.start_id}}), "
+                        f"(b:`{safe_tgt}` {{id: item.end_id}}) "
+                        f"MERGE (a)-[r:MENTIONED_IN]->(b) "
+                        f"{_mention_union('item.properties')}"
+                    )
                 else:
                     query = (
                         f"UNWIND $batch AS item "
@@ -1291,6 +1334,13 @@ class GraphStore:
                                 f"    r.structured_sources = old_sources + "
                                 f"[s IN sources WHERE NOT s IN old_sources]"
                                 f"{item_snapshot}"
+                            )
+                        elif rel.type == "MENTIONED_IN":
+                            q = (
+                                f"MATCH (a:`{safe_fb_src}` {{id: $start_id}}), "
+                                f"(b:`{safe_fb_tgt}` {{id: $end_id}}) "
+                                f"MERGE (a)-[r:MENTIONED_IN]->(b) "
+                                f"{_mention_union('$properties')}"
                             )
                         else:
                             q = (

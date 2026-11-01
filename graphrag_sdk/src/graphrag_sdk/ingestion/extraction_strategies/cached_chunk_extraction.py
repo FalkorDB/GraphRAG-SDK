@@ -68,6 +68,7 @@ from graphrag_sdk.core.models import (
     TextChunks,
 )
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+from graphrag_sdk.ingestion.resolution_strategies.base import description_list
 
 if TYPE_CHECKING:
     from graphrag_sdk.storage.graph_store import GraphStore
@@ -328,9 +329,12 @@ class CachedChunkExtraction(ExtractionStrategy):
         """Merge cached and freshly extracted GraphData.
 
         Later parts win on conflicting properties (fresh extraction follows
-        cached parts, so updated descriptions take precedence) — EXCEPT
-        ``source_chunk_ids``, which is a union: an entity or fact present in
-        both a cached and an extracted chunk must keep both provenances.
+        cached parts) — EXCEPT ``source_chunk_ids``, which is a union: an
+        entity or fact present in both a cached and an extracted chunk must
+        keep both provenances; and an entity's descriptions, also a union:
+        a cached part can hand a ``descriptions`` list, which the store reads
+        before ``description``, so a fresh part's description overlaid on it
+        would never reach the node.
 
         Relationships are keyed on ``(start, type, end)`` for the same reason
         nodes are keyed on id. Concatenating them instead would leave two
@@ -372,6 +376,13 @@ class CachedChunkExtraction(ExtractionStrategy):
                     nodes_by_id[node.id] = node
                 else:
                     merged = _union_sources(existing.properties or {}, node.properties or {})
+                    said = description_list(existing.properties or {})
+                    said += [d for d in description_list(node.properties or {}) if d not in said]
+                    merged.pop("descriptions", None)
+                    if said:
+                        merged["description"] = " | ".join(said)
+                    if len(said) > 1:
+                        merged["descriptions"] = said
                     label = node.label or existing.label
                     nodes_by_id[node.id] = GraphNode(id=node.id, label=label, properties=merged)
             for rel in part.relationships:

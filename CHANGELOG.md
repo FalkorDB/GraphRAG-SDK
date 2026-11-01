@@ -235,7 +235,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MENTIONED_IN` edges, one per chunk, written once and deleted with the
   chunk; the node holds no chunk list. Ingest-time remaps and dedup merges
   carry both onto the surviving entity's edge, combining them when two land on
-  one chunk. A second document that mentions an entity adds its description
+  one chunk, and a second write of an edge (`backfill_entity()` finding an
+  entity extraction already found there) adds to it instead of replacing it. A second document that mentions an entity adds its description
   instead of replacing the first's (`SET n += props` kept only the last). A
   write adds descriptions up to 20 per node (it never cuts what a node already
   holds), and `finalize()`, after dedup, replaces those of every entity holding

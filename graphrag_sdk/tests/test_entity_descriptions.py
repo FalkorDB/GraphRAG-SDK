@@ -18,7 +18,13 @@ import pytest
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import DatabaseError
-from graphrag_sdk.core.models import EntityMention, GraphData, GraphNode, LLMResponse
+from graphrag_sdk.core.models import (
+    EntityMention,
+    GraphData,
+    GraphNode,
+    GraphRelationship,
+    LLMResponse,
+)
 from graphrag_sdk.core.providers.base import LLMBatchItem
 from graphrag_sdk.ingestion.lexical_graph import LexicalGraphWriter
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -165,6 +171,35 @@ class TestSummaries:
         # finalize() hands these on as FinalizeResult.description_summary_failures.
         assert failures == ["a (timeout)"]
 
+    async def test_a_page_that_raises_is_listed_and_the_pass_goes_on(
+        self, mock_connection, monkeypatch
+    ):
+        """What earlier pages wrote stays counted; the pass does not raise."""
+        monkeypatch.setattr("graphrag_sdk.storage.graph_store.SUMMARY_PAGE", 1)
+        members = [f"fact {i}" for i in range(SUMMARISE_OVER_MEMBERS + 1)]
+        mock_connection.query = AsyncMock(
+            side_effect=[
+                _result([["a", "A", "x", members], ["b", "B", "y", members]]),
+                _result([[1]]),
+            ]
+        )
+        llm = SummaryLLM("A summary.")
+        calls = 0
+        real = llm.abatch_invoke
+
+        async def second_page_fails(prompts, **kw):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("rate limited")
+            return await real(prompts, **kw)
+
+        llm.abatch_invoke = second_page_fails
+        failures: list[str] = []
+        store = GraphStore(mock_connection)
+        assert await store.summarise_long_descriptions(llm, failures=failures) == 1
+        assert failures == ["b (rate limited)"]
+
 
 class TestTakingARemovedDocumentOff:
     async def test_only_what_the_removed_chunks_said_is_taken_off(self, mock_connection):
@@ -243,6 +278,29 @@ class TestMentionEdges:
         assert rels[1].properties == {
             "description": "CEO | | Name | Alice |",
             "descriptions": ["CEO", "| Name | Alice |"],
+        }
+
+    async def test_two_names_with_one_id_in_a_chunk_make_one_edge_with_both(self):
+        """``New York`` and ``New_York`` get one entity id; the second
+        mention's spans and description were dropped."""
+        writer = LexicalGraphWriter()
+        writer.graph_store = MagicMock()
+        writer.graph_store.upsert_relationships = AsyncMock(return_value=1)
+        data = GraphData(
+            mentions=[
+                EntityMention(chunk_id="c1", entity_id="ny", spans=[0, 8], descriptions=["A city"]),
+                EntityMention(
+                    chunk_id="c1", entity_id="ny", spans=[20, 28], descriptions=["A state"]
+                ),
+            ]
+        )
+        await writer._write_mentions(data, MagicMock())
+        (rels,) = writer.graph_store.upsert_relationships.call_args[0]
+        assert len(rels) == 1
+        assert rels[0].properties == {
+            "spans": [0, 8, 20, 28],
+            "description": "A city | A state",
+            "descriptions": ["A city", "A state"],
         }
 
 
@@ -421,6 +479,43 @@ class TestOnRealFalkorDB:
         _, descs, _, _, _ = await _entity(store)
         assert descs == ["Legacy fact", "Written meanwhile"]
         assert len(calls) == 2  # read again after the first write was skipped
+
+    async def test_a_second_write_of_a_mention_edge_adds_to_it(self, store):
+        """A backfill of an entity extraction already found in a chunk writes
+        that mention edge again: it adds its description and spans."""
+        await store.upsert_nodes([_alice("CEO")])
+        await store.query_raw("CREATE (:Chunk {id: 'c1'})")
+
+        def edge(**props):
+            return GraphRelationship(
+                start_node_id="alice", end_node_id="c1", type="MENTIONED_IN", properties=props
+            )
+
+        await store.upsert_relationships(
+            [
+                edge(
+                    spans=[0, 5],
+                    description="CEO | Founder | Acme",
+                    descriptions=["CEO", "Founder | Acme"],
+                )
+            ]
+        )
+        await store.upsert_relationships(
+            [edge(description="Backfilled"), edge(spans=[0, 5, 9, 14])]
+        )
+        rows = (
+            await store.query_raw(
+                "MATCH (:__Entity__ {id: 'alice'})-[m:MENTIONED_IN]->(:Chunk {id: 'c1'}) "
+                "RETURN m.spans, m.description, m.descriptions"
+            )
+        ).result_set
+        assert rows == [
+            [
+                [0, 5, 9, 14],
+                "CEO | Founder | Acme | Backfilled",
+                ["CEO", "Founder | Acme", "Backfilled"],
+            ]
+        ]
 
     async def test_text_a_remaining_chunk_still_says_stays(self, store):
         """An update keeps an unchanged chunk under a new id: what it says is
