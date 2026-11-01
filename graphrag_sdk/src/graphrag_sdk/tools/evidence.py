@@ -19,8 +19,8 @@ DEFAULT_LEDGER_CAPACITY = 2000
 _CITE = r"\d{1,6}(?:\s*[-–]\s*\d{1,6})?"
 #: A citation marker: ``[3]``, ``[1, 4]``, ``[1-3]``, also glued to a word or a
 #: figure (``plant[1]``, ``1998[2]``) or chained (``[1][2]``). Not for ``[0]``
-#: (evidence is numbered from 1, so ``items[0]`` is code), nor when a number of
-#: four or more digits is not in the ledger (``[2024]`` is a year). Markers
+#: (evidence is numbered from 1, so ``items[0]`` is code), nor when every number
+#: has four or more digits and is not in the ledger (``[2024]`` is a year). Markers
 #: inside inline code or a fenced code block are code and never touched.
 _MARKER_RE = re.compile(rf"\[(\s*{_CITE}(?:\s*[,;]\s*{_CITE})*\s*)\]")
 #: Longest range read as citations; ``[1-200]`` is a page span, not 200 cites.
@@ -261,8 +261,8 @@ class GroundedAnswer:
 
 def _marker_numbers(body: str, valid: set[int] | EvidenceLedger | None = None) -> list[int] | None:
     """The numbers a marker cites, ranges expanded; ``None`` when it is not a
-    citation (``[0]``, a backwards range, one longer than ``_MAX_RANGE``, or a
-    number of four or more digits ``valid`` never numbered, such as a year)."""
+    citation (``[0]``, a backwards range, one longer than ``_MAX_RANGE``, or
+    only numbers of four or more digits ``valid`` never numbered, such as a year)."""
     numbers: list[int] = []
     for part in re.split(r"[,;]", body):
         ends = [int(x) for x in re.split(r"[-–]", part)]
@@ -275,19 +275,21 @@ def _marker_numbers(body: str, valid: set[int] | EvidenceLedger | None = None) -
 
 
 def _names_a_year(body: str, valid: set[int] | EvidenceLedger | None) -> bool:
-    """Whether a marker holds a number of four or more digits that ``valid``
-    never numbered (``[2024]``). A number the ledger gave out and has since
-    dropped is still a citation, of evidence no longer held."""
-    for x in re.findall(r"\d+", body):
-        n = int(x)
+    """Whether every number in a marker has four or more digits and ``valid``
+    never numbered it (``[2024]``, ``[2023, 2024]``). A marker that mixes in a
+    citation (``[3, 2024]``) is a citation list, whose unknown members are
+    reported as invalid. A number the ledger gave out and has since dropped is
+    still a citation, of evidence no longer held."""
+
+    def unissued(n: int) -> bool:
         if n < 1000:
-            continue
+            return False
         if isinstance(valid, EvidenceLedger):
-            if n >= valid._next:
-                return True
-        elif valid is None or n not in valid:
-            return True
-    return False
+            return n >= valid._next
+        return valid is None or n not in valid
+
+    numbers = [int(x) for x in re.findall(r"\d+", body)]
+    return bool(numbers) and all(unissued(n) for n in numbers)
 
 
 def _clean_markers(text: str, valid: set[int] | EvidenceLedger) -> tuple[str, list[int], list[int]]:
