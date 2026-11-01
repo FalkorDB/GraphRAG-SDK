@@ -450,6 +450,13 @@ class TestLargeNumbersAndAbbreviations:
         cited = ground_answer("The war ended [1945] [1].", ledger(1001))
         assert cited.cited == [1] and cited.answer == "The war ended [1945] [1]."
 
+    def test_a_year_mixed_into_a_citation_list_keeps_the_citation(self):
+        g = ground_answer("The war ended in Europe [3, 1945].", ledger(3))
+        assert g.cited == [3] and g.invalid == [1945]
+        assert g.answer == "The war ended in Europe [3]."
+        years = ground_answer("The war lasted [1939, 1945] [1].", ledger(3))
+        assert years.cited == [1] and years.invalid == []
+
     @pytest.mark.parametrize(
         "answer",
         [
