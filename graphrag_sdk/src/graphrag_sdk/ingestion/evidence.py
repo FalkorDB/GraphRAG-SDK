@@ -97,6 +97,8 @@ def _merge(windows: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
 
 
 def _render(text: str, windows: list[tuple[int, int]], max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
     parts = [" ".join(text[lo:hi].split()) for lo, hi in windows]
     joined = WINDOW_JOIN.join(p for p in parts if p)
     if len(joined) > max_chars:

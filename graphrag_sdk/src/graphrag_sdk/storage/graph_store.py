@@ -893,6 +893,7 @@ class GraphStore:
             )
         ).result_set or []
         written = 0
+        failed: list[str] = []
         for start in range(0, len(rows), SUMMARY_PAGE):
             page = [
                 (eid, name or eid, current, self._members(current, members))
@@ -909,10 +910,19 @@ class GraphStore:
             replies = await llm.abatch_invoke(prompts)
             for (eid, _name, current, _members), item in zip(page, replies):
                 text = (item.response.content or "").strip() if item.ok and item.response else ""
+                if not text:
+                    failed.append(f"{eid} ({item.error or 'empty reply'})")
                 if len(text) > MAX_SUMMARY_CHARS:
                     text = text[:MAX_SUMMARY_CHARS].rsplit(" ", 1)[0].rstrip() + "…"
                 if text:
                     written += await self._write_description(eid, current, [text], summarised=True)
+        if failed:
+            # Still over the limit, so the next finalize() tries them again.
+            logger.warning(
+                "Could not summarise %d long entity description(s); kept as they are: %s",
+                len(failed),
+                ", ".join(failed[:10]),
+            )
         logger.info("Summarised %d of %d long entity descriptions", written, len(rows))
         return written
 

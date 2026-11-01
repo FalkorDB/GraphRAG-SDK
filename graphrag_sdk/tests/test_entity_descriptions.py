@@ -145,7 +145,7 @@ class TestSummaries:
         assert await GraphStore(mock_connection).summarise_long_descriptions(llm) == 0
         assert llm.prompts == []
 
-    async def test_a_failed_summary_writes_nothing(self, mock_connection):
+    async def test_a_failed_summary_writes_nothing_and_is_logged(self, mock_connection, caplog):
         mock_connection.query = AsyncMock(
             return_value=_result([["a", "A", "x | y", ["x", "y", "z", "u", "v", "w"]]])
         )
@@ -155,6 +155,8 @@ class TestSummaries:
         )
         assert await GraphStore(mock_connection).summarise_long_descriptions(llm) == 0
         assert _writes(mock_connection) == []
+        assert "Could not summarise 1 long entity description" in caplog.text
+        assert "a (timeout)" in caplog.text
 
 
 class TestTakingARemovedDocumentOff:

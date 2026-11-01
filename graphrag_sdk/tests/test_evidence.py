@@ -101,3 +101,7 @@ def test_a_name_is_found_only_as_a_whole_name():
 
 def test_a_span_given_twice_is_kept_once():
     assert flat_spans([(1, 5), (1, 5), (9, 12)]) == [1, 5, 9, 12]
+
+
+def test_a_zero_cap_gives_nothing():
+    assert evidence_text("Alice runs Acme.", [(0, 5)], max_chars=0) == ""
