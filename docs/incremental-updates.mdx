@@ -197,7 +197,7 @@ result = await rag.apply_changes(
 | `max_concurrency`    | Parallelism cap for `ingest()` of the `added` list. Safe to raise — adds have no orphan-cleanup race surface.                                                                                          |
 | `update_concurrency` | **Default 1, and you almost certainly should not raise it.** The orphan-cleanup invariant only holds while updates serialize. See [Concurrency](#concurrency-and-the-update_concurrency-trap) below.   |
 
-The order `deletes → updates → adds` is part of the public contract; do not assume reordering is safe.
+The order `deletes → updates → adds` is part of the public contract; do not assume reordering is safe. Relationship tables (a `RelationshipMapping` in the ontology) in `added` or `modified` run after all of it, `modified` first, because their endpoints resolve against nodes the entity tables in the same batch write. A git diff that lists `consumed_batch.csv` before `unit.csv` still writes every edge, and each entry keeps its position in the result.
 
 Overlapping ids across input lists raise `ValueError` at the input boundary — this is almost always a broken git-diff parser.
 

@@ -359,6 +359,19 @@ class TestMergePreservesDescriptions:
         assert q.rindex("MERGE ") < q.index("SET s.desc = $d") < q.index("DETACH DELETE d")
         assert "CASE WHEN ok THEN [1] ELSE [] END | DETACH DELETE d" in q
 
+    @pytest.mark.parametrize("direction", ["in", "out"])
+    def test_relates_moves_union_relationship_table_ownership(self, direction):
+        """The relationship tables owning an edge are provenance too: left to
+        ``SET nr += properties(e)`` the survivor's edge kept only the
+        duplicate's tables, so dropping one of those deleted an edge another,
+        forgotten, table still lists."""
+        q = absorb_query([("RELATES", direction)], [], [])
+        assert "coalesce(ex.structured_sources, []) AS old_sources" in q
+        assert (
+            "ELSE old_sources + [x IN coalesce(e.structured_sources, []) "
+            "WHERE NOT x IN old_sources] END"
+        ) in q
+
     def test_node_provenance_is_unioned_before_deletion(self):
         """Entity nodes carry ``source_chunk_ids`` read back by
         ``CachedChunkExtraction``; deleting the duplicate outright dropped

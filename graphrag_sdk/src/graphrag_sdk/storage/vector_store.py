@@ -333,6 +333,12 @@ class VectorStore:
                 result = await self._conn.query(
                     "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
                     "WHERE r.embedding IS NULL AND r.fact IS NOT NULL "
+                    # Not an edge only relationship tables own: each carries its
+                    # mapping's one template fact and no endpoint names, so it
+                    # took relationship-search slots retrieval then threw away.
+                    # An edge a document also supports is embedded as before.
+                    "AND (size(coalesce(r.structured_sources, [])) = 0 "
+                    "OR size(coalesce(r.source_chunk_ids, [])) > 0) "
                     "RETURN id(a) AS aid, id(b) AS bid, id(r) AS rid, r.fact AS fact "
                     "LIMIT $limit",
                     {"limit": batch_size},
