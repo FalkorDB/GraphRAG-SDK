@@ -150,7 +150,7 @@ Deduplicated by `(entity_id, chunk_id)`. Written once and deleted with its chunk
 | `src_name` | `string` | Source entity name |
 | `tgt_name` | `string` | Target entity name |
 | `source_chunk_ids` | `list[string]` | Chunks containing evidence for this relationship |
-| `spans` | `string` (JSON) | Character offsets of the evidence sentence |
+| `spans` | `string` (JSON) | Character offsets of the evidence sentence (none from a chunk coreference resolution rewrote) |
 | `embedding` | `vecf32` | Vector embedding of the `fact` text (added during `finalize()`) |
 
 ---

@@ -675,6 +675,8 @@ class GraphExtraction(ExtractionStrategy):
         relation_failed_chunk_uids: set[str] = set()
 
         # ── Optional: Coreference resolution per chunk ──
+        # The models read the resolved text, but the chunk node stores
+        # ``chunk.text``: spans written to the graph index that.
         chunk_texts: list[str] = []
         if self.coref_resolver is not None:
             for chunk in active_chunks:
@@ -815,7 +817,10 @@ class GraphExtraction(ExtractionStrategy):
                     # description gets the sentence around its spans on its
                     # mention edge.
                     self._record_mentions(
-                        chunk_entities[chunk_idx], chunk_texts[chunk_idx], chunk.uid
+                        chunk_entities[chunk_idx],
+                        chunk.text,
+                        chunk.uid,
+                        read_text=chunk_texts[chunk_idx],
                     )
                     all_entities.extend(chunk_entities[chunk_idx])
                     continue
@@ -824,6 +829,11 @@ class GraphExtraction(ExtractionStrategy):
                 verified_ents, rels = self._parse_step2_response(
                     item.response.content, entity_types, chunk.uid, ontology
                 )
+                if chunk_texts[chunk_idx] != chunk.text:
+                    # The model's evidence offsets index the resolved text it
+                    # read, not the stored chunk, and cannot be moved onto it.
+                    for rel in rels:
+                        rel.spans = {}  # type: ignore[attr-defined]
                 if verified_ents:
                     # Carry over spans/confidence from step 1 entities
                     step1_ents = chunk_entities[chunk_idx]
@@ -836,7 +846,9 @@ class GraphExtraction(ExtractionStrategy):
                 else:
                     # LLM returned no entities — use step 1 entities
                     verified_ents = chunk_entities[chunk_idx]
-                self._record_mentions(verified_ents, chunk_texts[chunk_idx], chunk.uid)
+                self._record_mentions(
+                    verified_ents, chunk.text, chunk.uid, read_text=chunk_texts[chunk_idx]
+                )
                 all_entities.extend(verified_ents)
                 all_relations.extend(rels)
 
@@ -915,6 +927,8 @@ class GraphExtraction(ExtractionStrategy):
         entities: list[ExtractedEntity],
         chunk_text: str,
         chunk_id: str,
+        *,
+        read_text: str | None = None,
     ) -> None:
         """Record, per chunk, where it names each entity and what it says the
         entity is, for that entity's mention edge.
@@ -924,16 +938,25 @@ class GraphExtraction(ExtractionStrategy):
         model's description, or the sentence around its spans when the model
         gave none. The mention edge keeps both, so the entity's description can
         be rebuilt from its edges after a merge or a delete.
+
+        ``chunk_text`` is the text the chunk node stores, and the spans index
+        it. ``read_text`` is the text the models read when coreference
+        resolution rewrote it ("He" -> "Alice Smith" moves every later
+        offset): the step-1 spans index that text, so they are kept only when
+        it is the stored text, and the sentence around a mention is cut from
+        it, where the pronouns are already resolved.
         """
+        read = chunk_text if read_text is None else read_text
+        same_text = read == chunk_text
         for ent in entities:
-            spans = find_spans(chunk_text, ent.name)
-            if not spans:
-                spans = [
-                    (o["start"], o["end"])
-                    for o in (getattr(ent, "spans", None) or {}).get(chunk_id, [])
-                ]
+            step1 = [
+                (o["start"], o["end"])
+                for o in (getattr(ent, "spans", None) or {}).get(chunk_id, [])
+            ]
+            spans = find_spans(chunk_text, ent.name) or (step1 if same_text else [])
+            read_spans = spans if same_text else (find_spans(read, ent.name) or step1)
             ent.spans = {chunk_id: [{"start": s, "end": e} for s, e in spans]}  # type: ignore[attr-defined]
-            text = ent.description.strip() or evidence_text(chunk_text, spans)
+            text = ent.description.strip() or evidence_text(read, read_spans)
             ent.chunk_descriptions = {chunk_id: [text]} if text else {}  # type: ignore[attr-defined]
             ent.description = text
 
@@ -949,6 +972,10 @@ class GraphExtraction(ExtractionStrategy):
         Matches by normalized name. Step 1 spans (from GLiNER2) are used
         directly. For entities the LLM discovered (not in step 1), spans
         are computed via ``str.find()`` on the chunk text.
+
+        ``chunk_text`` is the text the models read (coreference-resolved when
+        a resolver is set), so these spans index it; ``_record_mentions``
+        decides which of them may index the stored chunk.
         """
         # Build lookup: normalized name → step 1 entity
         s1_lookup: dict[str, ExtractedEntity] = {}

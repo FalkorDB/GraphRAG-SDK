@@ -348,6 +348,8 @@ extractor = GraphExtraction(
 3. Replace pronouns with canonical mentions, right-to-left to preserve offsets
 4. Handles possessives: "her" becomes "Voss's"
 
+The resolved text is what both steps read, and the sentence that stands in for a missing description is cut from it. The chunk node stores the original text, so the spans on `MENTIONED_IN` edges are found in the original; a chunk coreference rewrote keeps no `RELATES` evidence offsets, since the model gave them for the resolved text.
+
 **When to use:** When your documents have heavy pronoun usage and extraction is missing entities because of it. Adds ~1-2 seconds per chunk.
 
 ---

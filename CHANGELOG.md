@@ -558,6 +558,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves more concurrent questions.
 
 ### Fixed
+- **With coreference resolution on, spans pointed at the wrong text.** The
+  models read the resolved chunk ("She hired Bob" becomes "Alice Smith hired
+  Bob"), the spans were found in it, but the chunk node stores the original,
+  so every span after a rewritten pronoun selected other text or ran past the
+  chunk's end. A `MENTIONED_IN` edge's spans are now found in the stored text;
+  the NER offsets are used only when coreference left the chunk unchanged, and
+  a rewritten chunk's `RELATES` evidence offsets are left out. The sentence
+  that stands in for a missing description is still cut from the resolved
+  text. Coreference resolution is off by default.
 - **A write batch holding the same entity or relationship twice lost a write.**
   In one `UNWIND ... MERGE` call FalkorDB 4.x kept the first row's values and
   6.0.x the last, and on both only one row's `source_chunk_ids` survived, so an
