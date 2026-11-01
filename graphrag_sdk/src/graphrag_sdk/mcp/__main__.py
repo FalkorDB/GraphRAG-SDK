@@ -23,6 +23,15 @@ def _env_flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in _TRUE_VALUES
 
 
+def _quiet_litellm() -> None:
+    """Stop litellm printing help banners to stdout, the stdio transport's channel."""
+    try:
+        import litellm
+    except ImportError:  # pragma: no cover - litellm comes with the extra
+        return
+    litellm.suppress_debug_info = True
+
+
 def _build_rag() -> object:
     from graphrag_sdk.api.main import GraphRAG
     from graphrag_sdk.core.connection import ConnectionConfig
@@ -103,6 +112,7 @@ def main() -> None:
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
 
+    _quiet_litellm()
     rag = _build_rag()
     server = GraphRAGMCPServer(rag, auth_token=args.token, read_only=args.read_only)
 

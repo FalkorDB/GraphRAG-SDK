@@ -33,9 +33,11 @@ class FakeStore:
         self.header = header or []
         self.error = error
         self.queries: list[tuple[str, dict]] = []
+        self.read_only: list[bool] = []
 
     async def query_raw(self, cypher: str, params: dict | None = None, **kwargs: Any):
         self.queries.append((cypher, params or {}))
+        self.read_only.append(kwargs.get("read_only", False))
         if self.error is not None:
             raise self.error
         return FakeResult(self.rows, self.header)
@@ -194,7 +196,7 @@ class TestSessions:
         assert tk.rag._conn.config.graph_name == "kb__acme_1"
         assert tk._owns_rag and tk._read_only and tk._tenant_id == "acme_1"
 
-    @pytest.mark.parametrize("bad", ["", "a b", "x" * 65, "../g", "a:b"])
+    @pytest.mark.parametrize("bad", ["", "a b", "x" * 65, "../g", "a:b", "acme\n"])
     def test_for_tenant_rejects_bad_ids(self, bad: str):
         with pytest.raises(ValueError, match="tenant_id"):
             GraphRAGToolkit.for_tenant(
@@ -220,6 +222,71 @@ class TestReadTools:
         monkeypatch.setattr(ops, "schema_counts", schema_counts)
         result = await toolkit.status()
         assert result.entities == 0 and "empty" in (result.hint or "")
+
+    async def test_status_and_ontology_are_citable(self, toolkit, monkeypatch):
+        async def counts(store):
+            return {"entities": 40, "relations": 2, "documents": 1, "chunks": 4}
+
+        async def schema_counts(store):
+            return {"Person": 40}, {"WORKS_AT": 2}
+
+        async def declared():
+            from graphrag_sdk.core.models import Ontology
+
+            return Ontology()
+
+        monkeypatch.setattr(ops, "graph_counts", counts)
+        monkeypatch.setattr(ops, "schema_counts", schema_counts)
+        monkeypatch.setattr(toolkit, "_declared_ontology", declared)
+        status = await toolkit.status()
+        ontology = await toolkit.get_ontology()
+        assert (status.n, ontology.n) == (1, 2)
+        assert status.to_llm_text().startswith("[1] Entities: 40 |")
+        assert toolkit.ledger.get(2).tool == "get_ontology"
+        check = await toolkit.check_citations("The graph holds 40 Person entities [1][2].")
+        assert check.grounded and check.unsupported == []
+
+    async def test_entities_the_graph_does_not_store_are_dropped(self, toolkit, rag, monkeypatch):
+        # The facts path names entities by a made-up id (the lower-cased name).
+        rag.retrieve_result = RetrieverResult(
+            items=[],
+            metadata={
+                "provenance": {
+                    "entities": [
+                        {"id": "bob smith", "name": "Bob Smith"},
+                        {"id": "a", "name": "Alice"},
+                    ]
+                }
+            },
+        )
+        card = {"id": "a", "name": "Alice", "label": "", "description": None, "properties": {}}
+        walked: list[list[str]] = []
+
+        async def enrich(store, ids):
+            assert ids == ["bob smith", "a"]
+            return {"a": card}
+
+        async def triples(store, ids, *, hops, cap):
+            walked.append(ids)
+            return []
+
+        monkeypatch.setattr(ops, "enrich_entities", enrich)
+        monkeypatch.setattr(ops, "expand_triples", triples)
+        monkeypatch.setattr(ops, "chunk_documents", lambda *a, **k: _const({}))
+        result = await toolkit.retrieve("Who?")
+        assert [e.id for e in result.entities] == ["a"] and walked == [["a"]]
+        assert len(toolkit.ledger) == 1
+
+    async def test_an_empty_passage_gets_no_number(self, toolkit, rag, monkeypatch):
+        rag.retrieve_result = RetrieverResult(
+            items=[],
+            metadata={"provenance": {"chunks": [{"id": "c1", "text": "  "}, {"id": "c2"}]}},
+        )
+        monkeypatch.setattr(ops, "chunk_documents", lambda *a, **k: _const({}))
+        result = await toolkit.retrieve("Who?", paths=["passages"])
+        assert [c.n for c in result.chunks] == [None, None] and len(toolkit.ledger) == 0
+        check = await toolkit.check_citations("Alice works at Acme [1].")
+        assert not check.grounded
 
     async def test_retrieve_numbers_every_item(self, toolkit, rag, monkeypatch):
         rag.retrieve_result = RetrieverResult(
@@ -353,7 +420,10 @@ class TestReadTools:
             walked.append(ids)
             return [{"source": "Alice", "type": "WORKS_AT", "target": "Acme", "fact": ""}]
 
-        monkeypatch.setattr(ops, "enrich_entities", lambda *a, **k: _const({}))
+        card = {"id": "a", "name": "Alice", "label": "", "description": None, "properties": {}}
+        monkeypatch.setattr(
+            ops, "enrich_entities", lambda store, ids: _const({"a": card} if "a" in ids else {})
+        )
         monkeypatch.setattr(ops, "expand_triples", triples)
         monkeypatch.setattr(ops, "chunk_documents", lambda *a, **k: _const({}))
         return walked
@@ -403,13 +473,15 @@ class TestReadTools:
     async def test_retrieve_on_an_uninitialised_rag_writes_no_ontology(
         self, toolkit, rag, monkeypatch
     ):
-        """GraphRAG.retrieve would register the default types first; the tool must not."""
-        from graphrag_sdk.core.models import EntityType, Ontology
-
-        declared = Ontology(entities=[EntityType(label="Person")])
+        """GraphRAG.retrieve would register the default types first; the tool must not.
+        Nor does it load the ontology: retrieve never runs text-to-Cypher."""
         rag._ontology_initialized = False
         rag.ontology = None
-        rag._ontology_store = SimpleNamespace(load=lambda: _const(declared))
+
+        def load():
+            raise AssertionError("the ontology is not needed to retrieve")
+
+        rag._ontology_store = SimpleNamespace(load=load)
         validated: list[bool] = []
 
         async def validate(*, ctx=None):
@@ -438,7 +510,7 @@ class TestReadTools:
         monkeypatch.setattr(ops, "expand_triples", lambda *a, **k: _const([]))
         await toolkit.retrieve("Who is Alice?")
         assert validated == [True]
-        assert seen == {"ontology": declared, "question": "Who is Alice?"}
+        assert seen == {"ontology": None, "question": "Who is Alice?"}
 
 
 # ── check_citations ────────────────────────────────────────────────
@@ -475,13 +547,50 @@ class TestMissingGraph:
         status = await missing.call("status", {})
         assert status.entities == 0 and "Graph 'nope' does not exist" in status.hint
 
-    async def test_existence_is_checked_once(self, toolkit: GraphRAGToolkit, store: FakeStore):
+    async def test_existence_is_checked_read_only_on_every_call(
+        self, toolkit: GraphRAGToolkit, store: FakeStore
+    ):
         await toolkit.call("retrieve", {"question": "Who?"})
         await toolkit.call("retrieve", {"question": "Who?"})
-        assert [q for q, _ in store.queries].count("RETURN 1") == 1
+        probes = [i for i, (q, _) in enumerate(store.queries) if q == "RETURN 1"]
+        assert len(probes) == 2
+        assert all(store.read_only[i] is True for i in probes)
+
+    async def test_a_graph_deleted_later_is_reported_missing(
+        self, toolkit: GraphRAGToolkit, store: FakeStore
+    ):
+        await toolkit.call("retrieve", {"question": "Who?"})
+        store.error = DatabaseError("Invalid graph operation on empty key")
+        with pytest.raises(ToolError, match="does not exist"):
+            await toolkit.call("retrieve", {"question": "Who?"})
+
+    async def test_an_unreachable_store_is_an_error_not_an_empty_graph(
+        self, toolkit: GraphRAGToolkit, store: FakeStore
+    ):
+        store.error = DatabaseError("Connection refused")
+        calls = (("retrieve", {"question": "Who?"}), ("get_ontology", {}), ("status", {}))
+        for tool, args in calls:
+            with pytest.raises(ToolError, match="Could not reach the graph store") as info:
+                await toolkit.call(tool, args)
+            assert "running and reachable" in info.value.hint
+        assert store.queries == [("RETURN 1", {})] * 3  # nothing else was attempted
+
+    async def test_get_ontology_names_the_missing_graph(self, missing):
+        with pytest.raises(ToolError, match="Graph 'nope' does not exist"):
+            await missing.call("get_ontology", {})
 
 
 class TestCheckCitations:
+    async def test_saying_the_graph_lacks_something_needs_no_citation(self, toolkit):
+        toolkit.ledger.add(tool="retrieve", kind="passage", content="Initech was acquired in 2019.")
+        gap = await toolkit.check_citations("The graph does not say who founded Globex.")
+        assert not gap.grounded and gap.reason == "no_citations"
+        assert "needs no citation" in gap.hint and "after each claim" not in gap.hint
+        mixed = await toolkit.check_citations(
+            "Initech was acquired in 2019 [1]. The graph does not say who founded Globex."
+        )
+        assert mixed.grounded and mixed.uncited == [] and mixed.hint is None
+
     async def test_cited_invalid_and_missing(self, toolkit: GraphRAGToolkit):
         toolkit.ledger.add(tool="retrieve", kind="relation", content="Alice -[WORKS_AT]-> Acme")
         ok = await toolkit.check_citations("Alice works at Acme [1].")

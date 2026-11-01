@@ -260,38 +260,55 @@ def fact_body(fact: str, rel_type: str) -> str:
     return fact
 
 
+_MIN_HOP_SHARE = 5
+
+
 async def expand_triples(
     store: Any,
     seed_ids: list[str],
     *,
     hops: int,
     cap: int = 60,
-    per_hop_limit: int = 25,
+    per_hop_limit: int | None = None,
 ) -> list[dict[str, str]]:
     """``{source, type, target, fact}`` RELATES edges around ``seed_ids``, hop by hop.
 
     Never builds a variable-length pattern from caller input. Direction comes
-    from the edge's own ``src_name`` / ``tgt_name``, so one undirected query
-    per hop is enough. Edges an earlier hop returned are excluded before the
-    ``LIMIT``, so walking back along them cannot use up a hop's budget.
+    from the edge's own ``src_name`` / ``tgt_name`` (or, for edges written
+    without them, the stored endpoints), so one undirected query per hop is
+    enough. Edges an earlier hop returned are excluded before the ``LIMIT``,
+    so walking back along them cannot use up a hop's budget, and an edge
+    between two frontier entities is matched once, not twice.
+
+    Each hop gets an even share of what is left of ``cap`` (at least a few
+    rows), so the first hop cannot use up the whole cap; whatever a hop does
+    not use rolls forward to the next. ``per_hop_limit`` caps a hop further.
     """
     triples: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
     seen_edges: list[int] = []
     visited = set(seed_ids)
     frontier = list(seed_ids)
-    for _ in range(max(1, hops)):
-        if not frontier or len(triples) >= cap:
+    hops = max(1, hops)
+    for hop in range(hops):
+        left = cap - len(triples)
+        if not frontier or left <= 0:
             break
+        limit = max(left // (hops - hop), min(_MIN_HOP_SHARE, left))
+        if per_hop_limit is not None:
+            limit = min(limit, per_hop_limit)
         result = await _read(
             store,
             "MATCH (a:__Entity__)-[r:RELATES]-(b:__Entity__) "
             "WHERE a.id IN $ids AND NOT ID(r) IN $seen_edges "
-            "RETURN r.src_name, r.rel_type, r.tgt_name, "
+            "AND (NOT b.id IN $ids OR a.id <= b.id) "
+            "WITH r, b, coalesce(r.src_name, startNode(r).name) AS src, "
+            "coalesce(r.tgt_name, endNode(r).name) AS tgt "
+            "RETURN src, r.rel_type, tgt, "
             "coalesce(r.fact, r.description, ''), b.id, ID(r) "
-            "ORDER BY r.src_name, r.rel_type, r.tgt_name "
+            "ORDER BY src, r.rel_type, tgt "
             "LIMIT $limit",
-            {"ids": frontier, "seen_edges": list(seen_edges), "limit": per_hop_limit},
+            {"ids": frontier, "seen_edges": list(seen_edges), "limit": limit},
         )
         next_frontier: list[str] = []
         for row in _rows(result):

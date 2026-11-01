@@ -1,6 +1,6 @@
 """Tests for the MCP server: tool listing, per-session evidence, JSON
 results, errors with hints, and a protocol round trip through an in-process
-MCP client (mcp 1.x or 2.x)."""
+MCP client and over SSE (mcp 2.x)."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from graphrag_sdk.core.exceptions import (
     RetrieverError,
 )
 from graphrag_sdk.mcp import GUIDE, GraphRAGMCPServer, fit_json
-from graphrag_sdk.mcp.server import bearer_token_guard, check_sse_binding
+from graphrag_sdk.mcp.server import bearer_token_guard, check_sse_binding, redact
 from graphrag_sdk.tools import TOOL_NAMES, ToolError
 
 pytest.importorskip("mcp")
@@ -185,6 +185,48 @@ class TestCallTool:
         assert "abc.def-123" not in text and "ABCDEF123456" not in text
         assert "supersecret" not in text
         assert "Bearer ***" in text and "sk-***" in text and "api_key=***" in text
+
+    @pytest.mark.parametrize(
+        "secret, shown",
+        [
+            ("redis://admin:hunter2@db.example:6379", "redis://***:***@db.example:6379"),
+            ("{'api_key': 'abc123secret'}", "{'api_key': '***'}"),
+            ('{"password": "hunter2"}', '{"password": "***"}'),
+            ("OPENAI_API_KEY=abc123secret", "OPENAI_API_KEY=***"),
+            ("AZURE_OPENAI_KEY=abcdef123", "AZURE_OPENAI_KEY=***"),
+            ("FALKOR_PASSWORD=hunter2", "FALKOR_PASSWORD=***"),
+        ],
+    )
+    def test_redact_masks_credentials(self, secret, shown):
+        assert redact(secret) == shown
+
+    @pytest.mark.parametrize(
+        "text", ["max_tokens=10", "hotkey=x", "see http://example.com:8080/a@b", "cost: 40"]
+    )
+    def test_redact_leaves_ordinary_text(self, text):
+        assert redact(text) == text
+
+    async def test_evidence_cut_from_a_reply_cannot_be_cited(self, server: GraphRAGMCPServer):
+        from pydantic import BaseModel
+
+        class Found(BaseModel):
+            passages: list[dict]
+
+        toolkit = server.toolkit
+        earlier = toolkit.ledger.add(tool="retrieve", kind="passage", content="Earlier fact.")
+
+        async def call(name: str, arguments: dict) -> Any:
+            added = [
+                toolkit.ledger.add(tool="retrieve", kind="passage", content=f"Fact {i}. " * 40)
+                for i in range(400)
+            ]
+            return Found(passages=[{"n": ev.n, "text": ev.content} for ev in added])
+
+        toolkit.call = call  # type: ignore[method-assign]
+        text, _ = await server.call_tool("retrieve", {"question": "q"})
+        shown = [p["n"] for p in json.loads(text)["passages"]]
+        assert json.loads(text)["truncated"] and 0 < len(shown) < 400
+        assert sorted(ev.n for ev in toolkit.ledger.items) == [earlier.n, *shown]
 
     async def test_read_only_write_is_an_error(self):
         server = GraphRAGMCPServer(FakeRAG(), read_only=True)
@@ -382,6 +424,18 @@ class TestAuth:
         await self.run_app(guarded, [(b"authorization", b"Bearer s3cret")])
         assert len(reached) == 1
 
+    async def test_bearer_scheme_is_case_insensitive(self):
+        reached = []
+
+        async def app(scope, receive, send):
+            reached.append(scope)
+
+        guarded = bearer_token_guard(app, "s3cret")
+        for scheme in (b"bearer", b"BEARER"):
+            await self.run_app(guarded, [(b"authorization", scheme + b" " + b"s3cret")])
+        denied = await self.run_app(guarded, [(b"authorization", b"bearer " + b"wrong")])
+        assert len(reached) == 2 and denied[0]["status"] == 401
+
     async def test_guard_passes_non_http_scopes(self):
         reached = []
 
@@ -526,6 +580,86 @@ class TestSSESecurity:
 
         # Off loopback the bearer token protects the server; clients use any name.
         assert sse_security_kwargs("0.0.0.0", 8080) == {}
+
+
+class TestSSEConnections:
+    """Each SSE stream is its own connection, even for stateless mcp 2.x clients."""
+
+    @asynccontextmanager
+    async def serve(self, server: GraphRAGMCPServer):
+        import socket
+
+        uvicorn = pytest.importorskip("uvicorn")
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        lowlevel = server._build_server()
+        app = server._sse_app(
+            lowlevel, lowlevel.create_initialization_options(), host="127.0.0.1", port=port
+        )
+        # log_config=None: uvicorn's loggers propagate, so caplog sees ASGI errors.
+        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_config=None)
+        http = uvicorn.Server(config)
+        task = asyncio.create_task(http.serve())
+        try:
+            while not http.started:
+                await asyncio.sleep(0.01)
+            yield f"http://127.0.0.1:{port}"
+        finally:
+            http.should_exit = True
+            await task
+
+    @pytest.fixture
+    def counted(self, server: GraphRAGMCPServer, monkeypatch) -> GraphRAGMCPServer:
+        from graphrag_sdk.tools import graph_ops as ops
+
+        async def graph_counts(store):
+            return {"entities": 3, "relations": 0, "documents": 1, "chunks": 1}
+
+        async def schema_counts(store):
+            return {"Person": 3}, {}
+
+        async def graph_exists(store):
+            return True
+
+        monkeypatch.setattr(ops, "graph_counts", graph_counts)
+        monkeypatch.setattr(ops, "schema_counts", schema_counts)
+        monkeypatch.setattr(ops, "graph_exists", graph_exists)
+        return server
+
+    async def test_clients_do_not_share_evidence(self, counted: GraphRAGMCPServer, caplog):
+        from mcp import Client
+        from mcp.client.session import ClientSession
+        from mcp.client.sse import sse_client
+
+        answer = {"answer": "The graph has 3 Person entities [1]."}
+        async with self.serve(counted) as base:
+            async with Client(sse_client(f"{base}/sse")) as a:
+                async with Client(sse_client(f"{base}/sse")) as b:
+                    assert json.loads(_text(await a.call_tool("status", {})))["n"] == 1
+                    mine = json.loads(_text(await a.call_tool("check_citations", answer)))
+                    theirs = json.loads(_text(await b.call_tool("check_citations", answer)))
+            assert mine["grounded"] is True
+            assert theirs["grounded"] is False and theirs["invalid"] == [1]
+            # A client that opens with the classic initialize handshake works too.
+            async with sse_client(f"{base}/sse") as (read, write):
+                async with ClientSession(read, write) as c:
+                    await c.initialize()
+                    assert json.loads(_text(await c.call_tool("status", {})))["n"] == 1
+            await asyncio.sleep(0.1)  # let the closed streams' handlers finish
+        assert counted.toolkit.ledger.items == []
+        assert not [r for r in caplog.records if r.exc_info or r.levelname == "ERROR"]
+
+    async def test_a_rejected_host_is_answered_without_a_traceback(self, server, caplog):
+        import httpx
+
+        async with self.serve(server) as base:
+            async with httpx.AsyncClient() as client:
+                with caplog.at_level("DEBUG"):
+                    response = await client.get(f"{base}/sse", headers={"Host": "evil.example"})
+            await asyncio.sleep(0.1)  # let the handler finish
+        assert response.status_code == 421
+        assert not [r for r in caplog.records if r.exc_info or r.levelname == "ERROR"]
 
 
 def test_the_all_extra_installs_the_mcp_server():

@@ -260,16 +260,52 @@ async def test_expand_triples_dedupes_and_walks_hop_by_hop():
         {"source": "A", "type": "REL", "target": "B", "fact": ""},
         {"source": "B", "type": "REL2", "target": "C", "fact": "evidence"},
     ]
-    assert store.calls[0]["params"] == {"ids": ["e1"], "seen_edges": [], "limit": 25}
+    assert store.calls[0]["params"] == {"ids": ["e1"], "seen_edges": [], "limit": 10}
 
     store.calls.clear()
     await ops.expand_triples(store, ["e1"], hops=2, cap=10, per_hop_limit=7)
     assert len(store.calls) == 2  # one query per hop
+    assert store.calls[0]["params"]["limit"] == 5  # half the cap for the first of two hops
     second = store.calls[1]["params"]
     assert second["ids"] == ["e2", "e3"] and second["limit"] == 7  # visited ids excluded
     assert second["seen_edges"] == [10, 11, 12]  # back-edges excluded before LIMIT
 
     assert len(await ops.expand_triples(store, ["e1"], hops=1, cap=1)) == 1
+
+
+async def test_expand_triples_gives_every_hop_a_share_of_the_cap():
+    limits: list[int] = []
+
+    def respond(cypher: str, params: dict) -> Any:
+        limits.append(params["limit"])
+        hop = len(limits)
+        return result(
+            [[f"N{hop}", "R", f"M{hop}-{i}", "", f"h{hop}-{i}", hop * 100 + i] for i in range(40)][
+                : params["limit"]
+            ]
+        )
+
+    store = FakeGraphStore([("r.src_name", respond)])
+    triples = await ops.expand_triples(store, ["e1"], hops=3, cap=40)
+    assert limits == [13, 13, 14]  # the first hop cannot fill the cap
+    assert len(triples) == 40 and triples[-1]["source"] == "N3"
+
+    limits.clear()
+    await ops.expand_triples(store, ["e1"], hops=5, cap=8)
+    assert limits == [5, 3]  # a small floor per hop, the rest rolls forward
+
+
+async def test_expand_triples_reads_table_edges_and_matches_seed_pairs_once():
+    store = FakeGraphStore([("r.src_name", lambda c, p: result([]))])
+    await ops.expand_triples(store, ["e1", "e2"], hops=1)
+    cypher = store.calls[0]["cypher"]
+    # Edges written from tables carry no src_name/tgt_name: use the endpoints.
+    assert "coalesce(r.src_name, startNode(r).name) AS src" in cypher
+    assert "coalesce(r.tgt_name, endNode(r).name) AS tgt" in cypher
+    assert "ORDER BY src, r.rel_type, tgt" in cypher
+    # An edge between two seeds is matched from one side only.
+    assert "(NOT b.id IN $ids OR a.id <= b.id)" in cypher
+    assert store.calls[0]["read_only"] is True
 
 
 async def test_expand_triples_stops_when_the_frontier_is_empty():

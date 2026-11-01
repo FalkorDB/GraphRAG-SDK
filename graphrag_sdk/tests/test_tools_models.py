@@ -22,6 +22,7 @@ from graphrag_sdk.tools.models import (
     StatusResult,
     ToolResult,
     _render,
+    properties_text,
 )
 
 
@@ -119,7 +120,7 @@ def test_truncation_happens_at_item_boundaries():
     full = model.to_llm_text(max_chars=100_000)
     text = model.to_llm_text(max_chars=400)
     lines = text.splitlines()
-    assert lines[-1].startswith("  …(") and lines[-1].endswith(" more)")
+    assert lines[-1].startswith("  …(") and lines[-1].endswith(" more omitted)")
     dropped = int(lines[-1].split("(")[1].split()[0])
     shown = [ln for ln in lines if ln.startswith("- [")]
     assert len(shown) + dropped == 50
@@ -141,10 +142,33 @@ def test_section_that_cannot_fit_is_summarised():
     model = retrieve_result(n_entities=3)
     # Room for the one-line summary but not for a header plus its drop marker.
     text = model.to_llm_text(max_chars=55)
-    assert text == "Question: Where does Alice work?\nEntities: …(3 items)"
+    assert text == "Question: Where does Alice work?\nEntities: …(3 omitted)"
     # With a little more room the header is kept and followed by a marker.
-    text = model.to_llm_text(max_chars=60)
-    assert text == "Question: Where does Alice work?\nEntities (3):\n  …(3 more)"
+    text = model.to_llm_text(max_chars=70)
+    assert text == "Question: Where does Alice work?\nEntities (3):\n  …(3 more omitted)"
+
+
+def test_a_long_section_does_not_push_out_the_passages():
+    model = big_retrieve_result(200)
+    model.facts = [Fact(n=300 + i, text=f"Fact number {i}.") for i in range(5)]
+    model.chunks = [
+        ChunkRef(n=400 + i, chunk_id=f"c{i}", document_id="d", text=f"Passage {i}. " * 9)
+        for i in range(30)
+    ]
+    text = model.to_llm_text(max_chars=2000)
+    assert len(text) <= 2000
+    assert "Facts (5):" in text and "- [304] Fact number 4." in text  # small: kept whole
+    assert "Passages (30):" in text and "- [400] [d] Passage 0." in text
+    assert "more omitted)" in text.split("Passages (30):")[1]
+    assert "Entities (200):" in text and "more omitted)" in text.split("Facts")[0]
+
+
+def test_default_budget_keeps_a_full_retrieve_result():
+    model = big_retrieve_result(20)
+    model.chunks = [
+        ChunkRef(n=100 + i, chunk_id=f"c{i}", text="Passage text. " * 20) for i in range(10)
+    ]
+    assert "omitted" not in model.to_llm_text()
 
 
 def test_preamble_that_cannot_fit_is_cut():
@@ -200,6 +224,18 @@ def test_ontology_rendering():
         "Entity types (1):\n- Person: 2 — A human (props: age)\n"
         "Relation types (1):\n- WORKS_AT: 0 [Person->Company] — Employment"
     )
+
+
+def test_whole_floats_are_shown_as_integers():
+    props = {"age": 40.0, "rate": 2.5, "ids": [1.0, 2.25], "big": 1e20, "flag": True}
+    assert properties_text(props) == "age: 40; rate: 2.5; ids: 1, 2.25; big: 1e+20; flag: True"
+
+
+def test_status_and_ontology_carry_their_evidence_number():
+    status = StatusResult(entities=3, n=4).to_llm_text()
+    assert status.startswith("[4] Entities: 3 |")
+    ontology = OntologyResult(entity_types=[EntityTypeInfo(label="Person", count=2)], n=5)
+    assert ontology.to_llm_text().startswith("[5] Ontology with live counts:\nEntity types (1):")
 
 
 def test_a_section_that_does_not_fit_leaves_a_marker():

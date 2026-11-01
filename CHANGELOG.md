@@ -19,32 +19,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The SDK runs no agent loop: your agent plans, calls the tools and writes
   the answer. Every tool validates its input with a strict schema, runs
   bounded (size and time limits), and returns a typed result
-  whose `to_llm_text()` stays under a fixed size.
-- **Every piece of evidence is numbered.** Entities, relations, facts and passages
-  carry an `[n]` from a per-session ledger
+  whose `to_llm_text()` stays under a fixed size (8,000 characters by
+  default), shared across its sections so a long relation list cannot push
+  out the passages; a cut section says how many items it omitted.
+- **Every piece of evidence is numbered.** Entities, relations, facts and passages,
+  and each `status` / `get_ontology` result, carry an `[n]` from a per-session ledger
   (`toolkit.new_session()`), and `check_citations(answer)` reports which `[n]`
   in a draft answer are real and whether the answer cites anything at all.
 - **`retrieve` runs every search path unless the agent names a few.**
   `paths` picks from `facts`, `exact_names`, `fuzzy_names`, `links` and
   `passages`, so a question that only needs the source text skips the entity
   searches and the relation expansion. Leave it out to run them all; when the chosen
-  paths find nothing, the result says to run again without them.
+  paths find nothing, the result says to run again without them. With
+  `expand_hops` 2–5 every hop gets a share of the relation cap, so the first
+  hop cannot fill it and starve the deeper ones.
 - **`graphrag-mcp` serves the same tools over MCP** (`pip install
   "graphrag-sdk[mcp]"`) to Claude Code, Cursor and any other MCP client, on
   stdio or SSE with a bearer token. `--read-only` (or
   `GRAPHRAG_MCP_READ_ONLY=1`) hides the write tools. The server sends a usage
-  guide as its instructions, keeps one evidence ledger per client connection,
-  and works with `mcp` 1.x and 2.x.
+  guide as its instructions and keeps one evidence ledger per client
+  connection, including stateless SSE clients (the `mcp.Client` default), so
+  one client can never cite another's evidence. Requires `mcp` 2.x; on stdio
+  LiteLLM's debug output is silenced so stdout carries only the protocol.
 - **Tool results never include internal nodes or embedding vectors**, and
-  the read tools never write: their own graph queries run as
-  `GRAPH.RO_QUERY`, so the database refuses writes.
-- **Read tools on a graph that does not exist** raise an error naming it and
-  create nothing.
+  the read tools never write: the toolkit's own graph queries run as
+  `GRAPH.RO_QUERY`, so the database refuses writes. `retrieve`'s search
+  paths run the SDK's standard retrieval queries, which only read.
+- **Read tools on a graph that does not exist** (never written, or deleted
+  since) raise an error naming it and create nothing; the read-only check
+  runs on every call. When the graph store cannot be reached they raise
+  "Could not reach the graph store" instead of reporting an empty graph.
 - **`check_citations`** accepts `[1, 2]` and `[1-3]`, and matches names as
-  whole words, case-insensitively.
+  whole words, case-insensitively: every word of a multi-word name must be
+  in the cited evidence, and a sentence's first word is checked when it is
+  part of a name. Figures ignore trailing zeros (`2.80` = `2.8`). A sentence
+  that says the graph lacks something needs no citation.
+- **`MultiPathRetrieval(router=...)` runs only the paths a question needs.**
+  `HeuristicPathRouter()` picks them from the question with no model call;
+  `LLMPathRouter(llm)` asks the model once. Plans name ids from
+  `RETRIEVAL_PATHS` (`relates`, `entity_cypher`, `entity_fulltext`,
+  `expansion`, `chunks`), MultiPath's internal paths; the `retrieve` tool's
+  agent-facing `paths` are `graphrag_sdk.tools.specs.RETRIEVE_PATHS`. An
+  empty plan or a failing router runs every path.
 - **`ingest` and `finalize` are marked destructive** in their MCP
   annotations, so clients ask before running them. The MCP server keeps
-  every reply valid JSON within its size limit, and reports unexpected
+  every reply valid JSON within its size limit (evidence cut to fit cannot
+  be cited), and reports unexpected
   errors with a next step and with API keys and tokens masked.
 - `pip install "graphrag-sdk[all]"` includes the MCP server.
 - New example `graphrag_sdk/examples/12_agent_toolkit.py` and docs page

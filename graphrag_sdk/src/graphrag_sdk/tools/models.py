@@ -26,6 +26,22 @@ def _snippet(value: Any, limit: int = _SNIPPET_CHARS) -> str:
     return text if len(text) <= limit else text[: limit - 1] + _ELLIPSIS
 
 
+def _omitted(count: int) -> str:
+    return f"  {_ELLIPSIS}({count} more omitted)"
+
+
+def _fair_share(sizes: list[int], room: int) -> int:
+    """The first block's share of ``room``: every block gets an even share,
+    and what a smaller block does not need goes to the bigger ones."""
+    left, count = room, len(sizes)
+    for size in sorted(sizes):
+        if size > left // count:
+            return min(sizes[0], left // count)
+        left -= size
+        count -= 1
+    return sizes[0]
+
+
 def _render(
     preamble: list[str],
     sections: list[tuple[str, list[str]]],
@@ -34,19 +50,23 @@ def _render(
 ) -> str:
     """Assemble preamble lines + (header, items) sections into text ≤ max_chars.
 
-    Truncation happens only at item boundaries; a dropped tail is marked
-    with the exact marker ``…(N more)``. Deterministic for equal inputs.
+    When the sections do not all fit, each gets a fair share of the room
+    (what a short section leaves over goes to the others), so a long section
+    cannot push a later one out. Truncation happens only at item boundaries;
+    a section's dropped tail is marked ``…(N more omitted)``. Deterministic
+    for equal inputs.
     """
     if max_chars < 1:
         return ""
     lines: list[str] = []
     used = 0
+    limit = max_chars  # the end of the current section's share
     cut = False  # whether the text already shows that something was dropped
 
     def try_add(line: str) -> bool:
         nonlocal used
         cost = len(line) + (1 if lines else 0)
-        if used + cost > max_chars:
+        if used + cost > limit:
             return False
         lines.append(line)
         used += cost
@@ -61,18 +81,21 @@ def _render(
                 lines.append(line[: max(room, 1) - 1] + _ELLIPSIS)
             return "\n".join(lines)
 
-    for header, items in sections:
-        if not items:
-            continue
+    sections = [(header, items) for header, items in sections if items]
+    # Every line is costed with its newline, so the shares never overrun.
+    sizes = [len(h) + 8 + sum(len(item) + 1 for item in items) for h, items in sections]
+    for i, (header, items) in enumerate(sections):
         header_line = f"{header} ({len(items)}):"
-        full_marker = f"  {_ELLIPSIS}({len(items)} more)"
+        full_marker = _omitted(len(items))
         # Only start a section if the header plus at least a drop-marker fit —
         # otherwise a bare header would dangle with nothing under it. Marker
         # strings never grow as the remaining count shrinks, so this reserve
         # guarantees every emitted header is followed by an item or a marker.
-        needed = used + (1 if lines else 0) + len(header_line) + 1 + len(full_marker)
-        if needed > max_chars:
-            if try_add(f"{header}: {_ELLIPSIS}({len(items)} items)"):
+        minimum = len(header_line) + 1 + len(full_marker) + 1
+        limit = used + max(_fair_share(sizes[i:], max_chars - used), minimum)
+        limit = min(limit, max_chars)
+        if used + minimum > limit:
+            if try_add(f"{header}: {_ELLIPSIS}({len(items)} omitted)"):
                 cut = True
             elif not cut:
                 # Not even the summary fits: a bare marker still tells the
@@ -81,9 +104,9 @@ def _render(
             continue
         try_add(header_line)
         for idx, item in enumerate(items):
-            marker = f"  {_ELLIPSIS}({len(items) - idx} more)"
+            marker = _omitted(len(items) - idx)
             reserve = (len(marker) + 1) if idx < len(items) - 1 else 0
-            if used + len(item) + 1 + reserve <= max_chars:
+            if used + len(item) + 1 + reserve <= limit:
                 try_add(item)
             else:
                 cut = try_add(marker) or cut
@@ -96,8 +119,16 @@ class ToolResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    def to_llm_text(self, *, max_chars: int = 4000) -> str:
-        """Render a compact, deterministic plain-text form bounded by max_chars."""
+    def to_llm_text(self, *, max_chars: int = 8000) -> str:
+        """Render a compact, deterministic plain-text form bounded by max_chars.
+
+        A summary for an LLM prompt, not the full result: long values are
+        cut to snippets, and when the sections do not all fit each keeps a
+        fair share of ``max_chars`` and notes how many items it left out.
+        ``check_citations`` checks an answer against the full evidence, so
+        an agent that needs every word should read the result's fields (or
+        its JSON) instead.
+        """
         return _render(self._preamble(), self._sections(), max_chars=max_chars)
 
     def _preamble(self) -> list[str]:  # pragma: no cover - overridden
@@ -182,13 +213,20 @@ class RelationTypeInfo(BaseModel):
     count: int = 0
 
 
+def _value_text(value: Any) -> str:
+    # Table columns are stored as floats: show 40.0 as 40, as people write it.
+    if isinstance(value, float) and value.is_integer() and abs(value) < 1e15:
+        return str(int(value))
+    return str(value)
+
+
 def properties_text(properties: dict[str, Any]) -> str:
     """An entity's properties as one line: ``age: 40; city: Paris``."""
     parts = []
     for key, value in properties.items():
         if isinstance(value, list | tuple):
-            value = ", ".join(str(v) for v in value)
-        text = _clean(value)
+            value = ", ".join(_value_text(v) for v in value)
+        text = _clean(_value_text(value))
         if text:
             parts.append(f"{_clean(key)}: {text}")
     return "; ".join(parts)
@@ -213,8 +251,9 @@ def _relation_line(r: RelationTriple) -> str:
 
 
 class StatusResult(ToolResult):
-    """What the graph holds."""
+    """What the graph holds. ``n`` is its evidence number."""
 
+    n: int | None = None
     entities: int = 0
     relations: int = 0
     documents: int = 0
@@ -225,7 +264,7 @@ class StatusResult(ToolResult):
 
     def _preamble(self) -> list[str]:
         lines = [
-            f"Entities: {self.entities} | Relations: {self.relations} | "
+            f"{_n(self.n)}Entities: {self.entities} | Relations: {self.relations} | "
             f"Documents: {self.documents} | Chunks: {self.chunks}"
         ]
         if self.hint:
@@ -240,10 +279,14 @@ class StatusResult(ToolResult):
 
 
 class OntologyResult(ToolResult):
-    """The declared ontology (with live counts)."""
+    """The declared ontology (with live counts). ``n`` is its evidence number."""
 
+    n: int | None = None
     entity_types: list[EntityTypeInfo] = Field(default_factory=list)
     relation_types: list[RelationTypeInfo] = Field(default_factory=list)
+
+    def _preamble(self) -> list[str]:
+        return [f"{_n(self.n)}Ontology with live counts:"] if self.n is not None else []
 
     def _sections(self) -> list[tuple[str, list[str]]]:
         ent_lines = []
