@@ -5429,12 +5429,17 @@ class GraphRAG:
         # descriptions, so its survivor is bounded in this run, and nothing
         # writes a node while dedup reads and merges it.
         dedup_count = await self.deduplicate_entities(judge=judge, dedup_all=dedup_all)
+        summarised = 0
+        summary_failures: list[str] = []
         try:
-            summarised = await self._graph_store.summarise_long_descriptions(self.llm)
+            summarised = await self._graph_store.summarise_long_descriptions(
+                self.llm, failures=summary_failures
+            )
             ctx_log(f"finalize: summarised {summarised} long descriptions")
         except Exception as exc:
             # Dedup is already written; a failed summary pass leaves the
             # descriptions as they were, to be summarised by the next run.
+            summary_failures.append(f"summary pass: {exc}")
             report(f"finalize: summarising long entity descriptions failed: {exc}")
         dedup_report = getattr(self._deduplicator, "last_report", None) or DedupReport()
         judge_stats = dict(getattr(self._deduplicator, "last_judge_stats", {}) or {})
@@ -5606,6 +5611,8 @@ class GraphRAG:
             entities_without_a_name=nameless,
             proposed_mappings=derived_sources,
             mapping_changed=sorted(self._mapping_changes),
+            descriptions_summarised=summarised,
+            description_summary_failures=summary_failures,
             entities_embedded=entity_count,
             relationships_embedded=rel_count,
             indexes=index_results,

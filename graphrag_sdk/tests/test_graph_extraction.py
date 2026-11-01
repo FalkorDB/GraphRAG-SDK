@@ -565,13 +565,27 @@ class TestSpansMerging:
         acme = ExtractedEntity(name="Acme", type="Organization", source_chunk_ids=["c0"])
         GraphExtraction._record_mentions([alice, acme], text, "c0")
         # The model's description is what the chunk says; the spans are every mention.
-        assert alice.chunk_descriptions == {"c0": "CEO of Acme."}
+        assert alice.chunk_descriptions == {"c0": ["CEO of Acme."]}
         assert alice.spans == {"c0": [{"start": 27, "end": 32}]}
         # Without one, the sentences around the spans stand in.
         assert acme.chunk_descriptions == {
-            "c0": "Alice, CEO of Acme, announced results. … Acme grew."
+            "c0": ["Alice, CEO of Acme, announced results. … Acme grew."]
         }
         assert len(acme.spans["c0"]) == 2
+
+    def test_the_same_entity_twice_in_one_chunk_keeps_both_descriptions(self):
+        text = "Alice is CEO. alice also founded Acme."
+        first = ExtractedEntity(
+            name="Alice", type="Person", description="CEO", source_chunk_ids=["c0"]
+        )
+        second = ExtractedEntity(
+            name="alice", type="Person", description="CEO and founder", source_chunk_ids=["c0"]
+        )
+        GraphExtraction._record_mentions([first, second], text, "c0")
+        (alice,) = GraphExtraction._aggregate_entities([first, second])
+        assert alice.chunk_descriptions == {"c0": ["CEO", "CEO and founder"]}
+        (node,) = GraphExtraction._entities_to_nodes([alice])
+        assert node.properties["descriptions"] == ["CEO", "CEO and founder"]
 
     def test_no_spans_not_in_node_properties(self):
         """Nodes without spans should not have spans key."""
@@ -1322,7 +1336,7 @@ class TestRelationFailureIsSeparateFromExtractionFailure:
         chunks = _make_chunks("Echunk-0 led the review. Nothing else.")
         result = await strategy.extract(chunks, Ontology(), ctx)
         (mention,) = result.mentions
-        assert mention.description == "Echunk-0 led the review."
+        assert mention.descriptions == ["Echunk-0 led the review."]
         assert mention.spans == [0, 8]
 
     async def test_partial_step2_failure(self, ctx):

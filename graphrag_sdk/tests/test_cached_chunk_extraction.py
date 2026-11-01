@@ -589,11 +589,12 @@ class TestGraphStoreCacheAccessors:
                         ["Person", "__Entity__"],
                         "Alice",
                         "Person",
-                        "Engineer",
+                        "Engineer | Founder | Acme",
                         ["c1", "x"],
                         [3, 8],
+                        ["Engineer", "Founder | Acme"],
                     ],
-                    ["c1", None, ["Person"], "NoId", "Person", None, [], []],  # skipped
+                    ["c1", None, ["Person"], "NoId", "Person", None, [], [], None],  # skipped
                 ]
             )
         )
@@ -603,8 +604,10 @@ class TestGraphStoreCacheAccessors:
         assert row.entity_id == "alice__person"
         assert row.label == "Person"  # __Entity__ filtered out
         assert row.source_chunk_ids == ["c1", "x"]
-        # What this chunk's own edge holds — not the entity's description.
-        assert row.description == "Engineer" and row.spans == [3, 8]
+        # What this chunk's own edge holds — not the entity's description —
+        # each description whole, never split on the " | " inside one.
+        assert row.description == "Engineer | Founder | Acme" and row.spans == [3, 8]
+        assert row.descriptions == ["Engineer", "Founder | Acme"]
         cypher = mock_connection.query.call_args[0][0]
         assert "m.description" in cypher and "e.description" not in cypher
 
@@ -618,7 +621,7 @@ class TestGraphStoreCacheAccessors:
 
         mock_connection.query = AsyncMock(
             return_value=MagicMock(
-                result_set=[["c1", "e1", ["__Entity__"], "X", "Widget", None, None, None]]
+                result_set=[["c1", "e1", ["__Entity__"], "X", "Widget", None, None, None, None]]
             )
         )
         rows = await graph_store.get_entities_mentioned_in_chunks(["c1"])
@@ -670,7 +673,7 @@ class TestGraphStoreCacheAccessors:
 
         mock_connection.query = AsyncMock(
             return_value=MagicMock(
-                result_set=[["c1", "e1", "Person", "Alice", "Person", None, "abc", "xy"]]
+                result_set=[["c1", "e1", "Person", "Alice", "Person", None, "abc", "xy", "z"]]
             )
         )
         rows = await graph_store.get_entities_mentioned_in_chunks(["c1"])

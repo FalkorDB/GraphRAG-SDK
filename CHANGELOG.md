@@ -230,21 +230,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   held a `source_chunk_ids` list and a `spans` JSON that grew with every
   mention and were rewritten on every write, and a merge appended every
   member's description to `descriptions`, without limit. Now which chunks
-  mention an entity, where (`spans`) and what each says it is (`description`)
-  are on its `MENTIONED_IN` edges, one per chunk, written once and deleted with
-  the chunk; the node holds no chunk list. Ingest-time remaps and dedup merges
+  mention an entity, where (`spans`) and what each says it is (`description`,
+  and `descriptions` when there is more than one, each kept whole) are on its
+  `MENTIONED_IN` edges, one per chunk, written once and deleted with the
+  chunk; the node holds no chunk list. Ingest-time remaps and dedup merges
   carry both onto the surviving entity's edge, combining them when two land on
   one chunk. A second document that mentions an entity adds its description
   instead of replacing the first's (`SET n += props` kept only the last). A
   write adds descriptions up to 20 per node (it never cuts what a node already
   holds), and `finalize()`, after dedup, replaces those of every entity holding
   more than 5 with one LLM summary, marked `description_summarised`; a failed
-  summary pass is reported and leaves dedup's work in place.
+  summary leaves the descriptions as they are and is listed in the new
+  `FinalizeResult.description_summary_failures` (`descriptions_summarised`
+  counts the rest), and dedup's work stays in place.
   `delete_document()` and `update()` record what the removed chunks' mention
   edges said, with their crash-safe cleanup state, and the cleanup takes
   exactly that text off the entities' descriptions (no LLM call), keeping what
-  a remaining chunk still says; a summarised entity is rebuilt from its edges
-  when all of them say something. On the Verdantix benchmark (57 documents, a
+  a remaining chunk still says and refilling a full node from the remaining
+  edges; a summarised entity is rebuilt from its edges when all of them say
+  something. On the Verdantix benchmark (57 documents, a
   `finalize()` after every 10, the same three extractions for both): dedup F1
   0.53 → 0.70, precision 0.955 → 0.987, wrong merges 1.8 → 0.7 per run,
   answers unchanged; at most 5 descriptions per node after `finalize()` (was
@@ -261,10 +265,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   N independent SETS" now says the sets come at the end, the count moves to a
   heading over them, and one line before them marks the types and sets as data,
   never instructions. The ~1,080 tokens before them are identical in every
-  call, past the 1,024 OpenAI and Azure need to cache a prefix automatically
-  (Anthropic models need explicit `cache_control`, and 2,048 tokens for
-  Haiku). Measured: 44% of judge input served from the provider's cache (was
-  9%), judge cost −26%, dedup unchanged.
+  call, past the 1,024 tokens Azure OpenAI and OpenAI's current models need to
+  cache a prefix automatically. The minimum depends on the model: Anthropic
+  models also need explicit `cache_control`, and their minimum varies (2,048
+  tokens for Claude Haiku). Measured with gpt-4.1 on Azure: 44% of judge input
+  served from the provider's cache (was 9%), judge cost −26%, dedup
+  unchanged.
 
 - **`finalize()` deduplicates incrementally, with one judge pass, and
   survives a crash.** `finalize()` checks only the entities whose check is

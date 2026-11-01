@@ -358,6 +358,15 @@ _ABSORB_HEAD = (
 _CARRIED = f"{_TICKED}, d, s, present, fresh, unhandled, ok"
 
 
+def _description_members(edge: str) -> str:
+    """A mention edge's descriptions as a list: its ``descriptions``, else its
+    ``description`` as one member (as on a node)."""
+    return (
+        f"coalesce({edge}.descriptions, "
+        f"CASE WHEN {edge}.description IS NULL THEN [] ELSE [{edge}.description] END)"
+    )
+
+
 def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
     """Move the duplicate's ``rel_type`` edges of one direction to the survivor.
     ``carried`` are the variables in scope, ``d``, ``s`` and ``ok`` among them."""
@@ -399,14 +408,17 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
         )
     elif safe == "MENTIONED_IN":
         # Both entities mention the chunk: the survivor's edge keeps what each
-        # said there — both spans, each pair once, and both descriptions,
-        # joined with " | ", each once. Left to ``+=`` the duplicate's edge
-        # replaced the survivor's, and its description, the only record of
-        # what that chunk said about the survivor, was gone.
+        # said there — both spans, each pair once, and both edges' description
+        # members, each once and each whole, stored as on a node. Left to
+        # ``+=`` the duplicate's edge replaced the survivor's, and its
+        # description, the only record of what that chunk said about the
+        # survivor, was gone.
         read_old = (
             f"OPTIONAL MATCH {existing} "
             f"WITH {carried}, e, b, coalesce(ex.spans, []) AS old_spans, "
-            "coalesce(ex.description, '') AS old_desc "
+            f"{_description_members('ex')} AS old_ds "
+            f"WITH {carried}, e, b, old_spans, "
+            f"old_ds + [x IN {_description_members('e')} WHERE NOT x IN old_ds] AS all_ds "
         )
         update = (
             "SET nr += properties(e) "
@@ -416,10 +428,9 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
             "CASE WHEN any(j IN range(0, size(old_spans) - 2, 2) "
             "WHERE old_spans[j] = e.spans[i] AND old_spans[j + 1] = e.spans[i + 1]) "
             "THEN acc ELSE acc + [e.spans[i], e.spans[i + 1]] END) END, "
-            "nr.description = CASE WHEN old_desc = '' THEN e.description "
-            "WHEN coalesce(e.description, '') = '' "
-            "OR e.description IN split(old_desc, ' | ') THEN old_desc "
-            "ELSE old_desc + ' | ' + e.description END"
+            "nr.description = CASE WHEN size(all_ds) = 0 THEN null "
+            "ELSE reduce(acc = head(all_ds), x IN tail(all_ds) | acc + ' | ' + x) END, "
+            "nr.descriptions = CASE WHEN size(all_ds) > 1 THEN all_ds ELSE null END"
         )
     else:
         read_old, update = "", "SET nr += properties(e)"

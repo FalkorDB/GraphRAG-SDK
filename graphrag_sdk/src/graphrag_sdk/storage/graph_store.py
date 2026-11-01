@@ -119,6 +119,10 @@ SUMMARY_PAGE = 200
 #: out of a summary, so after a delete that touched it, it is rebuilt from its
 #: mention edges instead.
 SUMMARISED_KEY = "description_summarised"
+#: Reads of an entity's description before a cleanup gives up taking a removed
+#: document's text off it: the write is skipped when something else wrote the
+#: description since the read, and the entity is read again.
+_DESCRIPTION_READS = 3
 
 _DESCRIPTION_SUMMARY_PROMPT = (
     "Summarise the following descriptions of the entity '{name}' into a single "
@@ -835,8 +839,9 @@ class GraphStore:
 
     @staticmethod
     def _members(description: Any, descriptions: Any) -> list[str]:
-        """A node's description members: its list, else its description as
-        one member."""
+        """The description members of a node or a mention edge: its
+        ``descriptions`` list, else its ``description`` as one member. Never
+        split on " | ": one description can contain it (a table row)."""
         items = descriptions if isinstance(descriptions, list) else [description]
         out: list[str] = []
         for d in items:
@@ -844,12 +849,6 @@ class GraphStore:
             if d and d not in out:
                 out.append(d)
         return out
-
-    @staticmethod
-    def _said(description: Any) -> list[str]:
-        """The descriptions one mention edge holds: two mentions that landed on
-        one chunk (a merge, a remap) are joined with " | "."""
-        return [d.strip() for d in str(description or "").split(" | ") if d.strip()]
 
     async def _write_description(
         self, eid: str, old: str, members: list[str], *, summarised: bool | None = None
@@ -876,6 +875,7 @@ class GraphStore:
         *,
         over: int = SUMMARISE_OVER_MEMBERS,
         max_tokens: int = 150,
+        failures: list[str] | None = None,
     ) -> int:
         """finalize()'s description pass: every entity holding more than
         ``over`` descriptions gets one, the LLM's summary of the descriptions
@@ -884,7 +884,8 @@ class GraphStore:
         scan, summarised ``SUMMARY_PAGE`` entities at a time (the LLM's own
         concurrency limit applies within a page), cut to ``MAX_SUMMARY_CHARS``,
         and each written only if the description is unchanged since it was
-        read. Returns how many were replaced."""
+        read. Returns how many were replaced; ``failures``, when given, gets
+        each entity whose summary failed, with its error."""
         rows = (
             await self._conn.query(
                 "MATCH (e:__Entity__) WHERE size(coalesce(e.descriptions, [])) > $over "
@@ -893,7 +894,7 @@ class GraphStore:
             )
         ).result_set or []
         written = 0
-        failed: list[str] = []
+        failed: list[str] = failures if failures is not None else []
         for start in range(0, len(rows), SUMMARY_PAGE):
             page = [
                 (eid, name or eid, current, self._members(current, members))
@@ -940,12 +941,12 @@ class GraphStore:
                 await self._conn.query(
                     "UNWIND $cids AS cid "
                     "MATCH (:Chunk {id: cid})<-[m:MENTIONED_IN]-(e:__Entity__) "
-                    "RETURN e.id, m.description",
+                    "RETURN e.id, m.description, m.descriptions",
                     {"cids": chunk_ids[start : start + self._BATCH_SIZE]},
                 )
             ).result_set or []
-            for eid, description in rows:
-                for d in self._said(description):
+            for eid, description, descriptions in rows:
+                for d in self._members(description, descriptions):
                     ids.append(eid)
                     said.append(d)
         await self._conn.query(
@@ -979,72 +980,106 @@ class GraphStore:
           mention edge still says (an unchanged chunk an update kept) stays.
           Everything else on the node stays: text from documents ingested by
           an earlier version, whose edges record nothing, is never lost.
+        - A node that was full (``MAX_DESCRIPTION_MEMBERS``) may have left a
+          later mention's description on its edge only; the places the
+          removed text frees are filled from the remaining edges.
         - An entity whose description holds an LLM summary cannot have the
           removed text taken out of it. When all of its remaining mention
           edges say something, it is rebuilt from them
           (``MAX_DESCRIPTION_MEMBERS`` of them, in chunk-id order, summarised
           again by the next finalize()); otherwise it is kept.
 
-        Written only if unchanged since read. Returns how many were replaced.
+        Each entity is written only if unchanged since read, and read again
+        when something else wrote it meanwhile. Raises ``DatabaseError`` if
+        one still changes after ``_DESCRIPTION_READS`` reads, so the cleanup
+        state that holds ``said`` is kept and the cleanup runs again.
+        Returns how many were replaced.
         """
-        ids = [eid for eid in ids if said.get(eid)]
+        ids = list(dict.fromkeys(eid for eid in ids if said.get(eid)))
         written = 0
         for start in range(0, len(ids), self._BATCH_SIZE):
             batch = ids[start : start + self._BATCH_SIZE]
-            rows = (
-                await self._conn.query(
-                    "UNWIND $ids AS eid MATCH (e:__Entity__ {id: eid}) "
-                    "CALL { WITH e OPTIONAL MATCH (e)-[u:MENTIONED_IN]->(:Chunk) "
-                    "RETURN collect(CASE WHEN u.description IS NULL THEN 1 END)[..1] "
-                    "AS undescribed } "
-                    "RETURN e.id, coalesce(e.description, ''), e.descriptions, "
-                    f"coalesce(e.{SUMMARISED_KEY}, false), size(undescribed) > 0",
-                    {"ids": batch},
+            for _ in range(_DESCRIPTION_READS):
+                batch, n = await self._take_said_off(batch, said)
+                written += n
+                if not batch:
+                    break
+            else:
+                raise DatabaseError(
+                    f"{len(batch)} entity description(s) kept changing while a "
+                    f"removed document's text was taken off them: {batch[:10]}"
                 )
-            ).result_set or []
-            for eid, current, held, summarised, undescribed in rows:
-                gone = said.get(eid, set())
-                members = self._members(current, held)
-                if summarised:
-                    if undescribed:
-                        continue
-                    kept = await self._remaining_said(eid, limit=MAX_DESCRIPTION_MEMBERS)
-                    if kept != members:
-                        written += await self._write_description(
-                            eid, current, kept, summarised=False
-                        )
+        return written
+
+    async def _take_said_off(
+        self, ids: list[str], said: dict[str, set[str]]
+    ) -> tuple[list[str], int]:
+        """One read-and-write pass of :meth:`rebuild_entity_descriptions`.
+        Returns the entities written meanwhile by something else (to read
+        again) and how many were replaced."""
+        rows = (
+            await self._conn.query(
+                "UNWIND $ids AS eid MATCH (e:__Entity__ {id: eid}) "
+                "CALL { WITH e OPTIONAL MATCH (e)-[u:MENTIONED_IN]->(:Chunk) "
+                "RETURN collect(CASE WHEN u.description IS NULL THEN 1 END)[..1] "
+                "AS undescribed } "
+                "RETURN e.id, coalesce(e.description, ''), e.descriptions, "
+                f"coalesce(e.{SUMMARISED_KEY}, false), size(undescribed) > 0",
+                {"ids": ids},
+            )
+        ).result_set or []
+        changed: list[str] = []
+        written = 0
+        for eid, current, held, summarised, undescribed in rows:
+            gone = said.get(eid, set())
+            members = self._members(current, held)
+            if summarised:
+                if undescribed:
                     continue
+                kept = await self._remaining_said(eid, limit=MAX_DESCRIPTION_MEMBERS)
+            else:
                 dropped = [m for m in members if m in gone]
                 if not dropped:
                     continue
                 still = await self._remaining_said(eid, among=dropped)
                 kept = [m for m in members if m not in gone or m in still]
-                if kept != members:
-                    written += await self._write_description(eid, current, kept)
-        return written
+                if len(members) >= MAX_DESCRIPTION_MEMBERS > len(kept):
+                    kept += await self._remaining_said(
+                        eid, limit=MAX_DESCRIPTION_MEMBERS - len(kept), besides=kept
+                    )
+            if kept == members:
+                continue
+            if await self._write_description(
+                eid, current, kept, summarised=False if summarised else None
+            ):
+                written += 1
+            else:
+                changed.append(eid)
+        return changed, written
 
     async def _remaining_said(
-        self, eid: str, *, limit: int | None = None, among: list[str] | None = None
+        self,
+        eid: str,
+        *,
+        limit: int | None = None,
+        among: list[str] | None = None,
+        besides: list[str] | None = None,
     ) -> list[str]:
-        """What ``eid``'s remaining mention edges say, in chunk-id order, each
-        description once: the first ``limit``, or only those in ``among``."""
+        """What ``eid``'s remaining mention edges say, each description once,
+        in the order of the first chunk (by id) that says it: only those in
+        ``among`` when given, none in ``besides``, the first ``limit``."""
         rows = (
             await self._conn.query(
                 "MATCH (e:__Entity__ {id: $id})-[m:MENTIONED_IN]->(c:Chunk) "
                 "WHERE m.description IS NOT NULL "
-                "RETURN m.description ORDER BY c.id",
-                {"id": eid},
+                "UNWIND coalesce(m.descriptions, [m.description]) AS d "
+                "WITH d, min(c.id) AS first "
+                "WHERE ($among IS NULL OR d IN $among) AND NOT d IN $besides "
+                "RETURN d ORDER BY first" + (" LIMIT $limit" if limit is not None else ""),
+                {"id": eid, "among": among, "besides": besides or [], "limit": limit},
             )
         ).result_set or []
-        out: list[str] = []
-        for (description,) in rows:
-            for d in self._said(description):
-                if d in out or (among is not None and d not in among):
-                    continue
-                out.append(d)
-                if limit is not None and len(out) >= limit:
-                    return out
-        return out
+        return [d for (d,) in rows if isinstance(d, str) and d.strip()]
 
     async def upsert_relationships(
         self,
@@ -1983,11 +2018,21 @@ class GraphStore:
                 # description, which joins every chunk's (and a summary) and
                 # would put other documents' text on this chunk's new edge.
                 "RETURN cid, e.id, labels(e), e.name, e.type, "
-                "m.description, e.source_chunk_ids, m.spans",
+                "m.description, e.source_chunk_ids, m.spans, m.descriptions",
                 {"cids": batch},
             )
             for row in result.result_set or []:
-                cid, eid, labels, name, etype, description, source_chunk_ids, spans = row
+                (
+                    cid,
+                    eid,
+                    labels,
+                    name,
+                    etype,
+                    description,
+                    source_chunk_ids,
+                    spans,
+                    descriptions,
+                ) = row
                 if not cid or not eid:
                     continue
                 # Tampered/partial graphs may hold a scalar where a list is
@@ -2006,6 +2051,7 @@ class GraphStore:
                         name=name if isinstance(name, str) else None,
                         type=etype if isinstance(etype, str) else None,
                         description=description if isinstance(description, str) else None,
+                        descriptions=self._members(description, descriptions),
                         source_chunk_ids=[s for s in source_chunk_ids if isinstance(s, str)],
                         spans=[int(x) for x in spans if isinstance(x, int)]
                         if isinstance(spans, list)

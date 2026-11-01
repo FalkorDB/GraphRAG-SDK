@@ -419,15 +419,6 @@ async def exact_match_merge(
         survivor = group_nodes[0]
         if entry["descriptions"]:
             set_merged_descriptions(survivor, group_nodes[1:])
-            if i in sl_summaries:
-                # An LLM summary (force_summary_threshold reached) is the one
-                # description the survivor keeps: the store joins a
-                # ``descriptions`` list it is handed, so leaving the list would
-                # throw the summary away. What each chunk said stays on its
-                # MENTIONED_IN edge.
-                survivor.properties["description"] = sl_summaries[i]
-                survivor.properties.pop("descriptions", None)
-                survivor.properties["description_summarised"] = True
         if entry["all_source_ids"]:
             survivor.properties["source_chunk_ids"] = entry["all_source_ids"]
         for dup in group_nodes[1:]:
@@ -436,6 +427,16 @@ async def exact_match_merge(
                     survivor.properties[k] = v
             id_remap[dup.id] = survivor.id
             merged_count += 1
+        if entry["descriptions"] and i in sl_summaries:
+            # An LLM summary (force_summary_threshold reached) is the one
+            # description the survivor keeps: the store joins a
+            # ``descriptions`` list it is handed, so leaving the list — the
+            # survivor's, or one the copy above took from a duplicate — would
+            # throw the summary away. What each chunk said stays on its
+            # MENTIONED_IN edge. Last, so nothing writes these keys after it.
+            survivor.properties["description"] = sl_summaries[i]
+            survivor.properties.pop("descriptions", None)
+            survivor.properties["description_summarised"] = True
         sl_survivor_by_idx[i] = survivor
 
     # ── Stage 6: apply approved cross-label merges ──

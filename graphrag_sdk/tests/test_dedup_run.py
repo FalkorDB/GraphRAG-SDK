@@ -612,3 +612,27 @@ async def test_a_merge_keeps_both_mentions_of_a_chunk_they_share(graph):
     _, spans, description = edges[0]
     assert sorted(zip(spans[0::2], spans[1::2])) == [(0, 8), (40, 52)]
     assert set(description.split(" | ")) == {"CEO of Apple", "Dr. Cook"}
+
+
+async def test_a_merge_adds_each_description_of_a_shared_chunk_once_and_whole(graph):
+    """One duplicate's edge holds two descriptions, one of them with " | "
+    inside; the other's says one of them again. Whichever survives, each is
+    kept once and whole: merging "A | B" into "A" no longer gives "A | A | B"."""
+    await checked_graph(graph)
+    await graph.query_raw(
+        "CREATE (c:Chunk {id: 'c1'}) WITH c "
+        "MATCH (t:__Entity__ {id: 'tim'}), (u:__Entity__ {id: 'timothy'}) "
+        "CREATE (t)-[:MENTIONED_IN {description: 'CEO of Apple', spans: [0, 8]}]->(c), "
+        "(u)-[:MENTIONED_IN {description: 'Dr. Cook | Apple | CEO of Apple', "
+        "descriptions: ['Dr. Cook | Apple', 'CEO of Apple'], spans: [0, 8]}]->(c)"
+    )
+    await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([TIM, APPLE])))
+    edges = await rows(
+        graph,
+        "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(:Chunk {id: 'c1'}) "
+        "RETURN m.spans, m.description, m.descriptions",
+    )
+    ((spans, description, descriptions),) = edges
+    assert spans == [0, 8]
+    assert sorted(descriptions) == ["CEO of Apple", "Dr. Cook | Apple"]
+    assert description == " | ".join(descriptions)

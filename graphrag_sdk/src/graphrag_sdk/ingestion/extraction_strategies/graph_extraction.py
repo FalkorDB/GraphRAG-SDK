@@ -811,9 +811,9 @@ class GraphExtraction(ExtractionStrategy):
                     # chunk that already failed step 1 is not double-counted.
                     if chunk.uid not in failed_chunk_uids:
                         relation_failed_chunk_uids.add(chunk.uid)
-                    # Fall back to step 1 entities only. They carry no
-                    # description, so their mention edges get the sentence
-                    # around their spans instead.
+                    # Fall back to step 1 entities only. One without a
+                    # description gets the sentence around its spans on its
+                    # mention edge.
                     self._record_mentions(
                         chunk_entities[chunk_idx], chunk_texts[chunk_idx], chunk.uid
                     )
@@ -858,7 +858,7 @@ class GraphExtraction(ExtractionStrategy):
                         spans=flat_spans(
                             (o["start"], o["end"]) for o in ent_spans.get(chunk_id, [])
                         ),
-                        description=chunk_descriptions.get(chunk_id, ""),
+                        descriptions=list(chunk_descriptions.get(chunk_id, [])),
                     )
                 )
 
@@ -934,7 +934,7 @@ class GraphExtraction(ExtractionStrategy):
                 ]
             ent.spans = {chunk_id: [{"start": s, "end": e} for s, e in spans]}  # type: ignore[attr-defined]
             text = ent.description.strip() or evidence_text(chunk_text, spans)
-            ent.chunk_descriptions = {chunk_id: text} if text else {}  # type: ignore[attr-defined]
+            ent.chunk_descriptions = {chunk_id: [text]} if text else {}  # type: ignore[attr-defined]
             ent.description = text
 
     @staticmethod
@@ -1118,11 +1118,16 @@ class GraphExtraction(ExtractionStrategy):
                 for cid in ent.source_chunk_ids:
                     if cid not in existing.source_chunk_ids:
                         existing.source_chunk_ids.append(cid)
+                # Per chunk, every distinct description: the same entity named
+                # twice in one chunk keeps what both said.
                 chunk_descriptions = getattr(ent, "chunk_descriptions", None) or {}
                 if chunk_descriptions:
                     held = getattr(existing, "chunk_descriptions", None) or {}
-                    for chunk_id, text in chunk_descriptions.items():
-                        held.setdefault(chunk_id, text)
+                    for chunk_id, texts in chunk_descriptions.items():
+                        have = held.setdefault(chunk_id, [])
+                        for text in texts:
+                            if text not in have:
+                                have.append(text)
                     existing.chunk_descriptions = held  # type: ignore[attr-defined]
                 # Merge spans: {chunk_id: [{start, end}, ...]}
                 ent_spans = getattr(ent, "spans", None) or {}
@@ -1146,7 +1151,9 @@ class GraphExtraction(ExtractionStrategy):
                 )
                 chunk_descriptions = getattr(ent, "chunk_descriptions", None)
                 if chunk_descriptions:
-                    seen[key].chunk_descriptions = dict(chunk_descriptions)  # type: ignore[attr-defined]
+                    seen[key].chunk_descriptions = {  # type: ignore[attr-defined]
+                        chunk_id: list(texts) for chunk_id, texts in chunk_descriptions.items()
+                    }
         return list(seen.values())
 
     @staticmethod
@@ -1203,14 +1210,14 @@ class GraphExtraction(ExtractionStrategy):
             node_id = compute_entity_id(ent.name, ent.type)
             if not node_id:
                 continue
-            # One member per chunk that named it, in chunk order; the store
+            # What each chunk that named it said, in chunk order; the store
             # joins them onto what the node already holds and bounds the total.
             chunk_descriptions = getattr(ent, "chunk_descriptions", None) or {}
             members: list[str] = []
             for chunk_id in ent.source_chunk_ids:
-                text = chunk_descriptions.get(chunk_id, "")
-                if text and text not in members:
-                    members.append(text)
+                for text in chunk_descriptions.get(chunk_id, []):
+                    if text not in members:
+                        members.append(text)
             if not members and ent.description:
                 members = [ent.description]
             props: dict[str, Any] = {

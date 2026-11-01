@@ -92,9 +92,9 @@ The layers are connected by `MENTIONED_IN` edges, which link entities to the chu
 
 **Created in:** Step 7 (Write). `__Entity__` label is automatically added. Embedding is written during `finalize()`.
 
-**An entity stays the same size however often it is mentioned.** Which chunks mention it, where, and what each says it is are on its `MENTIONED_IN` edges, one per chunk; the node holds no chunk list. Its descriptions are bounded twice: a write adds at most up to 20 on the node (past that, a mention's description is kept on its edge only; a write never cuts what a node already holds), and `finalize()`, after dedup, replaces the descriptions of every entity holding more than 5 with one LLM summary of them, marked `description_summarised`.
+**An entity stays the same size however often it is mentioned.** Which chunks mention it, where, and what each says it is are on its `MENTIONED_IN` edges, one per chunk; the node holds no chunk list. Its descriptions are bounded twice: a write adds at most up to 20 on the node (past that, a mention's description is kept on its edge only; a write never cuts what a node already holds), and `finalize()`, after dedup, tries to replace the descriptions of every entity holding more than 5 with one LLM summary of them, marked `description_summarised`. A summary that fails leaves them as they are, listed in `FinalizeResult.description_summary_failures`, and the next `finalize()` tries again.
 
-**What a deleted or updated document said is taken off.** Before `delete_document()` or `update()` removes a document's chunks, it records what their mention edges said, with the rest of its crash-safe cleanup state; the cleanup then drops exactly that text from the entities' descriptions, keeping anything a remaining chunk still says. No LLM call. A summarised entity cannot have text taken out of its summary: when every remaining mention edge says something, it is rebuilt from them (and summarised again by the next `finalize()`); otherwise it is kept as it is.
+**What a deleted or updated document said is taken off.** Before `delete_document()` or `update()` removes a document's chunks, it records what their mention edges said, with the rest of its crash-safe cleanup state; the cleanup then drops exactly that text from the entities' descriptions, keeping anything a remaining chunk still says, and fills the places this frees on a full node (20) from what the remaining chunks say. No LLM call. If something else writes an entity's description meanwhile, the entity is read again; if it keeps changing, the cleanup state is kept and the cleanup runs again on the next call. A summarised entity cannot have text taken out of its summary: when every remaining mention edge says something, it is rebuilt from them (and summarised again by the next `finalize()`); otherwise it is kept as it is.
 
 **Graphs written by an earlier version** keep their entities' `source_chunk_ids` lists and descriptions. `MENTIONED_IN` edges are what the SDK reads for provenance; the update and delete paths still trim the old lists. Their mention edges carry no description, so text a document ingested by an earlier version wrote cannot be taken off on its delete — it is kept, as before this version.
 
@@ -131,9 +131,10 @@ No additional properties.
 | Property | Type | Description |
 |----------|------|-------------|
 | `spans` | `list[integer]` | Where the chunk names the entity, flat: `[start, end, start, end, ...]` (character offsets in the chunk's `text`) |
-| `description` | `string` | What this chunk says the entity is: the extraction model's description, or the sentence around the spans when it gave none |
+| `description` | `string` | What this chunk says the entity is: the extraction model's description, or the sentence around the spans when it gave none. Joined with `" \| "` when there is more than one |
+| `descriptions` | `list[string]` | The same descriptions, each whole, when there is more than one: the chunk described the entity twice, or a merge or a remap put two mentions on one edge |
 
-Deduplicated by `(entity_id, chunk_id)`. Written once and deleted with its chunk, so an entity's description can always be rebuilt from its edges.
+Deduplicated by `(entity_id, chunk_id)`. Written once and deleted with its chunk, so what a deleted document said can be taken off its entities' descriptions.
 
 ### RELATES (Entity -> Entity)
 

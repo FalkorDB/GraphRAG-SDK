@@ -17,6 +17,7 @@ import pytest
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import EntityMention, GraphData, GraphNode, LLMResponse
 from graphrag_sdk.core.providers.base import LLMBatchItem
 from graphrag_sdk.ingestion.lexical_graph import LexicalGraphWriter
@@ -89,28 +90,31 @@ class TestRemappedMentions:
     def test_a_remap_keeps_what_every_mention_said(self):
         data = GraphData(
             mentions=[
-                EntityMention(entity_id="a", chunk_id="c1", spans=[0, 5], description="CEO"),
-                EntityMention(entity_id="b", chunk_id="c2", spans=[9, 12], description="Other"),
+                EntityMention(entity_id="a", chunk_id="c1", spans=[0, 5], descriptions=["CEO"]),
+                EntityMention(entity_id="b", chunk_id="c2", spans=[9, 12], descriptions=["Other"]),
             ]
         )
         out = IngestionPipeline._remap_mentions(data, {"x": "y"})
-        assert [(m.entity_id, m.spans, m.description) for m in out.mentions] == [
-            ("a", [0, 5], "CEO"),
-            ("b", [9, 12], "Other"),
+        assert [(m.entity_id, m.spans, m.descriptions) for m in out.mentions] == [
+            ("a", [0, 5], ["CEO"]),
+            ("b", [9, 12], ["Other"]),
         ]
 
     def test_two_mentions_of_one_chunk_become_one_with_both(self):
         data = GraphData(
             mentions=[
-                EntityMention(entity_id="alice", chunk_id="c1", spans=[0, 5], description="CEO"),
-                EntityMention(entity_id="dr-a", chunk_id="c1", spans=[40, 45], description="Dr."),
-                EntityMention(entity_id="dr-a", chunk_id="c1", spans=[0, 5], description="CEO"),
+                EntityMention(entity_id="alice", chunk_id="c1", spans=[0, 5], descriptions=["CEO"]),
+                EntityMention(
+                    entity_id="dr-a", chunk_id="c1", spans=[40, 45], descriptions=["Dr. | MD"]
+                ),
+                EntityMention(entity_id="dr-a", chunk_id="c1", spans=[0, 5], descriptions=["CEO"]),
             ]
         )
         (m,) = IngestionPipeline._remap_mentions(data, {"dr-a": "alice"}).mentions
         assert (m.entity_id, m.chunk_id) == ("alice", "c1")
         assert m.spans == [0, 5, 40, 45]
-        assert m.description == "CEO | Dr."
+        # Each kept whole: one holding " | " is not split into two.
+        assert m.descriptions == ["CEO", "Dr. | MD"]
 
 
 class TestSummaries:
@@ -153,10 +157,13 @@ class TestSummaries:
         llm.abatch_invoke = AsyncMock(
             return_value=[LLMBatchItem(index=0, error=RuntimeError("timeout"))]
         )
-        assert await GraphStore(mock_connection).summarise_long_descriptions(llm) == 0
+        failures: list[str] = []
+        store = GraphStore(mock_connection)
+        assert await store.summarise_long_descriptions(llm, failures=failures) == 0
         assert _writes(mock_connection) == []
         assert "Could not summarise 1 long entity description" in caplog.text
-        assert "a (timeout)" in caplog.text
+        # finalize() hands these on as FinalizeResult.description_summary_failures.
+        assert failures == ["a (timeout)"]
 
 
 class TestTakingARemovedDocumentOff:
@@ -181,23 +188,62 @@ class TestTakingARemovedDocumentOff:
         assert await store.rebuild_entity_descriptions(["bob"], {"alice": {"x"}}) == 0
         mock_connection.query.assert_not_called()
 
+    async def test_an_entity_written_meanwhile_is_read_again(self, mock_connection):
+        mock_connection.query = AsyncMock(
+            side_effect=[
+                _result([["alice", "Legacy | From C", ["Legacy", "From C"], False, False]]),
+                _result([]),
+                _result([[0]]),  # something else wrote it since the read
+                _result(
+                    [["alice", "Legacy | From C | New", ["Legacy", "From C", "New"], False, False]]
+                ),
+                _result([]),
+                _result([[1]]),
+            ]
+        )
+        store = GraphStore(mock_connection)
+        assert await store.rebuild_entity_descriptions(["alice"], {"alice": {"From C"}}) == 1
+        assert _writes(mock_connection)[-1][0][1]["members"] == ["Legacy", "New"]
+
+    async def test_one_that_keeps_changing_keeps_the_cleanup_state(self, mock_connection):
+        """Raising leaves the cleanup state in place, so the cleanup runs again."""
+        mock_connection.query = AsyncMock(
+            side_effect=[
+                _result([["alice", "Legacy | From C", ["Legacy", "From C"], False, False]]),
+                _result([]),
+                _result([[0]]),
+            ]
+            * 3
+        )
+        store = GraphStore(mock_connection)
+        with pytest.raises(DatabaseError, match="kept changing"):
+            await store.rebuild_entity_descriptions(["alice"], {"alice": {"From C"}})
+
 
 class TestMentionEdges:
     async def test_a_mention_edge_carries_its_spans_and_description(self):
         writer = LexicalGraphWriter()
         writer.graph_store = MagicMock()
-        writer.graph_store.upsert_relationships = AsyncMock(return_value=1)
+        writer.graph_store.upsert_relationships = AsyncMock(return_value=2)
         data = GraphData(
             mentions=[
                 EntityMention(
-                    chunk_id="c1", entity_id="alice", spans=[3, 8], description="CEO of Acme."
-                )
+                    chunk_id="c1", entity_id="alice", spans=[3, 8], descriptions=["CEO of Acme."]
+                ),
+                EntityMention(
+                    chunk_id="c2", entity_id="alice", descriptions=["CEO", "| Name | Alice |"]
+                ),
             ]
         )
         await writer._write_mentions(data, MagicMock())
         (rels,) = writer.graph_store.upsert_relationships.call_args[0]
         assert rels[0].type == "MENTIONED_IN"
         assert rels[0].properties == {"spans": [3, 8], "description": "CEO of Acme."}
+        # More than one: joined for readers, and the list, as on a node.
+        assert rels[1].properties == {
+            "description": "CEO | | Name | Alice |",
+            "descriptions": ["CEO", "| Name | Alice |"],
+        }
 
 
 # ── real FalkorDB ───────────────────────────────────────────────────────────
@@ -246,13 +292,20 @@ def _alice(description: str) -> GraphNode:
 
 
 async def _mentions(store, *edges):
-    """Chunks, and Alice's MENTIONED_IN edges to them: ``(chunk, description)``,
-    ``None`` for an edge written by an earlier version (no description)."""
-    for chunk, description in edges:
+    """Chunks, and Alice's MENTIONED_IN edges to them: ``(chunk, description)``
+    — a list for an edge holding more than one, ``None`` for an edge written by
+    an earlier version (no description)."""
+    for chunk, said in edges:
+        ds = said if isinstance(said, list) else [] if said is None else [said]
         await store.query_raw(
             "MERGE (c:Chunk {id: $c}) WITH c MATCH (e:__Entity__ {id: 'alice'}) "
-            "CREATE (e)-[m:MENTIONED_IN]->(c) SET m.description = $d, m.spans = [0, 5]",
-            {"c": chunk, "d": description},
+            "CREATE (e)-[m:MENTIONED_IN]->(c) "
+            "SET m.description = $d, m.descriptions = $ds, m.spans = [0, 5]",
+            {
+                "c": chunk,
+                "d": " | ".join(ds) if ds else None,
+                "ds": ds if len(ds) > 1 else None,
+            },
         )
 
 
@@ -321,6 +374,53 @@ class TestOnRealFalkorDB:
         await _remove(store, "doc1", ["c1"])
         desc, descs, _, _, _ = await _entity(store)
         assert (desc, descs) == ("Legacy fact", None)
+
+    async def test_a_description_holding_the_separator_goes_whole(self, store):
+        """A table row's evidence holds " | "; it is one description, and an
+        edge holding two keeps them apart, so each matches the node's."""
+        for d in ("Legacy fact", "| Alice | CEO |", "Founder | Acme", "Board member"):
+            await store.upsert_nodes([_alice(d)])
+        await _mentions(
+            store,
+            ("c0", None),
+            ("c1", "| Alice | CEO |"),
+            ("c2", ["Founder | Acme", "Board member"]),
+        )
+        await _remove(store, "doc", ["c1", "c2"])
+        desc, descs, _, _, _ = await _entity(store)
+        assert (desc, descs) == ("Legacy fact", None)
+
+    async def test_a_full_node_is_refilled_from_the_remaining_edges(self, store):
+        """A full node keeps a later mention's description on its edge only;
+        once the removed document frees places, that description takes one,
+        instead of the entity being left with none."""
+        said_by_a = [f"A fact {i}" for i in range(MAX_DESCRIPTION_MEMBERS)]
+        for d in [*said_by_a, "From B"]:
+            await store.upsert_nodes([_alice(d)])
+        _, descs, _, _, _ = await _entity(store)
+        assert "From B" not in descs
+        await _mentions(store, *[(f"cA{i}", d) for i, d in enumerate(said_by_a)], ("cB", "From B"))
+        await _remove(store, "docA", [f"cA{i}" for i in range(MAX_DESCRIPTION_MEMBERS)])
+        desc, descs, _, _, _ = await _entity(store)
+        assert (desc, descs) == ("From B", None)
+
+    async def test_a_description_written_meanwhile_is_kept_and_the_text_still_goes(self, store):
+        for d in ("Legacy fact", "From C"):
+            await store.upsert_nodes([_alice(d)])
+        await _mentions(store, ("c0", None), ("cC", "From C"))
+        real, calls = store._remaining_said, []
+
+        async def ingest_meanwhile(eid, **kw):
+            calls.append(kw)
+            if len(calls) == 1:
+                await store.upsert_nodes([_alice("Written meanwhile")])
+            return await real(eid, **kw)
+
+        store._remaining_said = ingest_meanwhile
+        assert await _remove(store, "docC", ["cC"]) == 1
+        _, descs, _, _, _ = await _entity(store)
+        assert descs == ["Legacy fact", "Written meanwhile"]
+        assert len(calls) == 2  # read again after the first write was skipped
 
     async def test_text_a_remaining_chunk_still_says_stays(self, store):
         """An update keeps an unchanged chunk under a new id: what it says is

@@ -182,8 +182,12 @@ class LexicalGraphWriter:
             props: dict = {}
             if m.spans:
                 props["spans"] = list(m.spans)
-            if m.description:
-                props["description"] = m.description
+            if m.descriptions:
+                # As on a node: joined for readers, the list kept whole when
+                # there is more than one, so each can be taken off on its own.
+                props["description"] = " | ".join(m.descriptions)
+                if len(m.descriptions) > 1:
+                    props["descriptions"] = list(m.descriptions)
             mention_rels.append(
                 GraphRelationship(
                     start_node_id=m.entity_id,

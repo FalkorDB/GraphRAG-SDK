@@ -647,10 +647,10 @@ class IngestionPipeline(LexicalGraphWriter):
         graph. The ``visited`` guard makes a malformed cyclic remap
         terminate at the cycle's entry point rather than loop forever.
 
-        A mention keeps its ``spans`` and ``description``: its MENTIONED_IN
+        A mention keeps its ``spans`` and ``descriptions``: its MENTIONED_IN
         edge is the only record of them. Two mentions that land on one
-        (entity, chunk) become one, with both mentions' spans and both
-        descriptions (joined with ``" | "``, each once).
+        (entity, chunk) become one, with both mentions' spans and
+        descriptions, each once.
         """
         rewritten: dict[tuple[str, str], EntityMention] = {}
         for m in graph_data.mentions:
@@ -666,21 +666,18 @@ class IngestionPipeline(LexicalGraphWriter):
                     entity_id=new_id,
                     chunk_id=m.chunk_id,
                     spans=list(m.spans),
-                    description=m.description,
+                    descriptions=list(m.descriptions),
                 )
                 continue
             pairs = list(zip(held.spans[0::2], held.spans[1::2]))
             for pair in zip(m.spans[0::2], m.spans[1::2]):
                 if pair not in pairs:
                     pairs.append(pair)
-            said = [d for d in held.description.split(" | ") if d]
-            for d in m.description.split(" | "):
-                if d and d not in said:
-                    said.append(d)
             rewritten[key] = held.model_copy(
                 update={
                     "spans": [x for pair in pairs for x in pair],
-                    "description": " | ".join(said),
+                    "descriptions": held.descriptions
+                    + [d for d in m.descriptions if d not in held.descriptions],
                 }
             )
         return graph_data.model_copy(update={"mentions": list(rewritten.values())})

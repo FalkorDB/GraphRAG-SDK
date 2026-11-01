@@ -230,15 +230,16 @@ class CachedChunkExtraction(ExtractionStrategy):
             new_uids = id_map.get(row.chunk_id)
             if not new_uids:
                 continue
+            said = row.descriptions or ([row.description] if row.description else [])
             for new_uid in new_uids:
                 # The unchanged chunk keeps what its old mention edge held:
-                # the same text, so the same spans and the same description.
+                # the same text, so the same spans and the same descriptions.
                 mentions.append(
                     EntityMention(
                         chunk_id=new_uid,
                         entity_id=row.entity_id,
                         spans=list(row.spans),
-                        description=row.description or "",
+                        descriptions=list(said),
                     )
                 )
             srcs = ent_sources.setdefault(row.entity_id, [])
@@ -250,8 +251,10 @@ class CachedChunkExtraction(ExtractionStrategy):
                     props["name"] = row.name
                 if row.type:
                     props["type"] = row.type
-                if row.description:
-                    props["description"] = row.description
+                if said:
+                    props["description"] = " | ".join(said)
+                if len(said) > 1:
+                    props["descriptions"] = list(said)
                 ent_props[row.entity_id] = props
                 ent_labels[row.entity_id] = row.label
                 # Remap provenance onto post-update chunk ids: this doc's

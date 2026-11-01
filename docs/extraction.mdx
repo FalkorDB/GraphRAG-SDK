@@ -272,12 +272,12 @@ The full stoplist includes ~50 pronouns and generic references. See `_ENTITY_STO
 
 After extraction runs on all chunks, entities are **deduplicated across chunks** by `(normalized_name.lower(), type.lower())`:
 
-- If the same entity appears in multiple chunks, the one with the **longer description** wins
+- What each chunk said about it is kept per chunk: every distinct description, two from the same chunk included. The node gets them joined (see below)
 - `source_chunk_ids` are merged (the entity knows every chunk it appeared in)
 - `spans` are merged (character offsets from every chunk)
 - Capitalized names are preferred over lowercase
 
-**Example:** "Alice" appears in chunks 3, 7, and 12. After aggregation, there's one entity with `source_chunk_ids = ["chunk_3", "chunk_7", "chunk_12"]` and spans from all three chunks.
+**Example:** "Alice" appears in chunks 3, 7, and 12. After aggregation, there's one entity with `source_chunk_ids = ["chunk_3", "chunk_7", "chunk_12"]` and spans from all three chunks. Written to the graph, that is three `MENTIONED_IN` edges, each holding that chunk's spans and descriptions; the node holds neither the chunk list nor the spans.
 
 ---
 
