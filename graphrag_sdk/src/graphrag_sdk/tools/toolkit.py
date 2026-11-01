@@ -1272,20 +1272,26 @@ class GraphRAGToolkit:
         wrote = wrote or failed_after_write
         finalize_error = None
         # A finalize that failed is retried by the next ingest call of any
-        # session, even one that changes nothing.
+        # session, even one that changes nothing. One finalize runs at a time
+        # (two at once fail with DedupRunActiveError); a retry another session
+        # completed while this one waited is not run again.
         if self._finalize_policy == "on_write" and (wrote or self._shared.get("finalize_failed")):
-            try:
-                await self._rag.finalize()
-                out.finalized = True
-                self._shared.pop("finalize_failed", None)
-            except Exception as exc:  # the documents are written: keep their result
-                logger.warning("finalize after ingest failed (%s)", type(exc).__name__)
-                self._shared["finalize_failed"] = True
-                finalize_error = (
-                    f"The documents were written, but finalize failed ({type(exc).__name__}); "
-                    "the next ingest call retries it (call ingest again with the same "
-                    "input to retry now)."
-                )
+            async with self._lock("finalize"):
+                if not wrote and not self._shared.get("finalize_failed"):
+                    out.finalized = True
+                else:
+                    try:
+                        await self._rag.finalize()
+                        out.finalized = True
+                        self._shared.pop("finalize_failed", None)
+                    except Exception as exc:  # the documents are written: keep their result
+                        logger.warning("finalize after ingest failed (%s)", type(exc).__name__)
+                        self._shared["finalize_failed"] = True
+                        finalize_error = (
+                            "The documents were written, but finalize failed "
+                            f"({type(exc).__name__}); the next ingest call retries it "
+                            "(call ingest again with the same input to retry now)."
+                        )
         out.hint = self._ingest_hint(out)
         if finalize_error:
             out.hint = f"{finalize_error} {out.hint}" if out.hint else finalize_error
@@ -1574,15 +1580,16 @@ class GraphRAGToolkit:
         it raises :class:`ConfigError`.
         """
         self._ensure_writable("finalize")
-        if self._finalize_policy == "on_write" and not self._shared.get("finalize_failed"):
-            return FinalizeReport(finalized=True, hint="Each ingest already finalized.")
         if self._finalize_policy == "never":
             raise ConfigError(
                 'finalize_policy="never": the toolkit never finalizes; call '
                 "GraphRAG.finalize() yourself."
             )
-        result = await self._rag.finalize()
-        self._shared.pop("finalize_failed", None)
+        async with self._lock("finalize"):
+            if self._finalize_policy == "on_write" and not self._shared.get("finalize_failed"):
+                return FinalizeReport(finalized=True, hint="Each ingest already finalized.")
+            result = await self._rag.finalize()
+            self._shared.pop("finalize_failed", None)
         return FinalizeReport(
             finalized=True,
             entities_deduplicated=int(getattr(result, "entities_deduplicated", 0) or 0),

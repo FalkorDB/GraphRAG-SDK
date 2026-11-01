@@ -205,7 +205,9 @@ _OPTION_TEXT: dict[str, dict[str, str]] = {
         "exact": "merge by exact normalized name. Cheap default. No LLM call.",
         "llm_verified": "exact match first, then embedding candidates that an\n"
         "    LLM confirms (catches paraphrased names). Costs up to max_llm_pairs\n"
-        "    LLM pair checks per document, plus embedding calls.",
+        "    LLM pair checks per document, plus a second ask for each confirmed\n"
+        "    cross-type match, one check per name shared across types, an LLM\n"
+        "    summary per entity with 3+ descriptions, and embedding calls.",
     },
 }
 _COMPONENT_TEXT = {
@@ -734,10 +736,11 @@ class LLMIngestionPlanner:
         max_llm_pairs: upper bound on the llm_verified resolver's LLM pair
             budget the plan may set (default 500, the resolver's own default);
             ``0`` disallows ``llm_verified``. The budget covers the whole
-            document (the resolver's default unified stage compares every
-            entity in one group); a confirmed cross-type match asked a second
-            time, same-name cross-type checks and description summaries are
-            on top of it.
+            document, as the resolver's default unified stage compares every
+            entity in one group. Some LLM calls come on top of it: each
+            confirmed cross-type match is asked again for a second opinion,
+            each name shared by entities of different types gets one check,
+            and each entity with 3+ descriptions gets a summary.
         tune_params: let the plan set parameters inside the chosen
             strategies (default ``True``); ``False`` keeps every default
             except a lower ``max_llm_pairs``.

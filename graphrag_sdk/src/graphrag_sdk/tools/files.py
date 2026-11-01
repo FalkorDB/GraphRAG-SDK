@@ -245,11 +245,14 @@ def resolve_files(
             if rel not in seen and (stat.st_dev, stat.st_ino) not in seen:
                 seen.update((rel, (stat.st_dev, stat.st_ino)))
                 out.append(rel)
-    if len(out) > max_files:
-        raise ToolError(
-            f"{len(out)} files match; one call takes at most {max_files}.",
-            hint="Split the files over several calls (narrower globs or explicit lists).",
-        )
+                # The count only grows, so stop at the first file too many.
+                if len(out) > max_files:
+                    raise ToolError(
+                        f"More than {max_files} files match; one call takes at most {max_files}.",
+                        hint=(
+                            "Split the files over several calls (narrower globs or explicit lists)."
+                        ),
+                    )
     return out
 
 

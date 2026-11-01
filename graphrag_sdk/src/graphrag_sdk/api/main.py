@@ -3812,6 +3812,10 @@ class GraphRAG:
             # raises as an exhausted budget does everywhere else. A
             # TimeoutError the planner raises itself is an ordinary planner
             # failure, so the budget is enforced by asyncio.wait, not wait_for.
+            # A budget spent before the planner starts raises here, so an
+            # immediate planner failure cannot fall back and keep ingesting.
+            if ctx is not None:
+                ctx.ensure_budget("ingestion planner")
             remaining = ctx.remaining_budget_seconds if ctx is not None else None
             task = asyncio.ensure_future(active.plan(sample_text, source=source, ctx=ctx))
             try:

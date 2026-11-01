@@ -241,6 +241,20 @@ class TestFiles:
         with pytest.raises(ToolError, match="at most 2"):
             fs.resolve_files(root, ["**/*"], max_files=2)
 
+    def test_too_many_files_stops_at_the_first_one_over(self, corpus, monkeypatch):
+        root = fs.resolve_root(corpus)
+        globs = []
+        list_files = fs.list_files
+
+        def counting(root, pattern, *args, **kw):
+            globs.append(pattern)
+            return list_files(root, pattern, *args, **kw)
+
+        monkeypatch.setattr(fs, "list_files", counting)
+        with pytest.raises(ToolError, match="at most 2"):
+            fs.resolve_files(root, ["**/*", "notes/*"], max_files=2)
+        assert globs == ["**/*"]  # the second glob is never walked
+
     @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
     def test_links_to_hidden_or_unsupported_files_are_not_listed(self, corpus):
         root = fs.resolve_root(corpus)
@@ -1364,6 +1378,35 @@ class TestIngestFiles:
         assert retried.finalized and rag.finalized == 1
         again = await tk.ingest(files=["notes/a.md"])
         assert not again.finalized and rag.finalized == 1
+
+    async def test_concurrent_retries_run_one_finalize(self, corpus):
+        from graphrag_sdk.storage.system_store import DedupRunActiveError
+
+        rag = FakeRAG()
+        running = []
+
+        async def broken():
+            raise RuntimeError("store down")
+
+        async def one_at_a_time():
+            if running:
+                raise DedupRunActiveError("a dedup run is already active")
+            running.append(True)
+            await asyncio.sleep(0.02)
+            running.clear()
+            rag.finalized += 1
+
+        rag.finalize = broken
+        tk = toolkit(rag, corpus, finalize_policy="on_write")
+        assert not (await tk.ingest(files=["notes/a.md"])).finalized
+        rag.finalize = one_at_a_time
+        rag.unchanged.add("a.md")
+        both = await asyncio.gather(
+            tk.new_session().ingest(files=["notes/a.md"]),
+            tk.new_session().ingest(files=["notes/a.md"]),
+        )
+        assert all(r.finalized for r in both) and rag.finalized == 1
+        assert not any("finalize failed" in (r.hint or "") for r in both)
 
     async def test_toolkit_finalize_retries_a_failed_on_write_finalize(self, corpus):
         rag = FakeRAG()
