@@ -249,9 +249,9 @@ async def test_enrich_entities_short_circuits():
 
 async def test_expand_triples_dedupes_and_walks_hop_by_hop():
     rows = [
-        ["A", "REL", "B", "", "e2"],
-        ["a", "REL", "b", "", "e2"],  # same triple, other case
-        ["B", "REL2", "C", "evidence", "e3"],
+        ["A", "REL", "B", "", "e2", 10],
+        ["a", "REL", "b", "", "e2", 11],  # same triple, other case
+        ["B", "REL2", "C", "evidence", "e3", 12],
         ["B", None, "C", "", "e1"],  # incomplete edge, seed id
     ]
     store = FakeGraphStore([("r.src_name", lambda c, p: result(rows))])
@@ -260,13 +260,14 @@ async def test_expand_triples_dedupes_and_walks_hop_by_hop():
         {"source": "A", "type": "REL", "target": "B", "fact": ""},
         {"source": "B", "type": "REL2", "target": "C", "fact": "evidence"},
     ]
-    assert store.calls[0]["params"] == {"ids": ["e1"], "limit": 25}
+    assert store.calls[0]["params"] == {"ids": ["e1"], "seen_edges": [], "limit": 25}
 
     store.calls.clear()
     await ops.expand_triples(store, ["e1"], hops=2, cap=10, per_hop_limit=7)
     assert len(store.calls) == 2  # one query per hop
     second = store.calls[1]["params"]
     assert second["ids"] == ["e2", "e3"] and second["limit"] == 7  # visited ids excluded
+    assert second["seen_edges"] == [10, 11, 12]  # back-edges excluded before LIMIT
 
     assert len(await ops.expand_triples(store, ["e1"], hops=1, cap=1)) == 1
 

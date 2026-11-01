@@ -263,6 +263,28 @@ class TestReadTools:
         assert result.documents[0].document_id == "d1"
         assert toolkit.ledger.get(4).source == "/docs/a.txt"
 
+    async def test_entity_properties_are_citable(self, toolkit, rag, monkeypatch):
+        rag.retrieve_result = RetrieverResult(
+            items=[], metadata={"provenance": {"entities": [{"id": "a", "name": "Alice"}]}}
+        )
+
+        async def enrich(store, ids):
+            card = {"id": "a", "name": "Alice", "label": "Person", "description": None}
+            return {"a": {**card, "properties": {"age": 40, "aliases": ["Al", "Ally"]}}}
+
+        async def nothing(*a, **k):
+            return [] if "hops" in k else {}
+
+        monkeypatch.setattr(ops, "enrich_entities", enrich)
+        monkeypatch.setattr(ops, "expand_triples", nothing)
+        monkeypatch.setattr(ops, "chunk_documents", nothing)
+        result = await toolkit.retrieve("How old is Alice?")
+        n = result.entities[0].n
+        assert "age: 40; aliases: Al, Ally" in toolkit.ledger.get(n).content
+        assert "(age: 40; aliases: Al, Ally)" in result.to_llm_text()
+        check = await toolkit.check_citations(f"Alice is 40 years old [{n}].")
+        assert check.grounded and not check.unsupported
+
     async def test_retrieve_trims_repeated_text(self, toolkit, rag, monkeypatch):
         rag.retrieve_result = RetrieverResult(
             items=[],
@@ -312,7 +334,8 @@ class TestReadTools:
         monkeypatch.setattr(ops, "expand_triples", no_triples)
         monkeypatch.setattr(ops, "chunk_documents", none)
         result = await toolkit.retrieve("anything")
-        assert "fuzzy_names" in (result.hint or "")
+        assert "Rephrase the question" in (result.hint or "")
+        assert "fuzzy_names" not in result.hint
 
     @pytest.fixture
     def found(self, rag, monkeypatch):

@@ -21,7 +21,7 @@ Use the tools when questions need more than one lookup: "which X are connected t
 | `ingest` | Add text, or files under the files root with a per-file plan (write). See [Building the graph from a folder](#building-the-graph-from-a-folder). |
 | `finalize` | Deduplicate, embed and index after a batch of ingests (write; listed only with `finalize_policy="manual"`). |
 
-Every read runs as `GRAPH.RO_QUERY`, so the database refuses writes. Results never contain embedding vectors or internal `__Label__` names. On a graph that was never written, the read tools say the graph does not exist (and `status` says so in its hint) instead of answering "nothing found", and they never create it.
+The read tools never write. Their own graph queries run as `GRAPH.RO_QUERY`, so the database refuses writes; `retrieve`'s search paths use the SDK's standard retrieval queries, which only read. Results never contain embedding vectors or internal `__Label__` names. On a graph that was never written, the read tools say the graph does not exist (and `status` says so in its hint) instead of answering "nothing found", and they never create it.
 
 ## Python
 
@@ -94,13 +94,15 @@ Every entity, edge, fact and passage a tool returns carries an evidence number `
 ```python
 session = toolkit.new_session()
 found = await session.retrieve("Where does Alice work?")
-check = await session.check_citations(f"Alice works at Acme Corp [{found.relations[0].n}].")
-check.grounded        # True
-check.cited           # the valid numbers the answer cites
-check.invalid         # numbers that point at nothing; removed from check.answer
-check.sources         # the cited evidence: tool, kind, content
-check.uncited         # sentences stating a figure or a name with no [n] of their own
-check.unsupported     # cited sentences + the figures / names their evidence lacks
+evidence = [*found.relations, *found.facts, *found.chunks]
+if evidence:
+    check = await session.check_citations(f"Alice works at Acme Corp [{evidence[0].n}].")
+    check.grounded        # True
+    check.cited           # the valid numbers the answer cites
+    check.invalid         # numbers that point at nothing; removed from check.answer
+    check.sources         # the cited evidence: tool, kind, content
+    check.uncited         # sentences stating a figure or a name with no [n] of their own
+    check.unsupported     # cited sentences + the figures / names their evidence lacks
 ```
 
 A marker can cite one item (`[3]`), a list (`[1, 4]`) or a range (`[1-3]`). The claim checks are literal and use no LLM: a figure must appear as a number in the full text of the evidence the sentence cites (so "two" for "2" is reported), and a name counts as found when at least half of its words appear there as whole words, ignoring case (either word of "Corvane Systems"; "Ann" is not found in "planning"). They are warnings and never change `grounded`.

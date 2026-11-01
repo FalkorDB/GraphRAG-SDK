@@ -182,12 +182,26 @@ class RelationTypeInfo(BaseModel):
     count: int = 0
 
 
+def properties_text(properties: dict[str, Any]) -> str:
+    """An entity's properties as one line: ``age: 40; city: Paris``."""
+    parts = []
+    for key, value in properties.items():
+        if isinstance(value, list | tuple):
+            value = ", ".join(str(v) for v in value)
+        text = _clean(value)
+        if text:
+            parts.append(f"{_clean(key)}: {text}")
+    return "; ".join(parts)
+
+
 def _entity_line(e: EntityCard) -> str:
     line = f"- {_n(e.n)}{_clean(e.name)}"
     if e.label:
         line += f" [{_clean(e.label)}]"
     if e.description:
         line += f": {_snippet(e.description, 160)}"
+    if props := properties_text(e.properties):
+        line += f" ({_snippet(props, 160)})"
     return line
 
 

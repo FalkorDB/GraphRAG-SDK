@@ -62,6 +62,7 @@ from graphrag_sdk.tools.models import (
     RelationTypeInfo,
     RetrieveResult,
     StatusResult,
+    properties_text,
 )
 from graphrag_sdk.tools.specs import (
     RETRIEVE_PATHS,
@@ -728,6 +729,8 @@ class GraphRAGToolkit:
             text = card["name"] + (f" ({card['label']})" if card["label"] else "")
             if card.get("description"):
                 text += f": {card['description']}"
+            if props := properties_text(card.get("properties") or {}):
+                text += f" ({props})"
             entities.append(
                 EntityCard(
                     n=self._evidence("retrieve", "entity", text, entity_id=card["id"]), **card
@@ -795,8 +798,8 @@ class GraphRAGToolkit:
         hint = None
         if not (entities or relations or facts or chunks):
             hint = (
-                "Nothing relevant was found. Rephrase the question, or add the "
-                "fuzzy_names path for partial or misspelt names."
+                "Nothing relevant was found on any path. Rephrase the question with "
+                "other words, or call status to check the graph holds data."
             )
             if inp.paths:
                 hint = (

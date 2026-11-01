@@ -124,7 +124,7 @@ async def test_status_and_ontology(toolkit: GraphRAGToolkit):
 
 
 async def test_the_database_refuses_writes_too(toolkit: GraphRAGToolkit):
-    """Tool reads run as GRAPH.RO_QUERY, so the database refuses writes."""
+    """The store's read_only queries run as GRAPH.RO_QUERY, so the database refuses writes."""
     before = (await toolkit.call("status", {})).entities
     with pytest.raises(DatabaseError):
         await toolkit._store.query_raw("CREATE (n:Hack) RETURN n", read_only=True)
