@@ -43,7 +43,8 @@ class RetrieveInput(_Input):
         description=(
             "Relation hops the links path follows from the entities found. Keep 1 "
             "first; on a second call use 2 or 3 when the question chains several "
-            "relations, up to 5 for a longer chain."
+            "relations, up to 5 for a longer chain. Relations stop at 4 x top_k "
+            "(40 at most), nearest hops first."
         ),
     )
     include_chunks: bool = Field(default=True, description="Include source text passages.")

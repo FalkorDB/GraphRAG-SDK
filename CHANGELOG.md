@@ -36,7 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guide as its instructions, keeps one evidence ledger per client connection,
   and works with `mcp` 1.x and 2.x.
 - **Tool results never include internal nodes or embedding vectors**, and
-  every read runs as `GRAPH.RO_QUERY`, so the database refuses writes.
+  the read tools never write: their own graph queries run as
+  `GRAPH.RO_QUERY`, so the database refuses writes.
 - **Read tools on a graph that does not exist** raise an error naming it and
   create nothing.
 - **`check_citations`** accepts `[1, 2]` and `[1-3]`, and matches names as

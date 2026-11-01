@@ -59,13 +59,15 @@ async def connect(server: GraphRAGMCPServer):
     try:
         from mcp import Client  # mcp 2.x
     except ImportError:  # mcp 1.x
+        Client = None
+    if Client is None:
         from mcp.shared.memory import create_connected_server_and_client_session
 
         async with create_connected_server_and_client_session(lowlevel) as session:
             yield session, None
-        return
-    async with Client(lowlevel) as client:
-        yield client, client.instructions
+    else:
+        async with Client(lowlevel) as client:
+            yield client, client.instructions
 
 
 def _text(result: Any) -> str:

@@ -272,10 +272,12 @@ async def expand_triples(
 
     Never builds a variable-length pattern from caller input. Direction comes
     from the edge's own ``src_name`` / ``tgt_name``, so one undirected query
-    per hop is enough.
+    per hop is enough. Edges an earlier hop returned are excluded before the
+    ``LIMIT``, so walking back along them cannot use up a hop's budget.
     """
     triples: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
+    seen_edges: list[int] = []
     visited = set(seed_ids)
     frontier = list(seed_ids)
     for _ in range(max(1, hops)):
@@ -284,18 +286,20 @@ async def expand_triples(
         result = await _read(
             store,
             "MATCH (a:__Entity__)-[r:RELATES]-(b:__Entity__) "
-            "WHERE a.id IN $ids "
+            "WHERE a.id IN $ids AND NOT ID(r) IN $seen_edges "
             "RETURN r.src_name, r.rel_type, r.tgt_name, "
-            "coalesce(r.fact, r.description, ''), b.id "
+            "coalesce(r.fact, r.description, ''), b.id, ID(r) "
             "ORDER BY r.src_name, r.rel_type, r.tgt_name "
             "LIMIT $limit",
-            {"ids": frontier, "limit": per_hop_limit},
+            {"ids": frontier, "seen_edges": list(seen_edges), "limit": per_hop_limit},
         )
         next_frontier: list[str] = []
         for row in _rows(result):
             src, rel_type, tgt = row[0] or "", row[1] or "", row[2] or ""
             fact = row[3] if len(row) > 3 else ""
             other = row[4] if len(row) > 4 else ""
+            if len(row) > 5 and isinstance(row[5], int):
+                seen_edges.append(row[5])
             key = (str(src).lower(), str(rel_type), str(tgt).lower())
             if src and rel_type and tgt and key not in seen:
                 seen.add(key)

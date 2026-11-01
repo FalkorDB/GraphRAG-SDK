@@ -52,7 +52,7 @@ def specs(**kwargs) -> list[ToolSpec]:
 # ── Registry ─────────────────────────────────────────────────────
 
 
-def test_registry_has_eight_tools_in_order():
+def test_registry_has_six_tools_in_order():
     assert TOOL_NAMES == ALL_NAMES
     assert [td.name for td in TOOL_REGISTRY] == list(ALL_NAMES)
     assert all(isinstance(td, ToolDef) for td in TOOL_REGISTRY)
