@@ -181,7 +181,9 @@ async def test_read_only_toolkit(toolkit: GraphRAGToolkit):
     with pytest.raises(ReadOnlyViolation):
         await ro.call("ingest", {"text": "x"})
     found = await ro.call("retrieve", {"question": "Where does Bob work?"})
-    assert found.entities or found.chunks
+    assert any(e.name == "Bob" for e in found.entities) or any(
+        "Bob" in c.text for c in found.chunks
+    )
 
 
 async def test_mcp_round_trip(toolkit: GraphRAGToolkit):
@@ -244,7 +246,7 @@ async def test_for_tenant_isolated_graphs(embedder):
         assert tk_b.rag._conn.config.graph_name == f"{base.graph_name}__tenant-b"
         await tk_a.ingest("Alice is an engineer.", document_id="doc-a")
         await tk_a.finalize()
-        assert (await tk_a.status()).entities >= 1
+        assert any(e.name == "Alice" for e in (await tk_a.retrieve("Who is Alice?")).entities)
         # Tenant b's graph was never written, so it cannot see a's entities.
         with pytest.raises(ToolError, match="__tenant-b' does not exist"):
             await tk_b.retrieve("Who is Alice?")

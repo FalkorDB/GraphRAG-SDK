@@ -14,7 +14,12 @@ import pytest
 
 from graphrag_sdk.api import main as main_mod
 from graphrag_sdk.api.main import GraphRAG
-from graphrag_sdk.core.exceptions import LLMError, LoaderError, ReadOnlyViolation
+from graphrag_sdk.core.exceptions import (
+    IngestionError,
+    LLMError,
+    LoaderError,
+    ReadOnlyViolation,
+)
 from graphrag_sdk.core.models import (
     DocumentInfo,
     Entity,
@@ -391,7 +396,7 @@ class TestPrunedTypes:
         unknown = PrunedTypes.from_report({"unknown": 2})
         unknown.add(PrunedTypes(unknown=1))
         assert unknown.unknown == 3 and unknown.missing_types
-        assert "3 entities of no declared type" in unknown.summary()
+        assert "3 entities with an unresolved type" in unknown.summary()
         ends = PrunedTypes.from_report({"unknown_endpoints": {"WORKS_AT": 2}})
         ends.add(PrunedTypes(unknown_endpoints={"WORKS_AT": 1, "OWNS": 1}))
         assert ends.unknown_endpoints == {"WORKS_AT": 3, "OWNS": 1} and ends.missing_types
@@ -1066,8 +1071,8 @@ class TestIngestFiles:
         hint = result.hint
         assert "3 relation(s) (WORKS_AT) were dropped because an endpoint's type was not " in hint
         assert "resolved (stored as Unknown)" in hint and "is not declared" not in hint
-        assert "classified with low confidence, so check those entities first" in hint
-        assert "Only if they are of a type the ontology lacks, declare it with " in hint
+        assert "classified with low confidence. Only if those entities" in hint
+        assert "Only if those entities are of a type the ontology lacks, declare it with" in hint
         assert "set_ontology(entities=[...])" in hint
         assert 'Unknown"]' not in hint and "'Unknown']" not in hint
         assert "ingest(files=['notes/a.md'], reextract=true)" in hint
@@ -1265,6 +1270,22 @@ class TestIngestFiles:
         mixed = await tk.ingest(files=["notes/*"])
         assert failed.failed == 1 and mixed.failed == 1
         assert rag.finalized == 0 and not failed.finalized and not mixed.finalized
+
+    async def test_on_write_policy_finalizes_after_a_failure_mid_pipeline(self, corpus):
+        rag = FakeRAG()
+        rag.unchanged.add("a.md")
+        ingest = rag.ingest
+
+        async def failing(source=None, **kw):
+            out = await ingest(source, **kw)
+            return [
+                IngestionError("write failed") if str(p).endswith("b.md") else r
+                for p, r in zip(source, out)
+            ]
+
+        rag.ingest = failing
+        result = await toolkit(rag, corpus, finalize_policy="on_write").ingest(files=["notes/*"])
+        assert result.failed == 1 and result.finalized and rag.finalized == 1
 
     async def test_bad_file_arguments(self, corpus):
         tk = toolkit(FakeRAG(), corpus)

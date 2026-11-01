@@ -112,7 +112,7 @@ An answer that cites no real evidence is not grounded.
 ## MCP server
 
 ```bash
-pip install "graphrag-sdk[mcp]"
+pip install "graphrag-sdk[mcp,markdown,pdf]"
 graphrag-mcp --read-only                                           # stdio, for local MCP clients
 graphrag-mcp --files-root ./corpus                                 # stdio, can also build the graph from ./corpus
 GRAPHRAG_MCP_TOKEN=... graphrag-mcp --transport sse --host 0.0.0.0  # network, bearer token required

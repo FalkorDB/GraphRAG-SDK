@@ -24,6 +24,7 @@ from pydantic import BaseModel, ValidationError
 from graphrag_sdk.core.connection import ConnectionConfig
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import (
+    ChunkingError,
     ConfigError,
     LoaderError,
     ReadOnlyViolation,
@@ -166,7 +167,7 @@ class _SamePlan:
         return self._plan
 
 
-#: Entity types the SDK writes itself: Unknown holds entities of no declared type.
+#: Entity types the SDK writes itself: Unknown holds entities whose type was not resolved.
 _RESERVED_ENTITY_TYPES = RESERVED_NODE_LABELS | {"Unknown"}
 _LABEL_HINT = (
     "Use letters, digits, spaces, '-' or '_'; no '|', ':', backticks, line breaks "
@@ -255,6 +256,15 @@ def _short(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _may_have_written(exc: BaseException) -> bool:
+    """Whether a file's failure may have come after the pipeline began writing.
+
+    Loading and chunking (the chunk budget included) run before anything is
+    written; any later failure can leave the file's nodes in the graph.
+    """
+    return not isinstance(exc, (ToolError, LoaderError, ChunkingError))
+
+
 def _file_error(exc: BaseException) -> str:
     """One file's error for a tool result.
 
@@ -269,7 +279,7 @@ def _file_error(exc: BaseException) -> str:
 
     if isinstance(exc, (ToolError, LoaderError, ChunkBudgetExceededError)):
         return _short(redact(str(exc)), 300)
-    logger.warning("A file failed (%s): %s", type(exc).__name__, redact(str(exc)))
+    logger.warning("A file failed (%s); details withheld.", type(exc).__name__)
     return (
         f"Failed with {type(exc).__name__}; the message is withheld "
         "(details are in the server log)."
@@ -1093,6 +1103,7 @@ class GraphRAGToolkit:
             reextract=reextract,
         )
         ctx = ctx or self._new_ctx()
+        failed_after_write = False
         if inp.text is not None:
             if inp.reextract:
                 result = await self._rag.update(
@@ -1116,11 +1127,15 @@ class GraphRAGToolkit:
                 pruned=PrunedTypes.from_report(result.metadata.get("pruned")),
             )
         else:
-            out = await self._ingest_files(inp.files or [], inp.plan or [], inp.reextract, ctx)
-        # Only a document actually written needs a finalize; a failed file
-        # (refused before writing, say) or an unchanged one does not.
+            out, failed_after_write = await self._ingest_files(
+                inp.files or [], inp.plan or [], inp.reextract, ctx
+            )
+        # Only a document written needs a finalize: an unchanged one or a file
+        # refused before writing does not, but a file that failed later may
+        # have left nodes behind.
         written = ("ingested", "reextracted")
         wrote = out.status in written or any(d.status in written for d in out.documents)
+        wrote = wrote or failed_after_write
         if self._finalize_policy == "on_write" and wrote:
             await self._rag.finalize()
             out.finalized = True
@@ -1160,7 +1175,8 @@ class GraphRAGToolkit:
         rules: list[PlanRuleInput],
         reextract: bool,
         ctx: Context,
-    ) -> IngestResult:
+    ) -> tuple[IngestResult, bool]:
+        """The files' result, and whether a file failed after it may have written."""
         from graphrag_sdk.ingestion.ingestion_planner import (
             PlanRule,
             RuleBasedIngestionPlanner,
@@ -1180,6 +1196,7 @@ class GraphRAGToolkit:
         loader = _ConfinedLoader(root, self._max_file_bytes)
         paths = [str(root / rel) for rel in rels]
         docs: list[IngestedDocument] = []
+        errors: list[BaseException] = []
         if not reextract:
             results = await self._rag.ingest(
                 paths,
@@ -1190,6 +1207,7 @@ class GraphRAGToolkit:
             )
             for rel, res in zip(rels, results):
                 if isinstance(res, BaseException):
+                    errors.append(res)
                     docs.append(IngestedDocument(path=rel, status="failed", error=_file_error(res)))
                     continue
                 meta = res.metadata or {}
@@ -1244,6 +1262,7 @@ class GraphRAGToolkit:
                             ctx=ctx,
                         )
                     except Exception as exc:  # one bad file must not fail the batch
+                        errors.append(exc)
                         return IngestedDocument(path=rel, status="failed", error=_file_error(exc))
                 plan_info = report.get("plan")
                 if plan_info:
@@ -1259,7 +1278,7 @@ class GraphRAGToolkit:
         for doc in docs:
             if doc.pruned is not None:
                 total.add(doc.pruned)
-        return IngestResult(
+        out = IngestResult(
             chunks_indexed=sum(d.chunks_indexed for d in docs),
             nodes_created=sum(d.nodes_created for d in docs),
             relationships_created=sum(d.relationships_created for d in docs),
@@ -1267,6 +1286,7 @@ class GraphRAGToolkit:
             failed=sum(d.status == "failed" for d in docs),
             pruned=total if (total.missing_types or total.dangling) else None,
         )
+        return out, any(_may_have_written(e) for e in errors)
 
     def _ingest_hint(self, out: IngestResult) -> str | None:
         hints: list[str] = []
@@ -1296,8 +1316,8 @@ class GraphRAGToolkit:
                     f"{n} relation(s) ({_names_hint(sorted(pruned.unknown_endpoints))}) were "
                     "dropped because an endpoint's type was not resolved (stored as Unknown); "
                     "a pattern cannot name Unknown. Unknown can also be a declared type the "
-                    "extractor classified with low confidence, so check those entities "
-                    "first. Only if they are of a type the ontology lacks, declare it with "
+                    "extractor classified with low confidence. Only if those entities are "
+                    "of a type the ontology lacks, declare it with "
                     "set_ontology(entities=[...]) and add it to the relation's patterns, "
                     f"then {redo}."
                 )

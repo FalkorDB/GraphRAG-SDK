@@ -431,7 +431,10 @@ class PrunedTypes(BaseModel):
     dangling: int = Field(default=0, description="Relations whose endpoint was dropped.")
     unknown: int = Field(
         default=0,
-        description="Entities kept with label Unknown: their type is not in the ontology.",
+        description=(
+            "Entities kept with label Unknown: their type was not resolved (not in the "
+            "ontology, or a declared type predicted with low confidence)."
+        ),
     )
     unknown_endpoints: dict[str, int] = Field(
         default_factory=dict,
@@ -512,7 +515,7 @@ class PrunedTypes(BaseModel):
             }
             parts.append(f"undeclared relation patterns {top(flat)}")
         if self.unknown:
-            parts.append(f"{self.unknown} entities of no declared type (stored as Unknown)")
+            parts.append(f"{self.unknown} entities with an unresolved type (stored as Unknown)")
         if self.unknown_endpoints:
             parts.append(f"relations to Unknown entities {top(self.unknown_endpoints)}")
         if self.dangling:

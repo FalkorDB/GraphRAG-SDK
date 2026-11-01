@@ -27,10 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (default `CHEAP_PLAN_LIMITS`: sentence, fixed or structural chunking, GLiNER
   extraction, exact resolution, and at most 1,000 chunks per file); anything
   else is replaced and the plan's `reason` says so.
-- **`max_chunks` bounds extraction calls per document.** `LLMIngestionPlanner`
+- **`max_chunks` caps the chunks per document.** `LLMIngestionPlanner`
   and `RuleBasedIngestionPlanner` take `max_chunks=`: a document that splits
   into more chunks is refused with `ChunkBudgetExceededError` before anything
-  of it is written or extracted (one extraction LLM call per chunk). The
+  of it is written or extracted. Each chunk costs one extraction LLM call with
+  `gliner` and two with the `llm` backend, so this bounds the calls. The
   default `None` sets no limit. `max_llm_pairs` caps `llm_verified` pairs per
   label group (cross-label pairs and summary calls come on top), and is now
   kept with `tune_params=False` too.
