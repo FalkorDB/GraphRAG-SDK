@@ -568,6 +568,31 @@ async def test_a_slow_planner_runs_out_the_latency_budget(mock_conn, embedder, l
     assert time.monotonic() - start < 2
 
 
+async def test_a_planner_cut_off_by_the_budget_is_unwound(mock_conn, embedder, llm):  # noqa: F811
+    from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+
+    cleaned = []
+
+    class Slow:
+        async def plan(self, text, *, source=None, ctx=None):
+            try:
+                await asyncio.sleep(5)
+            finally:
+                cleaned.append(True)
+            return IngestionPlan()
+
+    g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+    with pytest.raises(LatencyBudgetExceededError):
+        await g.ingest(
+            text="Alice works at Acme.",
+            document_id="d",
+            planner=Slow(),
+            ctx=Context(latency_budget_ms=50),
+        )
+    # The cancelled planner finished its cleanup before ingest returned.
+    assert cleaned == [True]
+
+
 class _TimingOutPlanner:
     async def plan(self, text, *, source=None, ctx=None):
         raise asyncio.TimeoutError("planner's own LLM call timed out")

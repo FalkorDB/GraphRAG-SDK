@@ -302,6 +302,13 @@ def canonical_file(root: Path, rel: str) -> str:
     real = _canonical(root, root / rel, {})
     if real is None:
         raise _gone(rel)
+    # The link may have been pointed elsewhere since the listing: apply the
+    # listing's rules to where it leads now.
+    if any(p.startswith(".") for p in PurePosixPath(real).parts) or not _supported(real):
+        raise ToolError(
+            f"{rel!r} links to a file that is hidden or not a supported type.",
+            hint="Pass the file itself.",
+        )
     return real
 
 
@@ -395,24 +402,39 @@ def open_confined(root: Path, rel: str, max_bytes: int | None = None) -> BinaryI
         if not stat.S_ISREG(info.st_mode):
             raise _gone(rel)
         if max_bytes is not None and info.st_size > max_bytes:
-            raise ToolError(
-                f"{rel!r} is larger than max_file_bytes "
-                f"({_megabytes(info.st_size)} > {_megabytes(max_bytes)}).",
-                hint="Split the file or raise max_file_bytes.",
-            )
+            raise _too_large(rel, info.st_size, max_bytes)
         return os.fdopen(fd, "rb")
     except BaseException:
         os.close(fd)
         raise
 
 
+def _too_large(rel: str, size: int, max_bytes: int) -> ToolError:
+    return ToolError(
+        f"{rel!r} is larger than max_file_bytes ({_megabytes(size)} > {_megabytes(max_bytes)}).",
+        hint="Split the file or raise max_file_bytes.",
+    )
+
+
+def _read_capped(fh: BinaryIO, rel: str, max_bytes: int | None) -> bytes:
+    """All of ``fh``, but never more than ``max_bytes`` (a file that grew
+    after its size was checked is refused, not read whole)."""
+    if max_bytes is None:
+        return fh.read()
+    data = fh.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise _too_large(rel, len(data), max_bytes)
+    return data
+
+
 def read_confined(root: Path, rel: str, max_bytes: int | None = None) -> bytes:
     """The bytes of ``rel`` under ``root``, read through :func:`open_confined`.
 
+    At most ``max_bytes`` are read, even if the file grows while open.
     Blocking: call it from a worker thread in async code.
     """
     with open_confined(root, rel, max_bytes) as fh:
-        return fh.read()
+        return _read_capped(fh, rel, max_bytes)
 
 
 def document_from_bytes(rel: str, data: bytes) -> DocumentOutput:
@@ -490,9 +512,10 @@ def sample_confined(
     is refused. Blocking: call it from a worker thread in async code.
     """
     pdf = rel.lower().endswith(".pdf")
-    with open_confined(root, rel, max_bytes if pdf else None) as fh:
+    cap = max_bytes if pdf else None
+    with open_confined(root, rel, cap) as fh:
         size = os.fstat(fh.fileno()).st_size
-        return (*_sample_open(fh, pdf, size, max_chars), size)
+        return (*_sample_open(fh, pdf, size, max_chars, rel=rel, max_bytes=cap), size)
 
 
 def sample_file(path: Path, max_chars: int) -> tuple[str, int, bool]:
@@ -512,12 +535,21 @@ def sample_file(path: Path, max_chars: int) -> tuple[str, int, bool]:
         return _sample_open(fh, path.suffix.lower() == ".pdf", path.stat().st_size, max_chars)
 
 
-def _sample_open(fh: BinaryIO, pdf: bool, size: int, max_chars: int) -> tuple[str, int, bool]:
+def _sample_open(
+    fh: BinaryIO,
+    pdf: bool,
+    size: int,
+    max_chars: int,
+    *,
+    rel: str = "",
+    max_bytes: int | None = None,
+) -> tuple[str, int, bool]:
     if pdf:
-        return _pdf_sample(fh, max_chars)
+        return _pdf_sample(fh, max_chars, rel=rel, max_bytes=max_bytes)
     window = max(_WINDOW_FACTOR * max_chars, _MIN_WINDOW_BYTES)
     if size <= window:
-        text = fh.read().decode("utf-8", errors="replace")
+        # Bounded by the window: a file that grew since fstat is not read whole.
+        text = fh.read(window).decode("utf-8", errors="replace")
         return middle_sample(text, max_chars), len(text), False
     fh.seek((size - window) // 2)
     raw = fh.read(window)
@@ -530,13 +562,15 @@ def _sample_open(fh: BinaryIO, pdf: bool, size: int, max_chars: int) -> tuple[st
     return middle_sample(" ".join(words), max_chars), chars, True
 
 
-def _pdf_sample(fh: BinaryIO, max_chars: int) -> tuple[str, int, bool]:
+def _pdf_sample(
+    fh: BinaryIO, max_chars: int, *, rel: str = "", max_bytes: int | None = None
+) -> tuple[str, int, bool]:
     try:
         import fitz  # PyMuPDF
     except ImportError:
         fitz = None
     if fitz is not None:
-        with fitz.open(stream=fh.read(), filetype="pdf") as doc:
+        with fitz.open(stream=_read_capped(fh, rel, max_bytes), filetype="pdf") as doc:
             return _middle_pages(len(doc), lambda i: doc[i].get_text(sort=True), max_chars)
     from pypdf import PdfReader
 

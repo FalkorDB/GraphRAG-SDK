@@ -323,6 +323,23 @@ def _file_id(rel: str) -> str:
     return FILE_ID_PREFIX + rel
 
 
+def _strip_file_ids(root: Path, entries: list[str]) -> list[str]:
+    """``entries`` with a file document id turned back into its path; an entry
+    that names an existing file as given keeps its ``file:`` prefix.
+    Blocking: call it from a worker thread in async code."""
+    out = []
+    for entry in entries:
+        if entry.startswith(FILE_ID_PREFIX):
+            try:
+                as_given = os.path.lexists(root / entry)
+            except (OSError, ValueError):
+                as_given = False
+            if not as_given:
+                entry = entry.removeprefix(FILE_ID_PREFIX)
+        out.append(entry)
+    return out
+
+
 def _failed(rel: str, exc: BaseException) -> IngestedDocument:
     return IngestedDocument(
         path=rel, document_id=_file_id(rel), status="failed", error=_file_error(exc)
@@ -1340,9 +1357,10 @@ class GraphRAGToolkit:
         )
 
         root = self._require_root("ingest(files=...)")
-        # A file's document id ("file:a.md") is accepted as its path.
-        entries = [e.removeprefix(FILE_ID_PREFIX) for e in entries]
         try:
+            # A file's document id ("file:a.md") is accepted as its path, but a
+            # real path that starts with "file:" is taken as given.
+            entries = await asyncio.to_thread(_strip_file_ids, root, entries)
             rels = await asyncio.to_thread(fs.resolve_files, root, entries)
             # Sources are paths relative to the root; document ids are those
             # paths under FILE_ID_PREFIX, so text cannot take a file's id.

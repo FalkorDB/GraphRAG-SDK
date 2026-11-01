@@ -193,6 +193,37 @@ class TestFiles:
         with pytest.raises(ToolError, match="unsupported file type"):
             fs.resolve_files(root, ["table.md"])
 
+    @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+    def test_a_link_pointed_at_a_hidden_file_after_listing_is_refused(self, corpus):
+        (corpus / "peek.md").symlink_to(corpus / "notes" / "b.md")
+        root = fs.resolve_root(corpus)
+        assert "peek.md" in fs.list_files(root)
+        (corpus / "peek.md").unlink()
+        (corpus / "peek.md").symlink_to(corpus / ".secret.md")
+        with pytest.raises(ToolError, match="hidden or not a supported type"):
+            fs.canonical_file(root, "peek.md")
+
+    def test_a_file_that_grows_past_the_cap_is_not_read_whole(self, corpus, monkeypatch):
+        import contextlib
+        import io
+
+        root = fs.resolve_root(corpus)
+        # The size check passed, then the file grew: the read itself is capped.
+        monkeypatch.setattr(
+            fs, "open_confined", lambda *a, **k: contextlib.closing(io.BytesIO(b"x" * 100))
+        )
+        with pytest.raises(ToolError, match="larger than max_file_bytes"):
+            fs.read_confined(root, "notes/b.md", 10)
+        assert fs.read_confined(root, "notes/b.md", 100) == b"x" * 100
+        assert fs.read_confined(root, "notes/b.md") == b"x" * 100
+
+    def test_a_small_text_file_that_grew_is_sampled_from_its_window(self):
+        import io
+
+        fh = io.BytesIO(b"word " * 1_000_000)
+        text, chars, estimated = fs._sample_open(fh, False, 10, 100)
+        assert fh.tell() < 1_000_000 and len(text) <= 100
+
     def test_resolve_files_errors(self, corpus):
         root = fs.resolve_root(corpus)
         with pytest.raises(ToolError, match="No supported file matches"):
@@ -621,6 +652,12 @@ class TestToolkitConfig:
         }
         assert tk._plan_limits["resolvers"] == ("exact",)
         assert tk._plan_limits["max_llm_pairs"] == 0
+
+    def test_llm_verified_without_a_pair_budget_gets_the_default(self):
+        tk = toolkit(FakeRAG(), plan_limits={"resolvers": ("exact", "llm_verified")})
+        assert tk._plan_limits["max_llm_pairs"] == 500
+        tk = toolkit(FakeRAG(), plan_limits={"resolvers": ("llm_verified",), "max_llm_pairs": 50})
+        assert tk._plan_limits["max_llm_pairs"] == 50
 
     async def test_read_only_refuses_every_ingestion_tool(self, corpus):
         tk = toolkit(FakeRAG(), corpus, read_only=True)
@@ -1597,6 +1634,14 @@ class TestStoredFilesGoThroughUpdate:
         result = await toolkit(rag, corpus).ingest(files=["file:notes/b.md"])
         assert result.documents[0].path == "notes/b.md"
         assert result.documents[0].document_id == "file:notes/b.md"
+
+    @pytest.mark.skipif(os.name == "nt", reason="':' is not allowed in Windows file names")
+    async def test_a_real_path_starting_with_file_is_taken_as_given(self, corpus, fake_strategies):
+        (corpus / "file:notes.md").write_text("A file whose name starts with file:.")
+        rag = FakeRAG()
+        result = await toolkit(rag, corpus).ingest(files=["file:notes.md"])
+        assert result.documents[0].path == "file:notes.md"
+        assert result.documents[0].document_id == "file:file:notes.md"
 
     async def test_a_failed_file_reports_its_id(self, corpus):
         rag = FakeRAG()

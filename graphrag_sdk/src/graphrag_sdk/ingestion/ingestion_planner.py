@@ -856,8 +856,17 @@ CHEAP_PLAN_LIMITS: Mapping[str, Any] = MappingProxyType(
 
 
 def merge_plan_limits(plan_limits: Mapping[str, Any] | None) -> dict[str, Any]:
-    """``plan_limits`` over :data:`CHEAP_PLAN_LIMITS`: a key not given keeps its cheap value."""
-    return {**CHEAP_PLAN_LIMITS, **(plan_limits or {})}
+    """``plan_limits`` over :data:`CHEAP_PLAN_LIMITS`: a key not given keeps its cheap value.
+
+    The one exception: ``resolvers`` that allow ``llm_verified`` without a
+    ``max_llm_pairs`` get the resolver's default pair budget, not the cheap 0
+    (which would silently drop the resolver that was asked for).
+    """
+    given = dict(plan_limits or {})
+    merged = {**CHEAP_PLAN_LIMITS, **given}
+    if "max_llm_pairs" not in given and "llm_verified" in (given.get("resolvers") or ()):
+        merged["max_llm_pairs"] = int(PARAM_SPECS["resolver"]["llm_verified"]["max_llm_pairs"][3])
+    return merged
 
 
 _RULE_KEYS = frozenset(

@@ -3819,6 +3819,9 @@ class GraphRAG:
             finally:
                 if not task.done():
                     task.cancel()
+                    # Let the cancelled planner unwind (as wait_for did), so
+                    # its cleanup runs and no "never retrieved" warning leaks.
+                    await asyncio.gather(task, return_exceptions=True)
             if not done:
                 raise LatencyBudgetExceededError(
                     "Latency budget exceeded while the ingestion planner was running"
