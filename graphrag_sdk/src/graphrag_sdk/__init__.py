@@ -110,6 +110,8 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     GraphExtraction,
 )
 from graphrag_sdk.ingestion.ingestion_planner import (
+    CHEAP_PLAN_LIMITS,
+    ChunkBudgetExceededError,
     HeuristicIngestionPlanner,
     IngestionPlan,
     IngestionPlanner,
@@ -254,6 +256,8 @@ __all__ = [
     "ResolutionStrategy",
     "ExactMatchResolution",
     "LLMVerifiedResolution",
+    "CHEAP_PLAN_LIMITS",
+    "ChunkBudgetExceededError",
     "HeuristicIngestionPlanner",
     "IngestionPlan",
     "IngestionPlanner",

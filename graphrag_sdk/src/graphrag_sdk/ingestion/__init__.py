@@ -8,6 +8,8 @@ from graphrag_sdk.ingestion.extraction_strategies.cached_chunk_extraction import
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
 from graphrag_sdk.ingestion.ingestion_planner import (
+    CHEAP_PLAN_LIMITS,
+    ChunkBudgetExceededError,
     HeuristicIngestionPlanner,
     IngestionPlan,
     IngestionPlanner,
@@ -25,6 +27,8 @@ __all__ = [
     "ChunkingStrategy",
     "ExtractionStrategy",
     "GraphExtraction",
+    "CHEAP_PLAN_LIMITS",
+    "ChunkBudgetExceededError",
     "HeuristicIngestionPlanner",
     "IngestionPlan",
     "IngestionPipeline",

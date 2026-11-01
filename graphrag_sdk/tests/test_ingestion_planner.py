@@ -29,6 +29,7 @@ from graphrag_sdk.ingestion.ingestion_planner import (
     CHUNKERS,
     EXTRACTORS,
     RESOLVERS,
+    ChunkBudget,
     HeuristicIngestionPlanner,
     IngestionPlan,
     LLMIngestionPlanner,
@@ -260,20 +261,24 @@ class TestPlanIngestionStrategiesMerge:
     async def test_fills_all_when_none_passed(self):
         llm = MockLLM(responses=['{"chunker":"fixed","extractor":"llm","resolver":"exact"}'])
         rag = _fake_rag(llm)
-        chunker, extractor, resolver, preloaded_document = (
-            await GraphRAG._plan_ingestion_strategies(
-                rag,
-                text="hello",
-                source="x.txt",
-                chunker=None,
-                extractor=None,
-                resolver=None,
-                planner=None,
-                ctx=None,
-            )
+        (
+            chunker,
+            extractor,
+            resolver,
+            preloaded_document,
+        ) = await GraphRAG._plan_ingestion_strategies(
+            rag,
+            text="hello",
+            source="x.txt",
+            chunker=None,
+            extractor=None,
+            resolver=None,
+            planner=LLMIngestionPlanner(llm),
+            ctx=None,
         )
         assert isinstance(chunker, FixedSizeChunking)
         assert isinstance(extractor, GraphExtraction)
+        assert isinstance(extractor.entity_extractor, LLMExtractor)
         assert isinstance(resolver, ExactMatchResolution)
         # text mode: no file was loaded, so there's nothing to preload for reuse.
         assert preloaded_document is None
@@ -282,21 +287,49 @@ class TestPlanIngestionStrategiesMerge:
         llm = MockLLM(responses=['{"chunker":"fixed","extractor":"llm","resolver":"llm_verified"}'])
         rag = _fake_rag(llm)
         explicit_chunker = SentenceTokenCapChunking()
-        chunker, extractor, resolver, _preloaded_document = (
-            await GraphRAG._plan_ingestion_strategies(
-                rag,
-                text="hello",
-                source="x.txt",
-                chunker=explicit_chunker,
-                extractor=None,
-                resolver=None,
-                planner=None,
-                ctx=None,
-            )
+        (
+            chunker,
+            extractor,
+            resolver,
+            _preloaded_document,
+        ) = await GraphRAG._plan_ingestion_strategies(
+            rag,
+            text="hello",
+            source="x.txt",
+            chunker=explicit_chunker,
+            extractor=None,
+            resolver=None,
+            planner=LLMIngestionPlanner(llm),
+            ctx=None,
         )
         # Caller's chunker is preserved; only the unset slots come from the plan.
         assert chunker is explicit_chunker
         assert isinstance(resolver, LLMVerifiedResolution)
+
+    async def test_default_planner_is_cheap(self):
+        # No planner: the expensive picks are replaced by allowed cheap ones,
+        # and the chunk ceiling wraps the chunker.
+        llm = MockLLM(
+            responses=['{"chunker":"contextual","extractor":"llm","resolver":"llm_verified"}']
+        )
+        rag = _fake_rag(llm)
+        report: dict = {}
+        chunker, extractor, resolver, _ = await GraphRAG._plan_ingestion_strategies(
+            rag,
+            text="hello",
+            source="x.txt",
+            chunker=None,
+            extractor=None,
+            resolver=None,
+            planner=None,
+            ctx=None,
+            report=report,
+        )
+        assert isinstance(chunker, ChunkBudget) and chunker.max_chunks == 1000
+        assert not isinstance(chunker.chunker, ContextualChunking)
+        assert isinstance(extractor.entity_extractor, GLiNERExtractor)
+        assert isinstance(resolver, ExactMatchResolution)
+        assert report["plan"]["extractor"] == "gliner"
 
     async def test_custom_heuristic_planner_used(self):
         rag = _fake_rag(MockLLM())
@@ -388,18 +421,21 @@ class TestPlanIngestionStrategiesMerge:
                 return SimpleNamespace(text="LOADED CONTENT SAMPLE")
 
         rag = _fake_rag(MockLLM())
-        _chunker, _extractor, _resolver, preloaded_document = (
-            await GraphRAG._plan_ingestion_strategies(
-                rag,
-                text=None,
-                source="x.pdf",
-                loader=FakeLoader(),
-                chunker=None,
-                extractor=None,
-                resolver=None,
-                planner=RecordingPlanner(),
-                ctx=None,
-            )
+        (
+            _chunker,
+            _extractor,
+            _resolver,
+            preloaded_document,
+        ) = await GraphRAG._plan_ingestion_strategies(
+            rag,
+            text=None,
+            source="x.pdf",
+            loader=FakeLoader(),
+            chunker=None,
+            extractor=None,
+            resolver=None,
+            planner=RecordingPlanner(),
+            ctx=None,
         )
         # File mode: the planner sees loaded content, not just the path.
         assert seen["text"] == "LOADED CONTENT SAMPLE"

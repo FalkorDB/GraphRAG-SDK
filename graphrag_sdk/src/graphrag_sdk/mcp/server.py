@@ -62,7 +62,7 @@ To answer a question:
    the exact entity names from its results and paths exact_names and links
    for what surrounds one entity, or with expand_hops 2 or 3 (up to 5) when
    the question chains several relations (the company that owns the firm that
-   made X).
+   made X). For a missing detail or reason, use paths passages and facts.
 3. status or get_ontology: what the graph holds (entity labels, relation
    types, counts), for questions about the graph itself. Their results carry
    an [n] too.
@@ -102,8 +102,12 @@ def _files_guide(*, ontology: bool, finalize: bool) -> str:
         ]
     steps.append(
         """Plan per file type from what preview_files showed, e.g. structural chunking
-   for Markdown with headings. Call ingest(files=[...], plan=[rules]) in
-   batches of at most 50 files; a glob such as 'reports/*.pdf' is fine."""
+   for Markdown with headings. The ingest description lists the options the
+   operator allows and what each costs in LLM calls (contextual chunking and
+   the llm extractor add one call per chunk); the cheap ones are the default,
+   so choose a costly option only for files that need it. Call
+   ingest(files=[...], plan=[rules]) in batches of at most 50 files; a glob
+   such as 'reports/*.pdf' is fine."""
     )
     if finalize:
         steps.append("Call finalize once, after the last batch.")

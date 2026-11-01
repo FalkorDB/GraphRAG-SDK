@@ -530,7 +530,11 @@ class PrunedTypes(BaseModel):
 
     @property
     def missing_types(self) -> bool:
-        """Whether an undeclared type or pattern showed up (not only dangling edges)."""
+        """Whether a type or pattern was undeclared, or an entity type unresolved (Unknown).
+
+        Unknown also holds declared types predicted with low confidence, so this
+        can be true with a complete ontology. Dangling edges alone do not count.
+        """
         return bool(
             self.entities
             or self.relations
@@ -572,7 +576,9 @@ class IngestedDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
     document_id: str | None = None
-    status: Literal["ingested", "unchanged", "reextracted", "failed"]
+    status: Literal["ingested", "unchanged", "reextracted", "updated", "failed"] = Field(
+        description="updated: the file changed since its last ingest and was replaced."
+    )
     chunks_indexed: int = 0
     nodes_created: int = 0
     relationships_created: int = 0

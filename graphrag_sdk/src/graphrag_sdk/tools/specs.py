@@ -183,7 +183,7 @@ class IngestInput(_Input):
         max_length=500,
         description="Stable id for text; generated when omitted.",
     )
-    files: list[str] | None = Field(
+    files: list[Annotated[str, Field(min_length=1, max_length=1024)]] | None = Field(
         default=None,
         min_length=1,
         max_length=200,
@@ -310,15 +310,10 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
     ToolDef(
         "ingest",
         IngestInput,
-        "Add documents to the graph: entities and relations are extracted and stored. "
-        "Pass text (a note or document), or files: paths or globs under the files root "
-        f"({', '.join(SUPPORTED_SUFFIXES)}), at most {MAX_FILES_PER_CALL} per call, with "
-        "an optional plan, one rule per kind of file, e.g. [{match: '*.md', chunker: "
-        "'structural'}, {match: '*.pdf', chunker: 'fixed', chunker_params: {chunk_size: "
-        "1500}}]. Unchanged files are skipped; reextract=true runs them again (with "
-        "their last plan unless you pass one). The "
-        "result gives each file's plan and the types dropped because the ontology lacks "
-        "them.",
+        "Add a text (a note or document) to the graph: entities and relations are "
+        "extracted and stored under its document_id. Unchanged text is skipped; "
+        "reextract=true runs it again. The result gives the types dropped because the "
+        "ontology lacks them.",
         read_only=False,
         destructive=True,
         ingest_only=True,
@@ -338,6 +333,31 @@ TOOL_REGISTRY: tuple[ToolDef, ...] = (
 
 TOOL_NAMES: tuple[str, ...] = tuple(td.name for td in TOOL_REGISTRY)
 
+#: The ingest description when the toolkit has a files root.
+_INGEST_FILES = (
+    "Add documents to the graph: entities and relations are extracted and stored. "
+    "Pass text (a note or document), or files: paths or globs under the files root "
+    f"({', '.join(SUPPORTED_SUFFIXES)}), at most {MAX_FILES_PER_CALL} per call, with "
+    "an optional plan, one rule per kind of file, e.g. [{match: '*.md', chunker: "
+    "'structural'}, {match: '*.pdf', chunker: 'fixed', chunker_params: {chunk_size: "
+    "1500}}]. Unchanged files are skipped; reextract=true runs them again (with "
+    "their last plan unless you pass one); a file that changed is updated in place. The "
+    "result gives each file's plan and the types dropped because the ontology lacks "
+    "them."
+)
+
+#: What each plan option costs, in LLM calls.
+_OPTION_COSTS: dict[str, str] = {
+    "sentence": "no LLM call",
+    "fixed": "no LLM call",
+    "structural": "no LLM call",
+    "contextual": "+1 LLM call per chunk, each sending the whole document",
+    "gliner": "local model, no extra LLM call",
+    "llm": "+1 LLM call per chunk",
+    "exact": "no LLM call",
+    "llm_verified": "up to {pairs} LLM pair checks per entity type",
+}
+
 
 def _plan_options(plan_limits: Mapping[str, Any] | None) -> str:
     from graphrag_sdk.ingestion.ingestion_planner import (
@@ -348,29 +368,54 @@ def _plan_options(plan_limits: Mapping[str, Any] | None) -> str:
     )
 
     limits = CHEAP_PLAN_LIMITS if plan_limits is None else plan_limits
-    parts = [
-        f"{slot} in ({', '.join(limits.get(key) or default)})"
-        for slot, key, default in (
-            ("chunker", "chunkers", CHUNKERS),
-            ("extractor", "extractors", EXTRACTORS),
-            ("resolver", "resolvers", RESOLVERS),
-        )
-    ]
-    return f" Allowed plan options: {'; '.join(parts)}; others fall back to these."
+    pairs = limits.get("max_llm_pairs", 500)
+    parts = []
+    for slot, key, default in (
+        ("chunker", "chunkers", CHUNKERS),
+        ("extractor", "extractors", EXTRACTORS),
+        ("resolver", "resolvers", RESOLVERS),
+    ):
+        names = [
+            f"{name} ({_OPTION_COSTS.get(name, 'cost unknown').format(pairs=pairs)})"
+            for name in limits.get(key) or default
+        ]
+        parts.append(f"{slot}: {', '.join(names)}")
+    chunks = limits.get("max_chunks")
+    cap = f" A file over {chunks} chunks fails before extraction." if chunks else ""
+    return (
+        f" Plan options allowed, with their cost: {'; '.join(parts)}. Every chunk also "
+        "costs one extraction LLM call. Files no rule matches use the cheap defaults; "
+        f"options outside these fall back to them.{cap}"
+    )
 
 
 def _description(
     td: ToolDef,
     finalize_policy: str,
     plan_limits: Mapping[str, Any] | None = None,
+    files: bool = False,
 ) -> str:
     if td.name == "ingest":
-        description = td.description + _plan_options(plan_limits)
+        # Files, plans and their costs are offered only with a files root.
+        description = _INGEST_FILES + _plan_options(plan_limits) if files else td.description
         if finalize_policy == "manual":
             # Only an agent that has the finalize tool is told to call it.
             description += " Call finalize once after the whole batch."
         return description
     return td.description
+
+
+def _schema(td: ToolDef, files: bool) -> dict[str, Any]:
+    schema = td.input_model.model_json_schema()
+    if td.name == "ingest" and not files:
+        # Without a files root only text can be ingested.
+        props = schema.get("properties", {})
+        for name in ("files", "plan"):
+            props.pop(name, None)
+        schema.get("$defs", {}).pop("PlanRuleInput", None)
+        if not schema.get("$defs"):
+            schema.pop("$defs", None)
+    return schema
 
 
 def tool_enabled(
@@ -407,8 +452,8 @@ def build_tool_specs(
     return [
         ToolSpec(
             name=td.name,
-            description=_description(td, finalize_policy, plan_limits),
-            input_schema=td.input_model.model_json_schema(),
+            description=_description(td, finalize_policy, plan_limits, files),
+            input_schema=_schema(td, files),
             read_only=td.read_only,
             destructive=td.destructive,
         )

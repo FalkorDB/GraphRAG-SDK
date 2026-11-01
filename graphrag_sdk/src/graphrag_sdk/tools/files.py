@@ -5,11 +5,16 @@
 
 from __future__ import annotations
 
+import io
 import os
+import stat
 import unicodedata
 from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
+from graphrag_sdk.core.exceptions import LoaderError
+from graphrag_sdk.core.models import DocumentInfo, DocumentOutput
 from graphrag_sdk.ingestion.ingestion_planner import match_path
 from graphrag_sdk.tools.errors import ToolError
 
@@ -27,6 +32,12 @@ _MIN_WINDOW_BYTES = 4096
 #: Most PDF pages parsed for one sample.
 _PDF_SAMPLE_PAGES = 3
 _GLOB_CHARS = frozenset("*?[")
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_BINARY = getattr(os, "O_BINARY", 0)
+#: Open each path component relative to its folder, never following a symlink.
+_FD_WALK = bool(_NOFOLLOW and _DIRECTORY) and os.open in os.supports_dir_fd
 
 
 def resolve_root(root: str | os.PathLike[str]) -> Path:
@@ -270,27 +281,161 @@ def check_sizes(root: Path, rels: Sequence[str], max_bytes: int | None) -> None:
         )
 
 
-def confined(root: Path, path: str | os.PathLike[str], max_bytes: int | None = None) -> Path:
-    """``path`` resolved, if it is still a file inside ``root`` (and not above ``max_bytes``).
+def canonical_file(root: Path, rel: str) -> str:
+    """``rel`` as its file's canonical path under ``root`` (a ToolError if outside it).
 
-    Checked again right before a file is read, so a symlink swapped in after
-    the paths were validated cannot point the loader outside the root.
+    A listed file may be a symlink to another file under the root;
+    :func:`open_confined` refuses symlinks, so it opens this path instead.
     Blocking: call it from a worker thread in async code.
     """
-    real = Path(path).resolve()
-    if not _inside(root, real) or not real.is_file():
-        raise ToolError(
-            f"{Path(path).name!r} is no longer a file under the files root.",
-            hint="Call preview_files to see the files and their paths.",
-        )
-    size = real.stat().st_size
-    if max_bytes is not None and size > max_bytes:
-        raise ToolError(
-            f"{Path(path).name!r} is larger than max_file_bytes "
-            f"({_megabytes(size)} > {_megabytes(max_bytes)}).",
-            hint="Split the file or raise max_file_bytes.",
-        )
+    real = _canonical(root, root / rel, {})
+    if real is None:
+        raise _gone(rel)
     return real
+
+
+def _gone(rel: str) -> ToolError:
+    return ToolError(
+        f"{rel!r} is no longer a file under the files root.",
+        hint="Call preview_files to see the files and their paths.",
+    )
+
+
+def open_confined(root: Path, rel: str, max_bytes: int | None = None) -> BinaryIO:
+    """The file ``rel`` under ``root``, opened for reading after checking it is still there.
+
+    Each folder on the way is opened relative to the one above it and nothing
+    is followed through a symlink (``O_NOFOLLOW``), so a symlink swapped in
+    after the paths were validated cannot lead outside the root; ``fstat`` on
+    the open file then checks it is a regular file (not a FIFO or a device,
+    opened with ``O_NONBLOCK`` so it cannot block) within ``max_bytes``. The
+    caller reads that same open file. ``rel`` must be canonical (see
+    :func:`canonical_file`). Blocking: call it from a worker thread.
+    """
+    pure = PurePosixPath(rel)
+    if pure.is_absolute() or not pure.parts or ".." in pure.parts:
+        raise _gone(rel)
+    try:
+        if _FD_WALK:
+            folder = os.open(root, os.O_RDONLY | _DIRECTORY)
+            try:
+                for name in pure.parts[:-1]:
+                    inner = os.open(name, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=folder)
+                    os.close(folder)
+                    folder = inner
+                fd = os.open(pure.parts[-1], os.O_RDONLY | _NOFOLLOW | _NONBLOCK, dir_fd=folder)
+            finally:
+                os.close(folder)
+        else:  # no dir_fd (Windows): check the resolved path, then open it
+            real = (root / rel).resolve()
+            if not _inside(root, real):
+                raise _gone(rel)
+            fd = os.open(real, os.O_RDONLY | _BINARY | _NONBLOCK)
+    except OSError:
+        raise _gone(rel) from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise _gone(rel)
+        if max_bytes is not None and info.st_size > max_bytes:
+            raise ToolError(
+                f"{rel!r} is larger than max_file_bytes "
+                f"({_megabytes(info.st_size)} > {_megabytes(max_bytes)}).",
+                hint="Split the file or raise max_file_bytes.",
+            )
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def read_confined(root: Path, rel: str, max_bytes: int | None = None) -> bytes:
+    """The bytes of ``rel`` under ``root``, read through :func:`open_confined`.
+
+    Blocking: call it from a worker thread in async code.
+    """
+    with open_confined(root, rel, max_bytes) as fh:
+        return fh.read()
+
+
+def document_from_bytes(rel: str, data: bytes) -> DocumentOutput:
+    """The document a loader would make of the file ``rel`` holding ``data``.
+
+    The same rule as ``GraphRAG``'s default loaders: ``.pdf`` is parsed as a
+    PDF, ``.md`` as Markdown (with its structure) and anything else as UTF-8
+    text, with line endings normalised as reading a text file does.
+    """
+    lower = rel.lower()
+    if lower.endswith(".pdf"):
+        return _pdf_document(rel, data)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise LoaderError(
+            f"{rel!r} is not UTF-8 text ({exc.reason} at byte {exc.start})."
+        ) from None
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    meta = {"size_bytes": len(data), "suffix": PurePosixPath(rel).suffix}
+    if lower.endswith(".md"):
+        from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+
+        return DocumentOutput(
+            text=text,
+            document_info=DocumentInfo(path=rel, metadata={**meta, "loader": "markdown"}),
+            elements=MarkdownLoader()._parse_markdown(text),
+        )
+    return DocumentOutput(
+        text=text, document_info=DocumentInfo(path=rel, metadata={**meta, "loader": "text"})
+    )
+
+
+def _pdf_document(rel: str, data: bytes) -> DocumentOutput:
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        fitz = None
+    try:
+        if fitz is not None:
+            with fitz.open(stream=data, filetype="pdf") as doc:
+                pages = [page.get_text(sort=True) for page in doc]
+                count, backend = len(doc), "pymupdf"
+            pages = [t for t in pages if t and t.strip()]
+        else:
+            try:
+                from pypdf import PdfReader
+            except ImportError:
+                raise ImportError(
+                    "A PDF library is required for PDF loading. Install one of:\n"
+                    "  pip install graphrag-sdk[pdf]       # pypdf (default)\n"
+                    "  pip install graphrag-sdk[pdf-fast]  # PyMuPDF, AGPL-3.0"
+                ) from None
+            reader = PdfReader(io.BytesIO(data))
+            pages = [t for t in (page.extract_text() for page in reader.pages) if t]
+            count, backend = len(reader.pages), "pypdf"
+    except ImportError:
+        raise
+    except Exception as exc:
+        raise LoaderError(f"Failed to read PDF {rel!r}: {exc}") from exc
+    return DocumentOutput(
+        text="\n\n".join(pages),
+        document_info=DocumentInfo(
+            path=rel,
+            metadata={"page_count": count, "loader": "pdf", "pdf_backend": backend},
+        ),
+    )
+
+
+def sample_confined(
+    root: Path, rel: str, max_chars: int, max_bytes: int | None = None
+) -> tuple[str, int, bool, int]:
+    """:func:`sample_file` of ``rel`` under ``root``, read through :func:`open_confined`,
+    and the file's size. A PDF is parsed from memory, so one above ``max_bytes``
+    is refused. Blocking: call it from a worker thread in async code.
+    """
+    pdf = rel.lower().endswith(".pdf")
+    with open_confined(root, rel, max_bytes if pdf else None) as fh:
+        size = os.fstat(fh.fileno()).st_size
+        return (*_sample_open(fh, pdf, size, max_chars), size)
 
 
 def sample_file(path: Path, max_chars: int) -> tuple[str, int, bool]:
@@ -302,16 +447,19 @@ def sample_file(path: Path, max_chars: int) -> tuple[str, int, bool]:
     estimated from the part read when ``estimated`` is True.
     Blocking: call it from a worker thread in async code.
     """
-    if path.suffix.lower() == ".pdf":
-        return _pdf_sample(path, max_chars)
-    size = path.stat().st_size
-    window = max(_WINDOW_FACTOR * max_chars, _MIN_WINDOW_BYTES)
     with path.open("rb") as fh:
-        if size <= window:
-            text = fh.read().decode("utf-8", errors="replace")
-            return middle_sample(text, max_chars), len(text), False
-        fh.seek((size - window) // 2)
-        raw = fh.read(window)
+        return _sample_open(fh, path.suffix.lower() == ".pdf", path.stat().st_size, max_chars)
+
+
+def _sample_open(fh: BinaryIO, pdf: bool, size: int, max_chars: int) -> tuple[str, int, bool]:
+    if pdf:
+        return _pdf_sample(fh, max_chars)
+    window = max(_WINDOW_FACTOR * max_chars, _MIN_WINDOW_BYTES)
+    if size <= window:
+        text = fh.read().decode("utf-8", errors="replace")
+        return middle_sample(text, max_chars), len(text), False
+    fh.seek((size - window) // 2)
+    raw = fh.read(window)
     text = raw.decode("utf-8", errors="replace")
     # The window starts and ends mid-word (maybe mid-character): drop both ends,
     # unless that leaves nothing (text with no whitespace is cut by characters).
@@ -321,20 +469,19 @@ def sample_file(path: Path, max_chars: int) -> tuple[str, int, bool]:
     return middle_sample(" ".join(words), max_chars), chars, True
 
 
-def _pdf_sample(path: Path, max_chars: int) -> tuple[str, int, bool]:
+def _pdf_sample(fh: BinaryIO, max_chars: int) -> tuple[str, int, bool]:
     try:
         import fitz  # PyMuPDF
     except ImportError:
         fitz = None
     if fitz is not None:
-        with fitz.open(str(path)) as doc:
+        with fitz.open(stream=fh.read(), filetype="pdf") as doc:
             return _middle_pages(len(doc), lambda i: doc[i].get_text(sort=True), max_chars)
     from pypdf import PdfReader
 
-    # A file object, not a path: given a path pypdf reads the whole file.
-    with path.open("rb") as fh:
-        reader = PdfReader(fh)
-        return _middle_pages(len(reader.pages), lambda i: reader.pages[i].extract_text(), max_chars)
+    # A file object: pypdf reads only the pages asked for.
+    reader = PdfReader(fh)
+    return _middle_pages(len(reader.pages), lambda i: reader.pages[i].extract_text(), max_chars)
 
 
 def _middle_pages(

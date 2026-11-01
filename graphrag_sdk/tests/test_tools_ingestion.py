@@ -5,10 +5,13 @@ against a real FalkorDB in test_tools_integration.py."""
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
+import time
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -22,6 +25,7 @@ from graphrag_sdk.core.exceptions import (
 )
 from graphrag_sdk.core.models import (
     DocumentInfo,
+    DocumentRecord,
     Entity,
     FinalizeResult,
     GraphData,
@@ -429,9 +433,12 @@ class FakeRAG:
 
     def __init__(self, stored: Ontology | None = None, ontology: Ontology | None = None):
         self._graph_store = MagicMock()
+        self.records: dict[str, DocumentRecord] = {}  # stored documents by id
+        self._graph_store.get_document_record = AsyncMock(side_effect=self.records.get)
         self._conn = SimpleNamespace(topology_version=1)
         self._ontology_store = FakeOntologyStore(stored)
         self.ontology = ontology or Ontology()
+        self._ontology_initialized = True
         self.llm = None
         self.embedder = None
         self.calls: list[tuple[str, Any]] = []
@@ -443,6 +450,15 @@ class FakeRAG:
         self.reject_ontology: str | None = None
 
     # ontology
+    async def _ensure_ontology_initialized(self) -> None:
+        self.calls.append(("register_pending", self.ontology))
+        self._ontology_store.ontology = self.ontology
+        self._ontology_initialized = True
+
+    async def _refresh_global_ontology(self) -> Ontology:
+        self.ontology = self._ontology_store.ontology
+        return self.ontology
+
     async def set_ontology(self, ontology: Ontology) -> Ontology:
         if self.reject_ontology:
             raise ValueError(self.reject_ontology)
@@ -547,10 +563,12 @@ class FakeRAG:
         base = self._result(key, None)
         if text is not None:
             base.metadata["pruned"] = self.pruned.get("text", {})
+        no_op = not force and os.path.basename(key) in self.unchanged
         return UpdateResult(
             **base.model_dump(exclude={"metadata"}),
             metadata=base.metadata,
             replaced_existing=os.path.basename(key) not in self.new,
+            no_op=no_op,
         )
 
     async def finalize(self) -> FinalizeResult:
@@ -1007,10 +1025,10 @@ class TestFileErrorsAreRedacted:
     async def test_preview(self, corpus, monkeypatch):
         secret = self.SECRET
 
-        def broken(path, max_chars):
+        def broken(root, rel, max_chars, max_bytes):
             raise RuntimeError(secret)
 
-        monkeypatch.setattr(fs, "sample_file", broken)
+        monkeypatch.setattr(fs, "sample_confined", broken)
         result = await toolkit(FakeRAG(), corpus).preview_files("notes/b.md")
         assert result.files[0].error and "SECRET" not in result.model_dump_json()
 
@@ -1038,7 +1056,8 @@ class TestIngestFiles:
             },
         )
         wanted = ("notes/a.md", "notes/b.md", "reports/2024/q1.txt")
-        assert rag.calls[0] == ("ingest_files", [str(corpus.resolve() / p) for p in wanted])
+        # Document ids are paths relative to the files root.
+        assert rag.calls[0] == ("ingest_files", list(wanted))
         docs = {d.path: d for d in result.documents}
         assert docs["notes/a.md"].plan["chunker"] == "structural"
         # extractor "llm" is outside the cheap limits, so it was restricted.
@@ -1055,10 +1074,12 @@ class TestIngestFiles:
         rag.pruned["b.md"] = {"unknown": 3}
         result = await toolkit(rag, corpus).ingest(files=["notes/*"])
         assert result.pruned.unknown == 3
-        assert "status shows how many entities are stored as Unknown" in result.hint
+        assert "status shows the total" in result.hint
         # Unknown may be a declared type classified with low confidence.
         assert "3 entities have an unresolved type" in result.hint
-        assert "check them before adding types" in result.hint
+        assert "a declared type the extractor classified with low confidence" in result.hint
+        # No tool lists those entities, so the hint does not ask to check them.
+        assert "check them" not in result.hint
         assert "types the ontology does not declare" not in result.hint
         assert "ingest(files=['notes/b.md'], reextract=true)" in result.hint
 
@@ -1121,7 +1142,7 @@ class TestIngestFiles:
         result = await tk.ingest(
             files=["notes/a.md"], plan=[{"match": "*.md", "chunker": "structural"}], reextract=True
         )
-        assert rag.calls == [("update", (str(corpus.resolve() / "notes/a.md"), True, "ingest"))]
+        assert rag.calls == [("update", ("notes/a.md", True, "ingest"))]
         doc = result.documents[0]
         assert doc.status == "reextracted" and doc.plan["chunker"] == "structural"
         assert fake_strategies[0][1] == ["Drug"]  # extraction told the ontology's types
@@ -1371,3 +1392,257 @@ class TestGuide:
         assert server.toolkit._max_file_bytes == fs.MAX_FILE_BYTES
         capped = GraphRAGMCPServer(FakeRAG(), files_root=corpus, max_file_bytes=10)
         assert capped.toolkit._max_file_bytes == 10
+
+
+# ── Review fixes (#275) ──────────────────────────────────────────────
+
+
+class TestOpenConfined:
+    def test_reads_a_file_under_the_root(self, corpus):
+        assert fs.read_confined(corpus, "notes/b.md") == b"# Beta\n\nBeta body."
+
+    @pytest.mark.parametrize("rel", ["../outside.md", "/etc/hosts", ""])
+    def test_paths_outside_the_root_are_refused(self, corpus, rel):
+        with pytest.raises(ToolError, match="no longer a file under the files root"):
+            fs.open_confined(corpus, rel)
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+    def test_a_leaf_swapped_for_a_symlink_is_refused(self, corpus):
+        real = fs.canonical_file(corpus, "notes/b.md")
+        (corpus / "notes" / "b.md").unlink()
+        (corpus / "notes" / "b.md").symlink_to(corpus.parent / "outside.md")
+        with pytest.raises(ToolError, match="no longer a file"):
+            fs.read_confined(corpus, real)
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+    def test_a_folder_swapped_for_a_symlink_is_refused(self, corpus):
+        real = fs.canonical_file(corpus, "notes/b.md")
+        elsewhere = corpus.parent / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "b.md").write_text("outside the root")
+        (corpus / "notes").rename(corpus / "old_notes")
+        (corpus / "notes").symlink_to(elsewhere, target_is_directory=True)
+        with pytest.raises(ToolError, match="no longer a file"):
+            fs.read_confined(corpus, real)
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs here")
+    def test_a_fifo_is_refused_without_blocking(self, corpus):
+        os.mkfifo(corpus / "pipe.md")
+        start = time.monotonic()
+        with pytest.raises(ToolError, match="no longer a file"):
+            fs.open_confined(corpus, "pipe.md")
+        assert time.monotonic() - start < 2
+
+    def test_the_size_cap_is_checked_on_the_open_file(self, corpus):
+        with pytest.raises(ToolError, match="larger than max_file_bytes"):
+            fs.open_confined(corpus, "notes/a.md", max_bytes=100)
+
+
+class TestDocumentFromBytes:
+    def test_markdown_keeps_its_structure(self):
+        doc = fs.document_from_bytes("notes/a.md", b"# Title\r\n\nBody text.\r\n")
+        assert doc.text == "# Title\n\nBody text.\n"
+        assert doc.document_info.metadata["loader"] == "markdown"
+        assert doc.elements and doc.document_info.path == "notes/a.md"
+
+    def test_text(self):
+        doc = fs.document_from_bytes("q1.txt", b"plain\rtext")
+        assert doc.text == "plain\ntext" and doc.document_info.metadata["loader"] == "text"
+        assert not doc.elements
+
+    def test_non_utf8_is_a_loader_error(self):
+        with pytest.raises(LoaderError, match="not UTF-8"):
+            fs.document_from_bytes("bad.txt", b"\xff\xfe bad")
+
+
+class TestPreviewConfinement:
+    @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+    async def test_a_symlink_swapped_in_after_the_check_is_not_read(self, corpus, monkeypatch):
+        (corpus.parent / "outside.md").write_text("TOP SECRET outside")
+        original = fs.canonical_file
+
+        def racing(root, rel):
+            real = original(root, rel)
+            (root / rel).unlink()
+            (root / rel).symlink_to(corpus.parent / "outside.md")
+            return real
+
+        monkeypatch.setattr(fs, "canonical_file", racing)
+        result = await toolkit(FakeRAG(), corpus).preview_files("notes/b.md")
+        assert result.files[0].error and "SECRET" not in result.model_dump_json()
+
+
+class TestPreviewPaging:
+    async def test_pages_fit_the_result_cap_and_cover_every_file_once(self, tmp_path):
+        from graphrag_sdk.mcp.server import fit_json
+
+        root = tmp_path / "many"
+        root.mkdir()
+        names = [f"{i:03d}_" + "n" * 180 + ".md" for i in range(60)]
+        for name in names:
+            (root / name).write_text("words and more words " * 100)
+        tk = toolkit(FakeRAG(), root)
+        seen: list[str] = []
+        offset: int | None = 0
+        sizes: list[int] = []
+        while offset is not None:
+            page = await tk.preview_files(offset=offset, limit=50, max_chars=1000)
+            data = page.model_dump(exclude_none=True)
+            assert "truncated" not in json.loads(fit_json(data))  # the MCP cap cuts nothing
+            assert page.files and all(f.sample for f in page.files)
+            seen += [f.path for f in page.files]
+            if page.next_offset is not None:
+                # next_offset is the first file this page left out
+                assert page.next_offset == offset + len(page.files)
+            offset = page.next_offset
+            sizes.append(len(page.files))
+        assert seen == sorted(names)
+        assert sizes[0] < 50  # 50 such files would overflow the cap
+
+
+class _SlowUpdates(FakeRAG):
+    def __init__(self):
+        super().__init__()
+        self.active = 0
+        self.peak = 0
+
+    async def update(self, *args, **kw):
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        await asyncio.sleep(0.01)
+        try:
+            return await super().update(*args, **kw)
+        finally:
+            self.active -= 1
+
+
+class TestUpdatesRunOneAtATime:
+    async def test_across_files_text_and_sessions(self, corpus, fake_strategies):
+        rag = _SlowUpdates()
+        tk = toolkit(rag, corpus)
+        await asyncio.gather(
+            tk.ingest(files=["notes/*", "reports/**/*", "readme.rst"], reextract=True),
+            tk.new_session().ingest(files=["notes/*"], reextract=True),
+            tk.new_session().ingest(text="Alice works at Acme.", document_id="t", reextract=True),
+        )
+        assert sum(c[0] == "update" for c in rag.calls) == 7
+        assert rag.peak == 1
+
+
+class TestStoredFilesGoThroughUpdate:
+    async def test_edited_new_and_unchanged_files(self, corpus, fake_strategies):
+        rag = FakeRAG()
+        rag.records["notes/a.md"] = DocumentRecord(path="notes/a.md", content_hash="old")
+        rag.records["readme.rst"] = DocumentRecord(path="readme.rst", content_hash="same")
+        rag.unchanged = {"readme.rst"}
+        result = await toolkit(rag, corpus).ingest(files=["notes/*", "readme.rst"])
+        status = {d.path: d.status for d in result.documents}
+        assert status == {
+            "notes/a.md": "updated",
+            "notes/b.md": "ingested",
+            "readme.rst": "unchanged",
+        }
+        updates = sorted(c[1] for c in rag.calls if c[0] == "update")
+        assert updates == [("notes/a.md", False, "ingest"), ("readme.rst", False, "ingest")]
+        assert ("ingest_files", ["notes/b.md"]) in rag.calls
+
+    async def test_document_ids_are_relative_to_the_root(self, corpus, fake_strategies):
+        rag = FakeRAG()
+        result = await toolkit(rag, corpus).ingest(files=["reports/2024/q1.txt"])
+        assert result.documents[0].path == "reports/2024/q1.txt"
+        assert ("ingest_files", ["reports/2024/q1.txt"]) in rag.calls
+        rag._graph_store.get_document_record.assert_awaited_with("reports/2024/q1.txt")
+
+
+class TestTextReextractOfAFile:
+    @pytest.mark.parametrize(
+        "record",
+        [
+            DocumentRecord(path="notes/a.md"),  # a file under the root
+            DocumentRecord(path="/elsewhere/a.md"),  # an absolute path
+            DocumentRecord(path="notes/a.md", kind="structured"),
+        ],
+    )
+    async def test_is_refused(self, corpus, record):
+        rag = FakeRAG()
+        rag.records["notes/a.md"] = record
+        with pytest.raises(ToolError, match="was read from a file") as err:
+            await toolkit(rag, corpus).ingest(
+                text="replacement", document_id="notes/a.md", reextract=True
+            )
+        assert "ingest(files=[...], reextract=true)" in (err.value.hint or "")
+        assert not [c for c in rag.calls if c[0] == "update"]
+
+    async def test_a_path_that_differs_from_the_id_is_refused(self):
+        rag = FakeRAG()
+        rag.records["doc"] = DocumentRecord(path="reports/q1.txt")
+        with pytest.raises(ToolError, match="was read from a file"):
+            await toolkit(rag).ingest(text="replacement", document_id="doc", reextract=True)
+
+    async def test_a_text_document_is_reextracted(self, corpus):
+        rag = FakeRAG()
+        rag.records["memo"] = DocumentRecord(path="memo")
+        result = await toolkit(rag, corpus).ingest(text="new", document_id="memo", reextract=True)
+        assert result.status == "reextracted"
+
+
+class TestFinalizeFailureKeepsTheResult:
+    async def test_on_write(self, corpus):
+        rag = FakeRAG()
+
+        async def broken():
+            raise RuntimeError("graph is busy")
+
+        rag.finalize = broken
+        tk = toolkit(rag, corpus, finalize_policy="on_write")
+        result = await tk.ingest(text="Alice works at Acme.", document_id="d")
+        assert result.status == "ingested" and result.nodes_created == 2
+        assert not result.finalized
+        assert result.hint.startswith(
+            "The documents were written, but finalize failed (RuntimeError); call finalize"
+        )
+        assert "graph is busy" not in result.hint
+
+
+class _SlowStore(FakeOntologyStore):
+    async def load(self) -> Ontology:
+        await asyncio.sleep(0.01)
+        return self.ontology.model_copy(deep=True)
+
+
+class TestSetOntologyIsAtomic:
+    async def test_concurrent_calls_keep_both_types(self):
+        rag = FakeRAG()
+        rag._ontology_store = _SlowStore()
+        tk = toolkit(rag)
+        await asyncio.gather(
+            tk.set_ontology(entities=[{"label": "Person"}]),
+            tk.new_session().set_ontology(entities=[{"label": "Company"}]),
+        )
+        labels = {e.label for e in rag._ontology_store.ontology.entities}
+        assert labels == {"Person", "Company"}
+
+    async def test_a_pending_constructor_ontology_is_registered_first(self):
+        rag = FakeRAG(ontology=Ontology(entities=[Entity(label="Drug")]))
+        rag._ontology_initialized = False
+        await toolkit(rag).set_ontology(entities=[{"label": "Person"}])
+        assert rag.calls[0][0] == "register_pending"
+        labels = {e.label for e in rag._ontology_store.ontology.entities}
+        assert labels == {"Drug", "Person"}
+
+    async def test_the_extractor_ontology_is_refreshed_from_the_store(self):
+        rag = FakeRAG(stored=Ontology(entities=[Entity(label="Person")]))
+        rag.ontology = Ontology()  # stale
+
+        async def described(label, description):  # writes to the store only
+            store = rag._ontology_store
+            ents = [
+                e.model_copy(update={"description": description}) if e.label == label else e
+                for e in store.ontology.entities
+            ]
+            store.ontology = store.ontology.model_copy(update={"entities": ents})
+            return store.ontology
+
+        rag.set_entity_description = described
+        await toolkit(rag).set_ontology(entities=[{"label": "Person", "description": "A human"}])
+        assert [(e.label, e.description) for e in rag.ontology.entities] == [("Person", "A human")]

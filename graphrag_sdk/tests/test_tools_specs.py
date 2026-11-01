@@ -118,19 +118,50 @@ def test_preview_files_needs_a_files_root():
     )
 
 
-def test_ingest_description_lists_the_allowed_plan_options():
+def test_ingest_description_lists_the_allowed_plan_options_and_their_cost():
     ingest = next(s for s in specs() if s.name == "ingest")
-    assert "Allowed plan options" in ingest.description
-    assert (
-        "gliner" in ingest.description
-        and "llm_verified" not in ingest.description.split("Allowed plan options")[1]
-    )
+    options = ingest.description.split("Plan options allowed")[1]
+    assert "gliner (local model, no extra LLM call)" in options
+    assert "llm_verified" not in options and "contextual" not in options
+    assert "Every chunk also costs one extraction LLM call" in options
+    assert "cheap defaults" in options and "over 1000 chunks" in options
     wide = next(
         s
-        for s in specs(plan_limits={"extractors": ("gliner", "llm"), "resolvers": ("exact",)})
+        for s in specs(
+            plan_limits={
+                "chunkers": ("sentence", "contextual"),
+                "extractors": ("gliner", "llm"),
+                "resolvers": ("exact", "llm_verified"),
+                "max_llm_pairs": 40,
+            }
+        )
         if s.name == "ingest"
     )
-    assert "llm" in wide.description.split("Allowed plan options")[1]
+    options = wide.description.split("Plan options allowed")[1]
+    assert "contextual (+1 LLM call per chunk, each sending the whole document)" in options
+    assert "llm (+1 LLM call per chunk)" in options
+    assert "llm_verified (up to 40 LLM pair checks per entity type)" in options
+    assert "chunks fails" not in options  # no max_chunks given
+
+
+def test_ingest_offers_files_only_with_a_files_root():
+    text_only = next(s for s in specs(files=False) if s.name == "ingest")
+    assert "files" not in text_only.input_schema["properties"]
+    assert "plan" not in text_only.input_schema["properties"]
+    assert "$defs" not in text_only.input_schema
+    assert "files root" not in text_only.description
+    assert "Plan options" not in text_only.description
+    with_files = next(s for s in specs(files=True) if s.name == "ingest")
+    assert {"files", "plan"} <= set(with_files.input_schema["properties"])
+    assert "files root" in with_files.description
+
+
+def test_each_file_entry_is_length_capped():
+    IngestInput(files=["a" * 1024])
+    with pytest.raises(ValidationError):
+        IngestInput(files=["ok.md", "a" * 1025])
+    with pytest.raises(ValidationError):
+        IngestInput(files=[""])
 
 
 @pytest.mark.parametrize("policy", ["on_write", "never"])

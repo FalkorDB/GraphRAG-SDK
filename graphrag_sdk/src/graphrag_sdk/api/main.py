@@ -7,12 +7,13 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
+import inspect
 import json
 import logging
 import os
 import re
 import warnings
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal, NoReturn, overload
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from graphrag_sdk.core.exceptions import (
     DocumentNotFoundError,
     IngestionError,
     LatencyBudgetExceededError,
+    LoaderError,
 )
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
@@ -78,13 +80,14 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     _coerce_attribute_value,
 )
 from graphrag_sdk.ingestion.ingestion_planner import (
-    ChunkBudget,
+    CHEAP_PLAN_LIMITS,
     IngestionPlan,
     IngestionPlanner,
     LLMIngestionPlanner,
     build_chunker,
     build_extractor,
     build_resolver,
+    with_chunk_budget,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
@@ -188,11 +191,16 @@ _CONTEXT_CLOSE_RE = re.compile(r"</\s*context\s*>", re.IGNORECASE)
 
 
 def _raise_load_failure(exc: Exception) -> NoReturn:
-    """Raise a load error the way ``IngestionPipeline.run`` raises it."""
+    """Raise a failure to load a document as a :class:`LoaderError`.
+
+    A loader's own ``IngestionError`` is raised as is; anything else (a
+    ``UnicodeDecodeError``, a vanished file) is wrapped, so callers can tell
+    that nothing was written.
+    """
     if isinstance(exc, IngestionError):
         raise exc
-    logger.error("Pipeline failed with unexpected error: %s", exc)
-    raise IngestionError(f"Pipeline failed: {exc}") from exc
+    logger.error("Loading the document failed: %s", exc)
+    raise LoaderError(f"Failed to load the document: {exc}") from exc
 
 
 def _neutralize_context_close_tag(text: str) -> str:
@@ -373,6 +381,9 @@ class GraphRAG:
         # queries a graph that was never deduplicated. Track ingests since the
         # last dedup so the read path can say so once.
         self._docs_since_dedup = 0
+        # Set by ingest(auto=True): update() then warns when it re-extracts
+        # with the default strategies instead of a plan.
+        self._planned_ingest = False
         self._finalize_reminder_emitted = False
 
         # Persistent ontology graph (``<data_graph>__ontology``). Always-on,
@@ -582,15 +593,28 @@ class GraphRAG:
         # would otherwise read as empty and fall through to seeding the defaults,
         # discarding every mapping; and a graph holding only mappings would be
         # re-seeded on the next open.
+        being_declared = list(self.ontology.relationship_tables)
         if (
             self.ontology.entities
             or self.ontology.relations
             or self.ontology.tables
             or self.ontology.relationship_tables
         ):
-            self._global_ontology = await self._ontology_store.register(
-                self.ontology.model_copy(update={"tables": [], "relationship_tables": []})
-            )
+            types = self.ontology.model_copy(update={"tables": [], "relationship_tables": []})
+            # The mapping checks write nothing, so they run before this first
+            # register: a declaration they refuse must not leave its entity
+            # types stored.
+            if self.ontology.tables or being_declared:
+                # The key checks count the declared relationship tables, not
+                # the stored ones they replace (see below).
+                self._relationship_tables_being_declared = being_declared
+                try:
+                    await self._check_the_declaration_before_writing(
+                        list(self.ontology.tables), being_declared, types=types
+                    )
+                finally:
+                    self._relationship_tables_being_declared = []
+            self._global_ontology = await self._ontology_store.register(types)
         elif loaded.entities or loaded.relations or loaded.tables or loaded.relationship_tables:
             self._global_ontology = loaded
         else:
@@ -617,13 +641,8 @@ class GraphRAG:
         # endpoint to the key a node table changes to, so while they register
         # the key checks count the declared relationship tables, not the
         # stored ones they replace.
-        being_declared = list(self.ontology.relationship_tables)
         self._relationship_tables_being_declared = being_declared
         try:
-            if self.ontology.tables or being_declared:
-                await self._check_the_declaration_before_writing(
-                    list(self.ontology.tables), being_declared
-                )
             for mapping in declared_tables:
                 self._global_ontology = await self._register_structured_ontology_locked(
                     ontology_for(mapping)
@@ -2069,6 +2088,7 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         auto: bool = False,
         planner: IngestionPlanner | None = None,
+        plan_limits: Mapping[str, Any] | None = None,
         max_concurrency: int = 3,
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
@@ -2086,6 +2106,7 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         auto: bool = False,
         planner: IngestionPlanner | None = None,
+        plan_limits: Mapping[str, Any] | None = None,
         max_concurrency: int = 3,
         ctx: Context | None = None,
     ) -> list[IngestionResult | Exception]: ...
@@ -2104,6 +2125,7 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         auto: bool = False,
         planner: IngestionPlanner | None = None,
+        plan_limits: Mapping[str, Any] | None = None,
         max_concurrency: int = 3,
         ctx: Context | None = None,
     ) -> (
@@ -2173,8 +2195,13 @@ class GraphRAG:
             resolver per document (mirroring retrieval-side routing). It only
             fills in strategies you did *not* pass explicitly — an explicit
             ``chunker``/``extractor``/``resolver`` always wins. By default the
-            planner is LLM-backed (one small call); pass a custom ``planner``
-            (e.g. ``HeuristicIngestionPlanner()``) for a zero-cost heuristic.
+            planner is LLM-backed (one small call) and held to
+            ``CHEAP_PLAN_LIMITS``: no strategy that adds LLM calls (contextual
+            chunking, the llm extractor, llm_verified resolution) and at most
+            1000 chunks per document. Pass ``plan_limits`` to allow more, or a
+            custom ``planner`` (e.g. ``HeuristicIngestionPlanner()`` for a
+            zero-cost heuristic, or ``LLMIngestionPlanner(llm, ...)`` with its
+            own limits).
             On an empty/invalid plan or planner error it falls back to the
             defaults above, so behavior is never silently lost (an exhausted
             latency budget still raises ``LatencyBudgetExceededError``).
@@ -2214,7 +2241,15 @@ class GraphRAG:
                 strategy left unspecified.
             planner: Optional planner instance (``LLMIngestionPlanner`` /
                 ``HeuristicIngestionPlanner``). Passing one turns ``auto``
-                on. Defaults to an LLM planner when ``auto=True``.
+                on. Defaults to an LLM planner when ``auto=True``. Anything
+                without an ``async def plan`` raises ``TypeError``.
+            plan_limits: The options the default LLM planner may pick, as
+                keyword arguments for ``LLMIngestionPlanner`` (``chunkers``,
+                ``extractors``, ``resolvers``, ``max_llm_pairs``,
+                ``tune_params``, ``max_chunks``). Default
+                ``CHEAP_PLAN_LIMITS``; ``max_chunks`` stays 1000 unless given
+                (``None`` removes it). Passing it turns ``auto`` on; not
+                combined with ``planner``, which carries its own limits.
             max_concurrency: Max parallel ingestions (list source only).
             ctx: Execution context.
 
@@ -2230,9 +2265,33 @@ class GraphRAG:
             its own, so ``ValueError`` is raised before anything is ingested.
         """
         # A planner given is a request to plan: it turns ``auto`` on rather
-        # than being silently ignored.
+        # than being silently ignored. Checked here, once, rather than
+        # failing over to the defaults for every document.
         if planner is not None:
+            if plan_limits is not None:
+                raise ValueError(
+                    "Pass plan_limits or planner, not both: a custom planner "
+                    "carries its own limits."
+                )
+            plan_method = getattr(planner, "plan", None)
+            if isinstance(planner, type) or not inspect.iscoroutinefunction(plan_method):
+                raise TypeError(
+                    f"planner must be an instance with an async plan() method, got {planner!r}"
+                )
             auto = True
+            self._planned_ingest = True
+        elif plan_limits is not None or auto:
+            auto = True
+            self._planned_ingest = True
+            # The document sample is in the planner's prompt, so its options
+            # are the caller's ceiling, never the document's: cheap unless
+            # plan_limits allows more.
+            limits = dict(CHEAP_PLAN_LIMITS if plan_limits is None else plan_limits)
+            limits.setdefault("max_chunks", CHEAP_PLAN_LIMITS["max_chunks"])
+            try:
+                planner = LLMIngestionPlanner(self.llm, **limits)
+            except TypeError as exc:
+                raise TypeError(f"plan_limits: {exc}") from None
 
         # ── Structured mode ──
         # The source itself says which path it takes: a .csv is records, not
@@ -2661,7 +2720,11 @@ class GraphRAG:
                     )
 
     async def _check_the_declaration_before_writing(
-        self, tables: list[TableMapping], relationship_tables: list[RelationshipMapping]
+        self,
+        tables: list[TableMapping],
+        relationship_tables: list[RelationshipMapping],
+        *,
+        types: Ontology | None = None,
     ) -> None:
         """Run every check that writes nothing, for the whole declaration, first.
 
@@ -2674,10 +2737,11 @@ class GraphRAG:
         registration runs (property types, endpoint keys, keys a table stops
         signing, and the store's signature and key-per-label rules) run here
         for every declared table against the ontology as the declaration would
-        leave it, before anything is written.
+        leave it, before anything is written. ``types``, the entity and
+        relation types declared with the tables, count as already stored.
         """
         stored = await self._ontology_store.load()
-        view = stored
+        view = stored if types is None else self._ontology_extended_by(stored, types)
         for incoming in [
             *(ontology_for(mapping) for mapping in tables),
             *(ontology_for_relationship(mapping) for mapping in relationship_tables),
@@ -3726,7 +3790,7 @@ class GraphRAG:
             except Exception as exc:  # noqa: BLE001
                 load_error = exc
 
-        active = planner or LLMIngestionPlanner(self.llm)
+        active = planner or LLMIngestionPlanner(self.llm, **CHEAP_PLAN_LIMITS)
         info: dict[str, Any] = report if report is not None else {}
         given = {"chunker": chunker, "extractor": extractor, "resolver": resolver}
         info.update(
@@ -3740,7 +3804,17 @@ class GraphRAG:
             # second load for a document that cannot be loaded is wasted.
             _raise_load_failure(load_error)
         try:
-            plan = await active.plan(sample_text, source=source, ctx=ctx)
+            # The planner gets what is left of the latency budget; running out
+            # raises as an exhausted budget does everywhere else.
+            remaining = ctx.remaining_budget_seconds if ctx is not None else None
+            try:
+                plan = await asyncio.wait_for(
+                    active.plan(sample_text, source=source, ctx=ctx), remaining
+                )
+            except asyncio.TimeoutError:
+                raise LatencyBudgetExceededError(
+                    "Latency budget exceeded while the ingestion planner was running"
+                ) from None
             if plan is None:
                 raise ValueError("planner returned no plan")
             if not isinstance(plan, IngestionPlan):
@@ -3833,12 +3907,16 @@ class GraphRAG:
     def _chunk_budget(
         planner: Any, chunker: ChunkingStrategy | None, info: dict[str, Any]
     ) -> ChunkingStrategy | None:
-        """``chunker`` (or the default one) held to the planner's ``max_chunks``, if any."""
+        """``chunker`` (or the default one) held to the planner's ``max_chunks``, if any.
+
+        Counted before any LLM call the chunker makes (a contextual
+        chunker's base chunks), so a refused document costs nothing.
+        """
         max_chunks = getattr(planner, "max_chunks", None)
         if not isinstance(max_chunks, int) or isinstance(max_chunks, bool) or max_chunks < 1:
             return chunker
         info["max_chunks"] = max_chunks
-        return ChunkBudget(chunker or SentenceTokenCapChunking(), max_chunks)
+        return with_chunk_budget(chunker or SentenceTokenCapChunking(), max_chunks)
 
     @staticmethod
     def _markdown_elements(text: str | None, source: str | None) -> list[Any]:
@@ -4569,6 +4647,18 @@ class GraphRAG:
                 "cached_chunks": cache_wrapper.cached_chunk_count,
                 "extracted_chunks": cache_wrapper.extracted_chunk_count,
             }
+        given = {"chunker": chunker, "extractor": extractor, "resolver": resolver}
+        defaulted = [name for name, value in given.items() if value is None]
+        if defaulted:
+            # update() has no planner: a document ingest(auto=True) planned is
+            # re-extracted with the defaults, so say so (no behaviour change).
+            note = (
+                f"update() used the default {', '.join(defaulted)}; a plan chosen by "
+                "ingest(auto=True) is not reused. Pass the strategies to keep it."
+            )
+            result_metadata["plan_note"] = note
+            if self._planned_ingest:
+                logger.warning("update of '%s': %s", resolved_id, note)
 
         update_result = await self._finish_update(
             resolved_id=resolved_id,
@@ -6050,6 +6140,7 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         auto: bool = False,
         planner: IngestionPlanner | None = None,
+        plan_limits: Mapping[str, Any] | None = None,
         max_concurrency: int = 3,
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
@@ -6067,6 +6158,7 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         auto: bool = False,
         planner: IngestionPlanner | None = None,
+        plan_limits: Mapping[str, Any] | None = None,
         max_concurrency: int = 3,
         ctx: Context | None = None,
     ) -> list[IngestionResult | Exception]: ...
@@ -6083,6 +6175,7 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         auto: bool = False,
         planner: IngestionPlanner | None = None,
+        plan_limits: Mapping[str, Any] | None = None,
         max_concurrency: int = 3,
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
@@ -6108,6 +6201,7 @@ class GraphRAG:
                 resolver=resolver,
                 auto=auto,
                 planner=planner,
+                plan_limits=plan_limits,
                 max_concurrency=max_concurrency,
                 record_loader=record_loader,
                 strict_mapping=strict_mapping,

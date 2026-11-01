@@ -16,25 +16,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agent can design one ontology for the whole corpus; `set_ontology` declares
   or extends it (adds only); `ingest(files=[...], plan=[rules])` ingests up to
   50 files per call, each with the chunker, extractor and resolver of the
-  first rule matching its path. Paths stay inside the root, are checked again
-  as each file is opened, and are read under their real on-disk spelling
-  (symlinks resolved), so two spellings of one file, or a link and its target,
-  ingest as one document. `preview_files` reads only a window around the middle
-  of each file (a few pages of a PDF) and marks estimated lengths
-  (`chars_estimated`); `ingest` refuses files over `max_file_bytes` (default
-  50 MiB).
+  first rule matching its path. Paths stay inside the root and are read under
+  their real on-disk spelling (symlinks resolved), so two spellings of one
+  file, or a link and its target, ingest as one document; a file's document id
+  is that path relative to the root (`reports/q1.pdf`). Each file is opened
+  folder by folder without following symlinks (`O_NOFOLLOW`, and `O_NONBLOCK`
+  so a FIFO cannot block), checked with `fstat` to be a regular file, and read
+  from that open handle, so a symlink swapped in after the check cannot read
+  outside the root. `preview_files` reads only a window around the middle of
+  each file (a few pages of a PDF), marks estimated lengths
+  (`chars_estimated`) and shortens a page to fit the result size, with
+  `next_offset` naming the first file left out; `ingest` refuses files over
+  `max_file_bytes` (default 50 MiB). The `files` and `plan` arguments are
+  offered only when a files root is set, and each `files` entry is capped at
+  1,024 characters.
 - **Agent plans stay cheap.** Plan choices are limited by `plan_limits`
   (default `CHEAP_PLAN_LIMITS`: sentence, fixed or structural chunking, GLiNER
   extraction, exact resolution, and at most 1,000 chunks per file); anything
-  else is replaced and the plan's `reason` says so.
+  else is replaced and the plan's `reason` says so. The `ingest` tool
+  description and the server's guide tell the agent what each allowed option
+  costs (`contextual`: +1 LLM call per chunk, each sending the whole document;
+  `llm` extractor: +1 LLM call per chunk; `llm_verified`: up to `max_llm_pairs`
+  LLM pair checks per entity type), so it chooses per file within the limits.
+- **`GraphRAG.ingest(auto=True)` is cheap by default.** Without `plan_limits`,
+  the default `LLMIngestionPlanner` may pick only `CHEAP_PLAN_LIMITS`, with
+  `max_chunks=1000`; pass `plan_limits={...}` (which turns `auto` on) to allow
+  contextual chunking, the `llm` extractor or `llm_verified` resolution.
+  `plan_limits` and `planner` together raise `ValueError`. The planner prompt
+  quotes the document sample in a `<document>` block marked as data, whose
+  instructions are to be ignored. `CHEAP_PLAN_LIMITS` (read-only) and
+  `ChunkBudgetExceededError` are exported from `graphrag_sdk`.
 - **`max_chunks` caps the chunks per document.** `LLMIngestionPlanner`
   and `RuleBasedIngestionPlanner` take `max_chunks=`: a document that splits
   into more chunks is refused with `ChunkBudgetExceededError` before anything
-  of it is written or extracted. Each chunk costs one extraction LLM call with
-  `gliner` and two with the `llm` backend, so this bounds the calls. The
-  default `None` sets no limit. `max_llm_pairs` caps `llm_verified` pairs per
-  label group (cross-label pairs and summary calls come on top), and is now
-  kept with `tune_params=False` too.
+  of it is written or extracted. It is a chunk limit, not a request ceiling:
+  `max_chunks=N` allows `N` extraction requests with `gliner` and about `2N`
+  with the `llm` backend, before retries. For `contextual` chunking the base
+  chunks are counted before the per-chunk context calls. The default `None`
+  sets no limit. `max_llm_pairs` caps `llm_verified` pairs per label group
+  (cross-label pairs and summary calls come on top), defaults to 500 for both
+  planners, and is now kept with `tune_params=False` too. A tuned
+  sentence-based window repeats at most half its tokens, so it advances by at
+  least half.
 - **Each ingest says what the ontology misses.** `IngestionResult.metadata
   ["pruned"]` and the tool's `pruned` count dropped entity and relation types,
   undeclared relation patterns, dangling relations and entities stored as
@@ -44,12 +67,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files again after the ontology is extended, planned and chunked like a first
   ingest (`ingest(text=..., document_id=..., reextract=true)` for text). The
   plan a file was last ingested with is remembered in memory only; after a
-  restart the plan's `reason` says none was remembered.
+  restart the plan's `reason` says none was remembered. A file already in the
+  graph whose content changed goes through `update()` (`status: "updated"`)
+  instead of adding new chunks beside the old ones. Updates run one at a time
+  across every session of a toolkit. Text re-extraction refuses a document
+  read from a file, so text cannot overwrite it.
+- **`set_ontology` is atomic across sessions**: its load, merge and write run
+  under one lock, an ontology given to `GraphRAG(...)` and not registered yet
+  is registered first, and the extractor's ontology is refreshed from the
+  store afterwards.
 - **`set_ontology` is annotated destructive over MCP** and refuses labels with
   `:`, line breaks or other control characters, `__X__` names, and the SDK's
   own `Chunk`, `Document` and `Unknown`, each with a hint.
 - **`finalize_policy="on_write"` skips finalize when nothing changed** (every
-  document unchanged).
+  document unchanged, or refused before writing). A finalize that fails after
+  documents were written keeps the ingest result and says so in its `hint`.
+- **Planner arguments are checked.** A `planner` that is not an instance with
+  an async `plan()` raises `TypeError`; the planner call gets what is left of
+  `ctx`'s latency budget and raises `LatencyBudgetExceededError` when it runs
+  out. A document that cannot be loaded raises `LoaderError`. `update()` says
+  in `metadata["plan_note"]` which strategies it defaulted (it does not
+  re-plan), and logs it at WARNING after a planned ingest. A reply naming a
+  strategy twice keeps the last; params are kept only with a valid id of
+  their own, and replies are read up to 20,000 characters.
 - **`RuleBasedIngestionPlanner`** maps glob rules to strategies with no LLM
   call, for `rag.ingest(paths, planner=...)` too.
 - **`graphrag-mcp --files-root`** (or `GRAPHRAG_MCP_FILES_ROOT`) serves the
