@@ -651,14 +651,18 @@ class TestSSEConnections:
         assert not [r for r in caplog.records if r.exc_info or r.levelname == "ERROR"]
 
     async def test_a_rejected_host_is_answered_without_a_traceback(self, server, caplog):
-        import httpx
-
         async with self.serve(server) as base:
-            async with httpx.AsyncClient() as client:
-                with caplog.at_level("DEBUG"):
-                    response = await client.get(f"{base}/sse", headers={"Host": "evil.example"})
+            host, port = base.removeprefix("http://").split(":")
+            with caplog.at_level("DEBUG"):
+                reader, writer = await asyncio.open_connection(host, int(port))
+                request = b"GET /sse HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n"
+                writer.write(request)
+                await writer.drain()
+                status_line = await reader.readline()
+                writer.close()
+                await writer.wait_closed()
             await asyncio.sleep(0.1)  # let the handler finish
-        assert response.status_code == 421
+        assert status_line.split()[1] == b"421"
         assert not [r for r in caplog.records if r.exc_info or r.levelname == "ERROR"]
 
 
