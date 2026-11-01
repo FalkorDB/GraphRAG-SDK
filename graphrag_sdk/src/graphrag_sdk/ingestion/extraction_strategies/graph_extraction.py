@@ -811,7 +811,12 @@ class GraphExtraction(ExtractionStrategy):
                     # chunk that already failed step 1 is not double-counted.
                     if chunk.uid not in failed_chunk_uids:
                         relation_failed_chunk_uids.add(chunk.uid)
-                    # Fall back to step 1 entities only
+                    # Fall back to step 1 entities only. They carry no
+                    # description, so their mention edges get the sentence
+                    # around their spans instead.
+                    self._record_mentions(
+                        chunk_entities[chunk_idx], chunk_texts[chunk_idx], chunk.uid
+                    )
                     all_entities.extend(chunk_entities[chunk_idx])
                     continue
 

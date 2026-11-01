@@ -247,6 +247,8 @@ class ChunkEntityRow(DataModel):
 
     ``label`` is the entity's concrete label (the non-``__Entity__`` one);
     ``None`` if the node somehow carries no usable label (tampered graph).
+    ``description`` and ``spans`` are what this chunk's own ``MENTIONED_IN``
+    edge holds: ``None`` and ``[]`` for an edge written by an earlier version.
     """
 
     chunk_id: str
@@ -256,6 +258,7 @@ class ChunkEntityRow(DataModel):
     type: str | None = None
     description: str | None = None
     source_chunk_ids: list[str] = Field(default_factory=list)
+    spans: list[int] = Field(default_factory=list)
 
 
 class ChunkRelationshipRow(DataModel):
@@ -300,6 +303,7 @@ _RESERVED_ATTRIBUTE_NAMES: frozenset[str] = frozenset(
         "tgt_name",
         "id",
         "label",
+        "description_summarised",
     }
 )
 
@@ -892,8 +896,8 @@ class EntityMention(DataModel):
     ``spans`` are where the chunk names the entity, flat
     (``[start, end, start, end, ...]``); ``description`` is what that chunk
     says the entity is. Both are written on the ``MENTIONED_IN`` edge, so they
-    go when the chunk goes, and the entity's own description can always be
-    rebuilt from its edges.
+    go when the chunk goes, and what a deleted document said can be taken off
+    the entity's description.
     """
 
     chunk_id: str

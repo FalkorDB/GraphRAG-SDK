@@ -231,10 +231,14 @@ class CachedChunkExtraction(ExtractionStrategy):
             if not new_uids:
                 continue
             for new_uid in new_uids:
-                # The unchanged chunk keeps what its old mention edge said.
+                # The unchanged chunk keeps what its old mention edge held:
+                # the same text, so the same spans and the same description.
                 mentions.append(
                     EntityMention(
-                        chunk_id=new_uid, entity_id=row.entity_id, description=row.description or ""
+                        chunk_id=new_uid,
+                        entity_id=row.entity_id,
+                        spans=list(row.spans),
+                        description=row.description or "",
                     )
                 )
             srcs = ent_sources.setdefault(row.entity_id, [])

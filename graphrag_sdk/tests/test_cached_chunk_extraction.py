@@ -591,8 +591,9 @@ class TestGraphStoreCacheAccessors:
                         "Person",
                         "Engineer",
                         ["c1", "x"],
+                        [3, 8],
                     ],
-                    ["c1", None, ["Person"], "NoId", "Person", None, []],  # skipped
+                    ["c1", None, ["Person"], "NoId", "Person", None, [], []],  # skipped
                 ]
             )
         )
@@ -602,6 +603,10 @@ class TestGraphStoreCacheAccessors:
         assert row.entity_id == "alice__person"
         assert row.label == "Person"  # __Entity__ filtered out
         assert row.source_chunk_ids == ["c1", "x"]
+        # What this chunk's own edge holds — not the entity's description.
+        assert row.description == "Engineer" and row.spans == [3, 8]
+        cypher = mock_connection.query.call_args[0][0]
+        assert "m.description" in cypher and "e.description" not in cypher
 
     async def test_get_entities_label_none_when_no_concrete_label(
         self, graph_store, mock_connection
@@ -613,7 +618,7 @@ class TestGraphStoreCacheAccessors:
 
         mock_connection.query = AsyncMock(
             return_value=MagicMock(
-                result_set=[["c1", "e1", ["__Entity__"], "X", "Widget", None, None]]
+                result_set=[["c1", "e1", ["__Entity__"], "X", "Widget", None, None, None]]
             )
         )
         rows = await graph_store.get_entities_mentioned_in_chunks(["c1"])
@@ -665,13 +670,14 @@ class TestGraphStoreCacheAccessors:
 
         mock_connection.query = AsyncMock(
             return_value=MagicMock(
-                result_set=[["c1", "e1", "Person", "Alice", "Person", None, "abc"]]
+                result_set=[["c1", "e1", "Person", "Alice", "Person", None, "abc", "xy"]]
             )
         )
         rows = await graph_store.get_entities_mentioned_in_chunks(["c1"])
         assert len(rows) == 1
         assert rows[0].label is None  # scalar labels → no concrete label
         assert rows[0].source_chunk_ids == []  # "abc" must not become ['a','b','c']
+        assert rows[0].spans == []
 
     async def test_relationship_scalar_provenance_skipped(self, graph_store, mock_connection):
         from unittest.mock import MagicMock

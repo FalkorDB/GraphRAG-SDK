@@ -1312,6 +1312,19 @@ class TestRelationFailureIsSeparateFromExtractionFailure:
         assert result.failed_chunks == []
         assert result.extraction_failed is False
 
+    async def test_a_failed_step2_still_records_each_mention(self, ctx):
+        """The NER entities a failed chunk keeps carry no description; their
+        mention edges get the sentence around the name instead, and spans."""
+        strategy = GraphExtraction(
+            llm=_FlakyBatchLLM(_STEP2_EMPTY_JSON, fail=(0,)),
+            entity_extractor=self._Entities(),
+        )
+        chunks = _make_chunks("Echunk-0 led the review. Nothing else.")
+        result = await strategy.extract(chunks, Ontology(), ctx)
+        (mention,) = result.mentions
+        assert mention.description == "Echunk-0 led the review."
+        assert mention.spans == [0, 8]
+
     async def test_partial_step2_failure(self, ctx):
         strategy = GraphExtraction(
             llm=_FlakyBatchLLM(_STEP2_EMPTY_JSON, fail=(1,)),

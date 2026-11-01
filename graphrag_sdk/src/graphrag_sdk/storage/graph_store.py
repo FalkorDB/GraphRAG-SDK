@@ -89,6 +89,13 @@ def _description_members(src: str) -> str:
     )
 
 
+# What a write leaves on the node: what it held, plus this write's new members,
+# up to ``$cap`` — but never fewer than it held (a merge can leave more).
+_KEEP_DESCRIPTIONS = (
+    "CASE WHEN size(d_old) >= $cap THEN d_old "
+    "ELSE (d_old + [d IN d_new WHERE NOT d IN d_old])[..$cap] END"
+)
+
 _JOIN_DESCRIPTION = (
     "SET n.description = CASE WHEN size(d_all) = 0 THEN null "
     "ELSE reduce(acc = head(d_all), d IN tail(d_all) | acc + ' | ' + d) END, "
@@ -99,8 +106,19 @@ _JOIN_DESCRIPTION = (
 SUMMARISE_OVER_MEMBERS = 5
 #: Most descriptions a write may leave on a node. Past it, a new mention's
 #: description is kept on its MENTIONED_IN edge only, so a node stays bounded
-#: however much is ingested before the next finalize().
+#: however much is ingested before the next finalize(). A write never cuts what
+#: a node already holds (a merge can leave more); finalize() summarises it.
 MAX_DESCRIPTION_MEMBERS = 20
+#: Longest summary written, in characters: the prompt asks for a length, this
+#: enforces it.
+MAX_SUMMARY_CHARS = 1000
+#: Entities one batch of summary calls covers, so a large graph is summarised
+#: page by page rather than with every prompt built at once.
+SUMMARY_PAGE = 200
+#: Marks an entity whose description holds an LLM summary. Text cannot be taken
+#: out of a summary, so after a delete that touched it, it is rebuilt from its
+#: mention edges instead.
+SUMMARISED_KEY = "description_summarised"
 
 _DESCRIPTION_SUMMARY_PROMPT = (
     "Summarise the following descriptions of the entity '{name}' into a single "
@@ -357,7 +375,7 @@ class GraphStore:
                         f"     {_description_members('n')} AS d_old, "
                         f"     {_description_members('item.properties')} AS d_new "
                         "WITH n, item, "
-                        "     (d_old + [d IN d_new WHERE NOT d IN d_old])[..$cap] AS d_all "
+                        f"     {_KEEP_DESCRIPTIONS} AS d_all "
                         "SET n += item.properties "
                         f"{_JOIN_DESCRIPTION} "
                         "SET n:__Entity__"
@@ -385,7 +403,7 @@ class GraphStore:
                                 f"     {_description_members('n')} AS d_old, "
                                 f"     {_description_members('$properties')} AS d_new "
                                 "WITH n, props, "
-                                "     (d_old + [d IN d_new WHERE NOT d IN d_old])[..$cap] AS d_all "
+                                f"     {_KEEP_DESCRIPTIONS} AS d_all "
                                 "SET n += props "
                                 f"{_JOIN_DESCRIPTION} "
                                 "SET n:__Entity__"
@@ -815,41 +833,39 @@ class GraphStore:
         logger.debug(f"Upserted {count} reference nodes")
         return count
 
-    async def _edge_descriptions(
-        self, ids: list[str], k: int
-    ) -> list[tuple[str, str, str, list[str]]]:
-        """``(id, name, current description, up to k edge descriptions)`` for
-        each entity in ``ids`` that has any: what its mention edges say."""
-        reads: list[tuple[str, str, str, list[str]]] = []
-        for start in range(0, len(ids), self._BATCH_SIZE):
-            rows = (
-                await self._conn.query(
-                    "UNWIND $ids AS eid MATCH (e:__Entity__ {id: eid}) "
-                    "CALL { WITH e MATCH (e)-[m:MENTIONED_IN]->(c:Chunk) "
-                    "WHERE m.description IS NOT NULL "
-                    "RETURN m.description AS said LIMIT $k } "
-                    "RETURN e.id, e.name, coalesce(e.description, ''), collect(said)",
-                    {"ids": ids[start : start + self._BATCH_SIZE], "k": k},
-                )
-            ).result_set or []
-            for eid, name, current, said in rows:
-                members: list[str] = []
-                for text in said or []:
-                    text = str(text or "").strip()
-                    if text and text not in members:
-                        members.append(text)
-                if members:
-                    reads.append((eid, name or eid, current, members))
-        return reads
+    @staticmethod
+    def _members(description: Any, descriptions: Any) -> list[str]:
+        """A node's description members: its list, else its description as
+        one member."""
+        items = descriptions if isinstance(descriptions, list) else [description]
+        out: list[str] = []
+        for d in items:
+            d = str(d or "").strip()
+            if d and d not in out:
+                out.append(d)
+        return out
 
-    async def _write_description(self, eid: str, old: str, members: list[str]) -> int:
+    @staticmethod
+    def _said(description: Any) -> list[str]:
+        """The descriptions one mention edge holds: two mentions that landed on
+        one chunk (a merge, a remap) are joined with " | "."""
+        return [d.strip() for d in str(description or "").split(" | ") if d.strip()]
+
+    async def _write_description(
+        self, eid: str, old: str, members: list[str], *, summarised: bool | None = None
+    ) -> int:
         """Set an entity's description to ``members`` — only if it still reads
-        ``old``, so a write made meanwhile is never lost."""
+        ``old``, so a write made meanwhile is never lost. ``summarised`` sets
+        (True) or clears (False) the summary marker; ``None`` leaves it."""
+        marker = ""
+        if summarised is not None:
+            marker = f", e.{SUMMARISED_KEY} = " + ("true" if summarised else "null")
         r = await self._conn.query(
             "MATCH (e:__Entity__ {id: $id}) WHERE coalesce(e.description, '') = $old "
-            "SET e.description = $desc, "
-            "e.descriptions = CASE WHEN size($members) > 1 THEN $members ELSE null END "
-            "RETURN count(e)",
+            "SET e.description = CASE WHEN size($members) = 0 THEN null ELSE $desc END, "
+            "e.descriptions = CASE WHEN size($members) > 1 THEN $members ELSE null END"
+            + marker
+            + " RETURN count(e)",
             {"id": eid, "old": old, "desc": " | ".join(members), "members": members},
         )
         return r.result_set[0][0] if r.result_set else 0
@@ -864,9 +880,11 @@ class GraphStore:
         """finalize()'s description pass: every entity holding more than
         ``over`` descriptions gets one, the LLM's summary of the descriptions
         it holds — an earlier summary among them, so the input is bounded by
-        ``MAX_DESCRIPTION_MEMBERS`` however often the entity is mentioned.
-        Found by one scan; each written only if the description is unchanged
-        since it was read. Returns how many were replaced."""
+        what a node holds however often the entity is mentioned. Found by one
+        scan, summarised ``SUMMARY_PAGE`` entities at a time (the LLM's own
+        concurrency limit applies within a page), cut to ``MAX_SUMMARY_CHARS``,
+        and each written only if the description is unchanged since it was
+        read. Returns how many were replaced."""
         rows = (
             await self._conn.query(
                 "MATCH (e:__Entity__) WHERE size(coalesce(e.descriptions, [])) > $over "
@@ -874,42 +892,149 @@ class GraphStore:
                 {"over": over},
             )
         ).result_set or []
-        reads = [
-            (eid, name or eid, current, [str(d) for d in members if str(d).strip()])
-            for eid, name, current, members in rows
-        ]
-        if not reads:
-            return 0
-        prompts = [
-            _DESCRIPTION_SUMMARY_PROMPT.format(
-                name=name,
-                max_tokens=max_tokens,
-                passages="\n".join(f"- {m}" for m in members),
-            )
-            for _, name, _, members in reads
-        ]
-        replies = await llm.abatch_invoke(prompts)
         written = 0
-        for (eid, _name, current, _members), item in zip(reads, replies):
-            text = (item.response.content or "").strip() if item.ok and item.response else ""
-            if text:
-                written += await self._write_description(eid, current, [text])
-        logger.info("Summarised %d of %d long entity descriptions", written, len(reads))
+        for start in range(0, len(rows), SUMMARY_PAGE):
+            page = [
+                (eid, name or eid, current, self._members(current, members))
+                for eid, name, current, members in rows[start : start + SUMMARY_PAGE]
+            ]
+            prompts = [
+                _DESCRIPTION_SUMMARY_PROMPT.format(
+                    name=name,
+                    max_tokens=max_tokens,
+                    passages="\n".join(f"- {m}" for m in members),
+                )
+                for _, name, _, members in page
+            ]
+            replies = await llm.abatch_invoke(prompts)
+            for (eid, _name, current, _members), item in zip(page, replies):
+                text = (item.response.content or "").strip() if item.ok and item.response else ""
+                if len(text) > MAX_SUMMARY_CHARS:
+                    text = text[:MAX_SUMMARY_CHARS].rsplit(" ", 1)[0].rstrip() + "…"
+                if text:
+                    written += await self._write_description(eid, current, [text], summarised=True)
+        logger.info("Summarised %d of %d long entity descriptions", written, len(rows))
         return written
 
-    async def rebuild_entity_descriptions(self, ids: list[str]) -> int:
-        """After a delete: each entity's description becomes what its remaining
-        mention edges say, joined (at most ``MAX_DESCRIPTION_MEMBERS``), so
-        nothing from the deleted document stays on it. No LLM call; one still
-        holding more than ``SUMMARISE_OVER_MEMBERS`` is summarised by the next
-        finalize(). Returns how many were replaced."""
+    async def capture_cleanup_said(self, document_id: str, chunk_ids: list[str]) -> None:
+        """Record on the Document what its ``chunk_ids``' mention edges say,
+        before those chunks are deleted: ``cleanup_said_ids[i]`` is the entity
+        and ``cleanup_said[i]`` what one chunk said about it. The cleanup that
+        follows takes exactly that text off the entities' descriptions
+        (:meth:`rebuild_entity_descriptions`); stored with the rest of the
+        cleanup state, so a resumed cleanup still has it."""
+        ids: list[str] = []
+        said: list[str] = []
+        for start in range(0, len(chunk_ids), self._BATCH_SIZE):
+            rows = (
+                await self._conn.query(
+                    "UNWIND $cids AS cid "
+                    "MATCH (:Chunk {id: cid})<-[m:MENTIONED_IN]-(e:__Entity__) "
+                    "RETURN e.id, m.description",
+                    {"cids": chunk_ids[start : start + self._BATCH_SIZE]},
+                )
+            ).result_set or []
+            for eid, description in rows:
+                for d in self._said(description):
+                    ids.append(eid)
+                    said.append(d)
+        await self._conn.query(
+            "MATCH (d:Document {id: $id}) SET d.cleanup_said_ids = $ids, d.cleanup_said = $said",
+            {"id": document_id, "ids": ids, "said": said},
+        )
+
+    async def get_cleanup_said(self, document_id: str) -> dict[str, set[str]]:
+        """What :meth:`capture_cleanup_said` recorded, by entity."""
+        rows = (
+            await self._conn.query(
+                "MATCH (d:Document {id: $id}) RETURN d.cleanup_said_ids, d.cleanup_said LIMIT 1",
+                {"id": document_id},
+            )
+        ).result_set or []
+        out: dict[str, set[str]] = {}
+        if rows:
+            ids, said = rows[0]
+            for eid, d in zip(ids or [], said or []):
+                if isinstance(eid, str) and isinstance(d, str):
+                    out.setdefault(eid, set()).add(d)
+        return out
+
+    async def rebuild_entity_descriptions(self, ids: list[str], said: dict[str, set[str]]) -> int:
+        """After a delete or an update cut some chunks away: take what those
+        chunks said (``said``, from :meth:`capture_cleanup_said`) off the
+        descriptions of the entities in ``ids``, so nothing a removed document
+        said stays on them. No LLM call.
+
+        - A description only a removed chunk said is dropped; one a remaining
+          mention edge still says (an unchanged chunk an update kept) stays.
+          Everything else on the node stays: text from documents ingested by
+          an earlier version, whose edges record nothing, is never lost.
+        - An entity whose description holds an LLM summary cannot have the
+          removed text taken out of it. When all of its remaining mention
+          edges say something, it is rebuilt from them
+          (``MAX_DESCRIPTION_MEMBERS`` of them, in chunk-id order, summarised
+          again by the next finalize()); otherwise it is kept.
+
+        Written only if unchanged since read. Returns how many were replaced.
+        """
+        ids = [eid for eid in ids if said.get(eid)]
         written = 0
-        for eid, _name, current, members in await self._edge_descriptions(
-            ids, MAX_DESCRIPTION_MEMBERS
-        ):
-            if " | ".join(members) != current:
-                written += await self._write_description(eid, current, members)
+        for start in range(0, len(ids), self._BATCH_SIZE):
+            batch = ids[start : start + self._BATCH_SIZE]
+            rows = (
+                await self._conn.query(
+                    "UNWIND $ids AS eid MATCH (e:__Entity__ {id: eid}) "
+                    "CALL { WITH e OPTIONAL MATCH (e)-[u:MENTIONED_IN]->(:Chunk) "
+                    "RETURN collect(CASE WHEN u.description IS NULL THEN 1 END)[..1] "
+                    "AS undescribed } "
+                    "RETURN e.id, coalesce(e.description, ''), e.descriptions, "
+                    f"coalesce(e.{SUMMARISED_KEY}, false), size(undescribed) > 0",
+                    {"ids": batch},
+                )
+            ).result_set or []
+            for eid, current, held, summarised, undescribed in rows:
+                gone = said.get(eid, set())
+                members = self._members(current, held)
+                if summarised:
+                    if undescribed:
+                        continue
+                    kept = await self._remaining_said(eid, limit=MAX_DESCRIPTION_MEMBERS)
+                    if kept != members:
+                        written += await self._write_description(
+                            eid, current, kept, summarised=False
+                        )
+                    continue
+                dropped = [m for m in members if m in gone]
+                if not dropped:
+                    continue
+                still = await self._remaining_said(eid, among=dropped)
+                kept = [m for m in members if m not in gone or m in still]
+                if kept != members:
+                    written += await self._write_description(eid, current, kept)
         return written
+
+    async def _remaining_said(
+        self, eid: str, *, limit: int | None = None, among: list[str] | None = None
+    ) -> list[str]:
+        """What ``eid``'s remaining mention edges say, in chunk-id order, each
+        description once: the first ``limit``, or only those in ``among``."""
+        rows = (
+            await self._conn.query(
+                "MATCH (e:__Entity__ {id: $id})-[m:MENTIONED_IN]->(c:Chunk) "
+                "WHERE m.description IS NOT NULL "
+                "RETURN m.description ORDER BY c.id",
+                {"id": eid},
+            )
+        ).result_set or []
+        out: list[str] = []
+        for (description,) in rows:
+            for d in self._said(description):
+                if d in out or (among is not None and d not in among):
+                    continue
+                out.append(d)
+                if limit is not None and len(out) >= limit:
+                    return out
+        return out
 
     async def upsert_relationships(
         self,
@@ -1844,12 +1969,15 @@ class GraphStore:
             result = await self._conn.query(
                 "UNWIND $cids AS cid "
                 "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(c:Chunk {id: cid}) "
+                # What this chunk's own edge says — never the entity's
+                # description, which joins every chunk's (and a summary) and
+                # would put other documents' text on this chunk's new edge.
                 "RETURN cid, e.id, labels(e), e.name, e.type, "
-                "coalesce(m.description, e.description), e.source_chunk_ids",
+                "m.description, e.source_chunk_ids, m.spans",
                 {"cids": batch},
             )
             for row in result.result_set or []:
-                cid, eid, labels, name, etype, description, source_chunk_ids = row
+                cid, eid, labels, name, etype, description, source_chunk_ids, spans = row
                 if not cid or not eid:
                     continue
                 # Tampered/partial graphs may hold a scalar where a list is
@@ -1869,6 +1997,9 @@ class GraphStore:
                         type=etype if isinstance(etype, str) else None,
                         description=description if isinstance(description, str) else None,
                         source_chunk_ids=[s for s in source_chunk_ids if isinstance(s, str)],
+                        spans=[int(x) for x in spans if isinstance(x, int)]
+                        if isinstance(spans, list)
+                        else [],
                     )
                 )
         return rows
@@ -1948,7 +2079,11 @@ class GraphStore:
         (rollback is safe); a crash after this write but before the
         commit marker is also safe (the pending will be discarded along
         with its half-written cleanup state).
+
+        Also records what the old chunks' mention edges say
+        (:meth:`capture_cleanup_said`), while they still exist.
         """
+        await self.capture_cleanup_said(document_id, old_chunk_ids)
         await self._conn.query(
             "MATCH (d:Document {id: $id}) "
             "SET d.cleanup_candidates = $candidates, "
@@ -1986,7 +2121,9 @@ class GraphStore:
         """Remove cleanup-state properties — last step of the
         post-cutover cleanup. Idempotent."""
         await self._conn.query(
-            "MATCH (d:Document {id: $id}) REMOVE d.cleanup_candidates, d.cleanup_old_chunk_ids",
+            "MATCH (d:Document {id: $id}) "
+            "REMOVE d.cleanup_candidates, d.cleanup_old_chunk_ids, "
+            "d.cleanup_said_ids, d.cleanup_said",
             {"id": document_id},
         )
 
@@ -2009,7 +2146,12 @@ class GraphStore:
         check for ``== 1`` and refuse to proceed otherwise — a 0
         indicates the doc vanished between the existence check and the
         commit, and pressing on would silently delete nothing.
+
+        First records what the document's chunks' mention edges say
+        (:meth:`capture_cleanup_said`): before the marker, so a resumed delete
+        finds it; a crash between the two leaves the live document intact.
         """
+        await self.capture_cleanup_said(document_id, chunk_ids)
         result = await self._conn.query(
             "MATCH (d:Document {id: $id}) "
             "SET d.pending_delete = true, "

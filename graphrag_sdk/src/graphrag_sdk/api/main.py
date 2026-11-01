@@ -3563,7 +3563,10 @@ class GraphRAG:
              MENTIONED_IN went to zero after cutover.
           4. for a table, ``_retract_table`` — take the signed columns and
              the identity off the survivors its new rows no longer mention.
-          5. ``clear_cleanup_state`` — remove the recovery-state
+          5. ``rebuild_entity_descriptions`` — take what the removed chunks
+             said off the surviving entities' descriptions (recorded with
+             the cleanup state, before the chunks went).
+          6. ``clear_cleanup_state`` — remove the recovery-state
              properties so future Phase-0 calls don't reprocess.
 
         Returns ``(stale_relates_deleted, orphan_entities_deleted)``.
@@ -3601,7 +3604,14 @@ class GraphRAG:
             retracted += await self._retract_rows_this_table_still_points_at(
                 mapping, [eid for eid in candidate_ids if eid not in gone], document_id
             )
+        said = await self._graph_store.get_cleanup_said(document_id)
+        described = await self._graph_store.rebuild_entity_descriptions(candidate_ids, said)
         await self._graph_store.clear_cleanup_state(document_id)
+        if described:
+            ctx.log(
+                f"post-cutover cleanup: {document_id} — took the removed chunks' "
+                f"text off {described} entity descriptions"
+            )
         if stale_deleted or trimmed or orphans_deleted or retracted:
             ctx.log(
                 f"post-cutover cleanup: {document_id} — "
@@ -4449,10 +4459,6 @@ class GraphRAG:
         # call resumes via _resume_pending_delete.
         chunks_deleted = await self._graph_store.delete_document_chunks(document_id)
         _, entities_deleted = await self._run_post_cutover_cleanup(document_id, ctx)
-        # The document's mention edges went with its chunks; the description
-        # of each entity it mentioned is rebuilt from the edges that remain,
-        # so nothing the document said stays on them.
-        await self._graph_store.rebuild_entity_descriptions(candidate_ids)
         await self._graph_store.delete_document_node(document_id)
 
         logger.info(
@@ -5423,8 +5429,13 @@ class GraphRAG:
         # descriptions, so its survivor is bounded in this run, and nothing
         # writes a node while dedup reads and merges it.
         dedup_count = await self.deduplicate_entities(judge=judge, dedup_all=dedup_all)
-        summarised = await self._graph_store.summarise_long_descriptions(self.llm)
-        ctx_log(f"finalize: summarised {summarised} long descriptions")
+        try:
+            summarised = await self._graph_store.summarise_long_descriptions(self.llm)
+            ctx_log(f"finalize: summarised {summarised} long descriptions")
+        except Exception as exc:
+            # Dedup is already written; a failed summary pass leaves the
+            # descriptions as they were, to be summarised by the next run.
+            report(f"finalize: summarising long entity descriptions failed: {exc}")
         dedup_report = getattr(self._deduplicator, "last_report", None) or DedupReport()
         judge_stats = dict(getattr(self._deduplicator, "last_judge_stats", {}) or {})
         ctx_log(f"finalize: deduplicated {dedup_count} entities; judge={judge_stats}")

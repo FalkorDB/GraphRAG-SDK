@@ -90,3 +90,14 @@ def test_a_line_wrapped_mid_sentence_is_one_sentence():
 def test_a_list_item_ends_at_its_line():
     text = "Holds:\n- Lot A held at stores\n- Lot B released\n"
     assert evidence_text(text, find_spans(text, "Lot B")) == "- Lot B released"
+
+
+def test_a_name_is_found_only_as_a_whole_name():
+    text = "US exports rose. Ann announced business with Al. Algorithms helped the US."
+    assert find_spans(text, "US") == [(0, 2), (71, 73)]
+    assert find_spans(text, "Al") == [(45, 47)]
+    assert find_spans(text, "Ann") == [(17, 20)]
+
+
+def test_a_span_given_twice_is_kept_once():
+    assert flat_spans([(1, 5), (1, 5), (9, 12)]) == [1, 5, 9, 12]

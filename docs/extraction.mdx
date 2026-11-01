@@ -297,7 +297,7 @@ After aggregation, each entity becomes a `GraphNode`:
 
 - **ID:** `compute_entity_id(name, type)` — deterministic: `"alice__person"` (lowercase, spaces replaced with underscores, type-qualified to prevent collisions)
 - **Label:** The entity type (e.g., `Person`, `Organization`)
-- **Properties:** `name`, `type` and `description` — the descriptions of the document's chunks that named it, joined with `" | "` (with `descriptions`, the list, when there is more than one). Which chunks those were, where in each the entity is named (`spans`), and what each said about it go on its `MENTIONED_IN` edges, one per chunk, not on the node
+- **Properties:** `name`, `type` and `description` — what the document's chunks that named it said, joined with `" | "` (with `descriptions`, the list, when there is more than one). The store adds these to what the entity already holds from other documents, and `finalize()` summarises an entity holding more than 5. Which chunks named it, where in each (`spans`), and what each said about it go on its `MENTIONED_IN` edges, one per chunk, not on the node
 
 ---
 

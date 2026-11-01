@@ -561,8 +561,9 @@ class TestASharedNodeKeepsWhatEachSourceGave:
     async def test_the_second_document_adds_its_chunks_instead_of_replacing_the_first(
         self, real_falkordb_rag_factory, scripted_llm, resolver, employees_csv
     ):
-        """Two notes mention the row's Alice. ``source_chunk_ids`` must name both;
-        deleting one note must take only that note's chunk back out."""
+        """Two notes mention the row's Alice: she has a MENTIONED_IN edge to
+        each note's chunk, and no chunk list on the node. Deleting one note
+        takes only that note's edge away."""
         llm = scripted_llm(
             [("Alice Smith", "Person", "Presented the plan")],
             [("Alice Smith", "Person", "Was promoted")],

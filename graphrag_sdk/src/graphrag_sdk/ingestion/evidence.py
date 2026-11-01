@@ -117,16 +117,23 @@ def evidence_text(
 
 
 def find_spans(text: str, name: str) -> list[tuple[int, int]]:
-    """Every case-insensitive occurrence of ``name`` in ``text``."""
+    """Every case-insensitive occurrence of ``name`` in ``text`` as a whole
+    name: not inside a longer word ("US" is not found in "business", nor "Al"
+    in "Algorithm")."""
     if not name.strip():
         return []
-    return [(m.start(), m.end()) for m in re.finditer(re.escape(name.strip()), text, re.IGNORECASE)]
+    pattern = r"(?<!\w)" + re.escape(name.strip()) + r"(?!\w)"
+    return [(m.start(), m.end()) for m in re.finditer(pattern, text, re.IGNORECASE)]
 
 
 def flat_spans(spans: Iterable[tuple[int, int]]) -> list[int]:
     """Spans as one flat list of ints, ``[start, end, start, end, ...]`` — the
     form a graph property can hold (a list of primitives)."""
     out: list[int] = []
+    seen: set[tuple[int, int]] = set()
     for s, e in spans:
-        out += [int(s), int(e)]
+        pair = (int(s), int(e))
+        if pair not in seen:
+            seen.add(pair)
+            out += [pair[0], pair[1]]
     return out

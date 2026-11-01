@@ -646,9 +646,13 @@ class IngestionPipeline(LexicalGraphWriter):
         MENTIONED_IN edges always land on a node that exists in the
         graph. The ``visited`` guard makes a malformed cyclic remap
         terminate at the cycle's entry point rather than loop forever.
+
+        A mention keeps its ``spans`` and ``description``: its MENTIONED_IN
+        edge is the only record of them. Two mentions that land on one
+        (entity, chunk) become one, with both mentions' spans and both
+        descriptions (joined with ``" | "``, each once).
         """
-        rewritten: list[EntityMention] = []
-        seen: set[tuple[str, str]] = set()
+        rewritten: dict[tuple[str, str], EntityMention] = {}
         for m in graph_data.mentions:
             new_id = m.entity_id
             visited: set[str] = set()
@@ -656,8 +660,27 @@ class IngestionPipeline(LexicalGraphWriter):
                 visited.add(new_id)
                 new_id = remap[new_id]
             key = (new_id, m.chunk_id)
-            if key in seen:
+            held = rewritten.get(key)
+            if held is None:
+                rewritten[key] = EntityMention(
+                    entity_id=new_id,
+                    chunk_id=m.chunk_id,
+                    spans=list(m.spans),
+                    description=m.description,
+                )
                 continue
-            seen.add(key)
-            rewritten.append(EntityMention(entity_id=new_id, chunk_id=m.chunk_id))
-        return graph_data.model_copy(update={"mentions": rewritten})
+            pairs = list(zip(held.spans[0::2], held.spans[1::2]))
+            for pair in zip(m.spans[0::2], m.spans[1::2]):
+                if pair not in pairs:
+                    pairs.append(pair)
+            said = [d for d in held.description.split(" | ") if d]
+            for d in m.description.split(" | "):
+                if d and d not in said:
+                    said.append(d)
+            rewritten[key] = held.model_copy(
+                update={
+                    "spans": [x for pair in pairs for x in pair],
+                    "description": " | ".join(said),
+                }
+            )
+        return graph_data.model_copy(update={"mentions": list(rewritten.values())})

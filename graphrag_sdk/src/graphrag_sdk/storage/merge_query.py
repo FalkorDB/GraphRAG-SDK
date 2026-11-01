@@ -397,6 +397,30 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
             "ELSE old_sources + [x IN coalesce(e.structured_sources, []) "
             "WHERE NOT x IN old_sources] END"
         )
+    elif safe == "MENTIONED_IN":
+        # Both entities mention the chunk: the survivor's edge keeps what each
+        # said there — both spans, each pair once, and both descriptions,
+        # joined with " | ", each once. Left to ``+=`` the duplicate's edge
+        # replaced the survivor's, and its description, the only record of
+        # what that chunk said about the survivor, was gone.
+        read_old = (
+            f"OPTIONAL MATCH {existing} "
+            f"WITH {carried}, e, b, coalesce(ex.spans, []) AS old_spans, "
+            "coalesce(ex.description, '') AS old_desc "
+        )
+        update = (
+            "SET nr += properties(e) "
+            "SET nr.spans = CASE WHEN size(old_spans) + size(coalesce(e.spans, [])) = 0 "
+            "THEN null ELSE old_spans + reduce(acc = [], "
+            "i IN range(0, size(coalesce(e.spans, [])) - 2, 2) | "
+            "CASE WHEN any(j IN range(0, size(old_spans) - 2, 2) "
+            "WHERE old_spans[j] = e.spans[i] AND old_spans[j + 1] = e.spans[i + 1]) "
+            "THEN acc ELSE acc + [e.spans[i], e.spans[i + 1]] END) END, "
+            "nr.description = CASE WHEN old_desc = '' THEN e.description "
+            "WHEN coalesce(e.description, '') = '' "
+            "OR e.description IN split(old_desc, ' | ') THEN old_desc "
+            "ELSE old_desc + ' | ' + e.description END"
+        )
     else:
         read_old, update = "", "SET nr += properties(e)"
     return (

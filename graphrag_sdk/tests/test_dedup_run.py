@@ -589,3 +589,26 @@ async def test_statistics_do_not_count_system_nodes(graph):
     stats = await graph.get_statistics()
     assert stats["node_count"] == 5
     assert not any(label.startswith("__GraphRAG") for label in stats["entity_types"])
+
+
+async def test_a_merge_keeps_both_mentions_of_a_chunk_they_share(graph):
+    """Naseem's repro: two duplicates mention one chunk. The survivor's edge
+    to it keeps both spans and both descriptions; the duplicate's no longer
+    replaces it."""
+    await checked_graph(graph)
+    await graph.query_raw(
+        "CREATE (c:Chunk {id: 'c1'}) WITH c "
+        "MATCH (t:__Entity__ {id: 'tim'}), (u:__Entity__ {id: 'timothy'}) "
+        "CREATE (t)-[:MENTIONED_IN {spans: [0, 8], description: 'CEO of Apple'}]->(c), "
+        "(u)-[:MENTIONED_IN {spans: [40, 52], description: 'Dr. Cook'}]->(c)"
+    )
+    await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([TIM, APPLE])))
+    edges = await rows(
+        graph,
+        "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(:Chunk {id: 'c1'}) "
+        "RETURN e.id, m.spans, m.description",
+    )
+    assert len(edges) == 1
+    _, spans, description = edges[0]
+    assert sorted(zip(spans[0::2], spans[1::2])) == [(0, 8), (40, 52)]
+    assert set(description.split(" | ")) == {"CEO of Apple", "Dr. Cook"}

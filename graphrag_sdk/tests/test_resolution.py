@@ -672,7 +672,12 @@ class TestExactMatchMatchesStage1:
         llm = MockLLM(responses=["A concise summary"])
         result = await ExactMatchResolution(llm=llm).resolve(data, ctx)
         assert len(result.nodes) == 1
-        assert result.nodes[0].properties["description"] == "A concise summary"
+        props = result.nodes[0].properties
+        assert props["description"] == "A concise summary"
+        # The store joins a ``descriptions`` list it is handed; left on the
+        # node, the list would have replaced the summary on write.
+        assert "descriptions" not in props
+        assert props["description_summarised"] is True
 
     async def test_identical_to_stage_1_on_the_same_input(self, ctx):
         """Equivalence check: same nodes through both paths, same outcome."""

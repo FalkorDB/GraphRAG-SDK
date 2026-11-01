@@ -340,10 +340,9 @@ async def exact_match_merge(
         idx = item.index
         if idx < cl_prompt_start:
             sl_entry_idx, descs = summary_prompt_refs[idx]
-            if item.ok:
+            # A failed summary leaves the joined descriptions in place.
+            if item.ok and item.response.content.strip():
                 sl_summaries[sl_entry_idx] = item.response.content.strip()
-            else:
-                sl_summaries[sl_entry_idx] = " | ".join(descs)
         else:
             cl_idx = idx - cl_prompt_start
             if not item.ok:
@@ -421,9 +420,14 @@ async def exact_match_merge(
         if entry["descriptions"]:
             set_merged_descriptions(survivor, group_nodes[1:])
             if i in sl_summaries:
-                # An LLM summary (force_summary_threshold reached) replaces the
-                # joined string only; the member list is kept intact.
+                # An LLM summary (force_summary_threshold reached) is the one
+                # description the survivor keeps: the store joins a
+                # ``descriptions`` list it is handed, so leaving the list would
+                # throw the summary away. What each chunk said stays on its
+                # MENTIONED_IN edge.
                 survivor.properties["description"] = sl_summaries[i]
+                survivor.properties.pop("descriptions", None)
+                survivor.properties["description_summarised"] = True
         if entry["all_source_ids"]:
             survivor.properties["source_chunk_ids"] = entry["all_source_ids"]
         for dup in group_nodes[1:]:
@@ -497,6 +501,8 @@ async def exact_match_merge(
         # and it is the field search, the fulltext index and the prompts read.
         if cl_summary:
             cl_survivor.properties["description"] = cl_summary
+            cl_survivor.properties.pop("descriptions", None)
+            cl_survivor.properties["description_summarised"] = True
 
     # ── Stage 7: resolve transitive id_remap chains (sl-loser → sl-survivor →
     # cl-survivor becomes sl-loser → cl-survivor directly) ──
