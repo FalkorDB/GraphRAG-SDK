@@ -265,9 +265,9 @@ async def test_get_ontology_on_a_fresh_graph_writes_nothing(real_falkordb_rag_fa
 
     rag = real_falkordb_rag_factory(llm=MockLLM(responses=[]), resolver=ExactMatchResolution())
     tk = GraphRAGToolkit(rag, read_only=True)
-    onto = await tk.call("get_ontology", {})
-    assert onto.entity_types == [] and onto.relation_types == []
-    # retrieve on the missing graph refuses without writing anything.
+    # Both read tools refuse on the missing graph without writing anything.
+    with pytest.raises(ToolError, match="does not exist"):
+        await tk.call("get_ontology", {})
     with pytest.raises(ToolError, match="does not exist"):
         await tk.call("retrieve", {"question": "Who founded Acme?"})
     stored = await rag._ontology_store.load()
@@ -434,7 +434,8 @@ async def test_read_tools_on_a_fresh_graph_create_no_keys(real_falkordb_rag_fact
     rag = real_falkordb_rag_factory(llm=MockLLM(responses=[]), resolver=ExactMatchResolution())
     tk = GraphRAGToolkit(rag, read_only=True)
     data_graph = rag._conn.config.graph_name
-    await tk.call("get_ontology", {})
+    with pytest.raises(ToolError, match=f"Graph '{data_graph}' does not exist"):
+        await tk.call("get_ontology", {})
     with pytest.raises(ToolError, match=f"Graph '{data_graph}' does not exist"):
         await tk.call("retrieve", {"question": "Who founded Acme?"})
     status = await tk.call("status", {})
