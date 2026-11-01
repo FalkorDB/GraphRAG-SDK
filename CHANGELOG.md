@@ -113,7 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GraphRAGToolkit(rag)`.
   The SDK runs no agent loop: your agent plans, calls the tools and writes
   the answer. Every tool validates its input with a strict schema, caps its
-  result size (each database query it runs times out), and returns a typed result
+  result size (its database queries use the configured per-query timeout), and
+  returns a typed result
   whose `to_llm_text()` stays under a fixed size (8,000 characters by
   default), shared across its sections so a long relation list cannot push
   out the passages; a cut section says how many items it omitted.

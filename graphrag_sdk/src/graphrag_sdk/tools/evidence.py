@@ -81,7 +81,8 @@ _SOURCE = (
 )
 _SAY = (
     r"(?:say|mention|state|include|contain|cover|specify|give|list|show|answer|tell"
-    r"|indicate|describe|provide|name|identify|explain|confirm|reveal|have|hold)"
+    r"|indicate|describe|provide|name|identify|explain|confirm|reveal|have|hold"
+    r"|find|locate|determine|verify)"
 )
 #: A sentence that says the evidence lacks something ("The graph does not say
 #: who founded Globex."). Saying so is honest, so it needs no citation. Only
@@ -90,17 +91,17 @@ _SAY = (
 _GAP_RE = re.compile(
     # The graph / the sources ... do not say, have no ..., none of them say.
     rf"\b{_SOURCE}\s+(?-i:[a-z]+\s+)?(?:(?:does|do|did|is|are|was|were|has|have|had|can"
-    rf"|could)(?: not|n['’]t)\s+(?:be\s+)?{_SAY}"
+    rf"|ca|could)(?: not|n['’]t|not)\s+(?:be\s+)?{_SAY}"
     r"|(?:has|have|had|holds?|contains?|gives?|provides?|returned|returns?|shows?)\s+no\b)"
     rf"|\b(?:none|neither) of {_SOURCE}\s+{_SAY}"
     # Not found / listed / mentioned in the graph.
     rf"|\bnot\s+(?:\w+\s+){{0,2}}?(?:in|from|within|part of|among|by)\s+{_SOURCE}\b"
     rf"|\bnothing\s+(?:in|from)\s+{_SOURCE}\b"
     # A failed lookup: I could not find, could not be determined.
-    r"|\b(?:I|we)\s+(?:could|can|did|do)(?: not|n['’]t|not)\s+"
+    r"|\b(?:I|we)\s+(?:could|can|ca|did|do)(?: not|n['’]t|not)\s+"
     r"(?:find|locate|confirm|determine|verify|tell|see)\b"
     r"|\b(?:I|we)\s+(?:found|find) (?:no|nothing)\b"
-    r"|\b(?:could|can)(?: not|n['’]t|not) be (?:found|determined|confirmed|verified)\b"
+    r"|\b(?:could|can|ca)(?: not|n['’]t|not) be (?:found|determined|confirmed|verified)\b"
     # No information about ... was found; not enough evidence.
     r"|(?:^|[.!?]\s+)(?:there (?:is|are|was|were) )?no (?:information|evidence|mention"
     r"|data|details?|records?|sources?|passages?|facts?|results?)\b"
