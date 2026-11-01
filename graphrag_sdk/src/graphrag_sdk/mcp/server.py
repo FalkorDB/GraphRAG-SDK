@@ -60,8 +60,8 @@ To answer a question:
    find nothing, run it again without them.
 2. If retrieve did not answer it, run retrieve again, more precisely: with
    the exact entity names from its results and paths exact_names and links
-   for what surrounds one entity, or with expand_hops 2 or 3 when the
-   question chains several relations (the company that owns the firm that
+   for what surrounds one entity, or with expand_hops 2 or 3 (up to 5) when
+   the question chains several relations (the company that owns the firm that
    made X).
 3. status or get_ontology: what the graph holds (entity labels, relation
    types, counts), for questions about the graph itself.
