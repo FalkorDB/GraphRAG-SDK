@@ -102,6 +102,27 @@ class TestMultiPathRetrieval:
         with pytest.raises(LatencyBudgetExceededError, match="budget exhausted"):
             await search_relates_edges(vector, [0.1], rel_top_k=3)
 
+    async def test_relates_search_names_entities_by_stored_id(self):
+        vector = MagicMock()
+        vector.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "Alice",
+                    "type": "WORKS_AT",
+                    "tgt_name": "Acme Corp",
+                    "fact": "",
+                    "score": 0.9,
+                    "src_id": "alice__person",
+                    "tgt_id": "acme_corp__organization",
+                },
+                {"src_name": "Bob", "type": "KNOWS", "tgt_name": "Alice", "score": 0.5},
+            ]
+        )
+        _, entities = await search_relates_edges(vector, [0.1], rel_top_k=3)
+        # A row without ids (an older store) falls back to an id made from the name.
+        assert list(entities) == ["alice__person", "acme_corp__organization", "bob", "alice"]
+        assert entities["alice__person"]["name"] == "Alice"
+
     async def test_relates_search_checks_budget_before_vector_call(self):
         vector = MagicMock()
         vector.search_relationships = AsyncMock(return_value=[])
