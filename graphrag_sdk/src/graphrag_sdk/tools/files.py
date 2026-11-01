@@ -45,7 +45,10 @@ _FD_WALK = bool(_NOFOLLOW and _DIRECTORY) and os.open in os.supports_dir_fd
 #: (``O_NOFOLLOW`` fails with ``ELOOP``, or ``EMLINK`` on FreeBSD).
 _GONE_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.EMLINK})
 #: ``(st_dev, st_ino)`` of each files root, recorded when it is resolved, so a
-#: root folder replaced afterwards (or moved behind a symlink) is refused.
+#: root folder replaced afterwards (or moved behind a symlink) is refused. A
+#: later resolve of the same path overwrites it, so a toolkit keeps its own
+#: record (:func:`resolve_root_with_id`) and passes it as ``root_id``; this one
+#: is the fallback for callers that pass none.
 _ROOT_IDS: dict[Path, tuple[int, int]] = {}
 
 
@@ -56,6 +59,13 @@ def resolve_root(root: str | os.PathLike[str]) -> Path:
     ``/Users``) are refused: an agent could then read every document of the
     machine or the user.
     """
+    return resolve_root_with_id(root)[0]
+
+
+def resolve_root_with_id(root: str | os.PathLike[str]) -> tuple[Path, tuple[int, int]]:
+    """:func:`resolve_root`, and the folder's ``(st_dev, st_ino)`` to pass as
+    ``root_id`` to the confined reads, so the folder is checked against this
+    caller's own record rather than the latest resolve of the same path."""
     path = Path(root).expanduser().resolve()
     if not path.is_dir():
         raise ValueError(f"files_root {str(root)!r} is not a directory")
@@ -67,8 +77,8 @@ def resolve_root(root: str | os.PathLike[str]) -> Path:
             "choose the folder that holds the documents"
         )
     info = path.stat()
-    _ROOT_IDS[path] = (info.st_dev, info.st_ino)
-    return path
+    _ROOT_IDS[path] = ident = (info.st_dev, info.st_ino)
+    return path, ident
 
 
 def _check_relative(entry: str) -> str:
@@ -338,10 +348,10 @@ def _root_replaced() -> ToolError:
     )
 
 
-def _open_root(root: Path) -> int:
+def _open_root(root: Path, root_id: tuple[int, int] | None = None) -> int:
     """``root`` opened as a folder, refused if it is a symlink now or not the
-    folder :func:`resolve_root` recorded (a folder above it swapped for a
-    symlink leads elsewhere)."""
+    folder ``root_id`` names (by default the one :func:`resolve_root` last
+    recorded; a folder above it swapped for a symlink leads elsewhere)."""
     try:
         folder = os.open(root, os.O_RDONLY | _DIRECTORY | _NOFOLLOW)
     except OSError as exc:
@@ -350,7 +360,8 @@ def _open_root(root: Path) -> int:
         raise _root_replaced() from None
     try:
         info = os.fstat(folder)
-        if _ROOT_IDS.setdefault(root, (info.st_dev, info.st_ino)) != (info.st_dev, info.st_ino):
+        expected = root_id or _ROOT_IDS.setdefault(root, (info.st_dev, info.st_ino))
+        if expected != (info.st_dev, info.st_ino):
             raise _root_replaced()
     except BaseException:
         os.close(folder)
@@ -358,7 +369,9 @@ def _open_root(root: Path) -> int:
     return folder
 
 
-def open_confined(root: Path, rel: str, max_bytes: int | None = None) -> BinaryIO:
+def open_confined(
+    root: Path, rel: str, max_bytes: int | None = None, *, root_id: tuple[int, int] | None = None
+) -> BinaryIO:
     """The file ``rel`` under ``root``, opened for reading after checking it is still there.
 
     On POSIX the root is opened without following a symlink and checked to be
@@ -381,7 +394,7 @@ def open_confined(root: Path, rel: str, max_bytes: int | None = None) -> BinaryI
         raise _gone(rel)
     try:
         if _FD_WALK:
-            folder = _open_root(root)
+            folder = _open_root(root, root_id)
             try:
                 for name in pure.parts[:-1]:
                     inner = os.open(name, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=folder)
@@ -427,13 +440,15 @@ def _read_capped(fh: BinaryIO, rel: str, max_bytes: int | None) -> bytes:
     return data
 
 
-def read_confined(root: Path, rel: str, max_bytes: int | None = None) -> bytes:
+def read_confined(
+    root: Path, rel: str, max_bytes: int | None = None, *, root_id: tuple[int, int] | None = None
+) -> bytes:
     """The bytes of ``rel`` under ``root``, read through :func:`open_confined`.
 
     At most ``max_bytes`` are read, even if the file grows while open.
     Blocking: call it from a worker thread in async code.
     """
-    with open_confined(root, rel, max_bytes) as fh:
+    with open_confined(root, rel, max_bytes, root_id=root_id) as fh:
         return _read_capped(fh, rel, max_bytes)
 
 
@@ -505,7 +520,12 @@ def _pdf_document(rel: str, data: bytes) -> DocumentOutput:
 
 
 def sample_confined(
-    root: Path, rel: str, max_chars: int, max_bytes: int | None = None
+    root: Path,
+    rel: str,
+    max_chars: int,
+    max_bytes: int | None = None,
+    *,
+    root_id: tuple[int, int] | None = None,
 ) -> tuple[str, int, bool, int]:
     """:func:`sample_file` of ``rel`` under ``root``, read through :func:`open_confined`,
     and the file's size. A PDF is parsed from memory, so one above ``max_bytes``
@@ -513,7 +533,7 @@ def sample_confined(
     """
     pdf = rel.lower().endswith(".pdf")
     cap = max_bytes if pdf else None
-    with open_confined(root, rel, cap) as fh:
+    with open_confined(root, rel, cap, root_id=root_id) as fh:
         size = os.fstat(fh.fileno()).st_size
         return (*_sample_open(fh, pdf, size, max_chars, rel=rel, max_bytes=cap), size)
 

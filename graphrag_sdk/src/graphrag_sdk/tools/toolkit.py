@@ -145,9 +145,12 @@ class _ConfinedLoader(LoaderStrategy):
     swapped in meanwhile cannot lead outside the root.
     """
 
-    def __init__(self, root: Path, max_bytes: int | None) -> None:
+    def __init__(
+        self, root: Path, max_bytes: int | None, root_id: tuple[int, int] | None = None
+    ) -> None:
         self._root = root
         self._max_bytes = max_bytes
+        self._root_id = root_id
 
     async def load(self, source: str, ctx: Context) -> DocumentOutput:
         rel = source
@@ -159,7 +162,9 @@ class _ConfinedLoader(LoaderStrategy):
                     f"{Path(source).name!r} is not under the files root.",
                     hint="Pass paths relative to the files root.",
                 ) from None
-        data = await asyncio.to_thread(fs.read_confined, self._root, rel, self._max_bytes)
+        data = await asyncio.to_thread(
+            fs.read_confined, self._root, rel, self._max_bytes, root_id=self._root_id
+        )
         # Parsed as its name says (a.md -> Markdown), like GraphRAG's default loaders.
         doc = await asyncio.to_thread(fs.document_from_bytes, rel, data)
         info = doc.document_info.model_copy(update={"path": source})
@@ -436,9 +441,12 @@ class GraphRAGToolkit:
         self._owns_rag = owns_rag
         self._ledger_capacity = ledger_capacity
         self._ledger = EvidenceLedger(ledger_capacity)
-        self._files_root: Path | None = (
-            fs.resolve_root(files_root) if files_root is not None else None
-        )
+        # The root folder's identity is kept per toolkit: another toolkit
+        # resolving the same path later must not change what this one accepts.
+        self._files_root: Path | None = None
+        self._files_root_id: tuple[int, int] | None = None
+        if files_root is not None:
+            self._files_root, self._files_root_id = fs.resolve_root_with_id(files_root)
         if max_file_bytes is not None and (
             isinstance(max_file_bytes, bool)
             or not isinstance(max_file_bytes, int)
@@ -1019,7 +1027,12 @@ class GraphRAGToolkit:
                 try:
                     real = await asyncio.to_thread(fs.canonical_file, root, rel)
                     text, chars, estimated, size = await asyncio.to_thread(
-                        fs.sample_confined, root, real, per_file, self._max_file_bytes
+                        fs.sample_confined,
+                        root,
+                        real,
+                        per_file,
+                        self._max_file_bytes,
+                        root_id=self._files_root_id,
                     )
                 except Exception as exc:  # one unreadable file must not fail the page
                     size = 0 if real is None else await asyncio.to_thread(_lstat_size, root, real)
@@ -1208,8 +1221,8 @@ class GraphRAGToolkit:
         planner plans the file afresh, so pass ``plan`` to repeat a custom one.
 
         Under ``finalize_policy="on_write"`` this also finalizes (unless
-        nothing changed), whose cost grows with the graph; prefer "manual"
-        and one :meth:`finalize` per batch.
+        nothing changed and no earlier finalize failed), whose cost grows
+        with the graph; prefer "manual" and one :meth:`finalize` per batch.
         """
         self._ensure_writable("ingest")
         inp = IngestInput(
@@ -1258,15 +1271,20 @@ class GraphRAGToolkit:
         wrote = out.status in written or any(d.status in written for d in out.documents)
         wrote = wrote or failed_after_write
         finalize_error = None
-        if self._finalize_policy == "on_write" and wrote:
+        # A finalize that failed is retried by the next ingest call of any
+        # session, even one that changes nothing.
+        if self._finalize_policy == "on_write" and (wrote or self._shared.get("finalize_failed")):
             try:
                 await self._rag.finalize()
                 out.finalized = True
+                self._shared.pop("finalize_failed", None)
             except Exception as exc:  # the documents are written: keep their result
                 logger.warning("finalize after ingest failed (%s)", type(exc).__name__)
+                self._shared["finalize_failed"] = True
                 finalize_error = (
                     f"The documents were written, but finalize failed ({type(exc).__name__}); "
-                    "call finalize to retry."
+                    "the next ingest call retries it (call ingest again with the same "
+                    "input to retry now)."
                 )
         out.hint = self._ingest_hint(out)
         if finalize_error:
@@ -1371,7 +1389,7 @@ class GraphRAGToolkit:
         except ValueError as exc:
             raise ToolError(str(exc), hint="Fix the plan rules.") from None
         await asyncio.to_thread(fs.check_sizes, root, rels, self._max_file_bytes)
-        loader = _ConfinedLoader(root, self._max_file_bytes)
+        loader = _ConfinedLoader(root, self._max_file_bytes, self._files_root_id)
         errors: list[BaseException] = []
         found: dict[str, IngestedDocument] = {}
         gate = asyncio.Semaphore(_FILE_CONCURRENCY)
@@ -1551,11 +1569,12 @@ class GraphRAGToolkit:
     async def finalize(self) -> FinalizeReport:
         """Run ``GraphRAG.finalize()`` (dedup, embeddings, indexes).
 
-        Under "on_write" each ingest already finalized, so this does
-        nothing; under "never" it raises :class:`ConfigError`.
+        Under "on_write" each ingest already finalizes, so this runs only to
+        retry a finalize that failed and is a no-op otherwise; under "never"
+        it raises :class:`ConfigError`.
         """
         self._ensure_writable("finalize")
-        if self._finalize_policy == "on_write":
+        if self._finalize_policy == "on_write" and not self._shared.get("finalize_failed"):
             return FinalizeReport(finalized=True, hint="Each ingest already finalized.")
         if self._finalize_policy == "never":
             raise ConfigError(
@@ -1563,6 +1582,7 @@ class GraphRAGToolkit:
                 "GraphRAG.finalize() yourself."
             )
         result = await self._rag.finalize()
+        self._shared.pop("finalize_failed", None)
         return FinalizeReport(
             finalized=True,
             entities_deduplicated=int(getattr(result, "entities_deduplicated", 0) or 0),

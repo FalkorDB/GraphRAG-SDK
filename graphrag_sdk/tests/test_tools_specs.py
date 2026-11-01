@@ -141,9 +141,20 @@ def test_ingest_description_lists_the_allowed_plan_options_and_their_cost():
     options = wide.description.split("Plan options allowed")[1]
     assert "contextual (+1 LLM call per chunk, each sending the whole document)" in options
     assert "llm (+1 LLM call per chunk)" in options
-    assert "llm_verified (up to 40 LLM pair checks per entity type, plus up to 200" in options
-    assert "each asked twice" in options and "LLM summary" in options
+    assert "llm_verified (up to 40 LLM pair checks per document" in options
+    assert "asked once more" in options and "LLM summary" in options
+    assert "per entity type" not in options and "200" not in options
     assert "over 1000 chunks" in options  # max_chunks left out keeps the cheap ceiling
+
+
+def test_a_zero_pair_budget_does_not_offer_llm_verified():
+    ingest = next(
+        s
+        for s in specs(plan_limits={"resolvers": ("exact", "llm_verified"), "max_llm_pairs": 0})
+        if s.name == "ingest"
+    )
+    options = ingest.description.split("Plan options allowed")[1]
+    assert "llm_verified" not in options and "exact" in options
 
 
 def test_an_unset_pair_ceiling_renders_the_resolver_maximum():

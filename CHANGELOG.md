@@ -39,8 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   description and the server's guide tell the agent what each allowed option
   costs (`contextual`: +1 LLM call per chunk, each sending the whole document;
   `llm` extractor: +1 LLM call per chunk; `llm_verified`: up to `max_llm_pairs`
-  LLM pair checks per entity type, plus up to 200 cross-type checks asked
-  twice and description summaries), so it chooses per file within the limits.
+  LLM pair checks per document, a second ask for each confirmed cross-type
+  match, one check per name shared across types and description summaries),
+  so it chooses per file within the limits.
 - **`GraphRAG.ingest(auto=True)` is cheap by default.** Without `plan_limits`,
   the default `LLMIngestionPlanner` may pick only `CHEAP_PLAN_LIMITS`, with
   `max_chunks=1000`; pass `plan_limits={...}` (which turns `auto` on) to allow
@@ -58,8 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_chunks=N` allows `N` extraction requests with `gliner` and about `2N`
   with the `llm` backend, before retries. For `contextual` chunking the base
   chunks are counted before the per-chunk context calls. The default `None`
-  sets no limit. `max_llm_pairs` caps `llm_verified` pairs per label group
-  (cross-label pairs and summary calls come on top), defaults to 500 for both
+  sets no limit. `max_llm_pairs` caps `llm_verified` pairs per document
+  (cross-type rechecks, same-name cross-type checks and summary calls come on top), defaults to 500 for both
   planners, and is now kept with `tune_params=False` too. A tuned
   sentence-based window repeats at most half its tokens, so it advances by at
   least half.

@@ -1345,6 +1345,40 @@ class TestIngestFiles:
         result = await toolkit(rag, corpus, finalize_policy="on_write").ingest(files=["notes/*"])
         assert result.failed == 1 and result.finalized and rag.finalized == 1
 
+    async def test_on_write_policy_retries_a_failed_finalize(self, corpus):
+        rag = FakeRAG()
+        finalize = rag.finalize
+
+        async def broken():
+            raise RuntimeError("store down")
+
+        rag.finalize = broken
+        tk = toolkit(rag, corpus, finalize_policy="on_write")
+        failed = await tk.ingest(files=["notes/a.md"])
+        assert not failed.finalized and "the next ingest call retries it" in failed.hint
+        assert "call finalize to retry" not in failed.hint
+        rag.finalize = finalize
+        rag.unchanged.add("a.md")
+        retried = await tk.new_session().ingest(files=["notes/a.md"])
+        assert retried.documents[0].status == "unchanged"
+        assert retried.finalized and rag.finalized == 1
+        again = await tk.ingest(files=["notes/a.md"])
+        assert not again.finalized and rag.finalized == 1
+
+    async def test_toolkit_finalize_retries_a_failed_on_write_finalize(self, corpus):
+        rag = FakeRAG()
+        finalize = rag.finalize
+
+        async def broken():
+            raise RuntimeError("store down")
+
+        rag.finalize = broken
+        tk = toolkit(rag, corpus, finalize_policy="on_write")
+        assert not (await tk.ingest(files=["notes/a.md"])).finalized
+        rag.finalize = finalize
+        assert (await tk.finalize()).finalized and rag.finalized == 1
+        assert (await tk.finalize()).finalized and rag.finalized == 1
+
     async def test_bad_file_arguments(self, corpus):
         tk = toolkit(FakeRAG(), corpus)
         with pytest.raises(ToolError, match="outside"):
@@ -1473,6 +1507,28 @@ class TestOpenConfined:
         corpus.symlink_to(outside, target_is_directory=True)
         with pytest.raises(ToolError, match="files root is no longer the folder"):
             fs.read_confined(root, "notes/b.md")
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX-only guarantee")
+    async def test_a_later_toolkit_does_not_bless_a_replaced_root(self, corpus):
+        from graphrag_sdk.core.context import Context
+
+        rag = FakeRAG()
+        loaders = []
+        original = rag.ingest
+
+        async def ingest(source=None, **kw):
+            loaders.append(kw["loader"])
+            return await original(source, **kw)
+
+        rag.ingest = ingest
+        first = toolkit(rag, corpus)
+        corpus.rename(corpus.parent / "old_docs")
+        (corpus / "notes").mkdir(parents=True)
+        (corpus / "notes" / "a.md").write_text("REPLACED")
+        toolkit(rag, corpus)  # a second toolkit on the same path sees the new folder
+        await first.ingest(files=["notes/a.md"])
+        with pytest.raises(ToolError, match="files root is no longer the folder"):
+            await loaders[0].load(str(corpus / "notes" / "a.md"), Context())
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX-only guarantee; symlinks need privileges")
     def test_a_folder_above_the_root_swapped_for_a_symlink_is_refused(self, tmp_path):
@@ -1717,7 +1773,8 @@ class TestFinalizeFailureKeepsTheResult:
         assert result.status == "ingested" and result.nodes_created == 2
         assert not result.finalized
         assert result.hint.startswith(
-            "The documents were written, but finalize failed (RuntimeError); call finalize"
+            "The documents were written, but finalize failed (RuntimeError); "
+            "the next ingest call retries it"
         )
         assert "graph is busy" not in result.hint
 

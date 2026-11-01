@@ -360,8 +360,9 @@ _OPTION_COSTS: dict[str, str] = {
     "llm": "+1 LLM call per chunk",
     "exact": "no LLM call",
     "llm_verified": (
-        "up to {pairs} LLM pair checks per entity type, plus up to 200 cross-type "
-        "checks each asked twice, and an LLM summary per entity with 3+ descriptions"
+        "up to {pairs} LLM pair checks per document (a match it confirms between two "
+        "entity types is asked once more), plus one check per name shared by "
+        "entities of different types and an LLM summary per entity with 3+ descriptions"
     ),
 }
 
@@ -392,6 +393,8 @@ def _plan_options(plan_limits: Mapping[str, Any] | None) -> str:
         names = [
             f"{name} ({_OPTION_COSTS.get(name, 'cost unknown').format(pairs=pairs)})"
             for name in limits.get(key) or default
+            # max_llm_pairs=0 rules llm_verified out: the plan replaces it.
+            if not (name == "llm_verified" and pairs == 0)
         ]
         parts.append(f"{slot}: {', '.join(names)}")
     chunks = limits.get("max_chunks")
