@@ -232,7 +232,9 @@ async def test_read_only_toolkit(toolkit: GraphRAGToolkit):
     with pytest.raises(ReadOnlyViolation):
         await ro.call("ingest", {"text": "x"})
     found = await ro.call("retrieve", {"question": "Where does Bob work?"})
-    assert found.entities or found.chunks
+    assert any(e.name == "Bob" for e in found.entities) or any(
+        "Bob" in c.text for c in found.chunks
+    )
 
 
 async def test_mcp_round_trip(toolkit: GraphRAGToolkit):
@@ -295,7 +297,7 @@ async def test_for_tenant_isolated_graphs(embedder):
         assert tk_b.rag._conn.config.graph_name == f"{base.graph_name}__tenant-b"
         await tk_a.ingest("Alice is an engineer.", document_id="doc-a")
         await tk_a.finalize()
-        assert (await tk_a.status()).entities >= 1
+        assert any(e.name == "Alice" for e in (await tk_a.retrieve("Who is Alice?")).entities)
         # Tenant b's graph was never written, so it cannot see a's entities.
         with pytest.raises(ToolError, match="__tenant-b' does not exist"):
             await tk_b.retrieve("Who is Alice?")
@@ -321,6 +323,252 @@ async def test_get_ontology_on_a_fresh_graph_writes_nothing(real_falkordb_rag_fa
         await tk.call("retrieve", {"question": "Who founded Acme?"})
     stored = await rag._ontology_store.load()
     assert stored.entities == [] and stored.relations == []
+
+
+# ── Agent ingestion over a folder ─────────────────────────────────────
+
+FOLDER = {
+    "notes/aspirin.md": "# Aspirin\n\nAspirin treats headache. Aspirin inhibits the COX1 gene.",
+    "reports/ibuprofen.txt": "Ibuprofen treats fever.",
+}
+EXTRACTIONS = {
+    "Aspirin treats": _step2(
+        [
+            ("Aspirin", "Drug", "A painkiller"),
+            ("Headache", "Disease", "Pain in the head"),
+            ("COX1", "Gene", "Cyclooxygenase 1"),
+        ],
+        [
+            ("Aspirin", "TREATS", "Headache", "Aspirin treats headache"),
+            ("Aspirin", "INHIBITS", "COX1", "Aspirin inhibits COX1"),
+        ],
+    ),
+    "Ibuprofen treats": _step2(
+        [("Ibuprofen", "Drug", "A painkiller"), ("Fever", "Disease", "High temperature")],
+        [("Ibuprofen", "TREATS", "Fever", "Ibuprofen treats fever")],
+    ),
+}
+
+
+def _routing_llm():
+    """Answers by document text, so files ingested concurrently get their own
+    extraction for both steps (the NER step reads ``entities`` too)."""
+    from graphrag_sdk.core.models import LLMResponse
+
+    from .conftest import MockLLM
+
+    class RoutingLLM(MockLLM):
+        def invoke(self, prompt: str, **kwargs):
+            for marker, response in EXTRACTIONS.items():
+                if marker in prompt:
+                    return LLMResponse(content=response)
+            return LLMResponse(content="[]")
+
+        async def ainvoke_messages(self, messages, *, max_retries=3, **kwargs):
+            text = "\n".join(str(getattr(m, "content", m)) for m in messages)
+            return self.invoke(text)
+
+    return RoutingLLM()
+
+
+# The default limits allow only GLiNER, which needs a model download; the
+# scripted LLM extractor keeps this test offline.
+OFFLINE_LIMITS = {
+    "chunkers": ("sentence", "fixed", "structural"),
+    "extractors": ("llm",),
+    "resolvers": ("exact",),
+    "max_llm_pairs": 0,
+}
+
+
+async def test_agent_ingests_a_folder(real_falkordb_rag_factory, tmp_path):
+    from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+
+    for rel, text in FOLDER.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+    rag = real_falkordb_rag_factory(llm=_routing_llm(), resolver=ExactMatchResolution())
+    tk = GraphRAGToolkit(rag, files_root=tmp_path, plan_limits=OFFLINE_LIMITS)
+
+    # 1. Look at the folder.
+    sampled = await tk.call("preview_files", {})
+    assert sampled.total == 2 and sampled.types == {"md": 1, "txt": 1}
+    assert "Aspirin treats headache" in sampled.files[0].sample
+
+    # 2. Declare the ontology before anything is stored: no default types.
+    await tk.call(
+        "set_ontology",
+        {
+            "entities": [{"label": "Drug"}, {"label": "Disease"}],
+            "relations": [{"label": "TREATS", "patterns": [["Drug", "Disease"]]}],
+        },
+    )
+    stored = await rag._ontology_store.load()
+    assert {e.label for e in stored.entities} == {"Drug", "Disease"}
+
+    # 3. Ingest the folder with one plan rule per file type.
+    plan = [
+        {"match": "*.md", "chunker": "structural", "extractor": "llm"},
+        {"match": "*", "chunker": "fixed", "extractor": "llm"},
+    ]
+    first = await tk.call("ingest", {"files": ["**/*"], "plan": plan})
+    docs = {d.path: d for d in first.documents}
+    assert [d.status for d in first.documents] == ["ingested", "ingested"]
+    assert docs["notes/aspirin.md"].plan["chunker"] == "structural"
+    assert docs["notes/aspirin.md"].document_id == "file:notes/aspirin.md"
+    assert docs["reports/ibuprofen.txt"].plan["chunker"] == "fixed"
+    # Extraction is told the declared types, so COX1 is kept as Unknown and
+    # its relation type is dropped: both point at what the ontology misses.
+    assert first.pruned is not None and first.pruned.unknown == 1
+    assert first.pruned.relations == {"INHIBITS": 1}
+    assert "stored as Unknown" in first.hint
+    unknown = await rag._graph_store.query_raw("MATCH (n:Unknown) RETURN n.name", read_only=True)
+    assert [r[0] for r in unknown.result_set] == ["COX1"]
+    assert "ingest(files=['notes/aspirin.md'], reextract=true)" in first.hint
+    assert not first.finalized
+
+    # 4. Same files again: unchanged, nothing re-extracted.
+    again = await tk.call("ingest", {"files": ["**/*"], "plan": plan})
+    assert {d.status for d in again.documents} == {"unchanged"}
+    assert "reextract=true" in again.hint
+
+    # 5. Extend the ontology, then re-extract only the affected file.
+    await tk.call(
+        "set_ontology",
+        {
+            "entities": [{"label": "Gene", "description": "A gene"}],
+            "relations": [{"label": "INHIBITS", "patterns": [["Drug", "Gene"]]}],
+        },
+    )
+    # Without a plan, the file keeps the plan of its last ingest.
+    redo = await tk.call("ingest", {"files": ["notes/aspirin.md"], "reextract": True})
+    assert [d.status for d in redo.documents] == ["reextracted"]
+    assert redo.documents[0].plan["chunker"] == "structural"
+    assert redo.documents[0].plan["extractor"] == "llm"
+    assert redo.pruned is None
+
+    # 6. Finalize once, then the graph holds every declared type.
+    assert (await tk.call("finalize", {})).finalized
+    status = await tk.call("status", {})
+    labels = {t.label: t.count for t in status.entity_types}
+    assert labels == {"Drug": 2, "Disease": 2, "Gene": 1}
+    relations = {t.label: t.count for t in status.relation_types}
+    assert relations == {"TREATS": 2, "INHIBITS": 1}
+    assert status.documents == 2
+    found = await rag._graph_store.query_raw("MATCH (g:Gene) RETURN g.name", read_only=True)
+    assert [r[0] for r in found.result_set] == ["COX1"]
+
+
+async def test_agent_ingestion_respects_the_root(real_falkordb_rag_factory, tmp_path):
+    from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+
+    root = tmp_path / "root"
+    root.mkdir()
+    (tmp_path / "secret.md").write_text("Aspirin treats headache.")
+    rag = real_falkordb_rag_factory(llm=_routing_llm(), resolver=ExactMatchResolution())
+    tk = GraphRAGToolkit(rag, files_root=root, plan_limits=OFFLINE_LIMITS)
+    with pytest.raises(ToolError, match="outside the files root"):
+        await tk.call("ingest", {"files": ["../secret.md"]})
+    with pytest.raises(ToolError, match="outside the files root"):
+        await tk.call("preview_files", {"pattern": "../*"})
+    assert (await tk.call("status", {})).documents == 0
+    with pytest.raises(ReadOnlyViolation):
+        await GraphRAGToolkit(rag, files_root=root, read_only=True).call(
+            "ingest", {"files": ["*.md"]}
+        )
+
+
+async def test_file_documents_have_file_ids_text_cannot_take(real_falkordb_rag_factory, tmp_path):
+    from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "aspirin.md").write_text(FOLDER["notes/aspirin.md"])
+    rag = real_falkordb_rag_factory(llm=_routing_llm(), resolver=ExactMatchResolution())
+    tk = GraphRAGToolkit(rag, files_root=tmp_path, plan_limits=OFFLINE_LIMITS)
+    plan = [{"match": "*"}]
+    first = await tk.call("ingest", {"files": ["notes/aspirin.md"], "plan": plan})
+    assert first.documents[0].document_id == "file:notes/aspirin.md"
+    record = await rag._graph_store.get_document_record("file:notes/aspirin.md")
+    assert record is not None and record.path == "notes/aspirin.md"  # no host path stored
+    chunks = sorted(await rag._graph_store.get_document_chunk_ids("file:notes/aspirin.md"))
+    assert chunks
+
+    # The same file again is unchanged.
+    again = await tk.call("ingest", {"files": ["notes/aspirin.md"], "plan": plan})
+    assert [(d.status, d.document_id) for d in again.documents] == [
+        ("unchanged", "file:notes/aspirin.md")
+    ]
+
+    # Text cannot take a file's id, with or without a files root.
+    text_only = GraphRAGToolkit(rag, plan_limits=OFFLINE_LIMITS)
+    for toolkit_ in (tk, text_only):
+        for reextract in (True, False):
+            with pytest.raises(ToolError, match="starts with 'file:'") as err:
+                await toolkit_.call(
+                    "ingest",
+                    {
+                        "text": "Other text.",
+                        "document_id": "file:notes/aspirin.md",
+                        "reextract": reextract,
+                    },
+                )
+            assert "ingest(files=[...], reextract=true)" in (err.value.hint or "")
+
+    # Text under the file's path is a document of its own; the file's is untouched.
+    memo = await tk.call(
+        "ingest", {"text": "Ibuprofen treats fever.", "document_id": "notes/aspirin.md"}
+    )
+    assert memo.status == "ingested" and memo.document_id == "notes/aspirin.md"
+    after = await rag._graph_store.get_document_record("file:notes/aspirin.md")
+    assert after is not None and after.content_hash == record.content_hash
+    assert sorted(await rag._graph_store.get_document_chunk_ids("file:notes/aspirin.md")) == chunks
+    assert (await tk.call("status", {})).documents == 2
+
+    # A changed file re-extracted is replaced under the same id.
+    (tmp_path / "notes" / "aspirin.md").write_text("# Aspirin\n\nAspirin treats headache.")
+    redo = await tk.call("ingest", {"files": ["notes/aspirin.md"], "reextract": True})
+    assert [(d.status, d.document_id) for d in redo.documents] == [
+        ("reextracted", "file:notes/aspirin.md")
+    ]
+    replaced = await rag._graph_store.get_document_record("file:notes/aspirin.md")
+    assert replaced is not None and replaced.content_hash != record.content_hash
+    assert replaced.path == "notes/aspirin.md"
+    assert (await tk.call("status", {})).documents == 2
+
+
+async def test_text_cannot_replace_a_file_the_operator_ingested(
+    real_falkordb_rag_factory, tmp_path, monkeypatch
+):
+    from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "aspirin.md").write_text(FOLDER["notes/aspirin.md"])
+    monkeypatch.chdir(tmp_path)
+    resolver = ExactMatchResolution()
+    rag = real_falkordb_rag_factory(llm=_routing_llm(), resolver=resolver)
+    # Ingested from the corpus folder by its relative path: path == id.
+    await rag.ingest("notes/aspirin.md", resolver=resolver)
+    record = await rag._graph_store.get_document_record("notes/aspirin.md")
+    assert record is not None and record.path == "notes/aspirin.md"
+    assert record.loader == "markdown"
+    chunks = sorted(await rag._graph_store.get_document_chunk_ids("notes/aspirin.md"))
+    assert chunks
+
+    with_root = GraphRAGToolkit(rag, files_root=tmp_path, plan_limits=OFFLINE_LIMITS)
+    for toolkit_ in (GraphRAGToolkit(rag), with_root):
+        for reextract in (True, False):
+            with pytest.raises(ToolError, match="was read from a file"):
+                await toolkit_.call(
+                    "ingest",
+                    {
+                        "text": "Ibuprofen treats fever.",
+                        "document_id": "notes/aspirin.md",
+                        "reextract": reextract,
+                    },
+                )
+    after = await rag._graph_store.get_document_record("notes/aspirin.md")
+    assert after is not None and after.content_hash == record.content_hash
+    assert sorted(await rag._graph_store.get_document_chunk_ids("notes/aspirin.md")) == chunks
 
 
 async def test_read_tools_on_a_fresh_graph_create_no_keys(real_falkordb_rag_factory):

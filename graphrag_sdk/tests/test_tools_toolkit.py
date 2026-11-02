@@ -43,6 +43,9 @@ class FakeStore:
             raise self.error
         return FakeResult(self.rows, self.header)
 
+    async def get_document_record(self, document_id: str):
+        return None  # no stored document: text ingest is never refused
+
 
 class FakeRAG:
     def __init__(self, store: FakeStore | None = None):
@@ -105,8 +108,11 @@ def toolkit(rag: FakeRAG) -> GraphRAGToolkit:
 
 class TestSpecsAndDispatch:
     def test_all_tools_advertised(self, toolkit: GraphRAGToolkit):
-        assert [s.name for s in toolkit.tool_specs()] == list(TOOL_NAMES)
-        assert len(TOOL_NAMES) == 6
+        # preview_files needs a files root, which this toolkit has none of.
+        assert [s.name for s in toolkit.tool_specs()] == [
+            n for n in TOOL_NAMES if n != "preview_files"
+        ]
+        assert len(TOOL_NAMES) == 8
 
     def test_read_only_drops_writes(self, rag: FakeRAG):
         tk = GraphRAGToolkit(rag, read_only=True)  # type: ignore[arg-type]

@@ -109,6 +109,17 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     DEFAULT_RELATION_TYPES,
     GraphExtraction,
 )
+from graphrag_sdk.ingestion.ingestion_planner import (
+    CHEAP_PLAN_LIMITS,
+    ChunkBudgetExceededError,
+    HeuristicIngestionPlanner,
+    IngestionPlan,
+    IngestionPlanner,
+    LLMIngestionPlanner,
+    PlanRule,
+    RuleBasedIngestionPlanner,
+    build_ingestion_strategies,
+)
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.record_loader import (
     CsvRecordLoader,
@@ -245,6 +256,15 @@ __all__ = [
     "ResolutionStrategy",
     "ExactMatchResolution",
     "LLMVerifiedResolution",
+    "CHEAP_PLAN_LIMITS",
+    "ChunkBudgetExceededError",
+    "HeuristicIngestionPlanner",
+    "IngestionPlan",
+    "IngestionPlanner",
+    "LLMIngestionPlanner",
+    "PlanRule",
+    "RuleBasedIngestionPlanner",
+    "build_ingestion_strategies",
     # Retrieval
     "CosineReranker",
     "HeuristicPathRouter",

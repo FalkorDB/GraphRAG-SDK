@@ -1744,8 +1744,9 @@ class GraphStore:
     # Cypher stays here per the repository pattern — facade calls these.
 
     async def get_document_record(self, document_id: str) -> DocumentRecord | None:
-        """Return persisted Document state (``path``, ``content_hash``, ``kind``)
-        as a typed ``DocumentRecord``, or ``None`` if no such Document.
+        """Return persisted Document state (``path``, ``content_hash``, ``kind``,
+        ``table``, ``loader``) as a typed ``DocumentRecord``, or ``None`` if no
+        such Document.
 
         Pre-1.1.0 Document nodes lack ``content_hash`` — the field will
         be ``None`` on those records and callers should treat that as
@@ -1753,7 +1754,8 @@ class GraphStore:
         """
         result = await self._conn.query(
             "MATCH (d:Document {id: $id}) RETURN d.path AS path, "
-            "d.content_hash AS content_hash, d.kind AS kind, d.table AS table LIMIT 1",
+            "d.content_hash AS content_hash, d.kind AS kind, d.table AS table, "
+            "d.loader AS loader LIMIT 1",
             {"id": document_id},
         )
         if not result.result_set:
@@ -1764,6 +1766,8 @@ class GraphStore:
             content_hash=row[1],
             kind=row[2] if len(row) > 2 else None,
             table=row[3] if len(row) > 3 else None,
+            # Written from the loader's metadata, which a custom loader fills.
+            loader=str(row[4]) if len(row) > 4 and row[4] is not None else None,
         )
 
     async def documents_of_table(self, signature: str) -> list[str]:

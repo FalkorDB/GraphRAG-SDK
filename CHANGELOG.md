@@ -9,6 +9,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Agentic ingestion: an agent builds the graph from a folder (#275)
+
+- **`GraphRAGToolkit(rag, files_root=...)` lets an agent ingest files.**
+  `preview_files` returns one sample from the middle of each file, paged, so the
+  agent can design one ontology for the whole corpus; `set_ontology` declares
+  or extends it (adds only); `ingest(files=[...], plan=[rules])` ingests up to
+  50 files per call, each with the chunker, extractor and resolver of the
+  first rule matching its path. Paths stay inside the root and are read under
+  their real on-disk spelling (symlinks resolved), so two spellings of one
+  file, or a link and its target, ingest as one document; a file's document id
+  is `file:` and that path relative to the root (`file:reports/q1.pdf`). On
+  POSIX each file is opened folder by folder without following symlinks
+  (`O_NOFOLLOW`, and `O_NONBLOCK` so a FIFO cannot block), from a root checked
+  to be the folder recorded at start, checked with `fstat` to be a regular
+  file, and read from that open handle, so a symlink swapped in after the
+  check cannot read outside the root. On Windows the path is checked under the
+  root and then reopened by name, so this guarantee is POSIX-only.
+  `preview_files` reads only a window around the middle of each file (a few
+  pages of a PDF), marks estimated lengths (`chars_estimated`) and shortens a
+  page to fit the result size, with `next_offset` naming the first file left
+  out; `ingest` refuses files over `max_file_bytes` (default 50 MiB). The
+  `files` and `plan` arguments are offered only when a files root is set, and
+  each `files` entry is capped at 1,024 characters.
+- **Agent plans stay cheap.** Plan choices are limited by `plan_limits`
+  (default `CHEAP_PLAN_LIMITS`: sentence, fixed or structural chunking, GLiNER
+  extraction, exact resolution, and at most 1,000 chunks per file); anything
+  else is replaced and the plan's `reason` says so. The `ingest` tool
+  description and the server's guide tell the agent what each allowed option
+  costs (`contextual`: +1 LLM call per chunk, each sending the whole document;
+  `llm` extractor: +1 LLM call per chunk; `llm_verified`: up to `max_llm_pairs`
+  LLM pair checks per document, a second ask for each confirmed cross-type
+  match, one check per name shared across types and description summaries),
+  so it chooses per file within the limits.
+- **`GraphRAG.ingest(auto=True)` is cheap by default.** Without `plan_limits`,
+  the default `LLMIngestionPlanner` may pick only `CHEAP_PLAN_LIMITS`, with
+  `max_chunks=1000`; pass `plan_limits={...}` (which turns `auto` on) to allow
+  contextual chunking, the `llm` extractor or `llm_verified` resolution. It is
+  merged over `CHEAP_PLAN_LIMITS` (in `GraphRAGToolkit(plan_limits=...)` too): a
+  key left out keeps its cheap value.
+  `plan_limits` and `planner` together raise `ValueError`. The planner prompt
+  quotes the document sample in a `<document>` block marked as data, whose
+  instructions are to be ignored. `CHEAP_PLAN_LIMITS` (read-only) and
+  `ChunkBudgetExceededError` are exported from `graphrag_sdk`.
+- **`max_chunks` caps the chunks per document.** `LLMIngestionPlanner`
+  and `RuleBasedIngestionPlanner` take `max_chunks=`: a document that splits
+  into more chunks is refused with `ChunkBudgetExceededError` before anything
+  of it is written or extracted. It is a chunk limit, not a request ceiling:
+  `max_chunks=N` allows `N` extraction requests with `gliner` and about `2N`
+  with the `llm` backend, before retries. For `contextual` chunking the base
+  chunks are counted before the per-chunk context calls. The default `None`
+  sets no limit. `max_llm_pairs` caps `llm_verified` pairs per document
+  (cross-type rechecks, same-name cross-type checks and summary calls come on top), defaults to 500 for both
+  planners, and is now kept with `tune_params=False` too. A tuned
+  sentence-based window repeats at most half its tokens, so it advances by at
+  least half.
+- **Each ingest says what the ontology misses.** `IngestionResult.metadata
+  ["pruned"]` and the tool's `pruned` count dropped entity and relation types,
+  undeclared relation patterns, dangling relations and entities stored as
+  `Unknown`. Relations dropped because an end is `Unknown` are counted in
+  `unknown_endpoints`, with a hint to declare the missing entity type, not in
+  `pattern_mismatches`. `ingest(files=..., reextract=true)` extracts those
+  files again after the ontology is extended, planned and chunked like a first
+  ingest (`ingest(text=..., document_id=..., reextract=true)` for text). The
+  plan a file was last ingested with is remembered in memory only; after a
+  restart the plan's `reason` says none was remembered. A file already in the
+  graph whose content changed goes through `update()` (`status: "updated"`)
+  instead of adding new chunks beside the old ones. Across every session of a
+  toolkit, ingests run together but an update or re-extraction runs alone: it
+  waits for the ingests already running, and ingests that come after it wait
+  for it, since its orphan cleanup could delete an entity an ingest has
+  written but not linked yet. Text ingest and re-extraction refuse a document
+  read from a file, so text cannot overwrite or extend it: a text's
+  `document_id` cannot start with `file:`, even without a files root, nor be
+  the id of a stored document that carries a file loader's metadata
+  (`loader`), stores a path other than its id, is a table, or names a file
+  under the files root (`GraphRAG.ingest("notes/a.md")` stores the id
+  `notes/a.md`).
+- **`set_ontology` is atomic across sessions**: its load, merge and write run
+  under one lock, an ontology given to `GraphRAG(...)` and not registered yet
+  is registered first, and the extractor's ontology is refreshed from the
+  store afterwards.
+- **`set_ontology` is annotated destructive over MCP** and refuses labels with
+  `:`, line breaks or other control characters, `__X__` names, and the SDK's
+  own `Chunk`, `Document` and `Unknown`, each with a hint.
+- **`finalize_policy="on_write"` skips finalize when nothing changed** (every
+  document unchanged, or refused before writing). A finalize that fails after
+  documents were written keeps the ingest result and says so in its `hint`.
+- **Planner arguments are checked.** A `planner` that is not an instance with
+  an async `plan()` raises `TypeError`; the planner call gets what is left of
+  `ctx`'s latency budget and raises `LatencyBudgetExceededError` when it runs
+  out. A document that cannot be loaded raises `LoaderError`. `update()` says
+  in `metadata["plan_note"]` which strategies it defaulted (it does not
+  re-plan), and logs it at WARNING after a planned ingest. A reply naming a
+  strategy twice keeps the last; params are kept only with a valid id of
+  their own, and replies are read up to 20,000 characters.
+- **`RuleBasedIngestionPlanner`** maps glob rules to strategies with no LLM
+  call, for `rag.ingest(paths, planner=...)` too.
+- **`graphrag-mcp --files-root`** (or `GRAPHRAG_MCP_FILES_ROOT`) serves the
+  file tools; without it no files are read. The filesystem root and the home
+  folder are refused. The server's guide tells the agent to ask the user for
+  their ontology first, and names `set_ontology` and `finalize` only when they
+  are served.
+
 #### Graph tools for your own agent, and an MCP server (#274)
 
 - **`GraphRAGToolkit` gives an agent you already run read-only tools on the
@@ -290,6 +393,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`SentenceTokenCapChunking` records the overlap each chunk has.** A chunk's
+  `overlap_sentences` metadata is now the number of its sentences the next
+  chunk repeats (0 on the last chunk), not the configured `overlap_sentences`,
+  so new Chunk nodes differ from older ones in that property; chunk text, ids
+  and cache hashes are unchanged. The new `max_overlap_fraction` option caps
+  the share of a chunk's tokens the next chunk may repeat (#275).
 - **An entity stays the same size however often it is mentioned.** Its node
   held a `source_chunk_ids` list and a `spans` JSON that grew with every
   mention and were rewritten on every write, and a merge appended every
@@ -636,6 +745,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lines cannot crowd them all out.
 
 ### Fixed
+- **A rejected `GraphRAG.set_ontology()` no longer sticks.** When the new
+  ontology was refused (a contradiction with the stored one, a reserved
+  label), it stayed on the instance and every later ingest failed on it. The
+  previous ontology is now restored before the error is raised.
 - **Reading the ontology no longer creates its graph.** `OntologyStore.load()`
   read with `GRAPH.QUERY`, which on a graph nothing was declared on yet left an
   empty `<graph>__ontology` key behind. It now reads with `GRAPH.RO_QUERY` and

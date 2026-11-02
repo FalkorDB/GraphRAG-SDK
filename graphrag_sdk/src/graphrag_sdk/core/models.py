@@ -236,6 +236,10 @@ class DocumentRecord(DataModel):
     which is how a Document loaded under a caller's own id is traced back to its
     declaration. ``None`` on prose, and on tables written before it was stamped.
     """
+    loader: str | None = None
+    """The loader that read the document from a file (``markdown``, ``text``,
+    ``pdf``). ``None`` on text ingested as a string and on tables.
+    """
 
 
 class ChunkEntityRow(DataModel):
