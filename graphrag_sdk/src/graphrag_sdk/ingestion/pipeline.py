@@ -718,7 +718,9 @@ class IngestionPipeline(LexicalGraphWriter):
 
     def _filter_quality(self, graph_data: GraphData) -> GraphData:
         """Remove nodes with empty IDs or labels, and dangling relationships."""
-        valid_nodes = [n for n in graph_data.nodes if n.id and n.label]
+        valid_nodes = [
+            n for n in graph_data.nodes if n.id and n.id.strip() and n.label and n.label.strip()
+        ]
         removed = len(graph_data.nodes) - len(valid_nodes)
         if removed:
             logger.info(f"Quality filter removed {removed} invalid nodes")
