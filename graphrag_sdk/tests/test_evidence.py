@@ -100,6 +100,31 @@ def test_a_name_is_found_only_as_a_whole_name():
     assert find_spans(text, "Ann") == [(17, 20)]
 
 
+def test_a_name_in_capitals_is_found_only_in_capitals():
+    assert find_spans("They told us to go. The US agreed.", "US") == [(24, 26)]
+    assert find_spans("they told us to go.", "US") == []
+
+
+def test_a_name_is_not_found_inside_a_longer_word_in_any_script():
+    # A combining mark is part of the word: a vowel sign, an accent written apart.
+    assert find_spans("भारतीय रेल", "भारत") == []
+    assert find_spans("Cafe\u0301 de Flore", "Cafe") == []
+    # A name that starts or ends in punctuation.
+    assert find_spans("ASP.NET runs on .NET", ".NET") == [(16, 20)]
+    assert find_spans("C++11 extends C++.", "C++") == [(14, 17)]
+    # Turkish dotless ı is not I.
+    assert find_spans("ıSTANBUL and Istanbul", "Istanbul") == [(13, 21)]
+
+
+def test_a_korean_name_takes_particles_after_it_but_nothing_before():
+    assert find_spans("서울에서 열렸다", "서울") == [(0, 2)]
+    assert find_spans("대서울", "서울") == []
+
+
+def test_occurrences_found_never_overlap():
+    assert find_spans("哈哈哈", "哈哈") == [(0, 2)]
+
+
 def test_a_capitalised_names_lowercase_occurrences_are_left_out():
     text = "Apple sells apple juice. APPLE stock rose."
     # "apple" the fruit is not the company; "APPLE" in a heading still is.

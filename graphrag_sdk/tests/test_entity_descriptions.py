@@ -362,11 +362,13 @@ async def _mentions(store, *edges):
         await store.query_raw(
             "MERGE (c:Chunk {id: $c}) WITH c MATCH (e:__Entity__ {id: 'alice'}) "
             "CREATE (e)-[m:MENTIONED_IN]->(c) "
-            "SET m.description = $d, m.descriptions = $ds, m.spans = [0, 5]",
+            "SET m.description = $d, m.descriptions = $ds, m.spans = [0, 5], "
+            "m.said_version = $v",
             {
                 "c": chunk,
                 "d": " | ".join(ds) if ds else None,
                 "ds": ds if len(ds) > 1 else None,
+                "v": None if said is None else 1,
             },
         )
 
@@ -615,6 +617,84 @@ class TestOnRealFalkorDB:
             await store.query_raw("MATCH (d:Document {id: 'doc'}) RETURN d.cleanup_said")
         ).result_set
         assert rows == [[["CEO"]]]
+
+    async def test_an_earlier_versions_edge_a_backfill_described_still_keeps_old_text(self, store):
+        """Naseem's repro: a backfill adds a description to an edge an earlier
+        version wrote. The text that chunk put on the node then was never
+        recorded, so the node must not be rebuilt from its edges."""
+        for d in ("Legacy: founded Acme in 1999.", "New doc 0.", "New doc 1."):
+            await store.upsert_nodes([_alice(d)])
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) SET e.description_summarised = true"
+        )
+        await _mentions(store, ("c0", None), ("c1", "New doc 0."), ("c2", "New doc 1."))
+        await store.upsert_nodes([_alice("Backfill: age 52.")])
+        await store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="c0",
+                    type="MENTIONED_IN",
+                    properties={"description": "Backfill: age 52."},
+                )
+            ]
+        )
+        await _remove(store, "doc1", ["c2"])
+        _, descs, _, _, summarised = await _entity(store)
+        assert descs == ["Legacy: founded Acme in 1999.", "New doc 0.", "Backfill: age 52."]
+        assert summarised is True
+
+    async def test_a_summary_nothing_was_taken_from_stays(self, store):
+        """Naseem's repro: update() removes an unchanged chunk too, whose new
+        copy says the same; the summary must not be thrown away for it."""
+        await store.upsert_nodes([_alice("x")])
+        await _mentions(store, ("old", "Same text."), ("new", "Same text."), ("c2", "Other."))
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) "
+            "SET e.description = 'Careful summary.', e.description_summarised = true"
+        )
+        assert await _remove(store, "doc", ["old"]) == 0
+        desc, _, _, _, summarised = await _entity(store)
+        assert (desc, summarised) == ("Careful summary.", True)
+
+    async def test_a_kept_summary_is_not_refilled_from_edges(self, store):
+        said = [f"fact {i}" for i in range(MAX_DESCRIPTION_MEMBERS)]
+        for d in ["Summary.", *said[:-1]]:
+            await store.upsert_nodes([_alice(d)])
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) SET e.description_summarised = true"
+        )
+        await _mentions(store, ("c0", None), *[(f"c{i + 1}", d) for i, d in enumerate(said)])
+        await _remove(store, "doc", ["c1"])
+        _, descs, _, _, _ = await _entity(store)
+        # fact 0 went; the edge-only fact 19 was not added beside the summary.
+        assert descs == ["Summary.", *said[1:-1]]
+
+    async def test_an_edge_keeps_at_most_the_cap_trimmed(self, store):
+        """An incomplete ingest run again rewrites one chunk's edge with new
+        wordings; the edge stops taking them at the cap, as a node does."""
+        await store.upsert_nodes([_alice("x")])
+        await store.query_raw("CREATE (:Chunk {id: 'c1'})")
+        for i in range(MAX_DESCRIPTION_MEMBERS + 5):
+            await store.upsert_relationships(
+                [
+                    GraphRelationship(
+                        start_node_id="alice",
+                        end_node_id="c1",
+                        type="MENTIONED_IN",
+                        properties={"description": f" wording {i} "},
+                    )
+                ]
+            )
+        rows = (
+            await store.query_raw(
+                "MATCH (:__Entity__ {id: 'alice'})-[m:MENTIONED_IN]->() "
+                "RETURN m.descriptions, m.said_version"
+            )
+        ).result_set
+        ((descs, version),) = rows
+        assert descs == [f"wording {i}" for i in range(MAX_DESCRIPTION_MEMBERS)]
+        assert version == 1
 
     async def test_a_summary_with_an_undescribed_edge_left_is_kept(self, store):
         await store.upsert_nodes([_alice("x")])

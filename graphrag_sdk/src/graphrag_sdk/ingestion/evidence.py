@@ -126,7 +126,6 @@ _UNSPACED_SCRIPTS = (
     "HIRAGANA",
     "KATAKANA",
     "HALFWIDTH KATAKANA",
-    "HANGUL",
     "THAI",
     "LAO",
     "KHMER",
@@ -135,40 +134,61 @@ _UNSPACED_SCRIPTS = (
 )
 
 
-def _joins(a: str, b: str) -> bool:
-    """Whether ``a`` and ``b`` side by side are one word: both are word
-    characters of a script that separates words with spaces."""
-    return all(
-        (c.isalnum() or c == "_") and not unicodedata.name(c, "").startswith(_UNSPACED_SCRIPTS)
-        for c in (a, b)
-    )
+def _word_char(c: str) -> bool:
+    """A letter, digit or combining mark (an accent written apart, a Devanagari
+    vowel sign), or ``_``."""
+    return c == "_" or unicodedata.category(c)[0] in "LNM"
+
+
+def _script(c: str, *prefixes: str) -> bool:
+    return unicodedata.name(c, "").startswith(prefixes)
+
+
+def _one_word(outside: str, inside: str, *, after: bool) -> bool:
+    """Whether a match's edge character ``inside`` and its neighbour
+    ``outside`` read as one word, so the match is cut out of a longer one
+    ("us" in "business", ".NET" in "ASP.NET", "C++" in "C++11", "Cafe" before
+    a separate accent). Never where either is of a script without spaces;
+    nor after a Korean name, which takes its particles at the end (서울에서)."""
+    if not _word_char(outside):
+        return False
+    if _script(outside, *_UNSPACED_SCRIPTS) or _script(inside, *_UNSPACED_SCRIPTS):
+        return False
+    return not (after and _script(outside, "HANGUL") and _script(inside, "HANGUL"))
 
 
 def is_whole_word(text: str, start: int, end: int) -> bool:
     """Whether ``text[start:end]`` is not part of a longer word ("US" is in
-    "the US." but not in "business", nor "Al" in "Algorithm"). Where a script
-    puts no spaces between words, any neighbour will do."""
+    "the US." but not in "business", nor "Al" in "Algorithm")."""
     if not 0 <= start < end <= len(text):
         return False
     return not (
-        (start > 0 and _joins(text[start - 1], text[start]))
-        or (end < len(text) and _joins(text[end - 1], text[end]))
+        (start > 0 and _one_word(text[start - 1], text[start], after=False))
+        or (end < len(text) and _one_word(text[end], text[end - 1], after=True))
     )
 
 
 def find_spans(text: str, name: str) -> list[tuple[int, int]]:
-    """Every occurrence of ``name`` in ``text``, whatever its case, as a whole
-    word (:func:`is_whole_word`). For a name written with capitals, its
-    all-lowercase occurrences are left out when there are others ("Apple" and
-    "APPLE" the company, not "apple" the fruit)."""
+    """Every occurrence of ``name`` in ``text`` as a whole word
+    (:func:`is_whole_word`), none overlapping another, whatever its case —
+    except that a name in capitals ("US") is found only in capitals, not as
+    the pronoun "us", and a capitalised name's all-lowercase occurrences are
+    left out when there are others ("Apple" and "APPLE" the company, not
+    "apple" the fruit). Case is compared by Unicode case folding, so "I" is
+    not the Turkish dotless "ı"."""
     name = name.strip()
     if not name:
         return []
-    found = [
-        m.span(1)
-        for m in re.finditer(f"(?=({re.escape(name)}))", text, re.IGNORECASE)
-        if is_whole_word(text, *m.span(1))
-    ]
+    folded = name.casefold()
+    found: list[tuple[int, int]] = []
+    for m in re.finditer(f"(?=({re.escape(name)}))", text, re.IGNORECASE):
+        start, end = m.span(1)
+        if found and start < found[-1][1]:
+            continue
+        if text[start:end].casefold() == folded and is_whole_word(text, start, end):
+            found.append((start, end))
+    if name.isupper():
+        return [(s, e) for s, e in found if text[s:e].isupper()]
     if any(c.isupper() for c in name):
         cased = [(s, e) for s, e in found if not text[s:e].islower()]
         return cased or found

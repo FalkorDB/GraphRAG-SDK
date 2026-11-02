@@ -382,7 +382,11 @@ class TestBackfillEntity:
         rag._graph_store.upsert_nodes = AsyncMock(return_value=1)
         rag._graph_store.upsert_relationships = AsyncMock(return_value=1)
         result = await rag.backfill_entity("Person", scope="all")
-        rag._graph_store.upsert_nodes.assert_awaited_once()
+        # The node, its edge, then the node's description: text reaches the
+        # node only once the edge that records it is written.
+        first, second = (c.args[0][0] for c in rag._graph_store.upsert_nodes.await_args_list)
+        assert "description" not in first.properties
+        assert second.properties == {"name": "Bob", "description": "A founder"}
         rag._graph_store.upsert_relationships.assert_awaited_once()
         # The MENTIONED_IN edge points the entity at the chunk.
         rel_call = rag._graph_store.upsert_relationships.await_args.args[0]
@@ -419,6 +423,9 @@ class TestBackfillEntity:
         rag._graph_store.upsert_relationships = AsyncMock(return_value=0)
         result = await rag.backfill_entity("Person", scope="all")
         assert result.failed_chunks == ["c1"]
+        # The description never reached the node.
+        (node,) = rag._graph_store.upsert_nodes.await_args.args[0]
+        assert "description" not in node.properties
 
     async def test_date_gate_uses_the_ontology_not_the_target_label(self, rag):
         """Backfilling `Product` in a graph whose ontology declares `Date` must

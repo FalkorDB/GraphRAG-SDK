@@ -25,6 +25,10 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.storage.deduplicator import properties_to_carry
 from graphrag_sdk.storage.merge_query import (
+    MAX_DESCRIPTION_MEMBERS,
+    SAID_VERSION,
+    SAID_VERSION_KEY,
+    combined_descriptions,
     copy_on_server,
     description_members,
     fold_query,
@@ -106,25 +110,23 @@ _JOIN_DESCRIPTION = (
 
 
 def _mention_union(props: str) -> str:
-    """What a mention-edge write does after its MERGE of ``r``: set the
-    write's ``props``, then combine its spans and descriptions with what the
-    edge held, as a merge does (``merge_query.mention_update``)."""
+    """What a mention-edge write does after its MERGE of ``r``: mark an edge
+    it creates as this version's (``SAID_VERSION_KEY``; one that existed
+    keeps what it had), set the write's ``props``, then combine its spans and
+    descriptions with what the edge held, as a merge does
+    (``merge_query.mention_update``)."""
     return (
+        f"ON CREATE SET r.{SAID_VERSION_KEY} = {SAID_VERSION} "
         f"WITH r, {props} AS props, coalesce(r.spans, []) AS old_spans, "
         f"{description_members('r')} AS old_ds "
         "WITH r, props, old_spans, "
-        f"old_ds + [x IN {description_members('props')} WHERE NOT x IN old_ds] AS all_ds "
+        f"{combined_descriptions('old_ds', 'props')} AS all_ds "
         f"SET r += props SET {mention_update('r', 'props')}"
     )
 
 
 #: A node with more descriptions than this is summarised into one by finalize().
 SUMMARISE_OVER_MEMBERS = 5
-#: Most descriptions a write may leave on a node. Past it, a new mention's
-#: description is kept on its MENTIONED_IN edge only, so a node stays bounded
-#: however much is ingested before the next finalize(). A write never cuts what
-#: a node already holds (a merge can leave more); finalize() summarises it.
-MAX_DESCRIPTION_MEMBERS = 20
 #: Longest summary written, in characters: the prompt asks for a length, this
 #: enforces it.
 MAX_SUMMARY_CHARS = 1000
@@ -1060,7 +1062,7 @@ class GraphStore:
             await self._conn.query(
                 "UNWIND $ids AS eid MATCH (e:__Entity__ {id: eid}) "
                 "CALL { WITH e OPTIONAL MATCH (e)-[u:MENTIONED_IN]->(c:Chunk) "
-                "RETURN collect(CASE WHEN u.description IS NULL "
+                f"RETURN collect(CASE WHEN u IS NOT NULL AND u.{SAID_VERSION_KEY} IS NULL "
                 "AND c.record_key IS NULL THEN 1 END)[..1] AS undescribed } "
                 "RETURN e.id, coalesce(e.description, ''), e.descriptions, "
                 f"coalesce(e.{SUMMARISED_KEY}, false), size(undescribed) > 0",
@@ -1074,6 +1076,10 @@ class GraphStore:
             members = self._members(current, held)
             rebuild = summarised and not undescribed
             if rebuild:
+                # An update removes unchanged chunks too, whose new copies say
+                # the same: a summary nothing was taken from stays.
+                if set(await self._remaining_said(eid, among=list(gone))) >= gone:
+                    continue
                 kept = await self._remaining_said(eid, limit=MAX_DESCRIPTION_MEMBERS)
             else:
                 dropped = [m for m in members if m in gone]
@@ -1081,7 +1087,8 @@ class GraphStore:
                     continue
                 still = await self._remaining_said(eid, among=dropped)
                 kept = [m for m in members if m not in gone or m in still]
-                if len(members) >= MAX_DESCRIPTION_MEMBERS > len(kept):
+                # Not beside a kept summary, which may already cover them.
+                if not summarised and len(members) >= MAX_DESCRIPTION_MEMBERS > len(kept):
                     kept += await self._remaining_said(
                         eid, limit=MAX_DESCRIPTION_MEMBERS - len(kept), besides=kept
                     )

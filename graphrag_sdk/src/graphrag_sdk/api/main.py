@@ -1784,15 +1784,41 @@ class GraphRAG:
                 )
                 filled += 1
             if new_nodes:
-                await self._graph_store.upsert_nodes(new_nodes)
+                # The edge is the record a delete takes the text off by, so
+                # the node gets its description only once its edge is written;
+                # a chunk whose edge was not written is not marked done.
+                await self._graph_store.upsert_nodes(
+                    [
+                        n.model_copy(
+                            update={
+                                "properties": {
+                                    k: v for k, v in n.properties.items() if k != "description"
+                                }
+                            }
+                        )
+                        for n in new_nodes
+                    ]
+                )
                 written = await self._graph_store.upsert_relationships(new_mentions)
                 if _reported_short(written, len(new_mentions)):
-                    # The edge is the record a delete takes the text off by;
-                    # without it the chunk must not be marked done.
                     raise DatabaseError(
                         f"backfill wrote {written} of {len(new_mentions)} mention edges "
                         f"for chunk {ctx.chunk_id}"
                     )
+                described = [
+                    n.model_copy(
+                        update={
+                            "properties": {
+                                "name": n.properties["name"],
+                                "description": n.properties["description"],
+                            }
+                        }
+                    )
+                    for n in new_nodes
+                    if n.properties.get("description")
+                ]
+                if described:
+                    await self._graph_store.upsert_nodes(described)
             return BackfillMergeStats(values_filled=filled, values_skipped=skipped)
 
         executor = BackfillExecutor(self.llm, self._graph_store, concurrency=concurrency)

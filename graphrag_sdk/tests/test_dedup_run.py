@@ -614,6 +614,26 @@ async def test_a_merge_keeps_both_mentions_of_a_chunk_they_share(graph):
     assert set(description.split(" | ")) == {"CEO of Apple", "Dr. Cook"}
 
 
+async def test_a_merged_mention_edge_is_this_versions_only_if_both_were(graph):
+    """An edge an earlier version wrote never recorded what its chunk put on
+    the node; merged into one this version wrote, the result has not either."""
+    await checked_graph(graph)
+    await graph.query_raw(
+        "CREATE (c:Chunk {id: 'c1'}), (c2:Chunk {id: 'c2'}) WITH c, c2 "
+        "MATCH (t:__Entity__ {id: 'tim'}), (u:__Entity__ {id: 'timothy'}) "
+        "CREATE (t)-[:MENTIONED_IN {description: 'CEO of Apple', said_version: 1}]->(c), "
+        "(u)-[:MENTIONED_IN {description: 'Dr. Cook'}]->(c), "
+        "(u)-[:MENTIONED_IN {description: 'Runs Apple', said_version: 1}]->(c2)"
+    )
+    await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([TIM, APPLE])))
+    edges = await rows(
+        graph,
+        "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(c:Chunk) RETURN c.id, m.said_version "
+        "ORDER BY c.id",
+    )
+    assert edges == [["c1", None], ["c2", 1]]
+
+
 async def test_a_merge_adds_each_description_of_a_shared_chunk_once_and_whole(graph):
     """One duplicate's edge holds two descriptions, one of them with " | "
     inside; the other's says one of them again. Whichever survives, each is

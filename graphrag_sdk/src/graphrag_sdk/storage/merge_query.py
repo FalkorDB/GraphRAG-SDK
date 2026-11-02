@@ -358,13 +358,41 @@ _ABSORB_HEAD = (
 _CARRIED = f"{_TICKED}, d, s, present, fresh, unhandled, ok"
 
 
+#: Most descriptions a write may leave on a node or a mention edge. Past it, a
+#: new mention's description is kept on its MENTIONED_IN edge only, so a node
+#: stays bounded however much is ingested before the next finalize(); an edge
+#: (one chunk, ingested again after an incomplete run) stops taking new
+#: wordings. A write never cuts what either already holds (a merge can leave
+#: more); finalize() summarises a node.
+MAX_DESCRIPTION_MEMBERS = 20
+
+#: On a MENTIONED_IN edge: this version wrote it when it was created, so it
+#: records everything its chunk put on the entity's description. An edge an
+#: earlier version wrote has none, even after a later write adds a
+#: description to it: the text its chunk put on the node then was never
+#: recorded, so the node cannot be rebuilt from its edges.
+SAID_VERSION_KEY = "said_version"
+SAID_VERSION = 1
+
+
 def description_members(edge: str) -> str:
     """A mention edge's descriptions as a list: its ``descriptions``, else its
-    ``description`` as one member, blank ones left out (as on a node)."""
+    ``description`` as one member, trimmed, blank ones left out (as on a
+    node)."""
     return (
-        f"[x IN coalesce({edge}.descriptions, "
+        f"[x IN [y IN coalesce({edge}.descriptions, "
         f"CASE WHEN {edge}.description IS NULL THEN [] ELSE [{edge}.description] END) "
-        "WHERE trim(x) <> '']"
+        "| trim(y)] WHERE x <> '']"
+    )
+
+
+def combined_descriptions(old: str, new: str) -> str:
+    """``old`` (a list in scope) plus ``new``'s description members it lacks,
+    up to ``MAX_DESCRIPTION_MEMBERS`` — never fewer than ``old`` holds."""
+    return (
+        f"CASE WHEN size({old}) >= {MAX_DESCRIPTION_MEMBERS} THEN {old} "
+        f"ELSE ({old} + [x IN {description_members(new)} WHERE NOT x IN {old}])"
+        f"[..{MAX_DESCRIPTION_MEMBERS}] END"
     )
 
 
@@ -372,8 +400,8 @@ def mention_update(edge: str, new: str) -> str:
     """The SET items that combine what mention edge ``edge`` holds with what
     ``new`` (an edge or a map) brings: the spans, each pair once, and the
     descriptions, each once and each whole, stored as on a node. Needs
-    ``old_spans`` (``edge``'s spans) and ``all_ds`` (``edge``'s descriptions
-    plus ``new``'s it lacks) in scope."""
+    ``old_spans`` (``edge``'s spans) and ``all_ds``
+    (:func:`combined_descriptions`) in scope."""
     spans = f"coalesce({new}.spans, [])"
     return (
         f"{edge}.spans = CASE WHEN size(old_spans) + size({spans}) = 0 "
@@ -436,14 +464,21 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
         # ``+=`` the duplicate's edge replaced the survivor's, and its
         # description, the only record of what that chunk said about the
         # survivor, was gone.
+        # The combined edge records everything only if both did: one an
+        # earlier version wrote keeps the merged edge an earlier version's.
         read_old = (
             f"OPTIONAL MATCH {existing} "
             f"WITH {carried}, e, b, coalesce(ex.spans, []) AS old_spans, "
-            f"{description_members('ex')} AS old_ds "
-            f"WITH {carried}, e, b, old_spans, "
-            f"old_ds + [x IN {description_members('e')} WHERE NOT x IN old_ds] AS all_ds "
+            f"{description_members('ex')} AS old_ds, ex IS NULL AS no_ex, "
+            f"ex.{SAID_VERSION_KEY} AS old_v "
+            f"WITH {carried}, e, b, old_spans, no_ex, old_v, "
+            f"{combined_descriptions('old_ds', 'e')} AS all_ds "
         )
-        update = f"SET nr += properties(e) SET {mention_update('nr', 'e')}"
+        update = (
+            f"SET nr += properties(e) SET {mention_update('nr', 'e')}, "
+            f"nr.{SAID_VERSION_KEY} = CASE WHEN no_ex THEN e.{SAID_VERSION_KEY} "
+            f"WHEN old_v IS NULL OR e.{SAID_VERSION_KEY} IS NULL THEN null ELSE old_v END"
+        )
     else:
         read_old, update = "", "SET nr += properties(e)"
     return (

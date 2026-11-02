@@ -257,8 +257,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   up to 15); LLM cost +3%; `finalize()` ~3 s longer (median 3.2 → 6.1 s),
   ingest and queries unchanged. Graphs written by an earlier version keep their
   entity `source_chunk_ids` lists, which the update and delete paths still
-  trim; their mention edges record no description, so text a document
-  ingested by an earlier version wrote is kept when that document is deleted.
+  trim; their mention edges record no description and no `said_version` (an
+  edge this version creates carries it, and a later write that adds a
+  description to an older edge does not), so text a document ingested by an
+  earlier version wrote is kept when that document is deleted.
 
 - **The dedup judge's fixed instructions come first in its prompt, so the
   provider caches them.** The set count sat ~150 tokens in and the decision
