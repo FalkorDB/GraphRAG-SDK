@@ -676,9 +676,10 @@ class GraphRAGToolkit:
     def _evidence(
         self, tool: str, kind: str, content: str, source: str = "", **meta: Any
     ) -> int | None:
-        # The full text the agent was shown, so check_citations checks the
-        # same text the agent cited from. Nothing to cite gets no number, so
-        # an empty passage cannot make an answer grounded.
+        # What check_citations checks a cited [n] against: the item's full
+        # text (a whole passage, the whole status or ontology text), which
+        # to_llm_text() may show only in part. Nothing to cite gets no
+        # number, so an empty passage cannot make an answer grounded.
         if not content.strip():
             return None
         return self._ledger.add(
@@ -1000,10 +1001,13 @@ class GraphRAGToolkit:
         say who founded Globex.") is not a claim and needs no [n].
         """
         inp = CheckCitationsInput(answer=answer)
-        checked = ground_answer(inp.answer, self._ledger)
+        # Checked off the event loop, so a long answer does not stall other
+        # sessions, against a copy that evidence added meanwhile cannot change.
+        ledger = self._ledger.snapshot()
+        checked = await asyncio.to_thread(ground_answer, inp.answer, ledger)
         sources = [
             EvidenceRef(n=ev.n, tool=ev.tool, kind=ev.kind, content=ev.content, source=ev.source)
-            for ev in checked.citations(self._ledger)
+            for ev in checked.citations(ledger)
         ]
         hints: list[str] = []
         if checked.reason == "no_citations" and states_a_gap(checked.answer):

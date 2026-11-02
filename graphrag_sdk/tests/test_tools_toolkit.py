@@ -4,6 +4,7 @@ FalkorDB in test_tools_integration.py."""
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -419,7 +420,7 @@ class TestReadTools:
         dumped = result.chunks[0].model_dump(exclude_none=True)
         assert dumped["document_id"] == "/docs/a.txt" and "document_path" not in dumped
         assert toolkit.ledger.get(result.chunks[0].n).source == "/docs/a.txt"
-        assert "[/docs/a.txt]" in result.to_llm_text()
+        assert "[a.txt]" in result.to_llm_text()  # the path's last part
 
     async def test_retrieve_nothing_found_hint(self, toolkit, monkeypatch):
         async def none(*a, **k):
@@ -654,6 +655,22 @@ class TestCheckCitations:
         assert "drop it" in (result.hint or "") and "correct the claim" in (result.hint or "")
         text = result.to_llm_text()
         assert "No citation (1):" in text and "missing: Globex" in text
+
+    async def test_checking_runs_off_the_event_loop_on_a_copy(self, toolkit, monkeypatch):
+        toolkit.ledger.add(tool="retrieve", kind="relation", content="Alice -[WORKS_AT]-> Acme")
+        seen: list[Any] = []
+        to_thread = asyncio.to_thread
+
+        async def spy(func, *args, **kwargs):
+            seen.append(args[1])
+            # Evidence added while the check runs must not change the copy it reads.
+            toolkit.ledger.add(tool="retrieve", kind="passage", content="Bob works at Globex.")
+            return await to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", spy)
+        result = await toolkit.check_citations("Alice works at Acme [1]. Bob works at Globex [2].")
+        assert len(seen) == 1 and seen[0] is not toolkit.ledger
+        assert result.invalid == [2] and len(toolkit.ledger) == 2
 
     async def test_sessions_do_not_share_numbers(self, toolkit: GraphRAGToolkit):
         toolkit.ledger.add(tool="t", kind="k", content="x")

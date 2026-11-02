@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from graphrag_sdk.tools.evidence import EvidenceLedger, ground_answer
 from graphrag_sdk.tools.models import (
     ChunkRef,
     CitationCheckResult,
@@ -196,6 +197,42 @@ def test_long_snippets_are_capped():
     assert len(fact_line) == len("- [1] ") + 240
 
 
+def test_a_passage_is_shown_up_to_about_a_chunk():
+    text = (
+        "The Fjordline contract was signed in March for 4.2 million euros. " * 11
+        + "After two change orders the final cost was 4.65 million euros. "
+        + "x" * 177
+    )
+    assert len(text) == 966 and text.index("4.65") > 740
+    model = RetrieveResult(
+        question="q",
+        chunks=[
+            ChunkRef(
+                n=1,
+                chunk_id="c1",
+                document_path="/data/projects/2024/fjordline/contracts/final_report.pdf",
+                text=text,
+            )
+        ],
+    )
+    rendered = model.to_llm_text()
+    assert "final cost was 4.65 million" in rendered
+    assert "- [1] [final_report.pdf] The Fjordline" in rendered and "/data/" not in rendered
+
+
+def test_passages_get_a_bigger_share_than_other_sections():
+    model = RetrieveResult(
+        question="q",
+        facts=[Fact(n=i, text=f"Fact {i}. " + "f" * 200) for i in range(1, 31)],
+        chunks=[
+            ChunkRef(n=100 + i, chunk_id=f"c{i}", document_id="d", text="p" * 600)
+            for i in range(30)
+        ],
+    )
+    facts, passages = model.to_llm_text(max_chars=6000).split("Passages (30):")
+    assert len(passages) > 1.8 * len(facts)
+
+
 # ── Per-model rendering ──────────────────────────────────────────
 
 
@@ -224,6 +261,33 @@ def test_ontology_rendering():
         "Entity types (1):\n- Person: 2 — A human (props: age)\n"
         "Relation types (1):\n- WORKS_AT: 0 [Person->Company] — Employment"
     )
+
+
+def four_and_two_types() -> tuple[list[EntityTypeInfo], list[RelationTypeInfo]]:
+    entity_types = [
+        EntityTypeInfo(label=label, count=count)
+        for label, count in [("Location", 3), ("Organization", 4), ("Person", 2), ("Event", 1)]
+    ]
+    relation_types = [
+        RelationTypeInfo(label="LOCATED_IN", count=3),
+        RelationTypeInfo(label="WORKS_AT", count=5),
+    ]
+    return entity_types, relation_types
+
+
+@pytest.mark.parametrize("cls", [StatusResult, OntologyResult])
+def test_short_lines_that_fit_are_all_kept(cls):
+    entity_types, relation_types = four_and_two_types()
+    model = cls(n=1, entity_types=entity_types, relation_types=relation_types)
+    for max_chars in (8000, 100_000):
+        text = model.to_llm_text(max_chars=max_chars)
+        assert "omitted" not in text
+        assert "- Event: 1" in text and "- WORKS_AT: 5" in text
+    # What check_citations checks a status or ontology citation against.
+    led = EvidenceLedger()
+    led.add(tool="status", kind="status", content=model.to_llm_text(max_chars=100_000))
+    g = ground_answer("The graph has 2 Person entities and 5 WORKS_AT relations [1].", led)
+    assert g.grounded and g.unsupported == []
 
 
 def test_whole_floats_are_shown_as_integers():

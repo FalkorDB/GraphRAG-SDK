@@ -57,14 +57,18 @@ async def search_relates_edges(
                 fact_strings.append((line, score))
             # Add entities as graph entry points, by their stored ids (typed,
             # e.g. "alice__person") so expansion can walk from them. A store
-            # that returns no ids gets ids made from the names; an endpoint
-            # with no name (a table row without a name column) keeps its id.
+            # that returns no ids gets ids made from the names. An endpoint
+            # with no name (a relation edge from a table sets none) still
+            # seeds expansion, but gets an empty name so the answer's Key
+            # Entities never show its raw id; a later edge may name it.
             for name, stored_id in ((src, rel.get("src_id")), (tgt, rel.get("tgt_id"))):
                 eid = stored_id or (name or "").strip().lower().replace(" ", "_")
                 if not eid:
                     continue
                 if eid not in entities:
-                    entities[eid] = {"name": name or str(stored_id), "description": ""}
+                    entities[eid] = {"name": name or "", "description": ""}
+                elif name and not entities[eid]["name"]:
+                    entities[eid]["name"] = name
     except LatencyBudgetExceededError:
         raise
     except Exception as exc:

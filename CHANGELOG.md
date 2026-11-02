@@ -125,7 +125,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns a typed result
   whose `to_llm_text()` stays under a fixed size (8,000 characters by
   default), shared across its sections so a long relation list cannot push
-  out the passages; a cut section says how many items it omitted.
+  out the passages (which get twice the share, up to about 1,200 characters
+  each); a cut section says how many items it omitted.
 - **Every piece of evidence is numbered.** Entities, relations, facts and passages,
   and each `status` / `get_ontology` result, carry an `[n]` from a per-session ledger
   (`toolkit.new_session()`), and `check_citations(answer)` reports which `[n]`
@@ -682,6 +683,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rerank, and parsing those replies in pure Python was most of the client's
   CPU per question: about 48 ms down to 11 ms in our tests, so one process
   serves more concurrent questions.
+- **Relationship expansion now starts from the endpoints of matched `RELATES`
+  edges, by their stored ids.** `search_relationships()` /
+  `search_relates_edges()` return each edge's `src_id` / `tgt_id`, and
+  expansion walks from those ids instead of ids guessed from names, which
+  missed typed ids such as `alice__person`. So the default `rag.retrieve()` /
+  `completion()` context can include more relationship lines than before. An
+  endpoint with no name (a relation edge from a table) seeds expansion but is
+  not listed under Key Entities. When there are more lines than
+  `max_relationships`, 2-hop lines keep up to a third of the room, so 1-hop
+  lines cannot crowd them all out.
 
 ### Fixed
 - **A rejected `GraphRAG.set_ontology()` no longer sticks.** When the new

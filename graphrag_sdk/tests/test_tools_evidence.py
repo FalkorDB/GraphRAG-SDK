@@ -351,6 +351,40 @@ class TestClaimChecks:
         led.add(tool="retrieve", kind="passage", content=content)
         assert ground_answer(answer, led).unsupported == []
 
+    @pytest.mark.parametrize(
+        ("answer", "content"),
+        [
+            ("Then Sean O’Brien signed it [1].", "Sean O'Brien signed it."),
+            ("Then Sean O'Brien signed it [1].", "Sean O’Brien signed it."),
+            ("Then Sean Oʼbrien signed it [1].", "Sean O‘Brien signed it."),
+        ],
+    )
+    def test_curly_apostrophes_match_straight_ones(self, answer, content):
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="passage", content=content)
+        assert ground_answer(answer, led).unsupported == []
+
+    @pytest.mark.parametrize(
+        ("answer", "content"),
+        [
+            ("Then Sensara GmbH hired Bob [1].", "Sensara hired Bob."),
+            ("Then Acme Corporation hired Bob [1].", "Acme Corp. hired Bob."),
+            ("Then Acme Corp. hired Bob [1].", "Acme Corporation hired Bob."),
+            ("Then Initech Inc. hired Bob [1].", "Initech, Ltd. hired Bob."),
+            ("Then Globex Holdings LLC hired Bob [1].", "Globex Holdings hired Bob."),
+        ],
+    )
+    def test_a_company_name_matches_without_its_legal_form(self, answer, content):
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="passage", content=content)
+        assert ground_answer(answer, led).unsupported == []
+
+    def test_a_legal_form_does_not_excuse_another_name(self):
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="passage", content="Acme Corp. hired Bob.")
+        g = ground_answer("Then Globex Corp hired Bob [1].", led)
+        assert [u.missing for u in g.unsupported] == [["Globex Corp"]]
+
     def test_the_source_path_is_not_evidence(self):
         led = EvidenceLedger()
         led.add(tool="retrieve", kind="passage", content="Sales rose.", source="report_2024.pdf")
@@ -405,6 +439,37 @@ class TestGaps:
         g = ground_answer(f"Initech was acquired in 2019 [1]. {sentence}", contract_2019())
         assert g.uncited == [sentence]
 
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "The evidence does not say who founded Globex, but Globex was founded in 1850 "
+            "by Jane Roe.",
+            "Not stated in the evidence: Globex revenue was 9 billion in 2022.",
+            "Globex was founded in 1850 by Jane Roe; the graph has no record of its CEO.",
+            "I could not find who audits Globex, but Jane Roe ran it in 1850.",
+            "Globex was founded in 1850 by Jane Roe, although the sources do not say where.",
+            "Who founded Globex is not stated, but Jane Roe ran it in 1850.",
+            "Globex was founded in 1850 by Jane Roe (the graph does not say where).",
+        ],
+    )
+    def test_a_gap_does_not_excuse_a_claim_in_the_same_sentence(self, sentence):
+        g = ground_answer(f"Initech was acquired in 2019 [1]. {sentence}", contract_2019())
+        assert g.uncited == [sentence]
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "The evidence does not say who founded Globex.",
+            "Who founded Globex is not stated.",
+            "The graph does not say who founded Globex, nor when Globex Holdings was formed.",
+            "The sources do not say who founded Globex; I could not find it elsewhere.",
+            "Globex's 2023 revenue is not stated in the evidence.",
+        ],
+    )
+    def test_a_sentence_that_only_states_gaps_needs_no_citation(self, sentence):
+        g = ground_answer(f"Initech was acquired in 2019 [1]. {sentence}", contract_2019())
+        assert g.uncited == []
+
 
 def contract_2019() -> EvidenceLedger:
     led = EvidenceLedger()
@@ -422,6 +487,41 @@ class TestPerformance:
         g = ground_answer(answer, led)
         assert time.perf_counter() - start < 2.0
         assert g.grounded and sorted(g.cited) == list(range(1, 50))
+
+    def test_many_sentences_citing_the_whole_ledger_are_checked_quickly(self):
+        led = EvidenceLedger()
+        for i in range(DEFAULT_LEDGER_CAPACITY):
+            led.add(
+                tool="retrieve",
+                kind="passage",
+                content=(f"Acme Corp paid {i}.5 million to Globex in 2019. " * 8)[:300],
+            )
+        every = ", ".join(f"{a}-{min(a + 48, len(led))}" for a in range(1, len(led) + 1, 49))
+        answer = " ".join(
+            f"Acme paid {i}.5 million to Globex Holdings in {1900 + i} [{every}]."
+            for i in range(128)
+        )
+        start = time.perf_counter()
+        g = ground_answer(answer, led)
+        assert time.perf_counter() - start < 1.5  # was about 2.5 s on a laptop
+        assert g.grounded and len(g.unsupported) == 10
+        assert g.unsupported[0].missing == ["1900", "Globex Holdings"]
+
+    def test_cached_evidence_gives_the_same_results(self):
+        led = EvidenceLedger()
+        led.add(tool="retrieve", kind="passage", content="Corvane paid 1,200.50 EUR.")
+        led.add(tool="retrieve", kind="passage", content="Systems at Initech cost 40.0 EUR.")
+        answer = (
+            "Corvane Systems paid 1200.5 EUR [1, 2]. Corvane Systems paid 40 EUR [2, 1]. "
+            "Corvane Systems paid 40 EUR [1]. Initech Systems paid 7 EUR [2]. "
+            "Corvane Systems paid 1200.5 EUR [1][2]."
+        )
+        g = ground_answer(answer, led)
+        # A name may take its words from different cited items, in any order.
+        assert [(u.sentence, u.missing) for u in g.unsupported] == [
+            ("Corvane Systems paid 40 EUR [1].", ["40", "Corvane Systems"]),
+            ("Initech Systems paid 7 EUR [2].", ["7"]),
+        ]
 
     @pytest.mark.parametrize(
         "answer",

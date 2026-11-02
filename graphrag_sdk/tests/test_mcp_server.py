@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -213,6 +214,21 @@ class TestCallTool:
     )
     def test_redact_leaves_ordinary_text(self, text):
         assert redact(text) == text
+
+    @pytest.mark.parametrize("text", ["_" * 40_000, "a-" * 20_000, "'" + "_" * 40_000])
+    def test_redact_is_fast_on_long_runs(self, text):
+        start = time.perf_counter()
+        assert redact(text) == text
+        assert time.perf_counter() - start < 0.5  # was 2 to 20 s
+
+    def test_redact_still_masks_after_a_long_run(self):
+        text = "_" * 5000 + " OPENAI_API_KEY=abc123 " + "a-" * 2000 + "redis://u:hunter2@db"
+        shown = redact(text)
+        assert "abc123" not in shown and "hunter2" not in shown
+        assert "OPENAI_API_KEY=***" in shown and "redis://***:***@db" in shown
+        assert redact("Connecting...postgres://u:hunter2@db") == (
+            "Connecting...postgres://***:***@db"
+        )
 
     async def test_evidence_cut_from_a_reply_cannot_be_cited(self, server: GraphRAGMCPServer):
         from pydantic import BaseModel
