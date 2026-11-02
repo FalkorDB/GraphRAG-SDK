@@ -382,12 +382,18 @@ class TestBackfillEntity:
         rag._graph_store.upsert_nodes = AsyncMock(return_value=1)
         rag._graph_store.upsert_relationships = AsyncMock(return_value=1)
         result = await rag.backfill_entity("Person", scope="all")
-        rag._graph_store.upsert_nodes.assert_awaited_once()
+        # The node, its edge, then the node's description: text reaches the
+        # node only once the edge that records it is written.
+        first, second = (c.args[0][0] for c in rag._graph_store.upsert_nodes.await_args_list)
+        assert "description" not in first.properties
+        assert second.properties == {"name": "Bob", "description": "A founder"}
         rag._graph_store.upsert_relationships.assert_awaited_once()
         # The MENTIONED_IN edge points the entity at the chunk.
         rel_call = rag._graph_store.upsert_relationships.await_args.args[0]
         assert rel_call[0].type == "MENTIONED_IN"
         assert rel_call[0].end_node_id == "c1"
+        # What the chunk said is on its edge too, so a delete can take it off.
+        assert rel_call[0].properties == {"description": "A founder"}
         assert result.values_filled == 1
         # Same (name, type) id as the extraction path, so the backfilled node
         # merges with an extracted "Bob" instead of living in its own namespace.
@@ -400,6 +406,44 @@ class TestBackfillEntity:
         assert rel_call[0].start_node_id == node.id
 
     @pytest.mark.asyncio
+    async def test_a_short_mention_edge_write_leaves_the_chunk_unmarked(self, rag):
+        """The edge is the record a delete takes the backfilled text off by:
+        a chunk whose edge was not written must be retried, not marked done."""
+        rag.llm = MockLLM(
+            responses=[
+                json.dumps(
+                    {"entities": [{"name": "Bob", "description": "A founder", "attributes": {}}]}
+                )
+            ]
+        )
+        rag._graph_store.list_chunks_for_entity_backfill = AsyncMock(
+            return_value=[{"chunk_id": "c1", "chunk_text": "Bob runs Acme"}]
+        )
+        rag._graph_store.upsert_nodes = AsyncMock(return_value=1)
+        rag._graph_store.upsert_relationships = AsyncMock(return_value=0)
+        result = await rag.backfill_entity("Person", scope="all")
+        assert result.failed_chunks == ["c1"]
+        # The description never reached the node.
+        (node,) = rag._graph_store.upsert_nodes.await_args.args[0]
+        assert "description" not in node.properties
+
+    async def test_a_short_description_write_leaves_the_chunk_unmarked(self, rag):
+        rag.llm = MockLLM(
+            responses=[
+                json.dumps(
+                    {"entities": [{"name": "Bob", "description": "A founder", "attributes": {}}]}
+                )
+            ]
+        )
+        rag._graph_store.list_chunks_for_entity_backfill = AsyncMock(
+            return_value=[{"chunk_id": "c1", "chunk_text": "Bob runs Acme"}]
+        )
+        # The node and its edge are written; the description write is not.
+        rag._graph_store.upsert_nodes = AsyncMock(side_effect=[1, 0])
+        rag._graph_store.upsert_relationships = AsyncMock(return_value=1)
+        result = await rag.backfill_entity("Person", scope="all")
+        assert result.failed_chunks == ["c1"]
+
     async def test_date_gate_uses_the_ontology_not_the_target_label(self, rag):
         """Backfilling `Product` in a graph whose ontology declares `Date` must
         keep numeric names ("747") exactly as normal extraction would; only the

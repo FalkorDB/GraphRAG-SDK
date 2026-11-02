@@ -506,7 +506,8 @@ class TestFailOpen:
 class TestMerge:
     async def test_entity_in_cached_and_extracted_chunk_unions_provenance(self, ontology, ctx):
         """Same entity in an unchanged chunk (cached) and a changed chunk
-        (extracted): fresh properties win, provenance is the union."""
+        (extracted): fresh properties win, provenance is the union, and so
+        are the descriptions — both chunks are in the new version."""
         store = FakeGraphStore(
             chunk_texts=[("old-1", "unchanged")],
             entity_rows=[
@@ -544,9 +545,40 @@ class TestMerge:
 
         assert len(result.nodes) == 1
         node = result.nodes[0]
-        assert node.properties["description"] == "New description"  # fresh wins
+        assert node.properties["name"] == "Alice"
+        assert node.properties["descriptions"] == ["Old description", "New description"]
+        assert node.properties["description"] == "Old description | New description"
         assert set(node.properties["source_chunk_ids"]) == {"new-1", "new-2"}  # union
         assert {m.chunk_id for m in result.mentions} == {"new-1", "new-2"}
+
+    def test_a_chunk_an_earlier_version_mentioned_is_extracted_again(self):
+        """Its edge never recorded what the chunk said; copied, the new edge
+        would claim to while holding nothing."""
+        rows = [
+            ChunkEntityRow(chunk_id="old", entity_id="alice", label="Person", recorded=False),
+            ChunkEntityRow(chunk_id="kept", entity_id="bob", label="Person"),
+        ]
+        assert CachedChunkExtraction._usable_chunks(["old", "kept"], rows, []) == {"kept"}
+
+    def test_a_fresh_description_is_added_to_a_cached_list(self):
+        """A cached part hands a ``descriptions`` list, which the store reads
+        before ``description``: overlaid, the fresh description never reached
+        the node."""
+        cached = GraphData(
+            nodes=[
+                GraphNode(
+                    id="e1",
+                    label="Person",
+                    properties={"description": "CEO | Founder", "descriptions": ["CEO", "Founder"]},
+                )
+            ]
+        )
+        fresh = GraphData(
+            nodes=[GraphNode(id="e1", label="Person", properties={"description": "Investor"})]
+        )
+        (node,) = CachedChunkExtraction._merge([cached, fresh]).nodes
+        assert node.properties["descriptions"] == ["CEO", "Founder", "Investor"]
+        assert node.properties["description"] == "CEO | Founder | Investor"
 
     async def test_extracted_entities_and_relations_pass_through(self, ontology, ctx):
         from graphrag_sdk.core.models import ExtractedEntity
@@ -596,10 +628,13 @@ class TestGraphStoreCacheAccessors:
                         ["Person", "__Entity__"],
                         "Alice",
                         "Person",
-                        "Engineer",
+                        "Engineer | Founder | Acme",
                         ["c1", "x"],
+                        [3, 8],
+                        ["Engineer", "Founder | Acme"],
+                        False,
                     ],
-                    ["c1", None, ["Person"], "NoId", "Person", None, []],  # skipped
+                    ["c1", None, ["Person"], "NoId", "Person", None, [], [], None, True],  # skipped
                 ]
             )
         )
@@ -609,6 +644,15 @@ class TestGraphStoreCacheAccessors:
         assert row.entity_id == "alice__person"
         assert row.label == "Person"  # __Entity__ filtered out
         assert row.source_chunk_ids == ["c1", "x"]
+        # What this chunk's own edge holds — not the entity's description —
+        # each description whole, never split on the " | " inside one.
+        assert row.description == "Engineer | Founder | Acme" and row.spans == [3, 8]
+        assert row.descriptions == ["Engineer", "Founder | Acme"]
+        # An earlier version wrote this edge: it never recorded what the chunk said.
+        assert row.recorded is False
+        assert "said_version" in mock_connection.query.call_args[0][0]
+        cypher = mock_connection.query.call_args[0][0]
+        assert "m.description" in cypher and "e.description" not in cypher
 
     async def test_get_entities_label_none_when_no_concrete_label(
         self, graph_store, mock_connection
@@ -620,7 +664,9 @@ class TestGraphStoreCacheAccessors:
 
         mock_connection.query = AsyncMock(
             return_value=MagicMock(
-                result_set=[["c1", "e1", ["__Entity__"], "X", "Widget", None, None]]
+                result_set=[
+                    ["c1", "e1", ["__Entity__"], "X", "Widget", None, None, None, None, True]
+                ]
             )
         )
         rows = await graph_store.get_entities_mentioned_in_chunks(["c1"])
@@ -672,13 +718,14 @@ class TestGraphStoreCacheAccessors:
 
         mock_connection.query = AsyncMock(
             return_value=MagicMock(
-                result_set=[["c1", "e1", "Person", "Alice", "Person", None, "abc"]]
+                result_set=[["c1", "e1", "Person", "Alice", "Person", None, "abc", "xy", "z", True]]
             )
         )
         rows = await graph_store.get_entities_mentioned_in_chunks(["c1"])
         assert len(rows) == 1
         assert rows[0].label is None  # scalar labels → no concrete label
         assert rows[0].source_chunk_ids == []  # "abc" must not become ['a','b','c']
+        assert rows[0].spans == []
 
     async def test_relationship_scalar_provenance_skipped(self, graph_store, mock_connection):
         from unittest.mock import MagicMock
@@ -845,9 +892,9 @@ class TestCachedUpdateIntegration:
         assert await count("Carol") == 0, "replaced-chunk entity must be orphan-cleaned"
         assert await count("Dave") == 1, "new-chunk entity must be extracted"
 
-        # Provenance: Alice's source_chunk_ids must point only at LIVE chunks.
+        # Provenance: Alice's mention edges must point only at LIVE chunks.
         r = await rag._graph_store.query_raw(
-            "MATCH (e:__Entity__) WHERE e.name = 'Alice' RETURN e.source_chunk_ids"
+            "MATCH (e:__Entity__ {name: 'Alice'})-[:MENTIONED_IN]->(c:Chunk) RETURN collect(c.id)"
         )
         alice_srcs = r.result_set[0][0] or []
         r = await rag._graph_store.query_raw(

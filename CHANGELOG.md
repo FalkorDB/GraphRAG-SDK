@@ -226,6 +226,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **An entity stays the same size however often it is mentioned.** Its node
+  held a `source_chunk_ids` list and a `spans` JSON that grew with every
+  mention and were rewritten on every write, and a merge appended every
+  member's description to `descriptions`, without limit. Now which chunks
+  mention an entity, where (`spans`) and what each says it is (`description`,
+  and `descriptions` when there is more than one, each kept whole) are on its
+  `MENTIONED_IN` edges, one per chunk, written once and deleted with the
+  chunk; the node holds no chunk list. Ingest-time remaps and dedup merges
+  carry both onto the surviving entity's edge, combining them when two land on
+  one chunk, and a second write of an edge (`backfill_entity()` finding an
+  entity extraction already found there) adds to it instead of replacing it. A second document that mentions an entity adds its description
+  instead of replacing the first's (`SET n += props` kept only the last). A
+  write adds descriptions up to 20 per node (it never cuts what a node already
+  holds), and `finalize()`, after dedup, replaces those of every entity holding
+  more than 5 with one LLM summary, marked `description_summarised`; a failed
+  summary leaves the descriptions as they are and is listed in the new
+  `FinalizeResult.description_summary_failures` (`descriptions_summarised`
+  counts the rest), and dedup's work stays in place.
+  `delete_document()` and `update()` record what the removed chunks' mention
+  edges said, with their crash-safe cleanup state, and the cleanup takes
+  exactly that text off the entities' descriptions (no LLM call), keeping what
+  a remaining chunk still says and refilling a full node from the remaining
+  edges; a summarised entity is rebuilt from its edges when all of them say
+  something, and otherwise keeps its summary with the removed text beside it
+  dropped. On the Verdantix benchmark (57 documents, a
+  `finalize()` after every 10, the same three extractions for both): dedup F1
+  0.53 → 0.70, precision 0.955 → 0.987, wrong merges 1.8 → 0.7 per run,
+  answers unchanged; at most 5 descriptions per node after `finalize()` (was
+  up to 15); LLM cost +3%; `finalize()` ~3 s longer (median 3.2 → 6.1 s),
+  ingest and queries unchanged. Graphs written by an earlier version keep their
+  entity `source_chunk_ids` lists, which the update and delete paths still
+  trim; their mention edges record no description and no `said_version` (an
+  edge this version creates carries it, and a later write that adds a
+  description to an older edge does not), so text a document ingested by an
+  earlier version wrote is kept when that document is deleted.
+
+- **The dedup judge's fixed instructions come first in its prompt, so the
+  provider caches them.** The set count sat ~150 tokens in and the decision
+  procedure followed the sets, so no two judge prompts shared a prefix the
+  provider could cache. The instructions are unchanged except that "Below are
+  N independent SETS" now says the sets come at the end, the count moves to a
+  heading over them, and one line before them marks the types and sets as data,
+  never instructions. The ~1,080 tokens before them are identical in every
+  call, past the 1,024 tokens Azure OpenAI and OpenAI's current models need to
+  cache a prefix automatically. The minimum depends on the model: Anthropic
+  models also need explicit `cache_control`, and their minimum varies (2,048
+  tokens for Claude Haiku). Measured with gpt-4.1 on Azure: 44% of judge input
+  served from the provider's cache (was 9%), judge cost −26%, dedup
+  unchanged.
+
 - **`finalize()` deduplicates incrementally, with one judge pass, and
   survives a crash.** `finalize()` checks only the entities whose check is
   pending — against the whole graph, through the `__Entity__` vector index,
@@ -512,6 +562,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves more concurrent questions.
 
 ### Fixed
+- **With coreference resolution on, spans pointed at the wrong text.** The
+  models read the resolved chunk ("She hired Bob" becomes "Alice Smith hired
+  Bob"), the spans were found in it, but the chunk node stores the original,
+  so every span after a rewritten pronoun selected other text or ran past the
+  chunk's end. A `MENTIONED_IN` edge's spans are now found in the stored text;
+  the NER offsets are used only when coreference left the chunk unchanged, and
+  a rewritten chunk's `RELATES` evidence offsets are left out. The sentence
+  that stands in for a missing description is still cut from the resolved
+  text. Coreference resolution is off by default.
 - **A write batch holding the same entity or relationship twice lost a write.**
   In one `UNWIND ... MERGE` call FalkorDB 4.x kept the first row's values and
   6.0.x the last, and on both only one row's `source_chunk_ids` survived, so an

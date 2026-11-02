@@ -247,6 +247,13 @@ class ChunkEntityRow(DataModel):
 
     ``label`` is the entity's concrete label (the non-``__Entity__`` one);
     ``None`` if the node somehow carries no usable label (tampered graph).
+    ``description``, ``descriptions`` and ``spans`` are what this chunk's own
+    ``MENTIONED_IN`` edge holds — its description as written, the same as
+    separate members, and where the chunk names the entity: ``None``, ``[]``
+    and ``[]`` for an edge written by an earlier version. ``recorded`` is
+    whether that edge records everything its chunk put on the entity's
+    description: written by this version (it has ``said_version``), or a
+    table row's, which puts nothing there; false for an earlier version's.
     """
 
     chunk_id: str
@@ -255,7 +262,10 @@ class ChunkEntityRow(DataModel):
     name: str | None = None
     type: str | None = None
     description: str | None = None
+    descriptions: list[str] = Field(default_factory=list)
     source_chunk_ids: list[str] = Field(default_factory=list)
+    spans: list[int] = Field(default_factory=list)
+    recorded: bool = True
 
 
 class ChunkRelationshipRow(DataModel):
@@ -300,6 +310,7 @@ _RESERVED_ATTRIBUTE_NAMES: frozenset[str] = frozenset(
         "tgt_name",
         "id",
         "label",
+        "description_summarised",
     }
 )
 
@@ -887,10 +898,22 @@ class ExtractedRelation(DataModel):
 
 
 class EntityMention(DataModel):
-    """A mention of an entity in a specific chunk."""
+    """A mention of an entity in a specific chunk.
+
+    ``spans`` are where the chunk names the entity, flat
+    (``[start, end, start, end, ...]``); ``descriptions`` are what that chunk
+    says the entity is — one, or more when the chunk describes it twice or two
+    mentions land on it (a merge, a remap), each kept whole. Both are written
+    on the ``MENTIONED_IN`` edge, the descriptions as on a node
+    (``description`` joined with " | ", ``descriptions`` when more than one),
+    so they go when the chunk goes, and what a deleted document said can be
+    taken off the entity's description.
+    """
 
     chunk_id: str
     entity_id: str
+    spans: list[int] = Field(default_factory=list)
+    descriptions: list[str] = Field(default_factory=list)
 
 
 class ExtractionOutput(DataModel):
@@ -1133,6 +1156,16 @@ class FinalizeResult(DataModel):
     them — deleted or re-keyed by ``update()``, renamed, or rewritten too often
     to read. Nothing was written for them; their groups are decided again on
     the next run."""
+
+    descriptions_summarised: int = 0
+    """Entities whose descriptions were replaced by one LLM summary: those
+    holding more than five, after dedup."""
+
+    description_summary_failures: list[str] = Field(default_factory=list)
+    """Entities whose summary failed this run, each with its error. They keep
+    their descriptions as they are, and the next ``finalize()`` tries again.
+    ``"summary pass: <error>"`` when the pass itself failed, before or while
+    it ran."""
 
     entities_embedded: int = 0
     relationships_embedded: int = 0

@@ -337,6 +337,26 @@ def test_pack_prompts_keeps_an_oversized_set_within_budget():
     assert len(enc.encode(prompts[0])) <= PROMPT_TOKEN_BUDGET
 
 
+
+def test_every_judge_prompt_opens_with_the_same_cacheable_instructions():
+    """The provider caches a prompt prefix identical across calls once it is
+    1,024 tokens or longer. The judge's instructions come before anything a
+    call varies — the set count, the types, the sets — so every call shares
+    them."""
+    import os
+
+    import tiktoken
+
+    a = [{"name": f"E{i}", "label": "Person", "description": "d"} for i in range(4)]
+    b = [{"name": f"Acme {i}", "label": "Organization", "description": "x" * 80} for i in range(9)]
+    (p1,), _ = pack_prompts(judge_sets([[0, 1], [2, 3]], a, AttributeSchema()))
+    (p2,), _ = pack_prompts(judge_sets([list(range(9))], b, AttributeSchema()))
+    shared = os.path.commonprefix([p1, p2])
+    assert len(tiktoken.get_encoding("cl100k_base").encode(shared)) >= 1024
+    for p in (p1, p2):
+        assert p.index("DECISION PROCEDURE") < p.index("--- Set 1 ---")
+        assert p.index("OUTPUT") < p.index("--- Set 1 ---")
+
 # ── the judge and the run's decisions, simulated ───────────────────────────
 #
 # ``simulate`` (tests/dedup_sim.py) runs the production decision code — the
