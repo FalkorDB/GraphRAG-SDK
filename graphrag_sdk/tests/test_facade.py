@@ -478,6 +478,65 @@ class TestGraphRAGFinalize:
         assert result.relationships_embedded == 2
         assert result.indexes == {"vector_Chunk": True}
 
+    @staticmethod
+    def _stub_finalize(graphrag, chunk_query):
+        """Stub what finalize() touches; ``chunk_query`` answers the chunk-naming query."""
+        chunk_calls: list[tuple[str, dict | None]] = []
+
+        async def query_raw(cypher, params=None):
+            if "c.name" in cypher:
+                chunk_calls.append((cypher, params))
+                return await chunk_query()
+            return MagicMock(result_set=[[0]])
+
+        graphrag._graph_store.query_raw = AsyncMock(side_effect=query_raw)
+        graphrag.deduplicate_entities = AsyncMock(return_value=4)
+        graphrag._vector_store.embed_relationships = AsyncMock(return_value=0)
+        graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
+        return chunk_calls
+
+    async def test_finalize_names_unnamed_chunks(self, graphrag):
+        async def named_three():
+            return MagicMock(result_set=[[3]])
+
+        chunk_calls = self._stub_finalize(graphrag, named_three)
+
+        result = await graphrag.finalize()
+
+        assert result.chunks_named == 3
+        ((cypher, params),) = chunk_calls
+        assert params == {"separator": " · chunk "}
+        # Only chunks without a name are touched, and never a document that
+        # update() is still replacing: that is what makes a second run a no-op
+        # and keeps a transient id out of a name.
+        assert "WHERE c.name IS NULL" in cypher
+        assert "__pending__" in cypher
+
+    async def test_finalize_can_leave_chunks_unnamed(self, graphrag):
+        async def never():
+            raise AssertionError("chunks must not be touched")
+
+        chunk_calls = self._stub_finalize(graphrag, never)
+
+        result = await graphrag.finalize(name_chunks=False)
+
+        assert chunk_calls == []
+        assert result.chunks_named == 0
+
+    async def test_finalize_survives_chunk_naming_failing(self, graphrag, caplog):
+        async def broken():
+            raise RuntimeError("graph went away")
+
+        self._stub_finalize(graphrag, broken)
+
+        with caplog.at_level(logging.WARNING):
+            result = await graphrag.finalize()
+
+        # A cosmetic step must not throw away the dedup that already ran.
+        assert result.entities_deduplicated == 4
+        assert result.chunks_named == 0
+        assert "readable names" in caplog.text
+
 
 class TestGraphRAGSyncWrappers:
     def test_ingest_sync(self, mock_conn, embedder, llm, tmp_path):
