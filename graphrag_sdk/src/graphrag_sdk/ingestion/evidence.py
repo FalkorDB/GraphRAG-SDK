@@ -145,29 +145,44 @@ def _script(c: str, *prefixes: str) -> bool:
     return unicodedata.name(c, "").startswith(prefixes)
 
 
-def _one_word(outside: str, inside: str, *, after: bool) -> bool:
+# Korean writes a name's particles and copula endings onto it, as one word:
+# 서울에서, 서울에서는, Samsung은, 서울이다. Up to three in a row. Any other
+# Hangul after a name makes a longer word (서울대학교, Samsung전자).
+_KOREAN_PARTICLES = (
+    "이 가 은 는 을 를 의 에 에서 에게 에게서 께 께서 한테 한테서 로 으로 로서 으로서 로써 "
+    "으로써 와 과 랑 이랑 하고 도 만 까지 부터 처럼 보다 마다 조차 마저 밖에 뿐 나 이나 든 "
+    "이든 며 이며 다 이다 입니다 였다 이었다 고 이고 인 인데 라고 이라고 라는 이라는 란 이란 "
+    "예요 이에요 지만 이지만"
+).split()
+_PARTICLES = re.compile(
+    "(?:" + "|".join(sorted(_KOREAN_PARTICLES, key=len, reverse=True)) + "){1,3}"
+)
+
+
+def _one_word(outside: str, inside: str) -> bool:
     """Whether a match's edge character ``inside`` and its neighbour
     ``outside`` read as one word, so the match is cut out of a longer one
     ("us" in "business", ".NET" in "ASP.NET", "C++" in "C++11", "Cafe" before
-    a separate accent). Never where either is of a script without spaces;
-    nor before Hangul after a match, which is a Korean particle on the name
-    (서울에서, Samsung은)."""
+    a separate accent). Never where either is of a script without spaces."""
     if not _word_char(outside):
         return False
-    if _script(outside, *_UNSPACED_SCRIPTS) or _script(inside, *_UNSPACED_SCRIPTS):
-        return False
-    return not (after and _script(outside, "HANGUL"))
+    return not (_script(outside, *_UNSPACED_SCRIPTS) or _script(inside, *_UNSPACED_SCRIPTS))
 
 
 def is_whole_word(text: str, start: int, end: int) -> bool:
     """Whether ``text[start:end]`` is not part of a longer word ("US" is in
-    "the US." but not in "business", nor "Al" in "Algorithm")."""
+    "the US." but not in "business", nor "Al" in "Algorithm"). Hangul right
+    after it must be Korean particles on the name (``_KOREAN_PARTICLES``)."""
     if not 0 <= start < end <= len(text):
         return False
-    return not (
-        (start > 0 and _one_word(text[start - 1], text[start], after=False))
-        or (end < len(text) and _one_word(text[end], text[end - 1], after=True))
-    )
+    if start > 0 and _one_word(text[start - 1], text[start]):
+        return False
+    if end < len(text) and _script(text[end], "HANGUL"):
+        run = end
+        while run < len(text) and _script(text[run], "HANGUL"):
+            run += 1
+        return _PARTICLES.fullmatch(text, end, run) is not None
+    return not (end < len(text) and _one_word(text[end], text[end - 1]))
 
 
 def find_spans(text: str, name: str) -> list[tuple[int, int]]:
