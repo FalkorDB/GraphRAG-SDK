@@ -1321,6 +1321,7 @@ class TestContentHashRequiresCompleteWrites:
         [
             GraphNode(id="", label="Person"),  # removed by the quality filter
             GraphNode(id="   ", label="Person"),  # whitespace-only IDs are invalid too
+            GraphNode(id="no-label", label="   "),  # whitespace-only labels are invalid too
             GraphNode(id="acme", label="Company"),  # pruned: not in the ontology
         ],
     )
