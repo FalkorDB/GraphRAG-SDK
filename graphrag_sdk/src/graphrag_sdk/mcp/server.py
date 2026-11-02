@@ -195,14 +195,18 @@ _SECRET_PATTERNS = (
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}"), "sk-***"),
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=\-]+"), "Bearer ***"),
     # Credentials in a URL: redis://user:pw@host
-    (re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^\s/:@]*:[^\s/@]+@"), r"\1***:***@"),
+    # The scheme is at most 32 characters, so a long run like "a-a-a-..."
+    # is not scanned to its end from every letter.
+    (re.compile(r"(?i)\b([a-z][a-z0-9+.\-]{0,31}://)[^\s/:@]*:[^\s/@]+@"), r"\1***:***@"),
     # A quoted key, as in a dict or JSON: {'api_key': 'value'}
     (
         re.compile(rf"(?i)(['\"]{_SECRET_NAME}['\"]\s*:\s*)(['\"]?)[^\s,;'\"}}]+"),
         r"\1\2***",
     ),
+    # key=value. The name starts only where a name cannot continue, so a
+    # long run of "_" is scanned once, not once per character.
     (
-        re.compile(rf"(?i)(?<![A-Za-z0-9])({_SECRET_NAME})(\s*[=:]\s*)[^\s,;'\"]+"),
+        re.compile(rf"(?i)(?<![A-Za-z0-9_])({_SECRET_NAME})(\s*[=:]\s*)[^\s,;'\"]+"),
         r"\1\2***",
     ),
 )

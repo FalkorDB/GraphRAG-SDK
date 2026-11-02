@@ -9,8 +9,6 @@ import pytest
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import (
-    LLMResponse,
-    RawSearchResult,
     RetrieverResult,
 )
 from graphrag_sdk.retrieval.strategies.entity_discovery import (
@@ -19,10 +17,10 @@ from graphrag_sdk.retrieval.strategies.entity_discovery import (
     search_relates_edges,
 )
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
-from graphrag_sdk.retrieval.strategies.result_assembly import rerank_chunks
+from graphrag_sdk.retrieval.strategies.relationship_expansion import expand_relationships
+from graphrag_sdk.retrieval.strategies.result_assembly import assemble_raw_result, rerank_chunks
 
 from .conftest import MockEmbedder, MockLLM
-
 
 # -- Fixtures --
 
@@ -139,9 +137,10 @@ class TestMultiPathRetrieval:
             ]
         )
         _, entities = await search_relates_edges(vector, [0.1], rel_top_k=3)
-        # A table row without a name column still seeds expansion by its id.
+        # A table row without a name column still seeds expansion by its id,
+        # but has no name to show.
         assert list(entities) == ["e-1__company", "p-7__person"]
-        assert entities["e-1__company"]["name"] == "e-1__company"
+        assert entities["e-1__company"]["name"] == ""
 
     async def test_relates_search_checks_budget_before_vector_call(self):
         vector = MagicMock()
@@ -804,6 +803,88 @@ class TestSearchRelatesEdges:
         # "alice" should appear only once in entities
         alice_count = sum(1 for eid in entities if eid == "alice")
         assert alice_count == 1
+
+    async def test_an_endpoint_with_no_name_seeds_expansion_but_is_not_shown(self, mp_vector_store):
+        """A relation edge from a table has ids but no names."""
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "",
+                    "src_id": "alice_smith__employee",
+                    "type": "WORKS_AT",
+                    "tgt_name": "",
+                    "tgt_id": "acme__company",
+                    "fact": "",
+                    "score": 0.9,
+                },
+                {
+                    "src_name": "Acme",
+                    "src_id": "acme__company",
+                    "type": "LOCATED_IN",
+                    "tgt_name": "Oslo",
+                    "tgt_id": "oslo__city",
+                    "fact": "",
+                    "score": 0.8,
+                },
+            ]
+        )
+        _, entities = await search_relates_edges(mp_vector_store, [0.1] * 8)
+        assert list(entities) == ["alice_smith__employee", "acme__company", "oslo__city"]
+        assert entities["alice_smith__employee"]["name"] == ""
+        assert entities["acme__company"]["name"] == "Acme"  # named by the later edge
+
+        raw = assemble_raw_result(list(entities.items()), [], [], [])
+        shown = str(raw.records)
+        assert "alice_smith__employee" not in shown
+        assert "- Acme" in shown and "- Oslo" in shown
+
+
+def _hop_rows(n: int, hops: int) -> list[list[str]]:
+    if hops == 1:
+        return [[f"A{i}", "KNOWS", f"B{i}", ""] for i in range(n)]
+    return [[f"A{i}", "KNOWS", f"B{i}", "WORKS_AT", f"C{i}"] for i in range(n)]
+
+
+class TestExpandRelationships:
+    """Tests for expand_relationships' cap on 1-hop and 2-hop lines."""
+
+    @staticmethod
+    def _store(one: int, two: int) -> MagicMock:
+        store = MagicMock()
+        store.query_raw = AsyncMock(
+            side_effect=[
+                MagicMock(result_set=_hop_rows(one, 1)),
+                MagicMock(result_set=_hop_rows(two, 2)),
+            ]
+        )
+        return store
+
+    async def _expand(self, one: int, two: int, cap: int = 20) -> list[str]:
+        entities = [("a__x", {"name": "A"})]
+        return await expand_relationships(self._store(one, two), entities, cap)
+
+    @staticmethod
+    def _hops(lines: list[str]) -> tuple[int, int]:
+        two = sum(1 for line in lines if line.count("—[") == 2)
+        return len(lines) - two, two
+
+    async def test_two_hop_lines_keep_a_share_when_the_cap_is_hit(self):
+        lines = await self._expand(30, 10)
+        assert len(lines) == 20 and self._hops(lines) == (14, 6)
+        assert lines[0].startswith("A0 —[KNOWS]→ B0") and lines[14].endswith("→ C0")
+
+    async def test_room_two_hop_lines_do_not_use_goes_to_one_hop(self):
+        assert self._hops(await self._expand(30, 2)) == (18, 2)
+
+    async def test_room_one_hop_lines_do_not_use_goes_to_two_hop(self):
+        assert self._hops(await self._expand(3, 25)) == (3, 17)
+
+    async def test_under_the_cap_every_line_is_kept_in_order(self):
+        lines = await self._expand(12, 8)
+        assert self._hops(lines) == (12, 8)
+        assert lines == [f"A{i} —[KNOWS]→ B{i}" for i in range(12)] + [
+            f"A{i} —[KNOWS]→ B{i} —[WORKS_AT]→ C{i}" for i in range(8)
+        ]
 
 
 class TestIsEnumerationQuery:

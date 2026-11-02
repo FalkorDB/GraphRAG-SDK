@@ -38,7 +38,7 @@ print(result.to_llm_text())                # compact text with [n] evidence numb
 print(result.model_dump_json())            # or the typed result
 ```
 
-`to_llm_text(max_chars=8000)` shares its budget across the result's sections, so a long list of relations cannot push the passages out; a section that does not fit ends with `…(N more omitted)`. Whole-number floats print as integers (`40`, not `40.0`).
+`to_llm_text(max_chars=8000)` shares its budget across the result's sections, so a long list of relations cannot push the passages out; passages get twice the share of other sections, show up to about 1,200 characters each, and are labelled with their file's name. A section that does not fit ends with `…(N more omitted)`. Whole-number floats print as integers (`40`, not `40.0`).
 
 Every tool is also an async method (`await toolkit.retrieve("Who founded Acme?")`). `call()` validates arguments against the same pydantic models that produce `input_schema`.
 

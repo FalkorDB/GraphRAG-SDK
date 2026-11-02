@@ -12,6 +12,9 @@ from graphrag_sdk.storage.graph_store import GraphStore
 
 _ELLIPSIS = "…"
 _SNIPPET_CHARS = 240
+#: A passage is shown up to about a whole chunk: its figures are often far
+#: from its start.
+_PASSAGE_CHARS = 1200
 
 
 def _clean(value: Any) -> str:
@@ -26,19 +29,27 @@ def _snippet(value: Any, limit: int = _SNIPPET_CHARS) -> str:
     return text if len(text) <= limit else text[: limit - 1] + _ELLIPSIS
 
 
+def _basename(path: str) -> str:
+    """The last part of a document path (``reports/q3.pdf`` -> ``q3.pdf``)."""
+    text = _clean(path)
+    return text.rstrip("/\\").rsplit("/", 1)[-1].rsplit("\\", 1)[-1] or text
+
+
 def _omitted(count: int) -> str:
     return f"  {_ELLIPSIS}({count} more omitted)"
 
 
-def _fair_share(sizes: list[int], room: int) -> int:
-    """The first block's share of ``room``: every block gets an even share,
-    and what a smaller block does not need goes to the bigger ones."""
-    left, count = room, len(sizes)
-    for size in sorted(sizes):
-        if size > left // count:
-            return min(sizes[0], left // count)
+def _fair_share(sizes: list[int], room: int, weights: list[int] | None = None) -> int:
+    """The first block's share of ``room``: every block gets a share in
+    proportion to its weight (even, by default), and what a smaller block
+    does not need goes to the bigger ones."""
+    weights = weights or [1] * len(sizes)
+    left, total = room, sum(weights)
+    for size, weight in sorted(zip(sizes, weights), key=lambda sw: sw[0] / sw[1]):
+        if size > left * weight // total:
+            return min(sizes[0], left * weights[0] // total)
         left -= size
-        count -= 1
+        total -= weight
     return sizes[0]
 
 
@@ -47,14 +58,16 @@ def _render(
     sections: list[tuple[str, list[str]]],
     *,
     max_chars: int,
+    weights: dict[str, int] | None = None,
 ) -> str:
     """Assemble preamble lines + (header, items) sections into text ≤ max_chars.
 
     When the sections do not all fit, each gets a fair share of the room
     (what a short section leaves over goes to the others), so a long section
-    cannot push a later one out. Truncation happens only at item boundaries;
-    a section's dropped tail is marked ``…(N more omitted)``. Deterministic
-    for equal inputs.
+    cannot push a later one out. ``weights`` gives a section, by header, a
+    bigger share (2 is twice the room of a section with the default 1).
+    Truncation happens only at item boundaries; a section's dropped tail is
+    marked ``…(N more omitted)``. Deterministic for equal inputs.
     """
     if max_chars < 1:
         return ""
@@ -84,6 +97,7 @@ def _render(
     sections = [(header, items) for header, items in sections if items]
     # Every line is costed with its newline, so the shares never overrun.
     sizes = [len(h) + 8 + sum(len(item) + 1 for item in items) for h, items in sections]
+    shares = [(weights or {}).get(h, 1) for h, _ in sections]
     for i, (header, items) in enumerate(sections):
         header_line = f"{header} ({len(items)}):"
         full_marker = _omitted(len(items))
@@ -92,7 +106,7 @@ def _render(
         # strings never grow as the remaining count shrinks, so this reserve
         # guarantees every emitted header is followed by an item or a marker.
         minimum = len(header_line) + 1 + len(full_marker) + 1
-        limit = used + max(_fair_share(sizes[i:], max_chars - used), minimum)
+        limit = used + max(_fair_share(sizes[i:], max_chars - used, shares[i:]), minimum)
         limit = min(limit, max_chars)
         if used + minimum > limit:
             if try_add(f"{header}: {_ELLIPSIS}({len(items)} omitted)"):
@@ -103,9 +117,12 @@ def _render(
                 cut = try_add(_ELLIPSIS)
             continue
         try_add(header_line)
+        # Room for a drop-marker is kept back only when the items will not
+        # all fit; otherwise it would cut short items that do.
+        fits = used + sum(len(item) + 1 for item in items) <= limit
         for idx, item in enumerate(items):
             marker = _omitted(len(items) - idx)
-            reserve = (len(marker) + 1) if idx < len(items) - 1 else 0
+            reserve = (len(marker) + 1) if idx < len(items) - 1 and not fits else 0
             if used + len(item) + 1 + reserve <= limit:
                 try_add(item)
             else:
@@ -129,10 +146,16 @@ class ToolResult(BaseModel):
         an agent that needs every word should read the result's fields (or
         its JSON) instead.
         """
-        return _render(self._preamble(), self._sections(), max_chars=max_chars)
+        return _render(
+            self._preamble(), self._sections(), max_chars=max_chars, weights=self._weights()
+        )
 
     def _preamble(self) -> list[str]:  # pragma: no cover - overridden
         return []
+
+    def _weights(self) -> dict[str, int]:
+        """Sections, by header, that get a bigger share of ``max_chars``."""
+        return {}
 
     def _sections(self) -> list[tuple[str, list[str]]]:  # pragma: no cover
         return []
@@ -334,11 +357,16 @@ class RetrieveResult(ToolResult):
             (
                 "Passages",
                 [
-                    f"- {_n(c.n)}[{_clean(c.document_path or c.document_id)}] {_snippet(c.text)}"
+                    f"- {_n(c.n)}[{_basename(c.document_path or c.document_id)}] "
+                    f"{_snippet(c.text, _PASSAGE_CHARS)}"
                     for c in self.chunks
                 ],
             ),
         ]
+
+    def _weights(self) -> dict[str, int]:
+        # Passages carry the figures an answer needs: twice the room.
+        return {"Passages": 2}
 
 
 class EvidenceRef(BaseModel):

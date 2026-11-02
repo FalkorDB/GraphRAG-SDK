@@ -110,6 +110,22 @@ _GAP_RE = re.compile(
     r"|\bnot\s+(?:explicitly\s+)?(?:mentioned|stated|specified)\s*[.!]?\s*$",
     re.I | re.M,
 )
+#: Where a sentence's clauses meet: ``;``, ``:``, brackets, a spaced dash, or
+#: a contrast (``, but``, ``although``). A gap stated in one clause does not
+#: excuse a claim made in another ("The graph does not say who founded
+#: Globex, but Globex was founded in 1850.").
+_CLAUSE_BREAK_RE = re.compile(
+    r"\s*(?:;|:(?!\d)|[()])\s*|\s+[-–—]\s+"
+    r"|,?\s+\b(?:but|although|though|whereas|while|yet|however)\b,?\s+",
+    re.I,
+)
+#: Curly and other look-alike apostrophes and quotes, read as straight ones so
+#: ``O’Brien`` matches ``O'Brien``.
+_QUOTES = str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "´": "'", "“": '"', "”": '"'})
+#: Words that end a company's name without being part of it ("Sensara GmbH"
+#: is "Sensara"). Words of fewer than three letters (``AG``, ``Co``) are never
+#: checked anyway.
+_LEGAL_SUFFIXES = frozenset("gmbh inc corp corporation ltd llc llp plc limited company".split())
 #: Trailing zeros of a decimal figure (``2.80``, ``40.0``), dropped before
 #: figures are compared.
 _TRAILING_ZEROS_RE = re.compile(r"(?<![\d.])(\d+)\.(\d*?)0+(?![\d.]?\d)")
@@ -185,6 +201,15 @@ class EvidenceLedger:
 
     def get(self, n: int) -> Evidence | None:
         return self._items.get(n)
+
+    def snapshot(self) -> EvidenceLedger:
+        """A copy holding the same items and numbering, for reading while
+        this ledger keeps taking new evidence."""
+        copy = EvidenceLedger(self._capacity)
+        copy._items = OrderedDict(self._items)
+        copy._next = self._next
+        copy._common = self._common
+        return copy
 
     @property
     def next_number(self) -> int:
@@ -437,17 +462,56 @@ def _drop_trailing_zeros(text: str) -> str:
     return _TRAILING_ZEROS_RE.sub(lambda m: m[1] + (f".{m[2]}" if m[2] else ""), text)
 
 
+def _normalise_evidence(content: str) -> str:
+    """Evidence text as :func:`_in_evidence` reads it: lower-case, straight
+    quotes, no thousands separators, no trailing zeros on decimals."""
+    text = content.lower().translate(_QUOTES)
+    return _drop_trailing_zeros(re.sub(r"(?<=\d),(?=\d{3}\b)", "", text))
+
+
 def _in_evidence(term: str, text: str) -> bool:
     """A figure must appear as a number (``2.8`` matches ``2.80``). A name
     must have every word of three or more letters in the text as a whole
-    word ("Corvane Systems" needs both; "Smith" alone still needs "smith").
-    Case is ignored; ``text`` is already lower-case, with figures
-    normalised by :func:`_drop_trailing_zeros`."""
+    word ("Corvane Systems" needs both; "Smith" alone still needs "smith"),
+    except a company's legal form at its end ("Acme Corporation" matches
+    "Acme Corp."). Case is ignored; ``text`` is normalised by
+    :func:`_normalise_evidence`."""
+    # A plain substring test first: it rules out most terms much faster.
     if term[0].isdigit():
-        figure = re.escape(_drop_trailing_zeros(term.replace(",", "")))
-        return re.search(rf"(?<![\d.]){figure}(?!\d|[.,]\d)", text) is not None
+        figure = _drop_trailing_zeros(term.replace(",", ""))
+        return figure in text and (
+            re.search(rf"(?<![\d.]){re.escape(figure)}(?!\d|[.,]\d)", text) is not None
+        )
     words = [w.lower() for w in term.split() if len(w) >= 3]
-    return all(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", text) is not None for w in words)
+    while len(words) > 1 and words[-1] in _LEGAL_SUFFIXES:
+        words.pop()
+    return all(
+        w in text and re.search(rf"(?<!\w){re.escape(w)}(?!\w)", text) is not None for w in words
+    )
+
+
+def _outside_gaps(sentence: str) -> str:
+    """``sentence`` without the clauses that say the evidence lacks something.
+
+    The whole clause goes, not just the gap phrase: its subject ("who
+    founded Globex") names what is missing, and is no claim. What is left
+    is checked as a claim like any other sentence.
+    """
+    gaps = [m.span() for m in _GAP_RE.finditer(sentence)]
+    kept: list[str] = []
+    start = 0
+    for brk in [*_CLAUSE_BREAK_RE.finditer(sentence), None]:
+        end = brk.start() if brk else len(sentence)
+        clause = sentence[start:end].strip()
+        # A gap phrase may span a clause break; one that ends a clause
+        # ("Who founded Globex is not stated, but ...") is found in the
+        # clause alone.
+        in_gap = any(s < end and e > start for s, e in gaps) or _GAP_RE.search(clause)
+        if clause and not in_gap:
+            kept.append(clause)
+        if brk:
+            start = brk.end()
+    return " ".join(kept)
 
 
 def _check_claims(answer: str, ledger: EvidenceLedger) -> tuple[list[str], list[UnsupportedClaim]]:
@@ -457,16 +521,22 @@ def _check_claims(answer: str, ledger: EvidenceLedger) -> tuple[list[str], list[
     questions and lead-ins ending in ``:`` are not claims. A claim with no
     marker of its own is uncited. A cited claim whose figures or names are in
     none of the evidence it cites is unsupported. The check is literal, with
-    no LLM: a figure written as a word ("two") counts as missing. A sentence
+    no LLM: a figure written as a word ("two") counts as missing. A clause
     that says the evidence lacks something ("The graph does not say who
-    founded Globex.") needs no marker. Figures and names are checked against
-    the cited evidence's content, not its source path.
+    founded Globex.") needs no marker; the rest of its sentence still does.
+    Figures and names are checked against the cited evidence's content, not
+    its source path.
     """
     uncited: list[str] = []
     unsupported: list[UnsupportedClaim] = []
     # Words written in lower case in the evidence or the answer are ordinary
     # words, not names, when they open a sentence.
     common = ledger.common_words() | frozenset(re.findall(r"(?<!\w)[a-z]+", answer))
+    # Each piece of evidence is normalised once, and the text of each set of
+    # cited numbers joined once, however many sentences cite them.
+    normalised: dict[int, str] = {}
+    joined: dict[frozenset[int], str] = {}
+    found: dict[tuple[frozenset[int], str], bool] = {}
     for sentence in _sentences(answer):
         if sentence.endswith(("?", ":")):
             continue
@@ -479,19 +549,36 @@ def _check_claims(answer: str, ledger: EvidenceLedger) -> tuple[list[str], list[
         bare = _MARKER_RE.sub(
             lambda m: m.group(0) if _names_a_year(m.group(1), ledger) else " ", sentence
         )
-        bare = " ".join(bare.split())
+        bare = " ".join(bare.translate(_QUOTES).split())
         terms = _claim_terms(bare, common)
         if not terms or len(bare.split()) < 3:
             continue
         if not numbers:
-            if len(uncited) < _MAX_FLAGGED and not _GAP_RE.search(bare):
+            # Only what the sentence says beside a stated gap is a claim.
+            rest = _outside_gaps(bare) if _GAP_RE.search(bare) else bare
+            if (
+                len(uncited) < _MAX_FLAGGED
+                and len(rest.split()) >= 3
+                and _claim_terms(rest, common)
+            ):
                 uncited.append(sentence)
             continue
-        cited_text = " ".join(
-            ev.content for n in numbers if (ev := ledger.get(n)) is not None
-        ).lower()
-        cited_text = _drop_trailing_zeros(re.sub(r"(?<=\d),(?=\d{3}\b)", "", cited_text))
-        missing = [t for t in terms if not _in_evidence(t, cited_text)]
+        key = frozenset(numbers)
+        cited_text = joined.get(key)
+        if cited_text is None:
+            parts = []
+            for n in numbers:
+                if n not in normalised and (ev := ledger.get(n)) is not None:
+                    normalised[n] = _normalise_evidence(ev.content)
+                if n in normalised:
+                    parts.append(normalised[n])
+            cited_text = joined[key] = " ".join(parts)
+        missing = []
+        for term in terms:
+            if (key, term) not in found:
+                found[key, term] = _in_evidence(term, cited_text)
+            if not found[key, term]:
+                missing.append(term)
         if missing and len(unsupported) < _MAX_FLAGGED:
             unsupported.append(UnsupportedClaim(sentence, missing))
     return uncited, unsupported
