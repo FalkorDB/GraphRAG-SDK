@@ -29,7 +29,11 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
-from graphrag_sdk.ingestion.lexical_graph import LexicalGraphWriter, _reported_short
+from graphrag_sdk.ingestion.lexical_graph import (
+    LexicalGraphWriter,
+    _reported_short,
+    merge_mentions,
+)
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
@@ -740,18 +744,17 @@ class IngestionPipeline(LexicalGraphWriter):
         MENTIONED_IN edges always land on a node that exists in the
         graph. The ``visited`` guard makes a malformed cyclic remap
         terminate at the cycle's entry point rather than loop forever.
+
+        A mention keeps its ``spans`` and ``descriptions``: its MENTIONED_IN
+        edge is the only record of them. Two mentions that land on one
+        (entity, chunk) become one holding both (``merge_mentions``).
         """
-        rewritten: list[EntityMention] = []
-        seen: set[tuple[str, str]] = set()
+        remapped: list[EntityMention] = []
         for m in graph_data.mentions:
             new_id = m.entity_id
             visited: set[str] = set()
             while new_id in remap and new_id not in visited:
                 visited.add(new_id)
                 new_id = remap[new_id]
-            key = (new_id, m.chunk_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            rewritten.append(EntityMention(entity_id=new_id, chunk_id=m.chunk_id))
-        return graph_data.model_copy(update={"mentions": rewritten})
+            remapped.append(m.model_copy(update={"entity_id": new_id}))
+        return graph_data.model_copy(update={"mentions": merge_mentions(remapped)})

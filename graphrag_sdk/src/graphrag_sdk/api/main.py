@@ -90,6 +90,7 @@ from graphrag_sdk.ingestion.ingestion_planner import (
     merge_plan_limits,
     with_chunk_budget,
 )
+from graphrag_sdk.ingestion.lexical_graph import _reported_short
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
@@ -1824,10 +1825,8 @@ class GraphRAG:
                 # (name, type) -- the same id the extraction path assigns, so a
                 # backfilled entity merges with its extracted twin.
                 ent_id = compute_entity_id(ent_name, label)
-                props: dict[str, Any] = {
-                    "name": ent_name,
-                    "description": ent.get("description", ""),
-                }
+                said = str(ent.get("description") or "").strip()
+                props: dict[str, Any] = {"name": ent_name, "description": said}
                 for attr in entity.properties:
                     raw = (ent.get("attributes") or {}).get(attr.name)
                     if raw is None:
@@ -1836,18 +1835,58 @@ class GraphRAG:
                     if ok:
                         props[attr.name] = coerced
                 new_nodes.append(GraphNode(id=ent_id, label=label, properties=props))
+                # What this chunk said goes on its mention edge too, as an
+                # extraction's does, so deleting the document takes it off.
                 new_mentions.append(
                     GraphRelationship(
                         start_node_id=ent_id,
                         end_node_id=ctx.chunk_id,
                         type="MENTIONED_IN",
-                        properties={},
+                        properties={"description": said} if said else {},
                     )
                 )
                 filled += 1
             if new_nodes:
-                await self._graph_store.upsert_nodes(new_nodes)
-                await self._graph_store.upsert_relationships(new_mentions)
+                # The edge is the record a delete takes the text off by, so
+                # the node gets its description only once its edge is written;
+                # a chunk whose edge was not written is not marked done.
+                await self._graph_store.upsert_nodes(
+                    [
+                        n.model_copy(
+                            update={
+                                "properties": {
+                                    k: v for k, v in n.properties.items() if k != "description"
+                                }
+                            }
+                        )
+                        for n in new_nodes
+                    ]
+                )
+                written = await self._graph_store.upsert_relationships(new_mentions)
+                if _reported_short(written, len(new_mentions)):
+                    raise DatabaseError(
+                        f"backfill wrote {written} of {len(new_mentions)} mention edges "
+                        f"for chunk {ctx.chunk_id}"
+                    )
+                described = [
+                    n.model_copy(
+                        update={
+                            "properties": {
+                                "name": n.properties["name"],
+                                "description": n.properties["description"],
+                            }
+                        }
+                    )
+                    for n in new_nodes
+                    if n.properties.get("description")
+                ]
+                if described:
+                    wrote = await self._graph_store.upsert_nodes(described)
+                    if _reported_short(wrote, len(described)):
+                        raise DatabaseError(
+                            f"backfill wrote {wrote} of {len(described)} entity descriptions "
+                            f"for chunk {ctx.chunk_id}"
+                        )
             return BackfillMergeStats(values_filled=filled, values_skipped=skipped)
 
         executor = BackfillExecutor(self.llm, self._graph_store, concurrency=concurrency)
@@ -4019,7 +4058,10 @@ class GraphRAG:
              MENTIONED_IN went to zero after cutover.
           4. for a table, ``_retract_table`` — take the signed columns and
              the identity off the survivors its new rows no longer mention.
-          5. ``clear_cleanup_state`` — remove the recovery-state
+          5. ``rebuild_entity_descriptions`` — take what the removed chunks
+             said off the surviving entities' descriptions (recorded with
+             the cleanup state, before the chunks went).
+          6. ``clear_cleanup_state`` — remove the recovery-state
              properties so future Phase-0 calls don't reprocess.
 
         Returns ``(stale_relates_deleted, orphan_entities_deleted)``.
@@ -4057,7 +4099,18 @@ class GraphRAG:
             retracted += await self._retract_rows_this_table_still_points_at(
                 mapping, [eid for eid in candidate_ids if eid not in gone], document_id
             )
+        said = await self._graph_store.get_cleanup_said(document_id)
+        # The entities the removed chunks' edges named too: a merge that moved
+        # an edge onto a survivor outside the candidates moved its text there.
+        described = await self._graph_store.rebuild_entity_descriptions(
+            list(dict.fromkeys([*candidate_ids, *said])), said
+        )
         await self._graph_store.clear_cleanup_state(document_id)
+        if described:
+            ctx.log(
+                f"post-cutover cleanup: {document_id} — took the removed chunks' "
+                f"text off {described} entity descriptions"
+            )
         if stale_deleted or trimmed or orphans_deleted or retracted:
             ctx.log(
                 f"post-cutover cleanup: {document_id} — "
@@ -4314,7 +4367,10 @@ class GraphRAG:
                 chunk of this document skip LLM extraction — their
                 entities/relations/mentions are rebuilt from the live
                 graph and remapped onto the new chunk uids. Only changed
-                chunks pay for extraction. Cache effectiveness is
+                chunks pay for extraction, and so does an unchanged
+                chunk whose mention edges an earlier SDK version wrote:
+                those never recorded what the chunk said, so it is
+                extracted again. Cache effectiveness is
                 reported in ``UpdateResult.metadata["cache_stats"]``
                 (``cached_chunks`` / ``extracted_chunks``). Two semantic
                 caveats: (1) the graph is the cache, so manually deleted
@@ -5915,8 +5971,24 @@ class GraphRAG:
         if null_cleaned:
             ctx_log(f"finalize: removed {null_cleaned} NULL-name stub entities")
 
-        # Step 2: Incremental dedup (exact, then judged)
+        # Step 2: Incremental dedup (exact, then judged), then the description
+        # pass: entities holding more than SUMMARISE_OVER_MEMBERS descriptions
+        # get one. After dedup, not alongside it: a merge joins two nodes'
+        # descriptions, so its survivor is bounded in this run, and nothing
+        # writes a node while dedup reads and merges it.
         dedup_count = await self.deduplicate_entities(judge=judge, dedup_all=dedup_all)
+        summarised = 0
+        summary_failures: list[str] = []
+        try:
+            summarised = await self._graph_store.summarise_long_descriptions(
+                self.llm, failures=summary_failures
+            )
+            ctx_log(f"finalize: summarised {summarised} long descriptions")
+        except Exception as exc:
+            # Dedup is already written; a failed summary pass leaves the
+            # descriptions as they were, to be summarised by the next run.
+            summary_failures.append(f"summary pass: {exc}")
+            report(f"finalize: summarising long entity descriptions failed: {exc}")
         dedup_report = getattr(self._deduplicator, "last_report", None) or DedupReport()
         judge_stats = dict(getattr(self._deduplicator, "last_judge_stats", {}) or {})
         ctx_log(f"finalize: deduplicated {dedup_count} entities; judge={judge_stats}")
@@ -6087,6 +6159,8 @@ class GraphRAG:
             entities_without_a_name=nameless,
             proposed_mappings=derived_sources,
             mapping_changed=sorted(self._mapping_changes),
+            descriptions_summarised=summarised,
+            description_summary_failures=summary_failures,
             entities_embedded=entity_count,
             relationships_embedded=rel_count,
             indexes=index_results,

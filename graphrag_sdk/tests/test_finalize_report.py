@@ -68,6 +68,24 @@ class TestACleanGraphReportsNothing:
         assert summary.mapping_changed == []
         assert summary.stale_signed_properties == []
         assert summary.probable_duplicates == []
+        assert summary.description_summary_failures == []
+        await rag.close()
+
+
+class TestDescriptionSummaries:
+    async def test_a_failed_summary_pass_is_reported(
+        self, real_falkordb_rag_factory, llm, resolver, monkeypatch
+    ):
+        """finalize() returns normally when the pass fails; the result says so."""
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+
+        async def fails(*args, **kwargs):
+            raise RuntimeError("LLM down")
+
+        monkeypatch.setattr(rag._graph_store, "summarise_long_descriptions", fails)
+        summary = await rag.finalize()
+        assert summary.description_summary_failures == ["summary pass: LLM down"]
+        assert summary.descriptions_summarised == 0
         await rag.close()
 
 
