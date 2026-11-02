@@ -745,6 +745,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lines cannot crowd them all out.
 
 ### Fixed
+- **`update()` with `cache_unchanged_chunks` kept one fact per entity pair.**
+  `CachedChunkExtraction` keyed `RELATES` edges on the pair (rebuilding from
+  the cache) or on `(start, "RELATES", end)` (merging), never on `rel_type`, so
+  `Alice WORKS_AT Acme` and `Alice FOUNDED Acme` collapsed into one edge. The
+  cached path dropped the second fact and the stale-edge sweep then deleted it
+  from the graph; the merge path, which every extracted part goes through even
+  with no cache hits, overwrote the first fact's `rel_type`, `fact` and
+  `description`. Both now key on `rel_type` the way `upsert_relationships()`
+  does (#361).
 - **A rejected `GraphRAG.set_ontology()` no longer sticks.** When the new
   ontology was refused (a contradiction with the stored one, a reserved
   label), it stayed on the instance and every later ingest failed on it. The
