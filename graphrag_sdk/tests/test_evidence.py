@@ -121,6 +121,8 @@ def test_a_name_is_not_found_inside_a_longer_word_in_any_script():
 def test_a_korean_name_takes_particles_after_it_but_nothing_before():
     assert find_spans("서울에서 열렸다", "서울") == [(0, 2)]
     assert find_spans("대서울", "서울") == []
+    # A Latin name takes them too.
+    assert find_spans("Samsung은 발표했다", "Samsung") == [(0, 7)]
 
 
 def test_occurrences_found_never_overlap():

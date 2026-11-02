@@ -150,12 +150,13 @@ def _one_word(outside: str, inside: str, *, after: bool) -> bool:
     ``outside`` read as one word, so the match is cut out of a longer one
     ("us" in "business", ".NET" in "ASP.NET", "C++" in "C++11", "Cafe" before
     a separate accent). Never where either is of a script without spaces;
-    nor after a Korean name, which takes its particles at the end (서울에서)."""
+    nor before Hangul after a match, which is a Korean particle on the name
+    (서울에서, Samsung은)."""
     if not _word_char(outside):
         return False
     if _script(outside, *_UNSPACED_SCRIPTS) or _script(inside, *_UNSPACED_SCRIPTS):
         return False
-    return not (after and _script(outside, "HANGUL") and _script(inside, "HANGUL"))
+    return not (after and _script(outside, "HANGUL"))
 
 
 def is_whole_word(text: str, start: int, end: int) -> bool:
