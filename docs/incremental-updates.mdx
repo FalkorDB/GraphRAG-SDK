@@ -44,7 +44,9 @@ result = await rag.update(
     chunker=None,
     extractor=None,
     resolver=None,
+    cache_unchanged_chunks=False,
     if_missing="error",             # "error" | "ingest"
+    force=False,
     ctx=None,
 )
 ```
@@ -57,6 +59,7 @@ result = await rag.update(
 | `text`                                  | Raw text. Skips the loader. Requires an explicit `document_id`.                                                                                                   |
 | `document_id`                           | Stable id of the `Document` node to update. Required for text mode.                                                                                               |
 | `loader` / `chunker` / `extractor` / `resolver` | Per-call strategy overrides, identical to `ingest()`.                                                                                                     |
+| `cache_unchanged_chunks`                | `False` (default) extracts every chunk again. `True` copies what the graph already holds for a chunk whose text is unchanged, so only changed chunks pay for extraction, and its entities keep their summaries (the new edge says exactly what the old one did). A chunk whose edges an earlier SDK version wrote is extracted again either way, so its new edge records what it says. The graph is the cache: an entity deleted by hand is not brought back, and a changed ontology, prompt or model does not reach unchanged chunks. Counts are in `metadata["cache_stats"]`. |
 | `if_missing`                            | `"error"` (default) raises `DocumentNotFoundError` if the id is unknown. `"ingest"` falls through to a fresh `ingest()` — upsert semantics.                       |
 | `force`                                 | `False` (default) returns `no_op=True` when the content hash is unchanged. `True` re-extracts anyway — the way to apply a new ontology, chunker or extractor to existing text, since `ingest()` also skips unchanged documents. |
 
@@ -147,7 +150,7 @@ DeleteDocumentResult(
 | `__Entity__` nodes that the doc referenced and have **no** remaining `MENTIONED_IN` | Scoped to candidates from this document; entities still cited elsewhere are kept. |
 | `RELATES` edges whose `source_chunk_ids` are entirely from this Document's chunks | Stale-fact cleanup. Edges with multi-document provenance survive.    |
 
-The surviving entities' descriptions are rewritten: what this document's chunks said about them is taken off, unless another chunk still says it (no LLM call). A summarised entity cannot have text taken out of its summary: when the removed text is no longer said by any remaining edge, it is rebuilt from its remaining `MENTIONED_IN` edges if every one of them was written by this version (`said_version`; a table row's edge does not count), and otherwise its summary is kept and the removed text beside it is still dropped. With `update(..., cache_unchanged_chunks=True)` an unchanged chunk's new edge says exactly what its old one did, so its entities keep their summaries; without it the chunk is extracted again, and a summary is kept only if the model describes the entity in the same words. An unchanged chunk whose edge an earlier SDK version wrote is extracted again either way, so its new edge records what it says. An entity still holding more than five descriptions is summarised by the next `finalize()`. `update()` does the same for the chunks a new version replaces. Text a document ingested by an earlier SDK version wrote cannot be told apart, and is kept.
+The surviving entities' descriptions are rewritten: what this document's chunks said about them is taken off, unless another chunk still says it (no LLM call). A summarised entity cannot have text taken out of its summary: when the removed text is no longer said by any remaining edge, it is rebuilt from its remaining `MENTIONED_IN` edges if every one of them was written by this version (`said_version`; a table row's edge does not count), and otherwise its summary is kept and the removed text beside it is still dropped. An unchanged chunk keeps its entities' summaries for sure only with [`cache_unchanged_chunks=True`](#parameters); without it the chunk is extracted again, and a summary is kept only if the model describes the entity in the same words. An entity still holding more than five descriptions is summarised by the next `finalize()`. `update()` does the same for the chunks a new version replaces. Text a document ingested by an earlier SDK version wrote cannot be told apart, and is kept.
 
 ### Crash safety
 

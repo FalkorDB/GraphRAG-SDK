@@ -192,13 +192,21 @@ def find_spans(text: str, name: str) -> list[tuple[int, int]]:
     if any(c.isupper() for c in name):
         cased = [(s, e) for s, e in found if not text[s:e].islower()]
         found = cased if cased or name.isupper() else found
-    exact = [(s, e) for s, e in found if text[s:e] == name]
-    kept: list[tuple[int, int]] = []
-    for s, e in exact + [span for span in found if text[span[0] : span[1]] != name]:
-        i = bisect.bisect_left(kept, (s, e))
-        if (i == 0 or kept[i - 1][1] <= s) and (i == len(kept) or kept[i][0] >= e):
-            kept.insert(i, (s, e))
-    return kept
+    # ``found`` is in text order. The occurrences written as the name are
+    # kept first (none overlapping the one before), then the others that
+    # overlap neither one of those nor the other kept before them.
+    exact: list[tuple[int, int]] = []
+    for s, e in found:
+        if text[s:e] == name and (not exact or exact[-1][1] <= s):
+            exact.append((s, e))
+    other: list[tuple[int, int]] = []
+    for s, e in found:
+        if text[s:e] == name or (other and other[-1][1] > s):
+            continue
+        i = bisect.bisect_left(exact, (s, e))
+        if (i == 0 or exact[i - 1][1] <= s) and (i == len(exact) or exact[i][0] >= e):
+            other.append((s, e))
+    return sorted(exact + other)
 
 
 def flat_spans(spans: Iterable[tuple[int, int]]) -> list[int]:

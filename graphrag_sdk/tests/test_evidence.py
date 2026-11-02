@@ -129,6 +129,10 @@ def test_occurrences_found_never_overlap():
     assert find_spans("哈哈哈", "哈哈") == [(0, 2)]
     # Of two that overlap, the one written as the name is kept.
     assert find_spans("a.A.A", "A.A") == [(2, 5)]
+    # Exact and other-case occurrences alternating: every one, in text order.
+    text = " ".join(["NASA", "Nasa"] * 2000)
+    spans = find_spans(text, "NASA")
+    assert len(spans) == 4000 and spans == sorted(spans) and spans[:2] == [(0, 4), (5, 9)]
 
 
 def test_a_capitalised_names_lowercase_occurrences_are_left_out():
