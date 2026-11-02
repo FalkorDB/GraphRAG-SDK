@@ -144,12 +144,18 @@ class OntologyStore:
         self._graph = driver.select_graph(self._graph_name)
         return self._graph
 
-    async def _query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
+    async def _query(
+        self, cypher: str, params: dict[str, Any] | None = None, *, read_only: bool = False
+    ) -> Any:
         # The connection refuses a FalkorDB too old before its first query;
         # this graph is queried through the driver, so it asks the same here,
         # or a refused server would get the ontology graph written first.
         await self._conn._check_server_version()
         graph = self._ensure_graph()
+        if read_only:
+            # GRAPH.QUERY on a missing key creates an empty graph, so a plain
+            # load() would leave a "<graph>__ontology" key behind.
+            return await graph.ro_query(cypher, params=params)
         return await graph.query(cypher, params=params)
 
     # ── Load ─────────────────────────────────────────────────────
@@ -170,33 +176,40 @@ class OntologyStore:
                 # Relation nodes describe one label and the first must win,
                 # they are ordered by the creation stamp first.
                 "MATCH (e:Entity) RETURN e.label AS label, e.description AS description "
-                "ORDER BY id(e)"
+                "ORDER BY id(e)",
+                read_only=True,
             )
             ent_prop_result = await self._query(
                 "MATCH (e:Entity)-[:HAS_PROPERTY]->(p:Property) "
                 "RETURN e.label AS owner, p.label AS name, p.type AS type, "
                 "p.description AS description, p.structured AS structured "
-                "ORDER BY id(e), id(p)"
+                "ORDER BY id(e), id(p)",
+                read_only=True,
             )
             patterned_rel_result = await self._query(
                 "MATCH (r:Relation)-[:SOURCE]->(s:Entity), (r)-[:TARGET]->(t:Entity) "
                 "RETURN r.label AS rel_label, r.description AS description, "
-                f"s.label AS src, t.label AS tgt ORDER BY {_RELATION_AGE}"
+                f"s.label AS src, t.label AS tgt ORDER BY {_RELATION_AGE}",
+                read_only=True,
             )
             open_rel_result = await self._query(
                 "MATCH (r:Relation) WHERE NOT (r)-[:SOURCE]->() "
                 "RETURN r.label AS rel_label, r.description AS description "
-                f"ORDER BY {_RELATION_AGE}"
+                f"ORDER BY {_RELATION_AGE}",
+                read_only=True,
             )
             rel_prop_result = await self._query(
                 "MATCH (r:Relation)-[:HAS_PROPERTY]->(p:Property) "
                 "RETURN r.label AS owner, p.label AS name, p.type AS type, "
                 "p.description AS description, p.structured AS structured "
-                f"ORDER BY {_RELATION_AGE}, id(p)"
+                f"ORDER BY {_RELATION_AGE}, id(p)",
+                read_only=True,
             )
         except FalkorDBVersionError:
             raise
         except Exception as exc:
+            if "empty key" in str(exc):  # never written: nothing declared yet
+                return Ontology()
             logger.debug("Ontology load failed (returning empty ontology): %s", exc)
             return Ontology()
 
@@ -218,23 +231,27 @@ class OntologyStore:
             table_result = await self._query(
                 "MATCH (t:TableMapping) RETURN t.source AS source, t.label AS label, "
                 "t.key AS key, t.name AS name, t.standalone AS standalone, t.derived AS derived, "
-                "t.description AS description ORDER BY id(t)"
+                "t.description AS description ORDER BY id(t)",
+                read_only=True,
             )
             column_result = await self._query(
                 "MATCH (t:TableMapping)-[:MAPS_COLUMN]->(c:MappedColumn) "
                 "RETURN t.source AS source, c.property AS property, c.column AS column, "
-                "c.type AS type, c.description AS description ORDER BY id(t), id(c)"
+                "c.type AS type, c.description AS description ORDER BY id(t), id(c)",
+                read_only=True,
             )
             link_result = await self._query(
                 "MATCH (t:TableMapping)-[:MAPS_LINK]->(l:MappedLink) "
                 "RETURN t.source AS source, l.type AS type, l.to AS to, l.by AS by, "
-                "l.name AS name, l.description AS description ORDER BY id(t), id(l)"
+                "l.name AS name, l.description AS description ORDER BY id(t), id(l)",
+                read_only=True,
             )
             link_column_result = await self._query(
                 "MATCH (t:TableMapping)-[:MAPS_LINK_COLUMN]->(c:MappedLinkColumn) "
                 "RETURN t.source AS source, c.link_type AS link_type, c.link_by AS link_by, "
                 "c.property AS property, c.column AS column, c.type AS type, "
-                "c.description AS description, c.link_to AS link_to ORDER BY id(t), id(c)"
+                "c.description AS description, c.link_to AS link_to ORDER BY id(t), id(c)",
+                read_only=True,
             )
             relationship_table_result = await self._query(
                 "MATCH (t:RelationshipMapping) "
@@ -244,12 +261,14 @@ class OntologyStore:
                 "t.end_column AS end_column, t.type AS type, "
                 "t.type_column AS type_column, t.allowed_types AS allowed_types, "
                 "t.direction AS direction, t.missing_endpoint AS missing_endpoint, "
-                "t.ambiguous_endpoint AS ambiguous_endpoint, t.description AS description"
+                "t.ambiguous_endpoint AS ambiguous_endpoint, t.description AS description",
+                read_only=True,
             )
             relationship_column_result = await self._query(
                 "MATCH (t:RelationshipMapping)-[:MAPS_COLUMN]->(c:MappedRelationshipColumn) "
                 "RETURN t.source AS source, c.property AS property, c.column AS column, "
-                "c.type AS type, c.description AS description"
+                "c.type AS type, c.description AS description",
+                read_only=True,
             )
             table_rows = list(getattr(table_result, "result_set", None) or [])
             column_rows = list(getattr(column_result, "result_set", None) or [])

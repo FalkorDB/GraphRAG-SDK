@@ -63,6 +63,7 @@
                   "structured-ingestion",
                   "extraction",
                   "retrieval",
+        "agentic-retrieval",
                   "storage",
                   "graph-schema"
                 ]

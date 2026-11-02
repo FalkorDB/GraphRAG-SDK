@@ -69,6 +69,7 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.utils.cypher import merge_key_value
+from graphrag_sdk.ingestion.resolution_strategies.base import description_list
 
 if TYPE_CHECKING:
     from graphrag_sdk.storage.graph_store import GraphStore
@@ -164,6 +165,13 @@ class CachedChunkExtraction(ExtractionStrategy):
         the rebuilt provenance would never land, and the post-cutover sweep
         would then delete facts the unchanged chunk still supports.
 
+        A chunk whose mention edge an earlier version wrote is unusable too:
+        that edge never recorded what the chunk put on the entity's
+        description, and copied, the new edge would claim to (this version
+        marks the edges it creates) while holding nothing — a later rebuild
+        from the edges would then drop that text although the chunk still
+        says it. Extracted again, its new edge records it.
+
         Dropping a chunk removes the entities only it mentioned, which can
         strand edges cited by other chunks, so this iterates to a fixpoint.
         Only the affected chunks are excluded — the rest of the document
@@ -176,7 +184,7 @@ class CachedChunkExtraction(ExtractionStrategy):
             if not label_by_ent.get(row.entity_id):
                 label_by_ent[row.entity_id] = row.label
 
-        good = set(old_ids)
+        good = set(old_ids) - {row.chunk_id for row in ent_rows if not row.recorded}
         while good:
             node_ids = {e for c in good for e in ents_by_chunk.get(c, ())}
             bad: set[str] = set()
@@ -242,8 +250,18 @@ class CachedChunkExtraction(ExtractionStrategy):
             new_uids = id_map.get(row.chunk_id)
             if not new_uids:
                 continue
+            said = row.descriptions or ([row.description] if row.description else [])
             for new_uid in new_uids:
-                mentions.append(EntityMention(chunk_id=new_uid, entity_id=row.entity_id))
+                # The unchanged chunk keeps what its old mention edge held:
+                # the same text, so the same spans and the same descriptions.
+                mentions.append(
+                    EntityMention(
+                        chunk_id=new_uid,
+                        entity_id=row.entity_id,
+                        spans=list(row.spans),
+                        descriptions=list(said),
+                    )
+                )
             srcs = ent_sources.setdefault(row.entity_id, [])
             if row.entity_id not in ent_props:
                 # Only emit non-empty fields — SET n += props would null-out
@@ -253,8 +271,10 @@ class CachedChunkExtraction(ExtractionStrategy):
                     props["name"] = row.name
                 if row.type:
                     props["type"] = row.type
-                if row.description:
-                    props["description"] = row.description
+                if said:
+                    props["description"] = " | ".join(said)
+                if len(said) > 1:
+                    props["descriptions"] = list(said)
                 ent_props[row.entity_id] = props
                 ent_labels[row.entity_id] = row.label
                 # Remap provenance onto post-update chunk ids: this doc's
@@ -328,9 +348,12 @@ class CachedChunkExtraction(ExtractionStrategy):
         """Merge cached and freshly extracted GraphData.
 
         Later parts win on conflicting properties (fresh extraction follows
-        cached parts, so updated descriptions take precedence) — EXCEPT
-        ``source_chunk_ids``, which is a union: an entity or fact present in
-        both a cached and an extracted chunk must keep both provenances.
+        cached parts) — EXCEPT ``source_chunk_ids``, which is a union: an
+        entity or fact present in both a cached and an extracted chunk must
+        keep both provenances; and an entity's descriptions, also a union:
+        a cached part can hand a ``descriptions`` list, which the store reads
+        before ``description``, so a fresh part's description overlaid on it
+        would never reach the node.
 
         Relationships are keyed on ``(start, type, end)`` — plus ``rel_type``
         for ``RELATES``, as ``upsert_relationships`` does — for the same reason
@@ -373,6 +396,13 @@ class CachedChunkExtraction(ExtractionStrategy):
                     nodes_by_id[node.id] = node
                 else:
                     merged = _union_sources(existing.properties or {}, node.properties or {})
+                    said = description_list(existing.properties or {})
+                    said += [d for d in description_list(node.properties or {}) if d not in said]
+                    merged.pop("descriptions", None)
+                    if said:
+                        merged["description"] = " | ".join(said)
+                    if len(said) > 1:
+                        merged["descriptions"] = said
                     label = node.label or existing.label
                     nodes_by_id[node.id] = GraphNode(id=node.id, label=label, properties=merged)
             for rel in part.relationships:

@@ -9,6 +9,173 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Agentic ingestion: an agent builds the graph from a folder (#275)
+
+- **`GraphRAGToolkit(rag, files_root=...)` lets an agent ingest files.**
+  `preview_files` returns one sample from the middle of each file, paged, so the
+  agent can design one ontology for the whole corpus; `set_ontology` declares
+  or extends it (adds only); `ingest(files=[...], plan=[rules])` ingests up to
+  50 files per call, each with the chunker, extractor and resolver of the
+  first rule matching its path. Paths stay inside the root and are read under
+  their real on-disk spelling (symlinks resolved), so two spellings of one
+  file, or a link and its target, ingest as one document; a file's document id
+  is `file:` and that path relative to the root (`file:reports/q1.pdf`). On
+  POSIX each file is opened folder by folder without following symlinks
+  (`O_NOFOLLOW`, and `O_NONBLOCK` so a FIFO cannot block), from a root checked
+  to be the folder recorded at start, checked with `fstat` to be a regular
+  file, and read from that open handle, so a symlink swapped in after the
+  check cannot read outside the root. On Windows the path is checked under the
+  root and then reopened by name, so this guarantee is POSIX-only.
+  `preview_files` reads only a window around the middle of each file (a few
+  pages of a PDF), marks estimated lengths (`chars_estimated`) and shortens a
+  page to fit the result size, with `next_offset` naming the first file left
+  out; `ingest` refuses files over `max_file_bytes` (default 50 MiB). The
+  `files` and `plan` arguments are offered only when a files root is set, and
+  each `files` entry is capped at 1,024 characters.
+- **Agent plans stay cheap.** Plan choices are limited by `plan_limits`
+  (default `CHEAP_PLAN_LIMITS`: sentence, fixed or structural chunking, GLiNER
+  extraction, exact resolution, and at most 1,000 chunks per file); anything
+  else is replaced and the plan's `reason` says so. The `ingest` tool
+  description and the server's guide tell the agent what each allowed option
+  costs (`contextual`: +1 LLM call per chunk, each sending the whole document;
+  `llm` extractor: +1 LLM call per chunk; `llm_verified`: up to `max_llm_pairs`
+  LLM pair checks per document, a second ask for each confirmed cross-type
+  match, one check per name shared across types and description summaries),
+  so it chooses per file within the limits.
+- **`GraphRAG.ingest(auto=True)` is cheap by default.** Without `plan_limits`,
+  the default `LLMIngestionPlanner` may pick only `CHEAP_PLAN_LIMITS`, with
+  `max_chunks=1000`; pass `plan_limits={...}` (which turns `auto` on) to allow
+  contextual chunking, the `llm` extractor or `llm_verified` resolution. It is
+  merged over `CHEAP_PLAN_LIMITS` (in `GraphRAGToolkit(plan_limits=...)` too): a
+  key left out keeps its cheap value.
+  `plan_limits` and `planner` together raise `ValueError`. The planner prompt
+  quotes the document sample in a `<document>` block marked as data, whose
+  instructions are to be ignored. `CHEAP_PLAN_LIMITS` (read-only) and
+  `ChunkBudgetExceededError` are exported from `graphrag_sdk`.
+- **`max_chunks` caps the chunks per document.** `LLMIngestionPlanner`
+  and `RuleBasedIngestionPlanner` take `max_chunks=`: a document that splits
+  into more chunks is refused with `ChunkBudgetExceededError` before anything
+  of it is written or extracted. It is a chunk limit, not a request ceiling:
+  `max_chunks=N` allows `N` extraction requests with `gliner` and about `2N`
+  with the `llm` backend, before retries. For `contextual` chunking the base
+  chunks are counted before the per-chunk context calls. The default `None`
+  sets no limit. `max_llm_pairs` caps `llm_verified` pairs per document
+  (cross-type rechecks, same-name cross-type checks and summary calls come on top), defaults to 500 for both
+  planners, and is now kept with `tune_params=False` too. A tuned
+  sentence-based window repeats at most half its tokens, so it advances by at
+  least half.
+- **Each ingest says what the ontology misses.** `IngestionResult.metadata
+  ["pruned"]` and the tool's `pruned` count dropped entity and relation types,
+  undeclared relation patterns, dangling relations and entities stored as
+  `Unknown`. Relations dropped because an end is `Unknown` are counted in
+  `unknown_endpoints`, with a hint to declare the missing entity type, not in
+  `pattern_mismatches`. `ingest(files=..., reextract=true)` extracts those
+  files again after the ontology is extended, planned and chunked like a first
+  ingest (`ingest(text=..., document_id=..., reextract=true)` for text). The
+  plan a file was last ingested with is remembered in memory only; after a
+  restart the plan's `reason` says none was remembered. A file already in the
+  graph whose content changed goes through `update()` (`status: "updated"`)
+  instead of adding new chunks beside the old ones. Across every session of a
+  toolkit, ingests run together but an update or re-extraction runs alone: it
+  waits for the ingests already running, and ingests that come after it wait
+  for it, since its orphan cleanup could delete an entity an ingest has
+  written but not linked yet. Text ingest and re-extraction refuse a document
+  read from a file, so text cannot overwrite or extend it: a text's
+  `document_id` cannot start with `file:`, even without a files root, nor be
+  the id of a stored document that carries a file loader's metadata
+  (`loader`), stores a path other than its id, is a table, or names a file
+  under the files root (`GraphRAG.ingest("notes/a.md")` stores the id
+  `notes/a.md`).
+- **`set_ontology` is atomic across sessions**: its load, merge and write run
+  under one lock, an ontology given to `GraphRAG(...)` and not registered yet
+  is registered first, and the extractor's ontology is refreshed from the
+  store afterwards.
+- **`set_ontology` is annotated destructive over MCP** and refuses labels with
+  `:`, line breaks or other control characters, `__X__` names, and the SDK's
+  own `Chunk`, `Document` and `Unknown`, each with a hint.
+- **`finalize_policy="on_write"` skips finalize when nothing changed** (every
+  document unchanged, or refused before writing). A finalize that fails after
+  documents were written keeps the ingest result and says so in its `hint`.
+- **Planner arguments are checked.** A `planner` that is not an instance with
+  an async `plan()` raises `TypeError`; the planner call gets what is left of
+  `ctx`'s latency budget and raises `LatencyBudgetExceededError` when it runs
+  out. A document that cannot be loaded raises `LoaderError`. `update()` says
+  in `metadata["plan_note"]` which strategies it defaulted (it does not
+  re-plan), and logs it at WARNING after a planned ingest. A reply naming a
+  strategy twice keeps the last; params are kept only with a valid id of
+  their own, and replies are read up to 20,000 characters.
+- **`RuleBasedIngestionPlanner`** maps glob rules to strategies with no LLM
+  call, for `rag.ingest(paths, planner=...)` too.
+- **`graphrag-mcp --files-root`** (or `GRAPHRAG_MCP_FILES_ROOT`) serves the
+  file tools; without it no files are read. The filesystem root and the home
+  folder are refused. The server's guide tells the agent to ask the user for
+  their ontology first, and names `set_ontology` and `finalize` only when they
+  are served.
+
+#### Graph tools for your own agent, and an MCP server (#274)
+
+- **`GraphRAGToolkit` gives an agent you already run read-only tools on the
+  graph**: `status`, `get_ontology`, `retrieve` and
+  `check_citations`, plus `ingest` and
+  `finalize` for agents allowed to write: wrap a `GraphRAG` in
+  `GraphRAGToolkit(rag)`.
+  The SDK runs no agent loop: your agent plans, calls the tools and writes
+  the answer. Every tool validates its input with a strict schema, caps its
+  result size (its database queries use the configured per-query timeout), and
+  returns a typed result
+  whose `to_llm_text()` stays under a fixed size (8,000 characters by
+  default), shared across its sections so a long relation list cannot push
+  out the passages (which get twice the share, up to about 1,200 characters
+  each); a cut section says how many items it omitted.
+- **Every piece of evidence is numbered.** Entities, relations, facts and passages,
+  and each `status` / `get_ontology` result, carry an `[n]` from a per-session ledger
+  (`toolkit.new_session()`), and `check_citations(answer)` reports which `[n]`
+  in a draft answer are real and whether the answer cites anything at all.
+- **`retrieve` runs every search path unless the agent names a few.**
+  `paths` picks from `facts`, `exact_names`, `fuzzy_names`, `links` and
+  `passages`, so a question that only needs the source text skips the entity
+  searches and the relation expansion. Leave it out to run them all; when the chosen
+  paths find nothing, the result says to run again without them. With
+  `expand_hops` 2–5 every hop gets a share of the relation cap, so the first
+  hop cannot fill it and starve the deeper ones.
+- **`graphrag-mcp` serves the same tools over MCP** (`pip install
+  "graphrag-sdk[mcp]"`) to Claude Code, Cursor and any other MCP client, on
+  stdio or SSE with a bearer token. `--read-only` (or
+  `GRAPHRAG_MCP_READ_ONLY=1`) hides the write tools. The server sends a usage
+  guide as its instructions and keeps one evidence ledger per client
+  connection, including stateless SSE clients (the `mcp.Client` default), so
+  one client can never cite another's evidence. Requires `mcp` 2.x; on stdio
+  LiteLLM's debug output is silenced so stdout carries only the protocol.
+- **Tool results never include internal nodes or embedding vectors**, and
+  the read tools never write: the toolkit's own graph queries run as
+  `GRAPH.RO_QUERY`, so the database refuses writes. `retrieve`'s search
+  paths run the SDK's standard retrieval queries, which only read.
+- **Read tools on a graph that does not exist** (never written, or deleted
+  since) raise an error naming it and create nothing; the read-only check
+  runs on every call. When the graph store cannot be reached they raise
+  "Could not reach the graph store" instead of reporting an empty graph.
+- **`check_citations`** accepts `[1, 2]` and `[1-3]`, and matches names as
+  whole words, case-insensitively: every word of a multi-word name must be
+  in the cited evidence, and a sentence's first word is checked when it is
+  part of a name. Figures ignore trailing zeros (`2.80` = `2.8`). A sentence
+  that says the graph lacks something needs no citation.
+- **`MultiPathRetrieval(router=...)` runs only the paths a question needs.**
+  `HeuristicPathRouter()` picks them from the question with no model call;
+  `LLMPathRouter(llm)` asks the model once. Plans name ids from
+  `RETRIEVAL_PATHS` (`relates`, `entity_cypher`, `entity_fulltext`,
+  `expansion`, `chunks`), MultiPath's internal paths; the `retrieve` tool's
+  agent-facing `paths` are `graphrag_sdk.tools.specs.RETRIEVE_PATHS`. An
+  empty plan or a failing router runs every path, unless the latency budget
+  is exhausted. `enable_cypher` still runs its path whatever the plan.
+- **`ingest` and `finalize` are marked destructive** in their MCP
+  annotations, so clients ask before running them. The MCP server keeps
+  every reply valid JSON within its size limit (evidence cut or shortened
+  to fit cannot be cited), and reports unexpected
+  errors with a next step and with API keys and tokens masked.
+- `pip install "graphrag-sdk[all]"` includes the MCP server.
+- New example `graphrag_sdk/examples/12_agent_toolkit.py` and docs page
+  *Agentic Retrieval*.
+
 #### Structured ingestion — tables declared on the ontology, one node for a row and its mention
 
 - **`Ontology(tables=[TableMapping(...)])`** declares what a table's columns mean,
@@ -225,6 +392,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `graphrag_sdk/tests/test_grounded_abstention.py`.
 
 ### Changed
+
+- **`SentenceTokenCapChunking` records the overlap each chunk has.** A chunk's
+  `overlap_sentences` metadata is now the number of its sentences the next
+  chunk repeats (0 on the last chunk), not the configured `overlap_sentences`,
+  so new Chunk nodes differ from older ones in that property; chunk text, ids
+  and cache hashes are unchanged. The new `max_overlap_fraction` option caps
+  the share of a chunk's tokens the next chunk may repeat (#275).
+- **An entity stays the same size however often it is mentioned.** Its node
+  held a `source_chunk_ids` list and a `spans` JSON that grew with every
+  mention and were rewritten on every write, and a merge appended every
+  member's description to `descriptions`, without limit. Now which chunks
+  mention an entity, where (`spans`) and what each says it is (`description`,
+  and `descriptions` when there is more than one, each kept whole) are on its
+  `MENTIONED_IN` edges, one per chunk, written once and deleted with the
+  chunk; the node holds no chunk list. Ingest-time remaps and dedup merges
+  carry both onto the surviving entity's edge, combining them when two land on
+  one chunk, and a second write of an edge (`backfill_entity()` finding an
+  entity extraction already found there) adds to it instead of replacing it. A second document that mentions an entity adds its description
+  instead of replacing the first's (`SET n += props` kept only the last). A
+  write adds descriptions up to 20 per node (it never cuts what a node already
+  holds), and `finalize()`, after dedup, replaces those of every entity holding
+  more than 5 with one LLM summary, marked `description_summarised`; a failed
+  summary leaves the descriptions as they are and is listed in the new
+  `FinalizeResult.description_summary_failures` (`descriptions_summarised`
+  counts the rest), and dedup's work stays in place.
+  `delete_document()` and `update()` record what the removed chunks' mention
+  edges said, with their crash-safe cleanup state, and the cleanup takes
+  exactly that text off the entities' descriptions (no LLM call), keeping what
+  a remaining chunk still says and refilling a full node from the remaining
+  edges; a summarised entity is rebuilt from its edges when all of them say
+  something, and otherwise keeps its summary with the removed text beside it
+  dropped. On the Verdantix benchmark (57 documents, a
+  `finalize()` after every 10, the same three extractions for both): dedup F1
+  0.53 → 0.70, precision 0.955 → 0.987, wrong merges 1.8 → 0.7 per run,
+  answers unchanged; at most 5 descriptions per node after `finalize()` (was
+  up to 15); LLM cost +3%; `finalize()` ~3 s longer (median 3.2 → 6.1 s),
+  ingest and queries unchanged. Graphs written by an earlier version keep their
+  entity `source_chunk_ids` lists, which the update and delete paths still
+  trim; their mention edges record no description and no `said_version` (an
+  edge this version creates carries it, and a later write that adds a
+  description to an older edge does not), so text a document ingested by an
+  earlier version wrote is kept when that document is deleted.
+
+- **The dedup judge's fixed instructions come first in its prompt, so the
+  provider caches them.** The set count sat ~150 tokens in and the decision
+  procedure followed the sets, so no two judge prompts shared a prefix the
+  provider could cache. The instructions are unchanged except that "Below are
+  N independent SETS" now says the sets come at the end, the count moves to a
+  heading over them, and one line before them marks the types and sets as data,
+  never instructions. The ~1,080 tokens before them are identical in every
+  call, past the 1,024 tokens Azure OpenAI and OpenAI's current models need to
+  cache a prefix automatically. The minimum depends on the model: Anthropic
+  models also need explicit `cache_control`, and their minimum varies (2,048
+  tokens for Claude Haiku). Measured with gpt-4.1 on Azure: 44% of judge input
+  served from the provider's cache (was 9%), judge cost −26%, dedup
+  unchanged.
 
 - **`finalize()` deduplicates incrementally, with one judge pass, and
   survives a crash.** `finalize()` checks only the entities whose check is
@@ -510,6 +733,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rerank, and parsing those replies in pure Python was most of the client's
   CPU per question: about 48 ms down to 11 ms in our tests, so one process
   serves more concurrent questions.
+- **Relationship expansion now starts from the endpoints of matched `RELATES`
+  edges, by their stored ids.** `search_relationships()` /
+  `search_relates_edges()` return each edge's `src_id` / `tgt_id`, and
+  expansion walks from those ids instead of ids guessed from names, which
+  missed typed ids such as `alice__person`. So the default `rag.retrieve()` /
+  `completion()` context can include more relationship lines than before. An
+  endpoint with no name (a relation edge from a table) seeds expansion but is
+  not listed under Key Entities. When there are more lines than
+  `max_relationships`, 2-hop lines keep up to a third of the room, so 1-hop
+  lines cannot crowd them all out.
 
 ### Fixed
 - **`update()` with `cache_unchanged_chunks` kept one fact per entity pair.**
@@ -521,6 +754,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with no cache hits, overwrote the first fact's `rel_type`, `fact` and
   `description`. Both now key on `rel_type` the way `upsert_relationships()`
   does (#361).
+- **A rejected `GraphRAG.set_ontology()` no longer sticks.** When the new
+  ontology was refused (a contradiction with the stored one, a reserved
+  label), it stayed on the instance and every later ingest failed on it. The
+  previous ontology is now restored before the error is raised.
+- **Reading the ontology no longer creates its graph.** `OntologyStore.load()`
+  read with `GRAPH.QUERY`, which on a graph nothing was declared on yet left an
+  empty `<graph>__ontology` key behind. It now reads with `GRAPH.RO_QUERY` and
+  treats a missing key as an empty ontology.
+- **With coreference resolution on, spans pointed at the wrong text.** The
+  models read the resolved chunk ("She hired Bob" becomes "Alice Smith hired
+  Bob"), the spans were found in it, but the chunk node stores the original,
+  so every span after a rewritten pronoun selected other text or ran past the
+  chunk's end. A `MENTIONED_IN` edge's spans are now found in the stored text;
+  the NER offsets are used only when coreference left the chunk unchanged, and
+  a rewritten chunk's `RELATES` evidence offsets are left out. The sentence
+  that stands in for a missing description is still cut from the resolved
+  text. Coreference resolution is off by default.
 - **A write batch holding the same entity or relationship twice lost a write.**
   In one `UNWIND ... MERGE` call FalkorDB 4.x kept the first row's values and
   6.0.x the last, and on both only one row's `source_chunk_ids` survived, so an
