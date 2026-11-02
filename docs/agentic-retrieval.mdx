@@ -1,0 +1,162 @@
+---
+title: "GraphRAG SDK Agentic Retrieval: Graph Tools and MCP Server"
+sidebarTitle: "Agentic Retrieval"
+description: "Give your own agent read-only graph tools — hybrid search over entities, relations and passages — with numbered evidence and a citation check, in Python or over MCP."
+---
+
+GraphRAG SDK does not run an agent loop. **Your** agent — Claude Code, Cursor, a pydantic-ai or LangGraph agent — plans, calls the graph tools and writes the answer. The SDK runs each tool call bounded and read-only, numbers every piece of evidence it returns, and checks the `[n]` citations in your agent's draft against that evidence.
+
+Use the tools when questions need more than one lookup: "which X are connected to Y", multi-hop questions, comparisons. For a plain question about the content, [`rag.completion()`](/retrieval) is faster and cheaper.
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `status` | Entity, relation, document and chunk counts, and every entity label and relation type with its count. The result carries one evidence number. |
+| `get_ontology` | Declared entity types with their properties, relation types with their (source, target) patterns. The result carries one evidence number. |
+| `retrieve` | Hybrid search (vector + full-text + graph) for a question: entities, relations, facts and source passages. Runs every search path unless `paths` names a few: `facts` (facts on relations), `exact_names` (entities named in the question), `fuzzy_names` (full-text match on names and descriptions), `links` (relations around the entities found) and `passages` (source text). `expand_hops` (1–5) sets how far `links` walks; the relations it returns are capped at 4 × `top_k` (40 at most), and each hop gets a share of that cap so a busy first hop cannot crowd out the deeper ones. Needs the embedding model the graph was built with. |
+| `check_citations` | Check a draft answer: every `[n]` must be evidence a tool returned in this session. Also lists claims with no `[n]` of their own, and cited claims whose figures or names the cited evidence does not contain. |
+| `preview_files` | One sample from the middle of each file under the files root, paged with `next_offset` (the first file a page left out; a page is shortened to fit the result size), to design an ontology from (write side; listed only with a files root). Reads a bounded window around the middle of each file (a few pages of a PDF), never the whole file; a file's `chars` is then an estimate (`chars_estimated`). |
+| `set_ontology` | Declare or extend the entity and relation types extraction uses (write; annotated destructive over MCP, so clients ask first). Only adds: new types, descriptions and relation patterns. Labels may use letters (any script), digits, spaces, `-` and `_`; `\|`, `:`, backticks, line breaks, `__X__` names and the SDK's own `Chunk`, `Document` and `Unknown` are refused. |
+| `ingest` | Add text, or files under the files root with a per-file plan (write; `files` and `plan` are offered only with a files root, and the description lists the plan options allowed and what each costs). See [Building the graph from a folder](#building-the-graph-from-a-folder). |
+| `finalize` | Deduplicate, embed and index after a batch of ingests (write; listed only with `finalize_policy="manual"`). |
+
+The read tools never write. The toolkit's own graph queries (counts, ontology, entity cards, relation expansion, the existence check) run as `GRAPH.RO_QUERY`, so the database refuses writes; `retrieve`'s search paths run the SDK's standard retrieval queries, which only read but go through the normal query path. Results never contain embedding vectors or internal `__Label__` names.
+
+Before it reads, every read tool checks — read-only, on every call — that the graph exists. On a graph that was never written or has since been deleted, it raises an error naming the graph (`status` says so in its hint) instead of answering "nothing found", and creates nothing. When the check itself fails (FalkorDB down or unreachable), the call raises `Could not reach the graph store …` rather than reporting an empty graph.
+
+## Python
+
+```python
+from graphrag_sdk.tools import GraphRAGToolkit, ToolError
+
+toolkit = GraphRAGToolkit(rag, read_only=True)
+
+for spec in toolkit.tool_specs():          # name, description, JSON Schema input
+    register_with_your_agent(spec.name, spec.description, spec.input_schema)
+
+result = await toolkit.call("retrieve", {"question": "Where does Alice work?"})
+print(result.to_llm_text())                # compact text with [n] evidence numbers (8,000 chars max)
+print(result.model_dump_json())            # or the typed result
+```
+
+`to_llm_text(max_chars=8000)` shares its budget across the result's sections, so a long list of relations cannot push the passages out; passages get twice the share of other sections, show up to about 1,200 characters each, and are labelled with their file's name. A section that does not fit ends with `…(N more omitted)`. Whole-number floats print as integers (`40`, not `40.0`).
+
+Every tool is also an async method (`await toolkit.retrieve("Who founded Acme?")`). `call()` validates arguments against the same pydantic models that produce `input_schema`.
+
+A call that cannot run raises `ToolError` with a `hint` naming the fix:
+
+```
+Graph 'kb' does not exist. Hint: Ingest documents (and finalize) first, or check the graph name the server was started with.
+```
+
+Options:
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `read_only` | `False` | Drop `preview_files` / `set_ontology` / `ingest` / `finalize`; calling them raises `ReadOnlyViolation`. |
+| `files_root` | `None` | Folder `preview_files` and `ingest(files=...)` may read. Paths are relative to it; `..`, absolute paths, hidden files and symlinks leaving it are refused. Each file is read under its real on-disk path (case as stored, symlinks resolved), so two spellings of one file, or a link and its target, are one document. Document ids are `file:` and that path relative to `files_root` (`file:reports/q1.pdf`), so a moved root keeps them; text cannot be ingested under a `file:` id. A file already ingested with `rag.ingest("reports/q1.pdf")` has the id `reports/q1.pdf`, so ingesting it through the toolkit adds a second document, `file:reports/q1.pdf`, beside it. `ingest(files=...)` accepts a file's id as its path; a real path that starts with `file:` is read as given. On POSIX the file is opened folder by folder without following symlinks, from a root checked to be the folder it was at start, and checked to be a regular file on the open handle, then read from it, so a symlink swapped in after the check cannot read outside the root. On Windows the path is checked to be under the root and then reopened by name, so a symlink or junction swapped in between can still lead outside it: that guarantee is POSIX-only. Without it, `ingest` takes text only. |
+| `max_file_bytes` | 50 MiB | Largest file `ingest(files=...)` reads; larger files are refused with a hint (split the file or raise the limit). `None` sets no limit. |
+| `plan_limits` | cheap | Strategies an agent's ingest plan may pick: `chunkers`, `extractors`, `resolvers`, `max_llm_pairs`, `max_chunks`, `tune_params`, merged over `CHEAP_PLAN_LIMITS`: a key you leave out keeps its cheap value (except that `resolvers` allowing `llm_verified` without `max_llm_pairs` gets a budget of 500). `CHEAP_PLAN_LIMITS` allows `sentence` / `fixed` / `structural` chunking, `gliner` extraction and `exact` resolution, and refuses a file of over 1,000 chunks before extracting it (see [Cost ceiling](/ingestion#agentic-strategy-selection-auto%3Dtrue)). |
+| `include` | all | Subset of tool names to advertise and accept in `call()`. |
+| `finalize_policy` | `"manual"` | `"manual"`: call `finalize` after a batch. `"on_write"`: finalize after every ingest that changed something (demos only — cost grows with the graph). `"never"`: you call `rag.finalize()`. |
+| `ledger_capacity` | 2000 | Evidence items kept per session. |
+
+`GraphRAGToolkit.for_tenant(base_config, "acme", llm=..., embedder=...)` binds a toolkit to the graph `<base>__acme` and closes it on `aclose()` / `async with`.
+
+## Building the graph from a folder
+
+With a `files_root`, an agent can build the graph from a folder of `.txt`, `.md`, `.markdown`, `.rst` and `.pdf` files:
+
+1. **Ontology.** Ask the user for one and declare it with `set_ontology`. Without one, call `preview_files` until `next_offset` is null — one sample from the middle of every file, at most 30,000 characters per page — then declare one ontology for the whole corpus, with a specific relation type for each kind of link (owns, causes, supplies, …); with only a few broad types, extraction files facts under the wrong one. Declaring it before the first ingest keeps the default types out.
+2. **Ingest.** `ingest(files=[...], plan=[rules])`, at most 50 files per call; globs such as `reports/*.pdf` work. Each rule is `{"match": "*.md", "chunker": "structural", ...}`; the first rule matching a file's path picks its chunker, extractor and resolver. Choices outside `plan_limits` are replaced and the plan's `reason` says so. The cheap options are the default; the `ingest` description tells the agent what each allowed option costs (`contextual`: one more LLM call per chunk, sending the whole document; `llm` extractor: two extraction calls per chunk instead of one; `llm_verified`: up to `max_llm_pairs` LLM pair checks per document, a second ask for each confirmed match between two entity types, one check per name shared across types, and description summaries), so it can pick per file within the limits.
+3. **Finalize** once, after the last batch.
+4. **Check `pruned`.** Each result reports what the ontology misses: entity and relation types dropped, relation patterns not declared, and entities stored as `Unknown`. To keep them, extend the ontology with `set_ontology` and call `ingest(files=[affected], reextract=true)`, which extracts those files again in place (each keeps the plan of its last ingest unless you pass a `plan`; that memory lives in the toolkit's process only, so after a restart pass the `plan` again, and the plan's `reason` says when none was remembered); then finalize again. When relations were dropped only for an undeclared pattern, `pruned.pattern_examples` shows one dropped fact per pair, and the result's `hint` counts them and gives the exact `set_ontology` call that keeps them. Add only the pairs the relation's meaning fits; for the others, declare a better relation type. Relations dropped because one end is an `Unknown` entity are counted apart, in `pruned.unknown_endpoints`: a pattern cannot name `Unknown`, so declare the missing entity type and add it to the relation's patterns.
+
+```python
+toolkit = GraphRAGToolkit(rag, files_root="corpus/")
+await toolkit.set_ontology(
+    entities=[{"label": "Drug"}, {"label": "Disease"}],
+    relations=[{"label": "TREATS", "patterns": [["Drug", "Disease"]]}],
+)
+result = await toolkit.ingest(
+    files=["notes/*.md", "reports/*.pdf"],
+    plan=[{"match": "*.md", "chunker": "structural"}, {"match": "*", "chunker": "fixed"}],
+)
+for doc in result.documents:
+    print(doc.path, doc.status, (doc.plan or {}).get("chunker"))  # ingested / reextracted / updated / unchanged / failed
+print(result.pruned)                                   # what the ontology misses
+await toolkit.finalize()
+```
+
+Unchanged files are skipped (`status: "unchanged"`); pass `reextract=true` to extract them again. A file already in the graph whose content changed is replaced in place through `update()` (`status: "updated"`), not added beside its old chunks. Across every session of a toolkit, ingests run together, but an update or re-extraction runs alone: it waits for the ingests already running, and ingests that come after it wait for it, as its orphan cleanup could otherwise delete an entity an ingest or another update has written but not linked yet. Text works the same way: an unchanged text comes back with `status: "unchanged"`, and `ingest(text=..., document_id=..., reextract=true)` extracts it again; a `document_id` starting with `file:`, or of another document read from a file, is refused for text, with or without `reextract` (use `ingest(files=[...], reextract=true)`), so text cannot overwrite or extend a file's document. A stored document counts as read from a file when it carries a file loader's metadata (`loader`), stores a path other than its id, is a table, or its id names a file under `files_root`; so a file the operator ingested with `rag.ingest("notes/a.md")` (id `notes/a.md`) is refused too. Under `finalize_policy="on_write"`, a finalize that fails after the documents were written keeps their result and says so in the `hint`; the next `ingest` call, from any session, retries it even if it changes nothing, and `toolkit.finalize()` retries it directly (otherwise it is a no-op under `on_write`). A file name with `*`, `?` or `[` in it is read as that file when it exists. Listing stops after walking 100,000 entries under `files_root`; point it at the folder that holds the documents. The filesystem root, the home folder and folders that contain it are refused as `files_root`. The planner behind `plan` is `RuleBasedIngestionPlanner`, also usable directly with `rag.ingest(paths, planner=...)` (see [Ingestion](/ingestion#agentic-strategy-selection-auto%3Dtrue)).
+
+## Evidence and citations
+
+Every entity, edge, fact and passage a tool returns carries an evidence number `n`, and so does each `status` and `get_ontology` result as a whole, so an answer about the graph itself can be cited too. An empty passage gets no number. Numbers run across all calls of one **session** — one toolkit, or one `toolkit.new_session()` copy per conversation — so an answer can cite results from several calls.
+
+```python
+session = toolkit.new_session()
+found = await session.retrieve("Where does Alice work?")
+evidence = [*found.relations, *found.facts, *found.chunks]
+if evidence:
+    check = await session.check_citations(f"Alice works at Acme Corp [{evidence[0].n}].")
+    check.grounded        # True
+    check.cited           # the valid numbers the answer cites
+    check.invalid         # numbers that point at nothing; removed from check.answer
+    check.sources         # the cited evidence: tool, kind, content
+    check.uncited         # sentences stating a figure or a name with no [n] of their own
+    check.unsupported     # cited sentences + the figures / names their evidence lacks
+```
+
+A marker can cite one item (`[3]`), a list (`[1, 4]`) or a range (`[1-3]`). The claim checks are literal and use no LLM:
+
+- A figure must appear as a number in the full text of the evidence the sentence cites (so "two" for "2" is reported). Trailing zeros do not matter (`2.80` matches `2.8`); the evidence's source file path is not searched.
+- A name is a run of capitalised words, and counts as found when every word of three or more letters appears in the evidence as a whole word, ignoring case ("Corvane Systems" needs both words; "Ann" is not found in "planning"). A lone surname needs support like any other name. A sentence's capitalised first word is checked when it starts a run ("Corvane Systems ships") or the sentence names something else ("Globex acquired Initech"), unless it is an opener such as "The" or "However".
+- A sentence that says the graph lacks something ("The graph does not say who founded Globex.") needs no citation and is never listed in `uncited`. Only sentences about the evidence or a failed lookup count: a negative claim about the world ("Globex does not provide pensions.") still needs one.
+
+The claim checks are warnings and never change `grounded`.
+
+An answer that cites no real evidence is not grounded.
+
+## MCP server
+
+```bash
+pip install "graphrag-sdk[mcp,markdown,pdf]"                     # mcp 2.x
+graphrag-mcp --read-only                                           # stdio, for local MCP clients
+graphrag-mcp --files-root ./corpus                                 # stdio, can also build the graph from ./corpus
+GRAPHRAG_MCP_TOKEN=... graphrag-mcp --transport sse --host 0.0.0.0  # network, bearer token required
+```
+
+Claude Code / Cursor config:
+
+```json
+{
+  "mcpServers": {
+    "graphrag": {
+      "command": "graphrag-mcp",
+      "args": ["--read-only"],
+      "env": { "FALKOR_HOST": "localhost", "GRAPHRAG_GRAPH": "my_graph", "OPENAI_API_KEY": "sk-..." }
+    }
+  }
+}
+```
+
+Configuration comes from `FALKOR_HOST`, `FALKOR_PORT`, `FALKOR_USERNAME`, `FALKOR_PASSWORD`, `GRAPHRAG_GRAPH`, `GRAPHRAG_MODEL`, `GRAPHRAG_EMBED_MODEL`, `GRAPHRAG_EMBED_DIM`, `GRAPHRAG_EMBED_SEND_DIMENSIONS`, `GRAPHRAG_MCP_READ_ONLY` and `GRAPHRAG_MCP_FILES_ROOT`. `GRAPHRAG_EMBED_DIM` defaults to the model's native size (3072 for `text-embedding-3-large`, otherwise 1536); when it is set, it is sent to `text-embedding-3` models as `dimensions`. Set `GRAPHRAG_EMBED_SEND_DIMENSIONS=true` to send it to a model whose name does not say `text-embedding-3`, such as an Azure deployment. A server reads files only when given `--files-root` (or `GRAPHRAG_MCP_FILES_ROOT`); without it, `ingest` takes text only. The LLM and embedder serve `retrieve` and `ingest`; the other read tools need neither.
+
+The server serves the same tools, with MCP annotations (`readOnlyHint`, `destructiveHint`; `ingest`, `set_ontology` and `finalize` are marked destructive, so clients such as Claude Code ask the user before running them), and sends the client a short guide as its instructions: call `retrieve` first with the user's question word for word (all paths unless it knows the question needs only a few), run `retrieve` again with exact names or `expand_hops` 2–3 (up to 5) when the first call did not answer, use `status` or `get_ontology` for questions about the graph itself, answer briefly, cite `[n]`, and always run `check_citations` before replying. When it serves the write tools, the guide adds the ingestion steps above, starting with asking the user for their ontology; steps that need `set_ontology` or `finalize` are left out when those tools are not served (`include`, or a `finalize_policy` other than `"manual"`). Results over 40,000 characters are shortened (longest lists first, at any depth, then long strings; the JSON stays valid) and marked `truncated`, with a hint naming the lists that were cut; evidence cut from a reply, or shortened in it, is dropped from the session, so it cannot be cited. A failure that is not a `ToolError` comes back as a short message naming the kind of failure (timeout, model provider, database, configuration) with a next step; the underlying message stays in the server log, and API keys and tokens are masked in any error text.
+
+Each client connection gets its own evidence numbering. Over SSE that holds for every client stream, including clients on the stateless MCP protocol (2026-07-28, the default for `mcp.Client`), so one client can never cite another's evidence. Over stdio one process serves one client, so there is one numbering, and the server keeps stdout for the protocol (LiteLLM's debug banners are turned off).
+
+Serving SSE on a non-loopback host without a token is refused. The token is sent as `Authorization: Bearer <token>` (the scheme is case-insensitive). A loopback SSE server only accepts requests whose `Host` / `Origin` name it (DNS-rebinding protection).
+
+From Python:
+
+```python
+from graphrag_sdk.mcp import GraphRAGMCPServer
+
+server = GraphRAGMCPServer(rag, read_only=True)
+await server.run(transport="stdio")
+```
+
+See [`examples/12_agent_toolkit.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/12_agent_toolkit.py) for a runnable script.

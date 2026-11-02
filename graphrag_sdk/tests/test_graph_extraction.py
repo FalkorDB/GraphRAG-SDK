@@ -16,6 +16,8 @@ from graphrag_sdk.core.models import (
     TextChunk,
     TextChunks,
 )
+from graphrag_sdk.ingestion.evidence import find_spans
+from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import CorefResolver
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     DEFAULT_ENTITY_TYPES,
     EntityExtractor,
@@ -543,8 +545,9 @@ class TestSpansMerging:
         assert "chunk-0" in merged[0].source_chunk_ids
         assert "chunk-1" in merged[0].source_chunk_ids
 
-    def test_spans_propagated_to_node_properties(self):
-        """Nodes with spans should include them in properties."""
+    def test_spans_stay_off_the_node(self):
+        """Spans go on the MENTIONED_IN edge (one per chunk), never on the
+        node, where they would grow with every mention."""
         ent = ExtractedEntity(
             name="Alice",
             type="Person",
@@ -554,8 +557,51 @@ class TestSpansMerging:
         )
         nodes = GraphExtraction._entities_to_nodes([ent])
         assert len(nodes) == 1
-        assert "spans" in nodes[0].properties
-        assert nodes[0].properties["spans"]["chunk-0"] == [{"start": 0, "end": 5}]
+        assert "spans" not in nodes[0].properties
+
+    def test_each_chunk_records_its_spans_and_what_it_says(self):
+        text = "Northstar builds cabinets. Alice, CEO of Acme, announced results. Acme grew."
+        alice = ExtractedEntity(
+            name="Alice", type="Person", description="CEO of Acme.", source_chunk_ids=["c0"]
+        )
+        acme = ExtractedEntity(name="Acme", type="Organization", source_chunk_ids=["c0"])
+        GraphExtraction._record_mentions([alice, acme], text, "c0")
+        # The model's description is what the chunk says; the spans are every mention.
+        assert alice.chunk_descriptions == {"c0": ["CEO of Acme."]}
+        assert alice.spans == {"c0": [{"start": 27, "end": 32}]}
+        # Without one, the sentences around the spans stand in.
+        assert acme.chunk_descriptions == {
+            "c0": ["Alice, CEO of Acme, announced results. … Acme grew."]
+        }
+        assert len(acme.spans["c0"]) == 2
+
+    def test_a_fallback_span_inside_a_word_is_not_kept(self):
+        """Naseem's repro: "US" is not in "Our business is booming." as a
+        name, and the step-1 offsets (5, 7) are the "us" inside "business"."""
+        text = "Our business is booming."
+        us = ExtractedEntity(name="US", type="Location", source_chunk_ids=["c0"])
+        us.spans = {"c0": [{"start": 5, "end": 7}]}  # type: ignore[attr-defined]
+        GraphExtraction._record_mentions([us], text, "c0")
+        assert us.spans == {"c0": []}
+        assert us.chunk_descriptions == {}
+        # A name the LLM added (not in step 1) gets whole-name spans only.
+        new = ExtractedEntity(name="US", type="Location", source_chunk_ids=["c0"])
+        GraphExtraction._merge_step1_metadata([new], [], text, "c0")
+        assert getattr(new, "spans", None) is None
+
+    def test_the_same_entity_twice_in_one_chunk_keeps_both_descriptions(self):
+        text = "Alice is CEO. alice also founded Acme."
+        first = ExtractedEntity(
+            name="Alice", type="Person", description="CEO", source_chunk_ids=["c0"]
+        )
+        second = ExtractedEntity(
+            name="alice", type="Person", description="CEO and founder", source_chunk_ids=["c0"]
+        )
+        GraphExtraction._record_mentions([first, second], text, "c0")
+        (alice,) = GraphExtraction._aggregate_entities([first, second])
+        assert alice.chunk_descriptions == {"c0": ["CEO", "CEO and founder"]}
+        (node,) = GraphExtraction._entities_to_nodes([alice])
+        assert node.properties["descriptions"] == ["CEO", "CEO and founder"]
 
     def test_no_spans_not_in_node_properties(self):
         """Nodes without spans should not have spans key."""
@@ -659,6 +705,128 @@ class TestSpansMerging:
         assert len(merged) == 1
         assert "chunk-0" in merged[0].spans
         assert "chunk-1" in merged[0].spans
+
+
+_COREF_STORED = "Alice Smith founded Acme. She hired Bob."
+
+_COREF_STEP2_JSON = json.dumps(
+    {
+        "entities": [
+            {"name": "Alice Smith", "type": "Person", "description": "Founder of Acme."},
+            {"name": "Acme", "type": "Organization", "description": "A company."},
+            {"name": "Bob", "type": "Person", "description": ""},
+        ],
+        "relationships": [
+            {
+                "source": "Alice Smith",
+                "target": "Bob",
+                "type": "HIRED",
+                "description": "Alice Smith hired Bob.",
+                # "Alice Smith hired Bob." in the resolved text,
+                # "Alice Smith founded Acme. Alice Smith hired Bob."
+                "span_start": 26,
+                "span_end": 48,
+            },
+        ],
+    }
+)
+
+
+class _SheIsAliceSmith(CorefResolver):
+    """Rewrites "She" as "Alice Smith": every offset after it moves 8 later."""
+
+    async def resolve(self, text: str) -> str:
+        return text.replace("She", "Alice Smith")
+
+
+class _SpanningNER(EntityExtractor):
+    """Gives each entity every place the text it reads names it, as GLiNER
+    does: with coref on, these offsets index the resolved text."""
+
+    async def extract_entities(self, text, entity_types, source_chunk_id):
+        return [
+            ExtractedEntity(
+                name=name,
+                type=etype,
+                source_chunk_ids=[source_chunk_id],
+                spans={
+                    source_chunk_id: [{"start": s, "end": e} for s, e in find_spans(text, name)]
+                },
+            )
+            for name, etype in (
+                ("Alice Smith", "Person"),
+                ("Acme", "Organization"),
+                ("Bob", "Person"),
+            )
+        ]
+
+
+class TestCorefSpansIndexTheStoredChunk:
+    """The models read the coreference-resolved text, but the chunk node
+    stores the original, so the spans on its edges must index the original."""
+
+    @staticmethod
+    async def _extract(coref_resolver, ctx):
+        strategy = GraphExtraction(
+            llm=MockLLM(responses=[_COREF_STEP2_JSON], strict=True),
+            entity_extractor=_SpanningNER(),
+            coref_resolver=coref_resolver,
+        )
+        result = await strategy.extract(_make_chunks(_COREF_STORED), Ontology(), ctx)
+        names = {n.id: n.properties["name"] for n in result.nodes}
+        return result, {names[m.entity_id]: m for m in result.mentions}
+
+    async def test_mention_spans_slice_the_stored_chunk_to_the_name(self, ctx):
+        result, mentions = await self._extract(_SheIsAliceSmith(), ctx)
+        assert set(mentions) == {"Alice Smith", "Acme", "Bob"}
+        for name, mention in mentions.items():
+            pairs = list(zip(mention.spans[0::2], mention.spans[1::2]))
+            assert pairs, name
+            assert [_COREF_STORED[s:e] for s, e in pairs] == [name] * len(pairs)
+        # 44-47 in the resolved text, past the end of the stored one.
+        assert mentions["Bob"].spans == [36, 39]
+        # Not also 26-37, the "Alice Smith" coref wrote over "She".
+        assert mentions["Alice Smith"].spans == [0, 11]
+        # The sentence standing in for a missing description is still cut
+        # from the resolved text, which reads better.
+        assert mentions["Bob"].descriptions == ["Alice Smith hired Bob."]
+        # The model's evidence offsets index the resolved text: none are kept.
+        (rel,) = result.relationships
+        assert "spans" not in rel.properties
+
+    async def test_without_coref_spans_and_evidence_are_unchanged(self, ctx):
+        result, mentions = await self._extract(None, ctx)
+        assert mentions["Bob"].spans == [36, 39]
+        assert mentions["Alice Smith"].spans == [0, 11]
+        assert mentions["Acme"].spans == [20, 24]
+        assert mentions["Bob"].descriptions == ["She hired Bob."]
+        (rel,) = result.relationships
+        assert rel.properties["spans"] == {"chunk-0": [{"start": 26, "end": 48}]}
+
+    def test_step1_spans_are_kept_only_for_the_text_they_index(self):
+        """A name the stored text does not hold verbatim falls back to the
+        step-1 spans, which index the text step 1 read."""
+
+        def alice() -> ExtractedEntity:
+            return ExtractedEntity(
+                name="Alice Smith",
+                type="Person",
+                source_chunk_ids=["c0"],
+                spans={"c0": [{"start": 0, "end": 11}]},
+            )
+
+        rewritten = alice()
+        GraphExtraction._record_mentions(
+            [rewritten], "She hired Bob.", "c0", read_text="Alice Smith hired Bob."
+        )
+        # stored[0:11] would be "She hired B".
+        assert rewritten.spans == {"c0": []}
+        assert rewritten.chunk_descriptions == {"c0": ["Alice Smith hired Bob."]}
+
+        same = alice()
+        same.name = "A. Smith"
+        GraphExtraction._record_mentions([same], "Alice Smith hired Bob.", "c0")
+        assert same.spans == {"c0": [{"start": 0, "end": 11}]}
 
 
 class TestNoiseFiltering:
@@ -1295,6 +1463,19 @@ class TestRelationFailureIsSeparateFromExtractionFailure:
         assert len(result.nodes) == 3
         assert result.failed_chunks == []
         assert result.extraction_failed is False
+
+    async def test_a_failed_step2_still_records_each_mention(self, ctx):
+        """The NER entities a failed chunk keeps carry no description; their
+        mention edges get the sentence around the name instead, and spans."""
+        strategy = GraphExtraction(
+            llm=_FlakyBatchLLM(_STEP2_EMPTY_JSON, fail=(0,)),
+            entity_extractor=self._Entities(),
+        )
+        chunks = _make_chunks("Echunk-0 led the review. Nothing else.")
+        result = await strategy.extract(chunks, Ontology(), ctx)
+        (mention,) = result.mentions
+        assert mention.descriptions == ["Echunk-0 led the review."]
+        assert mention.spans == [0, 8]
 
     async def test_partial_step2_failure(self, ctx):
         strategy = GraphExtraction(

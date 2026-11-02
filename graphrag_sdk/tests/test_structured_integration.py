@@ -561,8 +561,9 @@ class TestASharedNodeKeepsWhatEachSourceGave:
     async def test_the_second_document_adds_its_chunks_instead_of_replacing_the_first(
         self, real_falkordb_rag_factory, scripted_llm, resolver, employees_csv
     ):
-        """Two notes mention the row's Alice. ``source_chunk_ids`` must name both;
-        deleting one note must take only that note's chunk back out."""
+        """Two notes mention the row's Alice: she has a MENTIONED_IN edge to
+        each note's chunk, and no chunk list on the node. Deleting one note
+        takes only that note's edge away."""
         llm = scripted_llm(
             [("Alice Smith", "Person", "Presented the plan")],
             [("Alice Smith", "Person", "Was promoted")],
@@ -591,16 +592,17 @@ class TestASharedNodeKeepsWhatEachSourceGave:
         age, listed, mentioned, docs = await provenance()
         assert age == 34
         assert docs == ["note1.txt", "note2.txt"]
-        assert listed == mentioned, "the property must agree with the MENTIONED_IN edges"
-        assert len(listed) == 2
+        # Which chunks mention her is on her MENTIONED_IN edges, not a list on the node.
+        assert listed == []
+        assert len(mentioned) == 2
 
         await rag.delete_document("note2.txt")
 
         age, listed, mentioned, docs = await provenance()
         assert age == 34
         assert docs == ["note1.txt"]
-        assert listed == mentioned, "note2's chunk is gone from the list, note1's is not"
-        assert len(listed) == 1
+        assert listed == []
+        assert len(mentioned) == 1, "note2's mention went with its chunk, note1's did not"
         await rag.close()
 
 
