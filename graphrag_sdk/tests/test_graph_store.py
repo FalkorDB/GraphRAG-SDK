@@ -113,22 +113,26 @@ class TestGraphStoreUpsertNodes:
 
 
 class TestUpsertNodesKeepsProvenance:
-    """Entity-level ``source_chunk_ids`` is a union across writes, never a replace.
+    """An entity carries no ``source_chunk_ids`` or ``spans``: which chunks
+    mention it, and where, is on its ``MENTIONED_IN`` edges, one per chunk.
+    A list on the node grew with every mention and was rewritten on every
+    write."""
 
-    Two documents mentioning one entity both leave their chunks on it; the
-    ``MENTIONED_IN`` edges already said so and the property must agree.
-    """
-
-    async def test_an_entity_write_unions_source_chunk_ids(self, graph_store, mock_connection):
+    async def test_an_entity_write_leaves_provenance_to_the_edges(
+        self, graph_store, mock_connection
+    ):
         await graph_store.upsert_nodes(
-            [GraphNode(id="acme", label="Organization", properties={"source_chunk_ids": ["c2"]})]
+            [
+                GraphNode(
+                    id="acme",
+                    label="Organization",
+                    properties={"name": "Acme", "source_chunk_ids": ["c2"], "spans": "{}"},
+                )
+            ]
         )
-        cypher = upsert_calls(mock_connection)[0][0][0]
-        assert "coalesce(n.source_chunk_ids, []) AS old" in cypher
-        assert "SET n += item.properties" in cypher
-        assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in cypher
-        assert "old + [c IN contrib WHERE NOT c IN old]" in cypher
-        assert cypher.index("SET n += item.properties") < cypher.index("n.source_chunk_ids = CASE")
+        cypher, params = upsert_calls(mock_connection)[0][0]
+        assert "source_chunk_ids" not in cypher
+        assert params["batch"] == [{"id": "acme", "properties": {"name": "Acme"}}]
 
     async def test_a_structural_write_replaces_as_before(self, graph_store, mock_connection):
         await graph_store.upsert_nodes(
@@ -138,7 +142,7 @@ class TestUpsertNodesKeepsProvenance:
         assert "SET n += item.properties" in cypher
         assert "source_chunk_ids = CASE" not in cypher
 
-    async def test_the_per_item_fallback_unions_too(self, graph_store, mock_connection):
+    async def test_the_per_item_fallback_leaves_it_off_too(self, graph_store, mock_connection):
         async def fail_the_batch(cypher, params=None):
             if "UNWIND" in cypher:
                 raise Exception("batch fail")
@@ -146,15 +150,22 @@ class TestUpsertNodesKeepsProvenance:
 
         mock_connection.query = AsyncMock(side_effect=fail_the_batch)
         await graph_store.upsert_nodes(
-            [GraphNode(id="acme", label="Organization", properties={"name": "Acme"})]
+            [
+                GraphNode(
+                    id="acme",
+                    label="Organization",
+                    properties={"name": "Acme", "source_chunk_ids": ["c1"]},
+                )
+            ]
         )
         fallback = [
-            call[0][0]
+            call
             for call in mock_connection.query.call_args_list
             if "UNWIND" not in call[0][0] and not _is_index_housekeeping(call[0][0])
         ]
         assert len(fallback) == 1
-        assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in fallback[0]
+        assert "source_chunk_ids" not in fallback[0][0][0]
+        assert fallback[0][0][1]["properties"] == {"name": "Acme"}
 
 
 class TestUpsertNodesMarksNothingForDedup:
@@ -230,7 +241,7 @@ class TestOneKeyTwiceInOneCall:
         )
         batch = upsert_calls(mock_connection)[0][0][1]["batch"]
         assert batch == [
-            {"id": "x", "properties": {"name": "B", "age": 3, "source_chunk_ids": ["c1", "c2"]}},
+            {"id": "x", "properties": {"name": "B", "age": 3}},
             {"id": "y", "properties": {"name": "Y"}},
         ]
         assert count == 4
@@ -342,9 +353,7 @@ class TestOneKeyTwiceInOneCall:
         )
 
         calls = self._per_item_calls(mock_connection)
-        assert [params["properties"] for _, params in calls] == [
-            {"name": "B", "source_chunk_ids": ["c1", "c2"]}
-        ]
+        assert [params["properties"] for _, params in calls] == [{"name": "B"}]
         assert count == 2
 
     async def test_the_per_item_fallback_sends_each_edge_key_once(
@@ -441,7 +450,7 @@ class TestUpsertReferenceNodes:
             " the name, not the unsigned identity it gets via coalesce, and not provenance,"
             " which is unioned like every other write's"
         )
-        assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in cypher
+        assert "source_chunk_ids" not in cypher
 
     async def test_empty_input_writes_nothing(self, graph_store, mock_connection):
         assert await graph_store.upsert_reference_nodes([]) == 0

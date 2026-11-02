@@ -211,7 +211,7 @@ Practical consequences:
 - **`suggest_schema_extensions` will never propose `name` as a new attribute.** It's conceptually always present on every entity, so adding it is a no-op.
 - **You should not declare `name` with a non-STRING type** — the SDK writes a string. Discovery rejects non-STRING `name` declarations like any other invalid type.
 
-Other reserved-system names (`id`, `description`, `source_chunk_ids`, `spans`, `rel_type`, `fact`, `src_name`, `tgt_name`, `label`) are *not* schema-visible — they are internal SDK plumbing and the discovery validator still rejects them in proposals.
+Other reserved-system names (`id`, `description`, `description_summarised`, `source_chunk_ids`, `spans`, `rel_type`, `fact`, `src_name`, `tgt_name`, `label`) are *not* schema-visible — they are internal SDK plumbing and the discovery validator still rejects them in proposals.
 
 ---
 
