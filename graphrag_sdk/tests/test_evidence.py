@@ -100,9 +100,11 @@ def test_a_name_is_found_only_as_a_whole_name():
     assert find_spans(text, "Ann") == [(17, 20)]
 
 
-def test_a_name_in_capitals_is_found_only_in_capitals():
+def test_a_name_in_capitals_is_never_found_all_lowercase():
     assert find_spans("They told us to go. The US agreed.", "US") == [(24, 26)]
     assert find_spans("they told us to go.", "US") == []
+    # Other cases still count: "NASA" written "Nasa".
+    assert find_spans("Nasa launched it.", "NASA") == [(0, 4)]
 
 
 def test_a_name_is_not_found_inside_a_longer_word_in_any_script():
@@ -123,6 +125,8 @@ def test_a_korean_name_takes_particles_after_it_but_nothing_before():
 
 def test_occurrences_found_never_overlap():
     assert find_spans("哈哈哈", "哈哈") == [(0, 2)]
+    # Of two that overlap, the one written as the name is kept.
+    assert find_spans("a.A.A", "A.A") == [(2, 5)]
 
 
 def test_a_capitalised_names_lowercase_occurrences_are_left_out():

@@ -2087,7 +2087,8 @@ class GraphStore:
                 # description, which joins every chunk's (and a summary) and
                 # would put other documents' text on this chunk's new edge.
                 "RETURN cid, e.id, labels(e), e.name, e.type, "
-                "m.description, e.source_chunk_ids, m.spans, m.descriptions",
+                "m.description, e.source_chunk_ids, m.spans, m.descriptions, "
+                f"m.{SAID_VERSION_KEY} IS NOT NULL OR c.record_key IS NOT NULL",
                 {"cids": batch},
             )
             for row in result.result_set or []:
@@ -2101,6 +2102,7 @@ class GraphStore:
                     source_chunk_ids,
                     spans,
                     descriptions,
+                    recorded,
                 ) = row
                 if not cid or not eid:
                     continue
@@ -2121,6 +2123,7 @@ class GraphStore:
                         type=etype if isinstance(etype, str) else None,
                         description=description if isinstance(description, str) else None,
                         descriptions=self._members(description, descriptions),
+                        recorded=bool(recorded),
                         source_chunk_ids=[s for s in source_chunk_ids if isinstance(s, str)],
                         spans=[int(x) for x in spans if isinstance(x, int)]
                         if isinstance(spans, list)

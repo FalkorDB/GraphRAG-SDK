@@ -1818,7 +1818,12 @@ class GraphRAG:
                     if n.properties.get("description")
                 ]
                 if described:
-                    await self._graph_store.upsert_nodes(described)
+                    wrote = await self._graph_store.upsert_nodes(described)
+                    if _reported_short(wrote, len(described)):
+                        raise DatabaseError(
+                            f"backfill wrote {wrote} of {len(described)} entity descriptions "
+                            f"for chunk {ctx.chunk_id}"
+                        )
             return BackfillMergeStats(values_filled=filled, values_skipped=skipped)
 
         executor = BackfillExecutor(self.llm, self._graph_store, concurrency=concurrency)
@@ -3906,7 +3911,10 @@ class GraphRAG:
                 chunk of this document skip LLM extraction — their
                 entities/relations/mentions are rebuilt from the live
                 graph and remapped onto the new chunk uids. Only changed
-                chunks pay for extraction. Cache effectiveness is
+                chunks pay for extraction, and so does an unchanged
+                chunk whose mention edges an earlier SDK version wrote:
+                those never recorded what the chunk said, so it is
+                extracted again. Cache effectiveness is
                 reported in ``UpdateResult.metadata["cache_stats"]``
                 (``cached_chunks`` / ``extracted_chunks``). Two semantic
                 caveats: (1) the graph is the cache, so manually deleted

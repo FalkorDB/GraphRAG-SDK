@@ -544,6 +544,15 @@ class TestMerge:
         assert set(node.properties["source_chunk_ids"]) == {"new-1", "new-2"}  # union
         assert {m.chunk_id for m in result.mentions} == {"new-1", "new-2"}
 
+    def test_a_chunk_an_earlier_version_mentioned_is_extracted_again(self):
+        """Its edge never recorded what the chunk said; copied, the new edge
+        would claim to while holding nothing."""
+        rows = [
+            ChunkEntityRow(chunk_id="old", entity_id="alice", label="Person", recorded=False),
+            ChunkEntityRow(chunk_id="kept", entity_id="bob", label="Person"),
+        ]
+        assert CachedChunkExtraction._usable_chunks(["old", "kept"], rows, []) == {"kept"}
+
     def test_a_fresh_description_is_added_to_a_cached_list(self):
         """A cached part hands a ``descriptions`` list, which the store reads
         before ``description``: overlaid, the fresh description never reached
@@ -616,8 +625,9 @@ class TestGraphStoreCacheAccessors:
                         ["c1", "x"],
                         [3, 8],
                         ["Engineer", "Founder | Acme"],
+                        False,
                     ],
-                    ["c1", None, ["Person"], "NoId", "Person", None, [], [], None],  # skipped
+                    ["c1", None, ["Person"], "NoId", "Person", None, [], [], None, True],  # skipped
                 ]
             )
         )
@@ -631,6 +641,9 @@ class TestGraphStoreCacheAccessors:
         # each description whole, never split on the " | " inside one.
         assert row.description == "Engineer | Founder | Acme" and row.spans == [3, 8]
         assert row.descriptions == ["Engineer", "Founder | Acme"]
+        # An earlier version wrote this edge: it never recorded what the chunk said.
+        assert row.recorded is False
+        assert "said_version" in mock_connection.query.call_args[0][0]
         cypher = mock_connection.query.call_args[0][0]
         assert "m.description" in cypher and "e.description" not in cypher
 
@@ -644,7 +657,9 @@ class TestGraphStoreCacheAccessors:
 
         mock_connection.query = AsyncMock(
             return_value=MagicMock(
-                result_set=[["c1", "e1", ["__Entity__"], "X", "Widget", None, None, None, None]]
+                result_set=[
+                    ["c1", "e1", ["__Entity__"], "X", "Widget", None, None, None, None, True]
+                ]
             )
         )
         rows = await graph_store.get_entities_mentioned_in_chunks(["c1"])
@@ -696,7 +711,7 @@ class TestGraphStoreCacheAccessors:
 
         mock_connection.query = AsyncMock(
             return_value=MagicMock(
-                result_set=[["c1", "e1", "Person", "Alice", "Person", None, "abc", "xy", "z"]]
+                result_set=[["c1", "e1", "Person", "Alice", "Person", None, "abc", "xy", "z", True]]
             )
         )
         rows = await graph_store.get_entities_mentioned_in_chunks(["c1"])

@@ -250,7 +250,10 @@ class ChunkEntityRow(DataModel):
     ``description``, ``descriptions`` and ``spans`` are what this chunk's own
     ``MENTIONED_IN`` edge holds — its description as written, the same as
     separate members, and where the chunk names the entity: ``None``, ``[]``
-    and ``[]`` for an edge written by an earlier version.
+    and ``[]`` for an edge written by an earlier version. ``recorded`` is
+    whether that edge records everything its chunk put on the entity's
+    description: written by this version (it has ``said_version``), or a
+    table row's, which puts nothing there; false for an earlier version's.
     """
 
     chunk_id: str
@@ -262,6 +265,7 @@ class ChunkEntityRow(DataModel):
     descriptions: list[str] = Field(default_factory=list)
     source_chunk_ids: list[str] = Field(default_factory=list)
     spans: list[int] = Field(default_factory=list)
+    recorded: bool = True
 
 
 class ChunkRelationshipRow(DataModel):

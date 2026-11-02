@@ -427,6 +427,23 @@ class TestBackfillEntity:
         (node,) = rag._graph_store.upsert_nodes.await_args.args[0]
         assert "description" not in node.properties
 
+    async def test_a_short_description_write_leaves_the_chunk_unmarked(self, rag):
+        rag.llm = MockLLM(
+            responses=[
+                json.dumps(
+                    {"entities": [{"name": "Bob", "description": "A founder", "attributes": {}}]}
+                )
+            ]
+        )
+        rag._graph_store.list_chunks_for_entity_backfill = AsyncMock(
+            return_value=[{"chunk_id": "c1", "chunk_text": "Bob runs Acme"}]
+        )
+        # The node and its edge are written; the description write is not.
+        rag._graph_store.upsert_nodes = AsyncMock(side_effect=[1, 0])
+        rag._graph_store.upsert_relationships = AsyncMock(return_value=1)
+        result = await rag.backfill_entity("Person", scope="all")
+        assert result.failed_chunks == ["c1"]
+
     async def test_date_gate_uses_the_ontology_not_the_target_label(self, rag):
         """Backfilling `Product` in a graph whose ontology declares `Date` must
         keep numeric names ("747") exactly as normal extraction would; only the

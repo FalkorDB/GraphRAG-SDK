@@ -153,6 +153,13 @@ class CachedChunkExtraction(ExtractionStrategy):
         the rebuilt provenance would never land, and the post-cutover sweep
         would then delete facts the unchanged chunk still supports.
 
+        A chunk whose mention edge an earlier version wrote is unusable too:
+        that edge never recorded what the chunk put on the entity's
+        description, and copied, the new edge would claim to (this version
+        marks the edges it creates) while holding nothing — a later rebuild
+        from the edges would then drop that text although the chunk still
+        says it. Extracted again, its new edge records it.
+
         Dropping a chunk removes the entities only it mentioned, which can
         strand edges cited by other chunks, so this iterates to a fixpoint.
         Only the affected chunks are excluded — the rest of the document
@@ -165,7 +172,7 @@ class CachedChunkExtraction(ExtractionStrategy):
             if not label_by_ent.get(row.entity_id):
                 label_by_ent[row.entity_id] = row.label
 
-        good = set(old_ids)
+        good = set(old_ids) - {row.chunk_id for row in ent_rows if not row.recorded}
         while good:
             node_ids = {e for c in good for e in ents_by_chunk.get(c, ())}
             bad: set[str] = set()

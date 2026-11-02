@@ -386,13 +386,17 @@ def description_members(edge: str) -> str:
     )
 
 
-def combined_descriptions(old: str, new: str) -> str:
-    """``old`` (a list in scope) plus ``new``'s description members it lacks,
-    up to ``MAX_DESCRIPTION_MEMBERS`` — never fewer than ``old`` holds."""
+def combined_descriptions(old: str, new: str, *, cap: bool = True) -> str:
+    """``old`` (a list in scope) plus ``new``'s description members it lacks:
+    up to ``MAX_DESCRIPTION_MEMBERS`` and never fewer than ``old`` holds, or,
+    without ``cap`` (a merge, which must keep what both edges recorded), all
+    of them."""
+    added = f"({old} + [x IN {description_members(new)} WHERE NOT x IN {old}])"
+    if not cap:
+        return added
     return (
         f"CASE WHEN size({old}) >= {MAX_DESCRIPTION_MEMBERS} THEN {old} "
-        f"ELSE ({old} + [x IN {description_members(new)} WHERE NOT x IN {old}])"
-        f"[..{MAX_DESCRIPTION_MEMBERS}] END"
+        f"ELSE {added}[..{MAX_DESCRIPTION_MEMBERS}] END"
     )
 
 
@@ -472,7 +476,7 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
             f"{description_members('ex')} AS old_ds, ex IS NULL AS no_ex, "
             f"ex.{SAID_VERSION_KEY} AS old_v "
             f"WITH {carried}, e, b, old_spans, no_ex, old_v, "
-            f"{combined_descriptions('old_ds', 'e')} AS all_ds "
+            f"{combined_descriptions('old_ds', 'e', cap=False)} AS all_ds "
         )
         update = (
             f"SET nr += properties(e) SET {mention_update('nr', 'e')}, "

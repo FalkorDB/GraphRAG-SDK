@@ -634,6 +634,26 @@ async def test_a_merged_mention_edge_is_this_versions_only_if_both_were(graph):
     assert edges == [["c1", None], ["c2", 1]]
 
 
+async def test_a_merge_keeps_a_full_edges_and_the_merged_edges_text(graph):
+    """A write stops adding to an edge holding the cap; a merge must not, or
+    the node keeps text no edge records and a delete cannot take it off."""
+    await checked_graph(graph)
+    full = [f"wording {i}" for i in range(20)]
+    await graph.query_raw(
+        "CREATE (c:Chunk {id: 'c1'}) WITH c "
+        "MATCH (t:__Entity__ {id: 'tim'}), (u:__Entity__ {id: 'timothy'}) "
+        "CREATE (t)-[:MENTIONED_IN {description: 'x', descriptions: $full}]->(c), "
+        "(u)-[:MENTIONED_IN {description: 'Dr. Cook'}]->(c)",
+        {"full": full},
+    )
+    await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([TIM, APPLE])))
+    ((descs,),) = await rows(
+        graph,
+        "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(:Chunk {id: 'c1'}) RETURN m.descriptions",
+    )
+    assert sorted(descs) == sorted([*full, "Dr. Cook"])
+
+
 async def test_a_merge_adds_each_description_of_a_shared_chunk_once_and_whole(graph):
     """One duplicate's edge holds two descriptions, one of them with " | "
     inside; the other's says one of them again. Whichever survives, each is

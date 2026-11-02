@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import bisect
 import re
 import unicodedata
 from collections.abc import Iterable
@@ -170,29 +171,33 @@ def is_whole_word(text: str, start: int, end: int) -> bool:
 
 def find_spans(text: str, name: str) -> list[tuple[int, int]]:
     """Every occurrence of ``name`` in ``text`` as a whole word
-    (:func:`is_whole_word`), none overlapping another, whatever its case —
-    except that a name in capitals ("US") is found only in capitals, not as
-    the pronoun "us", and a capitalised name's all-lowercase occurrences are
-    left out when there are others ("Apple" and "APPLE" the company, not
-    "apple" the fruit). Case is compared by Unicode case folding, so "I" is
-    not the Turkish dotless "ı"."""
+    (:func:`is_whole_word`), whatever its case, none overlapping another.
+
+    A name written with capitals is not found all-lowercase when it is found
+    otherwise ("Apple" and "APPLE" the company, not "apple" the fruit); a name
+    in capitals never is ("US" is not the pronoun "us", while "NASA" is found
+    as "Nasa"). Where two occurrences overlap, the one written as the name is
+    kept. Case is compared by Unicode case folding, so "I" is not the Turkish
+    dotless "ı"."""
     name = name.strip()
     if not name:
         return []
     folded = name.casefold()
-    found: list[tuple[int, int]] = []
-    for m in re.finditer(f"(?=({re.escape(name)}))", text, re.IGNORECASE):
-        start, end = m.span(1)
-        if found and start < found[-1][1]:
-            continue
-        if text[start:end].casefold() == folded and is_whole_word(text, start, end):
-            found.append((start, end))
-    if name.isupper():
-        return [(s, e) for s, e in found if text[s:e].isupper()]
+    found = [
+        m.span(1)
+        for m in re.finditer(f"(?=({re.escape(name)}))", text, re.IGNORECASE)
+        if text[m.start(1) : m.end(1)].casefold() == folded and is_whole_word(text, *m.span(1))
+    ]
     if any(c.isupper() for c in name):
         cased = [(s, e) for s, e in found if not text[s:e].islower()]
-        return cased or found
-    return found
+        found = cased if cased or name.isupper() else found
+    exact = [(s, e) for s, e in found if text[s:e] == name]
+    kept: list[tuple[int, int]] = []
+    for s, e in exact + [span for span in found if text[span[0] : span[1]] != name]:
+        i = bisect.bisect_left(kept, (s, e))
+        if (i == 0 or kept[i - 1][1] <= s) and (i == len(kept) or kept[i][0] >= e):
+            kept.insert(i, (s, e))
+    return kept
 
 
 def flat_spans(spans: Iterable[tuple[int, int]]) -> list[int]:

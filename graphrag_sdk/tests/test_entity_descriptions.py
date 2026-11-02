@@ -8,6 +8,7 @@ The real-FalkorDB tests are skipped unless ``RUN_INTEGRATION=1``.
 
 from __future__ import annotations
 
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -35,7 +36,7 @@ from graphrag_sdk.storage.graph_store import (
     GraphStore,
 )
 
-from .conftest import falkordb_test_server
+from .conftest import MockLLM, falkordb_test_server
 
 
 class SummaryLLM:
@@ -718,6 +719,24 @@ def _alice_doc(rag_factory, scripted_llm, *descriptions):
     return rag_factory(llm=llm, resolver=ExactMatchResolution())
 
 
+class ByChunkLLM(MockLLM):
+    """Answers the extraction step by the chunk in its prompt, not by call
+    order: one ingest extracts its chunks concurrently."""
+
+    def __init__(self, answers: dict[str, list[tuple[str, str, str]]]) -> None:
+        super().__init__()
+        self.answers = answers
+        self.asked: list[str] = []
+
+    def invoke(self, prompt: str, **kwargs):
+        for key, entities in self.answers.items():
+            if key in prompt:
+                self.asked.append(key)
+                found = [{"name": n, "type": t, "description": d} for n, t, d in entities]
+                return LLMResponse(content=json.dumps({"entities": found, "relationships": []}))
+        return LLMResponse(content='{"entities": [], "relationships": []}')
+
+
 async def _alice_description(rag):
     rows = (
         await rag._graph_store.query_raw(
@@ -728,6 +747,63 @@ async def _alice_description(rag):
 
 
 class TestEndToEnd:
+    async def test_a_cached_update_extracts_again_a_chunk_an_earlier_version_wrote(
+        self, real_falkordb_rag_factory
+    ):
+        """Naseem's repro: copied from the cache, an unchanged chunk's edge
+        from an earlier version became a marked edge holding nothing, and a
+        later unrelated delete rebuilt the node without that chunk's text."""
+        from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+            ExactMatchResolution,
+        )
+
+        legacy = "Legacy: works at Acme."
+        llm = ByChunkLLM(
+            {
+                "Alice works at Acme": [("Alice", "Person", legacy)],
+                "Carol manages": [("Carol", "Person", "Berlin manager.")],
+                "Dave manages": [("Dave", "Person", "Munich manager.")],
+                **{
+                    f"fact number {i} ": [("Alice", "Person", f"New fact {i}.")]
+                    for i in range(1, 6)
+                },
+            }
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution())
+        store = rag._graph_store
+        chunker = FixedSizeChunking(chunk_size=64, chunk_overlap=0)
+        part1 = "Alice works at Acme Corporation in the city today.".ljust(64, "|")
+        await rag.ingest(
+            text=part1 + "Carol manages the Berlin office.", document_id="bio", chunker=chunker
+        )
+        # Alice's edges as an earlier version wrote them: no description, no mark.
+        await store.query_raw(
+            "MATCH (:__Entity__ {name: 'Alice'})-[m:MENTIONED_IN]->() "
+            "SET m.description = null, m.descriptions = null, m.said_version = null"
+        )
+        for i in range(1, 6):
+            await rag.ingest(text=f"Alice fact number {i} is recorded.", document_id=f"n{i}")
+        await store.query_raw(
+            "MATCH (e:__Entity__ {name: 'Alice'}) SET e.description = $s, "
+            "e.descriptions = null, e.description_summarised = true",
+            {"s": "Summary, with what the legacy chunk said."},
+        )
+
+        result = await rag.update(
+            text=part1 + "Dave manages the Munich office.",
+            document_id="bio",
+            chunker=chunker,
+            cache_unchanged_chunks=True,
+        )
+        # The unchanged chunk is extracted again, not copied.
+        assert result.metadata["cache_stats"] == {"cached_chunks": 0, "extracted_chunks": 2}
+        assert llm.asked.count("Alice works at Acme") == 2
+
+        await rag.delete_document("n1")
+        desc, _ = await _alice_description(rag)
+        assert legacy in desc and "New fact 1." not in desc
+
     async def test_an_update_takes_the_old_versions_text_off(
         self, real_falkordb_rag_factory, scripted_llm
     ):
