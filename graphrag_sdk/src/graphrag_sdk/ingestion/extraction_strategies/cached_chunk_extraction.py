@@ -68,8 +68,8 @@ from graphrag_sdk.core.models import (
     TextChunks,
 )
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
-from graphrag_sdk.utils.cypher import merge_key_value
 from graphrag_sdk.ingestion.resolution_strategies.base import description_list
+from graphrag_sdk.utils.cypher import merge_key_value
 
 if TYPE_CHECKING:
     from graphrag_sdk.storage.graph_store import GraphStore
