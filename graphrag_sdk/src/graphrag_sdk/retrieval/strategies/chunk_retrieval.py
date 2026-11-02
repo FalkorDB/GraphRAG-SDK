@@ -11,6 +11,25 @@ from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 
 logger = logging.getLogger(__name__)
 
+# Distance of chunk ``c`` from the question; a chunk with no embedding (a
+# structured record) ranks after every embedded one instead of being dropped.
+# Above 2.0, the largest cosine distance, so it never ties an embedded chunk.
+_CHUNK_DISTANCE = (
+    "CASE WHEN c.embedding IS NULL THEN 3.0 ELSE vec.cosineDistance(c.embedding, vecf32($qv)) END"
+)
+
+# Keeps chunk ``c`` only if no Document it is PART_OF is inactive: the
+# ``<id>__pending__<hex>`` copy an ``update()`` writes before cutover, or a
+# document marked ``pending_delete`` (see :func:`inactive_chunk_ids`). Applied
+# in the graph paths before their per-path caps, so an inactive chunk cannot
+# take a slot and then be dropped, leaving the slot empty. A chunk with no
+# Document is kept.
+# Projected, then tested: FalkorDB rejects a pattern comprehension inside WHERE.
+_INACTIVE_DOCS = (
+    "[(d:Document)-[:PART_OF]->(c) "
+    "WHERE d.id CONTAINS '__pending__' OR d.pending_delete = true | d.id] AS inactive"
+)
+
 
 async def retrieve_chunks(
     vector_store: Any,
@@ -21,8 +40,18 @@ async def retrieve_chunks(
     simple_kw: list[str],
     entity_list: list[tuple[str, dict]],
     ctx: Context | None = None,
+    vector_top_k: int = 15,
 ) -> tuple[dict[str, str], dict[str, str], dict[str, list[float]]]:
     """4-path chunk retrieval: fulltext + vector + MENTIONED_IN + 2-hop.
+
+    Chunks of a document that is mid-update or being deleted are left out
+    (:func:`inactive_chunk_ids`), and then the same text under two ids is kept
+    once. In that order: a pending copy reached first must not displace the
+    live passage it duplicates and then be filtered away itself.
+
+    Args:
+        vector_top_k: Candidates from the chunk vector search; at least the
+            number of passages the caller keeps after reranking.
 
     Returns:
         chunks: dict of chunk_id -> chunk_text
@@ -55,7 +84,7 @@ async def retrieve_chunks(
     try:
         if ctx is not None:
             ctx.ensure_budget("chunk vector search")
-        results = await vector_store.search_chunks(query_vector, top_k=15)
+        results = await vector_store.search_chunks(query_vector, top_k=vector_top_k)
         for c in results:
             _add(c.get("id", ""), c.get("text", ""), "vector")
     except LatencyBudgetExceededError:
@@ -68,7 +97,10 @@ async def retrieve_chunks(
     # product name) can be MENTIONED_IN hundreds of chunks; the previous
     # COLLECT(c)[..3] picked an arbitrary 3, almost never including the
     # chunks most relevant to the current query. Ranking by cosine here
-    # surfaces the chunks closest to the query intent.
+    # surfaces the chunks closest to the query intent. Chunks without an
+    # embedding get a slot of their own: structured-record chunks are never
+    # embedded and are reached only through their entities, so an entity
+    # with three prose chunks must not crowd its own table row out.
     eids_mention = [eid for eid, _ in entity_list[:15]]
     if eids_mention:
         try:
@@ -77,10 +109,13 @@ async def retrieve_chunks(
             result = await graph_store.query_raw(
                 "UNWIND $eids AS eid "
                 "MATCH (e:__Entity__ {id: eid})-[:MENTIONED_IN]->(c:Chunk) "
-                "WHERE c.embedding IS NOT NULL "
-                "WITH eid, c, vec.cosineDistance(c.embedding, vecf32($qv)) AS dist "
-                "ORDER BY eid, dist ASC "
-                "WITH eid, COLLECT(c)[..3] AS chunks "
+                f"WITH eid, c, {_INACTIVE_DOCS} "
+                "WHERE size(inactive) = 0 "
+                f"WITH eid, c, {_CHUNK_DISTANCE} AS dist "
+                "ORDER BY eid, dist ASC, c.id ASC "
+                "WITH eid, COLLECT(c) AS cs "
+                "WITH eid, [x IN cs WHERE x.embedding IS NOT NULL][..3] "
+                "  + [x IN cs WHERE x.embedding IS NULL][..1] AS chunks "
                 "UNWIND chunks AS c "
                 "RETURN eid, c.id AS id, c.text AS text",
                 {"eids": eids_mention, "qv": query_vector},
@@ -94,28 +129,64 @@ async def retrieve_chunks(
         except Exception as exc:
             logger.debug("MENTIONED_IN chunk retrieval failed: %s", exc)
 
-    # Path D: 2-hop entity→neighbor→chunk (batched UNWIND)
+    # Path D: 2-hop entity→neighbor→chunk (batched UNWIND): the 20 embedded
+    # chunks closest to the question, then up to 5 unembedded record chunks,
+    # as two bounded queries. Each keeps only its LIMIT while sorting, where
+    # one collected list would hold every chunk a hub entity reaches.
     eids_2hop_chunk = [eid for eid, _ in entity_list[:10]]
+    two_hop_match = (
+        "UNWIND $eids AS eid "
+        "MATCH (e:__Entity__ {id: eid})-[:RELATES]-(neighbor:__Entity__)"
+        "-[:MENTIONED_IN]->(c:Chunk) "
+    )
+    two_hop_queries = (
+        two_hop_match + "WHERE c.embedding IS NOT NULL "
+        "WITH DISTINCT c "
+        f"WITH c, {_INACTIVE_DOCS} "
+        "WHERE size(inactive) = 0 "
+        "WITH c, vec.cosineDistance(c.embedding, vecf32($qv)) AS dist "
+        "RETURN c.id AS id, c.text AS text "
+        "ORDER BY dist ASC, id ASC "
+        "LIMIT 20",
+        two_hop_match + "WHERE c.embedding IS NULL "
+        "WITH DISTINCT c "
+        f"WITH c, {_INACTIVE_DOCS} "
+        "WHERE size(inactive) = 0 "
+        "RETURN c.id AS id, c.text AS text "
+        "ORDER BY id ASC "
+        "LIMIT 5",
+    )
+    # Each query fails on its own: the record query does not depend on the
+    # vector ranking of the first.
     if eids_2hop_chunk:
-        try:
-            if ctx is not None:
-                ctx.ensure_budget("2-hop chunk retrieval")
-            result = await graph_store.query_raw(
-                "UNWIND $eids AS eid "
-                "MATCH (e:__Entity__ {id: eid})-[:RELATES]-(neighbor:__Entity__)"
-                "-[:MENTIONED_IN]->(c:Chunk) "
-                "RETURN DISTINCT c.id AS id, c.text AS text "
-                "LIMIT 20",
-                {"eids": eids_2hop_chunk},
-            )
-            for row in result.result_set:
-                cid = row[0]
-                text = row[1] if len(row) > 1 else ""
-                _add(cid, text, "2hop_mentioned")
-        except LatencyBudgetExceededError:
-            raise
-        except Exception as exc:
-            logger.debug("2-hop chunk retrieval failed: %s", exc)
+        for two_hop_query in two_hop_queries:
+            try:
+                if ctx is not None:
+                    ctx.ensure_budget("2-hop chunk retrieval")
+                result = await graph_store.query_raw(
+                    two_hop_query, {"eids": eids_2hop_chunk, "qv": query_vector}
+                )
+                for row in result.result_set:
+                    cid = row[0]
+                    text = row[1] if len(row) > 1 else ""
+                    _add(cid, text, "2hop_mentioned")
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:
+                logger.debug("2-hop chunk retrieval failed: %s", exc)
+
+    # The fulltext and vector paths come from indexes and are filtered here.
+    for cid in await inactive_chunk_ids(graph_store, list(chunks), ctx=ctx):
+        chunks.pop(cid, None)
+        sources.pop(cid, None)
+    # The same text under two ids (an update in flight, or one passage
+    # ingested twice) is one passage to the answer; the first one reached stays.
+    texts: set[str] = set()
+    for cid, text in list(chunks.items()):
+        if text in texts:
+            chunks.pop(cid)
+            sources.pop(cid, None)
+        texts.add(text)
 
     # Batch-fetch stored embeddings for all collected chunks
     embeddings: dict[str, list[float]] = {}
@@ -182,3 +253,35 @@ async def fetch_chunk_documents(
     except Exception as exc:
         logger.debug("Document name fetch failed: %s", exc)
         return {}
+
+
+async def inactive_chunk_ids(
+    graph_store: Any,
+    chunk_ids: list[str],
+    ctx: Context | None = None,
+) -> set[str]:
+    """Chunks whose Document is not live: being deleted, or the
+    ``<id>__pending__<hex>`` copy an ``update()`` writes before cutover.
+
+    Until cutover the old version stays live, so the pending copy would show
+    the same passages twice, or a half-written new version; a document
+    marked ``pending_delete`` is on its way out.
+    """
+    if not chunk_ids:
+        return set()
+    try:
+        if ctx is not None:
+            ctx.ensure_budget("chunk document state fetch")
+        result = await graph_store.query_raw(
+            "UNWIND $ids AS cid "
+            "MATCH (d:Document)-[:PART_OF]->(c:Chunk {id: cid}) "
+            "WHERE d.id CONTAINS '__pending__' OR d.pending_delete = true "
+            "RETURN DISTINCT c.id",
+            {"ids": chunk_ids},
+        )
+        return {row[0] for row in result.result_set if row and row[0]}
+    except LatencyBudgetExceededError:
+        raise
+    except Exception as exc:
+        logger.debug("Chunk document state fetch failed: %s", exc)
+        return set()
