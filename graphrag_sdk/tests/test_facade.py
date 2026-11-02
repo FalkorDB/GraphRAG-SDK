@@ -13,6 +13,7 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import (
     ConfigError,
+    DatabaseError,
     DocumentNotFoundError,
     LatencyBudgetExceededError,
 )
@@ -20,6 +21,7 @@ from graphrag_sdk.core.models import (
     ApplyChangesResult,
     ChatMessage,
     DeleteDocumentResult,
+    DocumentRecord,
     GraphData,
     IngestionResult,
     RagResult,
@@ -276,6 +278,252 @@ class TestGraphRAGIngest:
         result = await graphrag.ingest(text="Test text.")
         graphrag._vector_store.backfill_entity_embeddings.assert_not_awaited()
         assert "entities_backfilled" not in result.metadata
+
+    async def test_ingest_auto_true_plans_and_loads_source_once(
+        self, mock_conn, embedder, llm, tmp_path, monkeypatch
+    ):
+        """End-to-end wiring test for ``ingest(auto=True)`` on a real file.
+
+        Closes the review gap noted on PR #275: earlier tests only drove
+        ``_plan_ingestion_strategies`` in isolation via a stub; nothing
+        exercised the real ``ingest()`` path where the planner runs after
+        loader resolution + ontology init. This also guards the double-load
+        fix: the planner's content sample must be reused by the pipeline,
+        so the loader's ``load()`` should be invoked exactly once.
+        """
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+        from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+
+        md_file = tmp_path / "doc.md"
+        md_file.write_text("# Title\n\nSome content for the agentic ingestion test.\n")
+
+        load_calls = {"count": 0}
+        original_load = MarkdownLoader.load
+
+        async def counting_load(self_loader, source, ctx):
+            load_calls["count"] += 1
+            return await original_load(self_loader, source, ctx)
+
+        monkeypatch.setattr(MarkdownLoader, "load", counting_load)
+
+        class FixedPlanner:
+            """Stub planner asserting it saw the real loaded content, not
+            just the file path, then picks known-safe strategies."""
+
+            async def plan(self, text, *, source=None, ctx=None):
+                assert text is not None
+                assert "agentic ingestion test" in text
+                return IngestionPlan(chunker="structural", extractor="llm", resolver="exact")
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+
+        result = await g.ingest(str(md_file), auto=True, planner=FixedPlanner())
+
+        assert isinstance(result, IngestionResult)
+        assert load_calls["count"] == 1
+        assert result.metadata["plan"]["plan"]["chunker"] == "structural"
+
+    @staticmethod
+    def _counting_planner():
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+
+        calls: list[str | None] = []
+
+        class P:
+            async def plan(self, text, *, source=None, ctx=None):
+                calls.append(source)
+                return IngestionPlan()
+
+        return P(), calls
+
+    async def test_ingest_auto_skips_planner_for_unchanged_text(self, mock_conn, embedder, llm):
+        import hashlib
+
+        txt = "Alice works at Acme."
+        planner, calls = self._counting_planner()
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        record = DocumentRecord(path="d1", content_hash=hashlib.sha256(txt.encode()).hexdigest())
+        g._graph_store.get_document_record = AsyncMock(return_value=record)
+        result = await g.ingest(text=txt, document_id="d1", auto=True, planner=planner)
+        assert calls == []
+        assert result.metadata["skipped_unchanged"] is True
+        assert result.metadata["plan"]["planner"] is None
+        assert "unchanged" in result.metadata["plan"]["notes"][0]
+
+    async def test_ingest_auto_skips_planner_for_unchanged_file(
+        self, mock_conn, embedder, llm, tmp_path, monkeypatch
+    ):
+        import hashlib
+
+        from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+
+        f = tmp_path / "a.txt"
+        f.write_text("Alice works at Acme.")
+        loads: list[str] = []
+        original_load = TextLoader.load
+
+        async def counting_load(self_loader, source, ctx):
+            loads.append(source)
+            return await original_load(self_loader, source, ctx)
+
+        monkeypatch.setattr(TextLoader, "load", counting_load)
+        text = (await original_load(TextLoader(), str(f), Context())).text
+        planner, calls = self._counting_planner()
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        record = DocumentRecord(path=str(f), content_hash=hashlib.sha256(text.encode()).hexdigest())
+        g._graph_store.get_document_record = AsyncMock(return_value=record)
+        result = await g.ingest(str(f), auto=True, planner=planner)
+        assert calls == []
+        assert len(loads) == 1  # loaded once, reused by the pipeline
+        assert result.metadata["skipped_unchanged"] is True
+
+    async def test_ingest_auto_plans_changed_content_once_loaded(
+        self, mock_conn, embedder, llm, tmp_path, monkeypatch
+    ):
+        from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+
+        f = tmp_path / "a.txt"
+        f.write_text("Alice works at Acme.")
+        loads: list[str] = []
+        original_load = TextLoader.load
+
+        async def counting_load(self_loader, source, ctx):
+            loads.append(source)
+            return await original_load(self_loader, source, ctx)
+
+        monkeypatch.setattr(TextLoader, "load", counting_load)
+        planner, calls = self._counting_planner()
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        record = DocumentRecord(path=str(f), content_hash="old-hash")
+        g._graph_store.get_document_record = AsyncMock(return_value=record)
+        result = await g.ingest(str(f), auto=True, planner=planner)
+        assert len(calls) == 1
+        assert len(loads) == 1
+        assert "skipped_unchanged" not in result.metadata
+        assert result.metadata["plan"]["planner"] == "P"
+
+    async def test_ingest_auto_records_plan_in_metadata(self, mock_conn, embedder, llm):
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+
+        class P:
+            async def plan(self, text, *, source=None, ctx=None):
+                return IngestionPlan(
+                    chunker="fixed",
+                    extractor="llm",
+                    resolver="exact",
+                    reason="dense tables",
+                    chunker_params={"chunk_size": 1500},
+                )
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        result = await g.ingest(text="Alice works at Acme.", document_id="d1", auto=True, planner=P())
+        report = result.metadata["plan"]
+        assert report["planner"] == "P"
+        assert report["plan"]["chunker"] == "fixed"
+        assert report["plan"]["chunker_params"] == {"chunk_size": 1500}
+        assert report["plan"]["reason"] == "dense tables"
+        assert report["slots"] == {
+            "chunker": "planner",
+            "extractor": "planner",
+            "resolver": "planner",
+        }
+        assert report["notes"] == []
+
+    async def test_ingest_auto_records_caller_slots_and_failures(
+        self, mock_conn, embedder, llm, caplog
+    ):
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+            ExactMatchResolution,
+        )
+
+        class Boom:
+            async def plan(self, *a, **k):
+                raise RuntimeError("planner down")
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        with caplog.at_level("WARNING"):
+            result = await g.ingest(
+                text="Alice works at Acme.",
+                document_id="d2",
+                auto=True,
+                planner=Boom(),
+                resolver=ExactMatchResolution(),
+            )
+        report = result.metadata["plan"]
+        assert report["plan"] is None
+        assert report["slots"] == {"chunker": "default", "extractor": "default", "resolver": "caller"}
+        assert "planner down" in report["notes"][0]
+        assert "Ingestion planner failed" in caplog.text
+
+    async def test_ingest_auto_with_all_strategies_skips_planner(self, mock_conn, embedder, llm):
+        from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+        from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+            GraphExtraction,
+        )
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+            ExactMatchResolution,
+        )
+
+        class MustNotRun:
+            async def plan(self, *a, **k):
+                raise AssertionError("planner ran although every slot was given")
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        result = await g.ingest(
+            text="Alice works at Acme.",
+            document_id="d3",
+            auto=True,
+            planner=MustNotRun(),
+            chunker=FixedSizeChunking(),
+            extractor=GraphExtraction(llm=llm),
+            resolver=ExactMatchResolution(),
+        )
+        assert result.metadata["plan"]["planner"] is None
+        assert "did not run" in result.metadata["plan"]["notes"][0]
+
+    async def test_ingest_batch_auto_plans_each_file(self, mock_conn, embedder, llm, tmp_path):
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+
+        seen: list[str] = []
+
+        class P:
+            async def plan(self, text, *, source=None, ctx=None):
+                seen.append(source)
+                chunker = "fixed" if "a.txt" in source else "sentence"
+                return IngestionPlan(chunker=chunker)
+
+        a = tmp_path / "a.txt"
+        b = tmp_path / "b.txt"
+        a.write_text("Alice works at Acme.")
+        b.write_text("Bob lives in Berlin.")
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        results = await g.ingest([str(a), str(b)], auto=True, planner=P())
+        assert len(seen) == 2
+        assert all(isinstance(r, IngestionResult) for r in results), results
+        chunkers = sorted(r.metadata["plan"]["plan"]["chunker"] for r in results)
+        assert chunkers == ["fixed", "sentence"]
+
+    async def test_ingest_auto_does_not_plan_a_table(
+        self, mock_conn, embedder, llm, tmp_path, monkeypatch
+    ):
+        planned: list[object] = []
+
+        class MustNotRun:
+            async def plan(self, *a, **k):
+                # Recorded, not raised: the planner path swallows exceptions.
+                planned.append(a)
+                raise AssertionError("planner ran for a table")
+
+        csv = tmp_path / "people.csv"
+        csv.write_text("name,city\nAlice,Berlin\n")
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        sentinel = IngestionResult(nodes_created=0, relationships_created=0, chunks_indexed=0)
+        monkeypatch.setattr(g, "_mapping_for", AsyncMock(return_value=object()))
+        monkeypatch.setattr(g, "_ingest_structured", AsyncMock(return_value=sentinel))
+        result = await g.ingest(str(csv), auto=True, planner=MustNotRun())
+        assert result is sentinel
+        assert planned == []
+        assert g._planned_ingest is False  # update() has no plan to warn about
 
 
 class TestGraphRAGDeduplicateEntities:
@@ -1335,6 +1583,29 @@ class TestGraphRAGConfigNode:
         result = await g.retrieve("test?")
         assert isinstance(result, RetrieverResult)
 
+    async def test_config_check_is_read_only(self, mock_conn, embedder):
+        """Checking the config must not create a graph that was never written."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
+
+        await g._validate_graph_config()
+
+        assert g._graph_store.query_raw.await_args.kwargs.get("read_only") is True
+        assert g._config_validated is True
+
+    async def test_missing_graph_still_probes_the_embedder(self, mock_conn, embedder):
+        """A graph that was never written has no stored config; the embedder
+        probe still runs and its dimension check still applies."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=4)
+        g._graph_store.query_raw = AsyncMock(
+            side_effect=DatabaseError("Invalid graph operation on empty key")
+        )
+
+        with pytest.raises(ConfigError, match="dimension"):
+            await g._validate_graph_config()
+
 
 class TestSameEmbeddingModel:
     """Model-name comparison used by the config guard.
@@ -2318,6 +2589,60 @@ class TestGraphRAGDeleteDocument:
 class TestApplyChanges:
     """v1.1.0: heterogeneous batch dispatcher (the CI use case)."""
 
+    @pytest.mark.parametrize("bucket", ["added", "modified"])
+    async def test_relationship_tables_use_ingest_and_serializable_batch_results(
+        self, graphrag, bucket
+    ):
+        from graphrag_sdk import EndpointMapping, RelationshipMapping
+        from graphrag_sdk.ingestion.structured_pipeline import RelationshipIngestionResult
+
+        mapping = RelationshipMapping(
+            source="edges.csv",
+            start=EndpointMapping("Unit", "units__id", "unit"),
+            end=EndpointMapping("Batch", "batches__id", "batch"),
+            type="CONSUMED_BATCH",
+        )
+        outcome = RelationshipIngestionResult("edges.csv")
+        outcome.rows = 3
+        outcome.relationships_written = 2
+        outcome.rows_skipped = 1
+        graphrag._mapping_for = AsyncMock(return_value=mapping)
+        graphrag.ingest = AsyncMock(return_value=outcome)
+        graphrag.update = AsyncMock()
+        result = await graphrag.apply_changes(**{bucket: ["edges.csv"]})
+        entry = getattr(result, bucket)[0]
+        assert entry.is_success
+        assert entry.result.relationships_created == 2
+        assert entry.result.nodes_created == entry.result.chunks_indexed == 0
+        assert entry.result.metadata["rows_skipped"] == 1
+        if bucket == "modified":
+            assert entry.result.replaced_existing is False
+        assert '"relationships_written":2' in result.model_dump_json()
+        graphrag.ingest.assert_awaited_once()
+        graphrag.update.assert_not_awaited()
+
+    @pytest.mark.parametrize("bucket", ["added", "modified"])
+    async def test_relationship_table_errors_remain_per_file(self, graphrag, bucket):
+        from graphrag_sdk import EndpointMapping, RelationshipMapping
+        from graphrag_sdk.ingestion.structured_pipeline import RelationshipIngestionResult
+
+        graphrag._mapping_for = AsyncMock(
+            return_value=RelationshipMapping(
+                source="edges.csv",
+                start=EndpointMapping("Unit", "units__id", "unit"),
+                end=EndpointMapping("Batch", "batches__id", "batch"),
+                type="CONSUMED_BATCH",
+            )
+        )
+        graphrag.ingest = AsyncMock(
+            side_effect=[ValueError("missing endpoint"), RelationshipIngestionResult("ok.csv")]
+        )
+        result = await graphrag.apply_changes(**{bucket: ["edges.csv", "ok.csv"]})
+        failed, succeeded = getattr(result, bucket)
+        assert failed.error_type == "ValueError"
+        assert failed.error == "missing endpoint"
+        assert succeeded.is_success
+
     async def test_dispatches_to_each_primitive(self, graphrag, tmp_path):
         """One call routes added/modified/deleted to the right method."""
         added_path = tmp_path / "new.txt"
@@ -2767,3 +3092,121 @@ class TestDefaultResolver:
         mine = ExactMatchResolution()
         await graphrag.ingest(text="Airbus builds aircraft.", resolver=mine)
         assert captured["resolver"] is mine
+
+
+# ── Retrieval edges: history and per-call ontology ───────────────
+
+
+class TestRetrievalEdges:
+    @pytest.fixture
+    def rag(self, mock_conn):
+        return GraphRAG(
+            connection=mock_conn,
+            llm=MockLLM(responses=["Generated."]),
+            embedder=MockEmbedder(dimension=8),
+            embedding_dimension=8,
+        )
+
+    def test_retrieve_sync_forwards_every_argument(self, rag):
+        import inspect
+
+        seen: dict = {}
+
+        async def fake_retrieve(question, **kwargs):
+            seen.update(question=question, **kwargs)
+            return RetrieverResult(items=[])
+
+        rag.retrieve = fake_retrieve  # type: ignore[method-assign]
+        strategy, reranker, ctx = object(), object(), Context()
+        rag.retrieve_sync("q", strategy=strategy, reranker=reranker, ctx=ctx)
+        assert seen == {"question": "q", "strategy": strategy, "reranker": reranker, "ctx": ctx}
+        # The sync wrapper takes exactly what retrieve() takes (no history:
+        # retrieval strategies never see the conversation).
+        assert inspect.signature(GraphRAG.retrieve_sync).parameters.keys() == (
+            inspect.signature(GraphRAG.retrieve).parameters.keys()
+        )
+        with pytest.raises(TypeError):
+            rag.retrieve_sync("q", history=[{"role": "user", "content": "hi"}])
+
+    async def test_strategies_get_no_history(self, rag):
+        strategy = MagicMock(spec=RetrievalStrategy)
+        strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="ctx")])
+        )
+        with pytest.raises(TypeError):
+            await rag.retrieve("q", strategy=strategy, history=[{"role": "user", "content": "x"}])
+        result = await rag.completion(
+            "q", strategy=strategy, history=[{"role": "user", "content": "x"}]
+        )
+        assert result.answer == "Generated."  # regular completion still generates
+        strategy.search.assert_awaited_once()
+        assert "history" not in strategy.search.await_args.kwargs
+        assert strategy.search.await_args.args[0] == "q"
+
+    async def test_caller_ontology_is_kept(self, rag):
+        from graphrag_sdk.core.models import Ontology
+
+        strategy = MagicMock()
+        strategy._ontology = Ontology()
+        strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
+        await rag.retrieve("q", strategy=strategy)
+        strategy.set_ontology.assert_not_called()
+
+    async def test_strategy_without_an_ontology_slot_is_left_alone(self, rag):
+        strategy = MagicMock(spec=RetrievalStrategy)
+        assert not hasattr(strategy, "_ontology")
+        strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
+        await rag.retrieve("q", strategy=strategy)
+        strategy.set_ontology.assert_not_called()
+
+    async def test_per_call_strategy_without_ontology_gets_the_facades(self, rag):
+        strategy = MagicMock()
+        strategy._ontology = None
+        strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
+        await rag.retrieve("q", strategy=strategy)
+        # Lent for the call, then taken back.
+        assert strategy.set_ontology.call_args_list == [
+            ((rag._global_ontology,),),
+            ((None,),),
+        ]
+
+    async def test_the_lent_ontology_is_taken_back(self, rag):
+        from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+
+        strategy = MultiPathRetrieval(
+            graph_store=rag._graph_store,
+            vector_store=rag._vector_store,
+            embedder=rag.embedder,
+            llm=rag.llm,
+        )
+        seen = []
+
+        async def search(question, ctx, **kwargs):
+            seen.append(strategy._ontology)
+            return RetrieverResult(items=[])
+
+        strategy.search = search
+        await rag.retrieve("q", strategy=strategy)
+        assert seen == [rag._global_ontology]
+        assert strategy._ontology is None  # the caller's strategy is left as it was
+
+    async def test_concurrent_calls_share_the_lent_ontology(self, rag):
+        import asyncio
+
+        strategy = MagicMock()
+        strategy._ontology = None
+        strategy.set_ontology = lambda o: setattr(strategy, "_ontology", o)
+        gate = asyncio.Event()
+        seen = []
+
+        async def search(question, ctx, **kwargs):
+            await gate.wait()
+            seen.append(strategy._ontology)
+            return RetrieverResult(items=[])
+
+        strategy.search = search
+        calls = [asyncio.create_task(rag.retrieve(q, strategy=strategy)) for q in "ab"]
+        await asyncio.sleep(0)
+        gate.set()
+        await asyncio.gather(*calls)
+        assert seen == [rag._global_ontology] * 2 and strategy._ontology is None

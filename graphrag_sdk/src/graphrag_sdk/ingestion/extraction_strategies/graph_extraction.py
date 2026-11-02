@@ -26,6 +26,12 @@ from graphrag_sdk.core.models import (
     reject_reserved_labels,
 )
 from graphrag_sdk.core.providers import LLMInterface
+from graphrag_sdk.ingestion.evidence import (
+    evidence_text,
+    find_spans,
+    flat_spans,
+    is_whole_word,
+)
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import CorefResolver
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
@@ -182,18 +188,19 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "Return ONLY valid JSON, nothing else."
 )
 
+# Substituted as a ``.format()`` value, so braces are literal (not escaped).
 _DEFAULT_JSON_EXAMPLE = (
-    '{{"entities": [{{"name": "...", "type": "...", "description": "..."}}], '
-    '"relationships": [{{"source": "...", "target": "...", "type": "...", '
-    '"description": "...", "span_start": 0, "span_end": 50}}]}}'
+    '{"entities": [{"name": "...", "type": "...", "description": "..."}], '
+    '"relationships": [{"source": "...", "target": "...", "type": "...", '
+    '"description": "...", "span_start": 0, "span_end": 50}]}'
 )
 
 _JSON_EXAMPLE_WITH_ATTRS = (
-    '{{"entities": [{{"name": "...", "type": "...", "description": "...", '
-    '"attributes": {{}}}}], '
-    '"relationships": [{{"source": "...", "target": "...", "type": "...", '
+    '{"entities": [{"name": "...", "type": "...", "description": "...", '
+    '"attributes": {}}], '
+    '"relationships": [{"source": "...", "target": "...", "type": "...", '
     '"description": "...", "span_start": 0, "span_end": 50, '
-    '"attributes": {{}}}}]}}'
+    '"attributes": {}}]}'
 )
 
 
@@ -674,6 +681,8 @@ class GraphExtraction(ExtractionStrategy):
         relation_failed_chunk_uids: set[str] = set()
 
         # ── Optional: Coreference resolution per chunk ──
+        # The models read the resolved text, but the chunk node stores
+        # ``chunk.text``: spans written to the graph index that.
         chunk_texts: list[str] = []
         if self.coref_resolver is not None:
             for chunk in active_chunks:
@@ -810,7 +819,15 @@ class GraphExtraction(ExtractionStrategy):
                     # chunk that already failed step 1 is not double-counted.
                     if chunk.uid not in failed_chunk_uids:
                         relation_failed_chunk_uids.add(chunk.uid)
-                    # Fall back to step 1 entities only
+                    # Fall back to step 1 entities only. One without a
+                    # description gets the sentence around its spans on its
+                    # mention edge.
+                    self._record_mentions(
+                        chunk_entities[chunk_idx],
+                        chunk.text,
+                        chunk.uid,
+                        read_text=chunk_texts[chunk_idx],
+                    )
                     all_entities.extend(chunk_entities[chunk_idx])
                     continue
 
@@ -818,6 +835,11 @@ class GraphExtraction(ExtractionStrategy):
                 verified_ents, rels = self._parse_step2_response(
                     item.response.content, entity_types, chunk.uid, ontology
                 )
+                if chunk_texts[chunk_idx] != chunk.text:
+                    # The model's evidence offsets index the resolved text it
+                    # read, not the stored chunk, and cannot be moved onto it.
+                    for rel in rels:
+                        rel.spans = {}  # type: ignore[attr-defined]
                 if verified_ents:
                     # Carry over spans/confidence from step 1 entities
                     step1_ents = chunk_entities[chunk_idx]
@@ -827,10 +849,13 @@ class GraphExtraction(ExtractionStrategy):
                         chunk_texts[chunk_idx],
                         chunk.uid,
                     )
-                    all_entities.extend(verified_ents)
                 else:
                     # LLM returned no entities — use step 1 entities
-                    all_entities.extend(chunk_entities[chunk_idx])
+                    verified_ents = chunk_entities[chunk_idx]
+                self._record_mentions(
+                    verified_ents, chunk.text, chunk.uid, read_text=chunk_texts[chunk_idx]
+                )
+                all_entities.extend(verified_ents)
                 all_relations.extend(rels)
 
         # ── Aggregate across chunks ──
@@ -841,8 +866,19 @@ class GraphExtraction(ExtractionStrategy):
         all_mentions: list[EntityMention] = []
         for ent in merged_entities:
             ent_id = compute_entity_id(ent.name, ent.type)
+            ent_spans = getattr(ent, "spans", None) or {}
+            chunk_descriptions = getattr(ent, "chunk_descriptions", None) or {}
             for chunk_id in ent.source_chunk_ids:
-                all_mentions.append(EntityMention(chunk_id=chunk_id, entity_id=ent_id))
+                all_mentions.append(
+                    EntityMention(
+                        chunk_id=chunk_id,
+                        entity_id=ent_id,
+                        spans=flat_spans(
+                            (o["start"], o["end"]) for o in ent_spans.get(chunk_id, [])
+                        ),
+                        descriptions=list(chunk_descriptions.get(chunk_id, [])),
+                    )
+                )
 
         # ── Build entity type map for relationship endpoint resolution ──
         entity_type_map: dict[str, str] = {}
@@ -893,6 +929,47 @@ class GraphExtraction(ExtractionStrategy):
         return graph_data
 
     @staticmethod
+    def _record_mentions(
+        entities: list[ExtractedEntity],
+        chunk_text: str,
+        chunk_id: str,
+        *,
+        read_text: str | None = None,
+    ) -> None:
+        """Record, per chunk, where it names each entity and what it says the
+        entity is, for that entity's mention edge.
+
+        The spans are every place the chunk names the entity (the step-1 spans
+        when its name is not found verbatim). What the chunk says it is: the
+        model's description, or the sentence around its spans when the model
+        gave none. The mention edge keeps both, so the entity's description can
+        be rebuilt from its edges after a merge or a delete.
+
+        ``chunk_text`` is the text the chunk node stores, and the spans index
+        it. ``read_text`` is the text the models read when coreference
+        resolution rewrote it ("He" -> "Alice Smith" moves every later
+        offset): the step-1 spans index that text, so they are kept only when
+        it is the stored text, and the sentence around a mention is cut from
+        it, where the pronouns are already resolved.
+        """
+        read = chunk_text if read_text is None else read_text
+        same_text = read == chunk_text
+        for ent in entities:
+            # A model's own offsets can land inside a word ("US" in
+            # "business"); only whole words stand in for a name not found.
+            step1 = [
+                (o["start"], o["end"])
+                for o in (getattr(ent, "spans", None) or {}).get(chunk_id, [])
+                if is_whole_word(read, o["start"], o["end"])
+            ]
+            spans = find_spans(chunk_text, ent.name) or (step1 if same_text else [])
+            read_spans = spans if same_text else (find_spans(read, ent.name) or step1)
+            ent.spans = {chunk_id: [{"start": s, "end": e} for s, e in spans]}  # type: ignore[attr-defined]
+            text = ent.description.strip() or evidence_text(read, read_spans)
+            ent.chunk_descriptions = {chunk_id: [text]} if text else {}  # type: ignore[attr-defined]
+            ent.description = text
+
+    @staticmethod
     def _merge_step1_metadata(
         verified: list[ExtractedEntity],
         step1: list[ExtractedEntity],
@@ -903,7 +980,12 @@ class GraphExtraction(ExtractionStrategy):
 
         Matches by normalized name. Step 1 spans (from GLiNER2) are used
         directly. For entities the LLM discovered (not in step 1), spans
-        are computed via ``str.find()`` on the chunk text.
+        are where the chunk text names them as a whole name
+        (:func:`find_spans`).
+
+        ``chunk_text`` is the text the models read (coreference-resolved when
+        a resolver is set), so these spans index it; ``_record_mentions``
+        decides which of them may index the stored chunk.
         """
         # Build lookup: normalized name → step 1 entity
         s1_lookup: dict[str, ExtractedEntity] = {}
@@ -923,11 +1005,11 @@ class GraphExtraction(ExtractionStrategy):
                 if s1_conf is not None:
                     ent.confidence = s1_conf  # type: ignore[attr-defined]
             else:
-                # Entity is new from step 2 — compute spans via case-insensitive search
-                idx = chunk_text.lower().find(ent.name.lower())
-                if idx >= 0:
+                # Entity is new from step 2 — where the text names it
+                found = find_spans(chunk_text, ent.name)
+                if found:
                     ent.spans = {  # type: ignore[attr-defined]
-                        source_chunk_id: [{"start": idx, "end": idx + len(ent.name)}]
+                        source_chunk_id: [{"start": s, "end": e} for s, e in found]
                     }
 
     # ── Step 2 Response Parsing ──────────────────────────────────
@@ -1053,7 +1135,8 @@ class GraphExtraction(ExtractionStrategy):
     def _aggregate_entities(
         entities: list[ExtractedEntity],
     ) -> list[ExtractedEntity]:
-        """Deduplicate entities by (normalized name, type), keeping longer descriptions.
+        """Deduplicate entities by (normalized name, type), keeping what each
+        chunk said (``chunk_descriptions``) and the longer description.
 
         Merges ``spans`` dicts across chunks so the final entity carries
         character offsets from every chunk it appeared in.
@@ -1073,6 +1156,17 @@ class GraphExtraction(ExtractionStrategy):
                 for cid in ent.source_chunk_ids:
                     if cid not in existing.source_chunk_ids:
                         existing.source_chunk_ids.append(cid)
+                # Per chunk, every distinct description: the same entity named
+                # twice in one chunk keeps what both said.
+                chunk_descriptions = getattr(ent, "chunk_descriptions", None) or {}
+                if chunk_descriptions:
+                    held = getattr(existing, "chunk_descriptions", None) or {}
+                    for chunk_id, texts in chunk_descriptions.items():
+                        have = held.setdefault(chunk_id, [])
+                        for text in texts:
+                            if text not in have:
+                                have.append(text)
+                    existing.chunk_descriptions = held  # type: ignore[attr-defined]
                 # Merge spans: {chunk_id: [{start, end}, ...]}
                 ent_spans = getattr(ent, "spans", None) or {}
                 if ent_spans:
@@ -1093,6 +1187,11 @@ class GraphExtraction(ExtractionStrategy):
                     attributes=dict(ent.attributes),
                     **_optional_extras(ent),
                 )
+                chunk_descriptions = getattr(ent, "chunk_descriptions", None)
+                if chunk_descriptions:
+                    seen[key].chunk_descriptions = {  # type: ignore[attr-defined]
+                        chunk_id: list(texts) for chunk_id, texts in chunk_descriptions.items()
+                    }
         return list(seen.values())
 
     @staticmethod
@@ -1149,16 +1248,25 @@ class GraphExtraction(ExtractionStrategy):
             node_id = compute_entity_id(ent.name, ent.type)
             if not node_id:
                 continue
+            # What each chunk that named it said, in chunk order; the store
+            # joins them onto what the node already holds and bounds the total.
+            chunk_descriptions = getattr(ent, "chunk_descriptions", None) or {}
+            members: list[str] = []
+            for chunk_id in ent.source_chunk_ids:
+                for text in chunk_descriptions.get(chunk_id, []):
+                    if text not in members:
+                        members.append(text)
+            if not members and ent.description:
+                members = [ent.description]
             props: dict[str, Any] = {
                 "name": ent.name,
                 "type": ent.type,
-                "description": ent.description,
+                "description": " | ".join(members),
                 "source_chunk_ids": ent.source_chunk_ids,
             }
-            # Include spans if present (GLiNER2 provides character offsets)
-            spans = getattr(ent, "spans", None)
-            if spans:
-                props["spans"] = spans
+            if len(members) > 1:
+                props["descriptions"] = members
+            # Spans live on the MENTIONED_IN edges (one per chunk), not here.
             # Merge ontology-declared attributes. The ontology layer does NOT
             # validate against SDK-reserved keys (name, type, description,
             # source_chunk_ids, spans, id) — declaring an Attribute with one

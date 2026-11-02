@@ -36,7 +36,7 @@ async def search_relates_edges(
     Returns:
         fact_strings_with_scores: [("src -[type]-> tgt: fact_text", score), ...]
         entities: dict of entity_id -> {name, description} discovered
-                  from matched edge endpoints.
+                  from matched edge endpoints, keyed by stored entity id.
     """
     fact_strings: list[tuple[str, float]] = []
     entities: dict[str, dict] = {}
@@ -55,15 +55,20 @@ async def search_relates_edges(
                 if fact:
                     line += f": {fact}"
                 fact_strings.append((line, score))
-            # Add entities as graph entry points
-            if src:
-                src_id = src.strip().lower().replace(" ", "_")
-                if src_id not in entities:
-                    entities[src_id] = {"name": src, "description": ""}
-            if tgt:
-                tgt_id = tgt.strip().lower().replace(" ", "_")
-                if tgt_id not in entities:
-                    entities[tgt_id] = {"name": tgt, "description": ""}
+            # Add entities as graph entry points, by their stored ids (typed,
+            # e.g. "alice__person") so expansion can walk from them. A store
+            # that returns no ids gets ids made from the names. An endpoint
+            # with no name (a relation edge from a table sets none) still
+            # seeds expansion, but gets an empty name so the answer's Key
+            # Entities never show its raw id; a later edge may name it.
+            for name, stored_id in ((src, rel.get("src_id")), (tgt, rel.get("tgt_id"))):
+                eid = stored_id or (name or "").strip().lower().replace(" ", "_")
+                if not eid:
+                    continue
+                if eid not in entities:
+                    entities[eid] = {"name": name or "", "description": ""}
+                elif name and not entities[eid]["name"]:
+                    entities[eid]["name"] = name
     except LatencyBudgetExceededError:
         raise
     except Exception as exc:
@@ -77,12 +82,18 @@ async def discover_entities(
     llm_kw: list[str],
     all_keywords: list[str],
     ctx: Context | None = None,
+    *,
+    use_cypher: bool = True,
+    use_fulltext: bool = True,
 ) -> tuple[dict[str, dict], dict[str, str]]:
     """2-path entity discovery.
 
     Paths:
-    a: Cypher CONTAINS on entity names
-    b: Fulltext search on entity index
+    a: Cypher CONTAINS on entity names (gated by ``use_cypher``)
+    b: Fulltext search on entity index (gated by ``use_fulltext``)
+
+    ``use_cypher`` / ``use_fulltext`` let a path router skip a sub-path when
+    it is irrelevant to the question. Both default to ``True`` (run both).
 
     Returns:
         found: dict of entity_id -> {name, description}
@@ -111,7 +122,7 @@ async def discover_entities(
         seen_kw.add(k_low)
         kw_batch.append(kw)
 
-    if kw_batch:
+    if use_cypher and kw_batch:
         # Pass a1: exact-name matches, capped per keyword. Inserted first
         # so exact matches land at the head of `found` and survive the
         # downstream max_entities / result_assembly caps.
@@ -178,7 +189,7 @@ async def discover_entities(
             logger.debug("Entity CONTAINS search failed: %s", exc)
 
     # Path b: Fulltext search on entity index
-    for kw in all_keywords[:6]:
+    for kw in all_keywords[:6] if use_fulltext else []:
         try:
             if ctx is not None:
                 ctx.ensure_budget("entity fulltext search")

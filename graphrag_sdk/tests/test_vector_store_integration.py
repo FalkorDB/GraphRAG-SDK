@@ -194,6 +194,7 @@ class TestRelationshipSearch:
 
         assert [r["fact"] for r in results] == ["Alice works at Acme", "Bob knows Alice"]
         assert results[0]["score"] == pytest.approx(1.0, abs=1e-6)
+        assert [(r["src_id"], r["tgt_id"]) for r in results] == [("a", "b"), ("c", "a")]
 
     async def test_edges_are_found_through_the_index(self, conn, monkeypatch):
         # Index first, then data: an index built over existing nodes fills in
@@ -214,6 +215,7 @@ class TestRelationshipSearch:
         results = await store.search_relationships([0.0, 1.0, 0.0], top_k=1)
 
         assert [r["fact"] for r in results] == ["Bob knows Alice"]
+        assert (results[0]["src_id"], results[0]["tgt_id"]) == ("c", "a")
         # The scan finds the same edge, so only this shows the index answered.
         assert not any("cosineDistance" in cypher for cypher in sent)
 

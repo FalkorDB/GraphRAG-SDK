@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
-from graphrag_sdk.core.tables import TableMapping
+from graphrag_sdk.core.tables import RelationshipMapping, TableMapping
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +236,10 @@ class DocumentRecord(DataModel):
     which is how a Document loaded under a caller's own id is traced back to its
     declaration. ``None`` on prose, and on tables written before it was stamped.
     """
+    loader: str | None = None
+    """The loader that read the document from a file (``markdown``, ``text``,
+    ``pdf``). ``None`` on text ingested as a string and on tables.
+    """
 
 
 class ChunkEntityRow(DataModel):
@@ -247,6 +251,13 @@ class ChunkEntityRow(DataModel):
 
     ``label`` is the entity's concrete label (the non-``__Entity__`` one);
     ``None`` if the node somehow carries no usable label (tampered graph).
+    ``description``, ``descriptions`` and ``spans`` are what this chunk's own
+    ``MENTIONED_IN`` edge holds — its description as written, the same as
+    separate members, and where the chunk names the entity: ``None``, ``[]``
+    and ``[]`` for an edge written by an earlier version. ``recorded`` is
+    whether that edge records everything its chunk put on the entity's
+    description: written by this version (it has ``said_version``), or a
+    table row's, which puts nothing there; false for an earlier version's.
     """
 
     chunk_id: str
@@ -255,7 +266,10 @@ class ChunkEntityRow(DataModel):
     name: str | None = None
     type: str | None = None
     description: str | None = None
+    descriptions: list[str] = Field(default_factory=list)
     source_chunk_ids: list[str] = Field(default_factory=list)
+    spans: list[int] = Field(default_factory=list)
+    recorded: bool = True
 
 
 class ChunkRelationshipRow(DataModel):
@@ -300,6 +314,7 @@ _RESERVED_ATTRIBUTE_NAMES: frozenset[str] = frozenset(
         "tgt_name",
         "id",
         "label",
+        "description_summarised",
     }
 )
 
@@ -423,18 +438,22 @@ class Ontology(DataModel):
     object. Each mapping signs the properties it writes with its source, so two
     tables describing one entity cannot overwrite each other.
     """
+    relationship_tables: list[RelationshipMapping] = Field(default_factory=list)
+    """Tabular sources whose rows describe only relationships between existing entities."""
 
     @model_validator(mode="after")
     def _refuse_duplicate_sources(self) -> Ontology:
         """One source, one mapping. Two would race on the same properties."""
         seen: set[str] = set()
-        for mapping in self.tables:
-            if mapping.source in seen:
+        sources = [mapping.source for mapping in self.tables]
+        sources.extend(mapping.source for mapping in self.relationship_tables)
+        for source in sources:
+            if source in seen:
                 raise ValueError(
-                    f"Table mapping for {mapping.source!r} is declared twice. "
+                    f"Structured mapping for {source!r} is declared twice. "
                     f"One source has one mapping; merge them."
                 )
-            seen.add(mapping.source)
+            seen.add(source)
         return self
 
     @model_validator(mode="after")
@@ -486,7 +505,7 @@ class Ontology(DataModel):
         other on its own.
         """
         by_signature: dict[str, list[str]] = {}
-        for mapping in self.tables:
+        for mapping in [*self.tables, *self.relationship_tables]:
             by_signature.setdefault(mapping.signature, []).append(mapping.source)
         collisions = {sig: srcs for sig, srcs in by_signature.items() if len(srcs) > 1}
         if collisions:
@@ -756,13 +775,23 @@ class Ontology(DataModel):
         merged_tables = {mapping.source: mapping for mapping in self.tables}
         for mapping in other.tables:
             merged_tables.setdefault(mapping.source, mapping)
-        return self.model_copy(
+        merged_relationship_tables = {
+            mapping.source: mapping for mapping in self.relationship_tables
+        }
+        for mapping in other.relationship_tables:
+            merged_relationship_tables.setdefault(mapping.source, mapping)
+        merged = self.model_copy(
             update={
                 "entities": list(ent_by_label.values()),
                 "relations": list(rel_by_label.values()),
                 "tables": list(merged_tables.values()),
+                "relationship_tables": list(merged_relationship_tables.values()),
             }
         )
+
+        merged._refuse_duplicate_sources()
+        merged._refuse_colliding_signatures()
+        return merged
 
     def tables_naming(self, label: str) -> dict[str, str]:
         """``source -> how`` for every mapping that names ``label``.
@@ -781,6 +810,14 @@ class Ontology(DataModel):
             links = sorted(link.type for link in mapping.links if link.to == label)
             if links:
                 naming[mapping.source] = "Link " + ", ".join(links)
+        for mapping in self.relationship_tables:
+            endpoints = [
+                side
+                for side, endpoint in (("start", mapping.start), ("end", mapping.end))
+                if endpoint.entity == label
+            ]
+            if endpoints:
+                naming[mapping.source] = "relationship " + "/".join(endpoints) + " endpoint"
         return naming
 
 
@@ -865,10 +902,22 @@ class ExtractedRelation(DataModel):
 
 
 class EntityMention(DataModel):
-    """A mention of an entity in a specific chunk."""
+    """A mention of an entity in a specific chunk.
+
+    ``spans`` are where the chunk names the entity, flat
+    (``[start, end, start, end, ...]``); ``descriptions`` are what that chunk
+    says the entity is — one, or more when the chunk describes it twice or two
+    mentions land on it (a merge, a remap), each kept whole. Both are written
+    on the ``MENTIONED_IN`` edge, the descriptions as on a node
+    (``description`` joined with " | ", ``descriptions`` when more than one),
+    so they go when the chunk goes, and what a deleted document said can be
+    taken off the entity's description.
+    """
 
     chunk_id: str
     entity_id: str
+    spans: list[int] = Field(default_factory=list)
+    descriptions: list[str] = Field(default_factory=list)
 
 
 class ExtractionOutput(DataModel):
@@ -1112,6 +1161,16 @@ class FinalizeResult(DataModel):
     to read. Nothing was written for them; their groups are decided again on
     the next run."""
 
+    descriptions_summarised: int = 0
+    """Entities whose descriptions were replaced by one LLM summary: those
+    holding more than five, after dedup."""
+
+    description_summary_failures: list[str] = Field(default_factory=list)
+    """Entities whose summary failed this run, each with its error. They keep
+    their descriptions as they are, and the next ``finalize()`` tries again.
+    ``"summary pass: <error>"`` when the pass itself failed, before or while
+    it ran."""
+
     entities_embedded: int = 0
     relationships_embedded: int = 0
     indexes: dict[str, bool] = Field(default_factory=dict)
@@ -1300,6 +1359,9 @@ class ApplyChangesResult(DataModel):
     A table in ``added`` or ``modified`` is reported in the same result type
     as a prose file, with the structured counts -- ``records``, ``entities``,
     ``references``, ``edges`` -- in ``result.metadata``.
+    Relationship-only tables use the same wrapper, with their relationship and
+    endpoint counts in ``result.metadata``; ``document_info`` identifies the
+    source, not a persisted Document node.
     """
 
     added: list[BatchEntry[IngestionResult]] = Field(default_factory=list)

@@ -11,7 +11,7 @@
 #   Adaptability — Optimization-ready core, strategies are swappable.
 #   Velocity — Production-grade throughput.
 
-__version__ = "1.4.0"
+__version__ = "1.6.0"
 
 # ── API Surface (Facade) ────────────────────────────────────────
 from graphrag_sdk.api.main import GraphRAG
@@ -24,6 +24,7 @@ from graphrag_sdk.core.exceptions import (
     FalkorDBVersionError,
     GraphRAGError,
     LatencyBudgetExceededError,
+    ReadOnlyViolation,
 )
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
@@ -108,6 +109,17 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     DEFAULT_RELATION_TYPES,
     GraphExtraction,
 )
+from graphrag_sdk.ingestion.ingestion_planner import (
+    CHEAP_PLAN_LIMITS,
+    ChunkBudgetExceededError,
+    HeuristicIngestionPlanner,
+    IngestionPlan,
+    IngestionPlanner,
+    LLMIngestionPlanner,
+    PlanRule,
+    RuleBasedIngestionPlanner,
+    build_ingestion_strategies,
+)
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.record_loader import (
     CsvRecordLoader,
@@ -117,8 +129,10 @@ from graphrag_sdk.ingestion.loaders.record_loader import (
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
 from graphrag_sdk.ingestion.mapping import (
     Column,
+    EndpointMapping,
     Link,
     MappingError,
+    RelationshipMapping,
     TableMapping,
 )
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -129,12 +143,21 @@ from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
+from graphrag_sdk.ingestion.structured_pipeline import (
+    RelationshipIngestionResult,
+    RelationshipResolutionError,
+)
 
 # ── Retrieval Strategies ────────────────────────────────────────
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.reranking_strategies.cosine import CosineReranker
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+from graphrag_sdk.retrieval.strategies.path_router import (
+    RETRIEVAL_PATHS,
+    HeuristicPathRouter,
+    LLMPathRouter,
+)
 
 # ── Storage ─────────────────────────────────────────────────────
 from graphrag_sdk.storage.dedup_judges.base import DedupJudge
@@ -147,6 +170,9 @@ from graphrag_sdk.storage.ontology_store import (
 )
 from graphrag_sdk.storage.system_store import DedupRunActiveError
 from graphrag_sdk.storage.vector_store import VectorStore
+
+# ── Agent Toolkit ───────────────────────────────────────────────
+from graphrag_sdk.tools import GraphRAGToolkit, ToolError, ToolSpec
 
 __all__ = [
     "DEFAULT_RELATION_TYPES",
@@ -230,9 +256,21 @@ __all__ = [
     "ResolutionStrategy",
     "ExactMatchResolution",
     "LLMVerifiedResolution",
+    "CHEAP_PLAN_LIMITS",
+    "ChunkBudgetExceededError",
+    "HeuristicIngestionPlanner",
+    "IngestionPlan",
+    "IngestionPlanner",
+    "LLMIngestionPlanner",
+    "PlanRule",
+    "RuleBasedIngestionPlanner",
+    "build_ingestion_strategies",
     # Retrieval
     "CosineReranker",
+    "HeuristicPathRouter",
+    "LLMPathRouter",
     "MultiPathRetrieval",
+    "RETRIEVAL_PATHS",
     "RerankingStrategy",
     "RetrievalStrategy",
     # Storage
@@ -245,12 +283,21 @@ __all__ = [
     "OntologyStore",
     "VectorStore",
     "Column",
+    "EndpointMapping",
     "TableMapping",
+    "RelationshipMapping",
+    "RelationshipIngestionResult",
+    "RelationshipResolutionError",
     "CsvRecordLoader",
     "MappingError",
     "RecordBatch",
     "RecordLoaderStrategy",
     "Link",
+    # Agent toolkit
+    "GraphRAGToolkit",
+    "ReadOnlyViolation",
+    "ToolError",
+    "ToolSpec",
 ]
 
 
