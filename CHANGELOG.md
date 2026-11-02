@@ -9,6 +9,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Graph tools for your own agent, and an MCP server (#274)
+
+- **`GraphRAGToolkit` gives an agent you already run read-only tools on the
+  graph**: `status`, `get_ontology`, `retrieve` and
+  `check_citations`, plus `ingest` and
+  `finalize` for agents allowed to write: wrap a `GraphRAG` in
+  `GraphRAGToolkit(rag)`.
+  The SDK runs no agent loop: your agent plans, calls the tools and writes
+  the answer. Every tool validates its input with a strict schema, caps its
+  result size (its database queries use the configured per-query timeout), and
+  returns a typed result
+  whose `to_llm_text()` stays under a fixed size (8,000 characters by
+  default), shared across its sections so a long relation list cannot push
+  out the passages (which get twice the share, up to about 1,200 characters
+  each); a cut section says how many items it omitted.
+- **Every piece of evidence is numbered.** Entities, relations, facts and passages,
+  and each `status` / `get_ontology` result, carry an `[n]` from a per-session ledger
+  (`toolkit.new_session()`), and `check_citations(answer)` reports which `[n]`
+  in a draft answer are real and whether the answer cites anything at all.
+- **`retrieve` runs every search path unless the agent names a few.**
+  `paths` picks from `facts`, `exact_names`, `fuzzy_names`, `links` and
+  `passages`, so a question that only needs the source text skips the entity
+  searches and the relation expansion. Leave it out to run them all; when the chosen
+  paths find nothing, the result says to run again without them. With
+  `expand_hops` 2–5 every hop gets a share of the relation cap, so the first
+  hop cannot fill it and starve the deeper ones.
+- **`graphrag-mcp` serves the same tools over MCP** (`pip install
+  "graphrag-sdk[mcp]"`) to Claude Code, Cursor and any other MCP client, on
+  stdio or SSE with a bearer token. `--read-only` (or
+  `GRAPHRAG_MCP_READ_ONLY=1`) hides the write tools. The server sends a usage
+  guide as its instructions and keeps one evidence ledger per client
+  connection, including stateless SSE clients (the `mcp.Client` default), so
+  one client can never cite another's evidence. Requires `mcp` 2.x; on stdio
+  LiteLLM's debug output is silenced so stdout carries only the protocol.
+- **Tool results never include internal nodes or embedding vectors**, and
+  the read tools never write: the toolkit's own graph queries run as
+  `GRAPH.RO_QUERY`, so the database refuses writes. `retrieve`'s search
+  paths run the SDK's standard retrieval queries, which only read.
+- **Read tools on a graph that does not exist** (never written, or deleted
+  since) raise an error naming it and create nothing; the read-only check
+  runs on every call. When the graph store cannot be reached they raise
+  "Could not reach the graph store" instead of reporting an empty graph.
+- **`check_citations`** accepts `[1, 2]` and `[1-3]`, and matches names as
+  whole words, case-insensitively: every word of a multi-word name must be
+  in the cited evidence, and a sentence's first word is checked when it is
+  part of a name. Figures ignore trailing zeros (`2.80` = `2.8`). A sentence
+  that says the graph lacks something needs no citation.
+- **`MultiPathRetrieval(router=...)` runs only the paths a question needs.**
+  `HeuristicPathRouter()` picks them from the question with no model call;
+  `LLMPathRouter(llm)` asks the model once. Plans name ids from
+  `RETRIEVAL_PATHS` (`relates`, `entity_cypher`, `entity_fulltext`,
+  `expansion`, `chunks`), MultiPath's internal paths; the `retrieve` tool's
+  agent-facing `paths` are `graphrag_sdk.tools.specs.RETRIEVE_PATHS`. An
+  empty plan or a failing router runs every path, unless the latency budget
+  is exhausted. `enable_cypher` still runs its path whatever the plan.
+- **`ingest` and `finalize` are marked destructive** in their MCP
+  annotations, so clients ask before running them. The MCP server keeps
+  every reply valid JSON within its size limit (evidence cut or shortened
+  to fit cannot be cited), and reports unexpected
+  errors with a next step and with API keys and tokens masked.
+- `pip install "graphrag-sdk[all]"` includes the MCP server.
+- New example `graphrag_sdk/examples/12_agent_toolkit.py` and docs page
+  *Agentic Retrieval*.
+
 #### Structured ingestion — tables declared on the ontology, one node for a row and its mention
 
 - **`Ontology(tables=[TableMapping(...)])`** declares what a table's columns mean,
@@ -560,8 +624,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rerank, and parsing those replies in pure Python was most of the client's
   CPU per question: about 48 ms down to 11 ms in our tests, so one process
   serves more concurrent questions.
+- **Relationship expansion now starts from the endpoints of matched `RELATES`
+  edges, by their stored ids.** `search_relationships()` /
+  `search_relates_edges()` return each edge's `src_id` / `tgt_id`, and
+  expansion walks from those ids instead of ids guessed from names, which
+  missed typed ids such as `alice__person`. So the default `rag.retrieve()` /
+  `completion()` context can include more relationship lines than before. An
+  endpoint with no name (a relation edge from a table) seeds expansion but is
+  not listed under Key Entities. When there are more lines than
+  `max_relationships`, 2-hop lines keep up to a third of the room, so 1-hop
+  lines cannot crowd them all out.
 
 ### Fixed
+- **Reading the ontology no longer creates its graph.** `OntologyStore.load()`
+  read with `GRAPH.QUERY`, which on a graph nothing was declared on yet left an
+  empty `<graph>__ontology` key behind. It now reads with `GRAPH.RO_QUERY` and
+  treats a missing key as an empty ontology.
 - **With coreference resolution on, spans pointed at the wrong text.** The
   models read the resolved chunk ("She hired Bob" becomes "Alice Smith hired
   Bob"), the spans were found in it, but the chunk node stores the original,

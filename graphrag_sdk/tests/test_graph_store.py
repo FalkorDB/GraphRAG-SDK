@@ -1883,6 +1883,29 @@ class TestGraphStoreIdIndex:
         assert any("DETACH DELETE" in c[0][0] for c in mock_connection.query.call_args_list)
 
 
+# ── query_raw: read-only and timeout passthrough ─────────────────
+
+
+class TestQueryRawPassthrough:
+    async def test_plain_query_keeps_the_two_argument_call(self):
+        conn = MagicMock()
+        conn.query = AsyncMock(return_value="r")
+        store = GraphStore(conn)
+        assert await store.query_raw("MATCH (n) RETURN n") == "r"
+        conn.query.assert_awaited_with("MATCH (n) RETURN n", None)
+
+    async def test_read_only_and_timeout_are_forwarded(self):
+        conn = MagicMock()
+        conn.query = AsyncMock(return_value="r")
+        store = GraphStore(conn)
+        await store.query_raw("MATCH (n) RETURN n", {"a": 1}, read_only=True, timeout=50)
+        conn.query.assert_awaited_with("MATCH (n) RETURN n", {"a": 1}, timeout=50, read_only=True)
+        await store.query_raw("MATCH (n) RETURN n", read_only=True)
+        conn.query.assert_awaited_with("MATCH (n) RETURN n", None, timeout=None, read_only=True)
+        await store.query_raw("MATCH (n) RETURN n", timeout=20)
+        conn.query.assert_awaited_with("MATCH (n) RETURN n", None, timeout=20, read_only=False)
+
+
 class TestNewIndexIsReadyBeforeItsFirstQuery:
     """``CREATE INDEX`` returns at once; FalkorDB builds the index afterwards.
 

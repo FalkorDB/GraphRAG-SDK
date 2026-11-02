@@ -1,0 +1,129 @@
+---
+title: "GraphRAG SDK Agentic Retrieval: Graph Tools and MCP Server"
+sidebarTitle: "Agentic Retrieval"
+description: "Give your own agent read-only graph tools — hybrid search over entities, relations and passages — with numbered evidence and a citation check, in Python or over MCP."
+---
+
+GraphRAG SDK does not run an agent loop. **Your** agent — Claude Code, Cursor, a pydantic-ai or LangGraph agent — plans, calls the graph tools and writes the answer. The SDK runs each tool call bounded and read-only, numbers every piece of evidence it returns, and checks the `[n]` citations in your agent's draft against that evidence.
+
+Use the tools when questions need more than one lookup: "which X are connected to Y", multi-hop questions, comparisons. For a plain question about the content, [`rag.completion()`](/retrieval) is faster and cheaper.
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `status` | Entity, relation, document and chunk counts, and every entity label and relation type with its count. The result carries one evidence number. |
+| `get_ontology` | Declared entity types with their properties, relation types with their (source, target) patterns. The result carries one evidence number. |
+| `retrieve` | Hybrid search (vector + full-text + graph) for a question: entities, relations, facts and source passages. Runs every search path unless `paths` names a few: `facts` (facts on relations), `exact_names` (entities named in the question), `fuzzy_names` (full-text match on names and descriptions), `links` (relations around the entities found) and `passages` (source text). `expand_hops` (1–5) sets how far `links` walks; the relations it returns are capped at 4 × `top_k` (40 at most), and each hop gets a share of that cap so a busy first hop cannot crowd out the deeper ones. Needs the embedding model the graph was built with. |
+| `check_citations` | Check a draft answer: every `[n]` must be evidence a tool returned in this session. Also lists claims with no `[n]` of their own, and cited claims whose figures or names the cited evidence does not contain. |
+| `ingest` | Add text to the graph (write). |
+| `finalize` | Deduplicate, embed and index after a batch of ingests (write; listed only with `finalize_policy="manual"`). |
+
+The read tools never write. The toolkit's own graph queries (counts, ontology, entity cards, relation expansion, the existence check) run as `GRAPH.RO_QUERY`, so the database refuses writes; `retrieve`'s search paths run the SDK's standard retrieval queries, which only read but go through the normal query path. Results never contain embedding vectors or internal `__Label__` names.
+
+Before it reads, every read tool checks — read-only, on every call — that the graph exists. On a graph that was never written or has since been deleted, it raises an error naming the graph (`status` says so in its hint) instead of answering "nothing found", and creates nothing. When the check itself fails (FalkorDB down or unreachable), the call raises `Could not reach the graph store …` rather than reporting an empty graph.
+
+## Python
+
+```python
+from graphrag_sdk.tools import GraphRAGToolkit, ToolError
+
+toolkit = GraphRAGToolkit(rag, read_only=True)
+
+for spec in toolkit.tool_specs():          # name, description, JSON Schema input
+    register_with_your_agent(spec.name, spec.description, spec.input_schema)
+
+result = await toolkit.call("retrieve", {"question": "Where does Alice work?"})
+print(result.to_llm_text())                # compact text with [n] evidence numbers (8,000 chars max)
+print(result.model_dump_json())            # or the typed result
+```
+
+`to_llm_text(max_chars=8000)` shares its budget across the result's sections, so a long list of relations cannot push the passages out; passages get twice the share of other sections, show up to about 1,200 characters each, and are labelled with their file's name. A section that does not fit ends with `…(N more omitted)`. Whole-number floats print as integers (`40`, not `40.0`).
+
+Every tool is also an async method (`await toolkit.retrieve("Who founded Acme?")`). `call()` validates arguments against the same pydantic models that produce `input_schema`.
+
+A call that cannot run raises `ToolError` with a `hint` naming the fix:
+
+```
+Graph 'kb' does not exist. Hint: Ingest documents (and finalize) first, or check the graph name the server was started with.
+```
+
+Options:
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `read_only` | `False` | Drop `ingest` / `finalize`; calling them raises `ReadOnlyViolation`. |
+| `include` | all | Subset of tool names to advertise and accept in `call()`. |
+| `finalize_policy` | `"manual"` | `"manual"`: call `finalize` after a batch. `"on_write"`: finalize after every ingest (demos only — cost grows with the graph). `"never"`: you call `rag.finalize()`. |
+| `ledger_capacity` | 2000 | Evidence items kept per session. |
+
+`GraphRAGToolkit.for_tenant(base_config, "acme", llm=..., embedder=...)` binds a toolkit to the graph `<base>__acme` and closes it on `aclose()` / `async with`.
+
+## Evidence and citations
+
+Every entity, edge, fact and passage a tool returns carries an evidence number `n`, and so does each `status` and `get_ontology` result as a whole, so an answer about the graph itself can be cited too. An empty passage gets no number. Numbers run across all calls of one **session** — one toolkit, or one `toolkit.new_session()` copy per conversation — so an answer can cite results from several calls.
+
+```python
+session = toolkit.new_session()
+found = await session.retrieve("Where does Alice work?")
+evidence = [*found.relations, *found.facts, *found.chunks]
+if evidence:
+    check = await session.check_citations(f"Alice works at Acme Corp [{evidence[0].n}].")
+    check.grounded        # True
+    check.cited           # the valid numbers the answer cites
+    check.invalid         # numbers that point at nothing; removed from check.answer
+    check.sources         # the cited evidence: tool, kind, content
+    check.uncited         # sentences stating a figure or a name with no [n] of their own
+    check.unsupported     # cited sentences + the figures / names their evidence lacks
+```
+
+A marker can cite one item (`[3]`), a list (`[1, 4]`) or a range (`[1-3]`). The claim checks are literal and use no LLM:
+
+- A figure must appear as a number in the full text of the evidence the sentence cites (so "two" for "2" is reported). Trailing zeros do not matter (`2.80` matches `2.8`); the evidence's source file path is not searched.
+- A name is a run of capitalised words, and counts as found when every word of three or more letters appears in the evidence as a whole word, ignoring case ("Corvane Systems" needs both words; "Ann" is not found in "planning"). A lone surname needs support like any other name. A sentence's capitalised first word is checked when it starts a run ("Corvane Systems ships") or the sentence names something else ("Globex acquired Initech"), unless it is an opener such as "The" or "However".
+- A sentence that says the graph lacks something ("The graph does not say who founded Globex.") needs no citation and is never listed in `uncited`. Only sentences about the evidence or a failed lookup count: a negative claim about the world ("Globex does not provide pensions.") still needs one.
+
+The claim checks are warnings and never change `grounded`.
+
+An answer that cites no real evidence is not grounded.
+
+## MCP server
+
+```bash
+pip install "graphrag-sdk[mcp]"                                   # mcp 2.x
+graphrag-mcp --read-only                                           # stdio, for local MCP clients
+GRAPHRAG_MCP_TOKEN=... graphrag-mcp --transport sse --host 0.0.0.0  # network, bearer token required
+```
+
+Claude Code / Cursor config:
+
+```json
+{
+  "mcpServers": {
+    "graphrag": {
+      "command": "graphrag-mcp",
+      "args": ["--read-only"],
+      "env": { "FALKOR_HOST": "localhost", "GRAPHRAG_GRAPH": "my_graph", "OPENAI_API_KEY": "sk-..." }
+    }
+  }
+}
+```
+
+Configuration comes from `FALKOR_HOST`, `FALKOR_PORT`, `FALKOR_USERNAME`, `FALKOR_PASSWORD`, `GRAPHRAG_GRAPH`, `GRAPHRAG_MODEL`, `GRAPHRAG_EMBED_MODEL`, `GRAPHRAG_EMBED_DIM`, `GRAPHRAG_EMBED_SEND_DIMENSIONS` and `GRAPHRAG_MCP_READ_ONLY`. `GRAPHRAG_EMBED_DIM` defaults to the model's native size (3072 for `text-embedding-3-large`, otherwise 1536); when it is set, it is sent to `text-embedding-3` models as `dimensions`. Set `GRAPHRAG_EMBED_SEND_DIMENSIONS=true` to send it to a model whose name does not say `text-embedding-3`, such as an Azure deployment. The LLM and embedder serve `retrieve` and `ingest`; the other read tools need neither.
+
+The server serves the same tools, with MCP annotations (`readOnlyHint`, `destructiveHint`; `ingest` and `finalize` are marked destructive, so clients such as Claude Code ask the user before running them), and sends the client a short guide as its instructions: call `retrieve` first with the user's question word for word (all paths unless it knows the question needs only a few), run `retrieve` again with exact names or `expand_hops` 2–3 (up to 5) when the first call did not answer, use `status` or `get_ontology` for questions about the graph itself, answer briefly, cite `[n]`, and always run `check_citations` before replying. Results over 40,000 characters are shortened (longest lists first, at any depth, then long strings; the JSON stays valid) and marked `truncated`, with a hint naming the lists that were cut; evidence cut from a reply, or shortened in it, is dropped from the session, so it cannot be cited. A failure that is not a `ToolError` comes back as a short message naming the kind of failure (timeout, model provider, database, configuration) with a next step; the underlying message stays in the server log, and API keys and tokens are masked in any error text.
+
+Each client connection gets its own evidence numbering. Over SSE that holds for every client stream, including clients on the stateless MCP protocol (2026-07-28, the default for `mcp.Client`), so one client can never cite another's evidence. Over stdio one process serves one client, so there is one numbering, and the server keeps stdout for the protocol (LiteLLM's debug banners are turned off).
+
+Serving SSE on a non-loopback host without a token is refused. The token is sent as `Authorization: Bearer <token>` (the scheme is case-insensitive). A loopback SSE server only accepts requests whose `Host` / `Origin` name it (DNS-rebinding protection).
+
+From Python:
+
+```python
+from graphrag_sdk.mcp import GraphRAGMCPServer
+
+server = GraphRAGMCPServer(rag, read_only=True)
+await server.run(transport="stdio")
+```
+
+See [`examples/12_agent_toolkit.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/12_agent_toolkit.py) for a runnable script.
