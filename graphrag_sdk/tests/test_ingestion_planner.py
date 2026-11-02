@@ -241,15 +241,17 @@ class TestBuilders:
 
 # -- GraphRAG._plan_ingestion_strategies merge logic --
 #
-# The method only touches self.llm / self.embedder / self.ontology, so a light
-# stub stands in for a full GraphRAG instance.
+# The method only touches self.llm / self.embedder / the working ontology, so a
+# light stub stands in for a full GraphRAG instance.
 
 
 def _fake_rag(llm, *, entities=None):
+    ontology = SimpleNamespace(entities=entities or [])
     rag = SimpleNamespace(
         llm=llm,
         embedder=MockEmbedder(),
-        ontology=SimpleNamespace(entities=entities or []),
+        ontology=ontology,
+        _global_ontology=ontology,
         _markdown_elements=GraphRAG._markdown_elements,
         _chunk_budget=GraphRAG._chunk_budget,
     )
