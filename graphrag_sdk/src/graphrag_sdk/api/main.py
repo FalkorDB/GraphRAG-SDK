@@ -3340,8 +3340,10 @@ class GraphRAG:
         result = await pipeline.run(source, ctx, text=text, document_info=doc_info)
 
         # Cross-document duplicates can only be resolved by finalize(); see
-        # _warn_if_finalize_missing.
-        self._docs_since_dedup += 1
+        # _warn_if_finalize_missing. An unchanged-document short-circuit did
+        # not write anything and must not arm the reminder.
+        if not result.metadata.get("skipped_unchanged"):
+            self._docs_since_dedup += 1
 
         if not _skip_post:
             # Post-ingestion: create indices only.

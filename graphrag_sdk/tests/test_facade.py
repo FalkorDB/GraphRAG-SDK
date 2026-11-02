@@ -2698,7 +2698,9 @@ class TestFinalizeReminder:
         g._vector_store.ensure_indices = AsyncMock(return_value={})
 
     @staticmethod
-    def _stub_prose_pipeline(g, monkeypatch, *, failing: tuple[str, ...] = ()):
+    def _stub_prose_pipeline(
+        g, monkeypatch, *, failing: tuple[str, ...] = (), skipped_unchanged: bool = False
+    ):
         from graphrag_sdk.core.models import IngestionResult
         from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 
@@ -2706,12 +2708,23 @@ class TestFinalizeReminder:
             if source.endswith(failing):
                 raise RuntimeError(f"extraction failed for {source}")
             return IngestionResult(
-                nodes_created=0, relationships_created=0, chunks_indexed=0, metadata={}
+                nodes_created=0,
+                relationships_created=0,
+                chunks_indexed=0,
+                metadata={"skipped_unchanged": True} if skipped_unchanged else {},
             )
 
         monkeypatch.setattr(IngestionPipeline, "run", run)
         g._vector_store.ensure_indices = AsyncMock(return_value={})
         g._write_graph_config = AsyncMock()
+
+    async def test_unchanged_ingest_does_not_arm_the_reminder(self, graphrag, monkeypatch):
+        self._stub_prose_pipeline(graphrag, monkeypatch, skipped_unchanged=True)
+
+        result = await graphrag.ingest(text="Airbus builds aircraft.", document_id="doc")
+
+        assert result.metadata["skipped_unchanged"] is True
+        assert graphrag._docs_since_dedup == 0
 
     @staticmethod
     def _stub_structured_pipeline(
