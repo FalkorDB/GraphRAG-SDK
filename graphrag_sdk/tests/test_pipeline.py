@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import IngestionError
@@ -20,12 +21,11 @@ from graphrag_sdk.core.models import (
     TextChunk,
     TextChunks,
 )
-from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
-
 
 # ── Stub strategies ─────────────────────────────────────────────
 
