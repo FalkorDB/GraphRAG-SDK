@@ -721,11 +721,13 @@ class GraphRAG:
         re-registration on an existing instance.
 
         A rejected ontology (a contradiction, a reserved label) is not kept:
-        the previous one comes back, so later ingests do not fail on it. A
-        failure can come after part of the new one was written, so the
-        ontology is left uninitialized and the next call reloads it from the
-        graph and registers the previous one again. The swap, the
-        registration and that rollback run under the ontology lock, so a
+        the previous working ontology is restored in memory and registered
+        again by the next call that needs the ontology, so later ingests do
+        not fail on it. A failure can come after part of the new one was
+        written: the types it had already written stay in the ontology graph
+        and are part of the ontology that call reloads. Calling
+        ``set_ontology`` again with the same ontology finishes it. The swap,
+        the registration and that rollback run under the ontology lock, so a
         concurrent call waits and then registers its own ontology.
         """
         current = asyncio.current_task()

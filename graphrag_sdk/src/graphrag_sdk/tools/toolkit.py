@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import dataclasses
 import json
@@ -14,7 +15,7 @@ import logging
 import os
 import re
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal
@@ -123,6 +124,64 @@ _MULTIPATH_PATH = {
 _ALL_MULTIPATH_PATHS = frozenset(_MULTIPATH_PATH.values())
 #: Paths that find the entities links walk from.
 _SEED_PATHS = frozenset({"facts", "exact_names", "fuzzy_names"})
+
+
+class _IngestLock:
+    """Ingests share it; an update holds it alone.
+
+    ``update()``'s orphan cleanup deletes an entity no chunk mentions, which
+    is also the state of an entity an ingest running beside it has written but
+    not yet linked. So an update waits for the running ingests, and ingests
+    wait while it runs. An update that is waiting goes before ingests that
+    come after it, so a stream of ingests cannot hold it off. A hold is given
+    back on error and on cancellation.
+    """
+
+    def __init__(self) -> None:
+        self._cond = asyncio.Condition()
+        self._ingests = 0
+        self._updating = False
+        self._updates_waiting = 0
+
+    @contextlib.asynccontextmanager
+    async def shared(self) -> AsyncIterator[None]:
+        """Held by an ingest: other ingests may hold it too, an update may not."""
+        async with self._cond:
+            await self._cond.wait_for(lambda: not self._updating and not self._updates_waiting)
+            self._ingests += 1
+        try:
+            yield
+        finally:
+            self._ingests -= 1
+            await self._wake()
+
+    @contextlib.asynccontextmanager
+    async def exclusive(self) -> AsyncIterator[None]:
+        """Held by an update: nothing else holds it meanwhile."""
+        async with self._cond:
+            self._updates_waiting += 1
+            try:
+                await self._cond.wait_for(lambda: not self._updating and not self._ingests)
+            except BaseException:
+                self._updates_waiting -= 1
+                # The ingests this update held back may go now.
+                self._cond.notify_all()
+                raise
+            self._updates_waiting -= 1
+            self._updating = True
+        try:
+            yield
+        finally:
+            self._updating = False
+            await self._wake()
+
+    async def _wake(self) -> None:
+        async def notify() -> None:
+            async with self._cond:
+                self._cond.notify_all()
+
+        # Shielded, so a holder cancelled on its way out still wakes the others.
+        await asyncio.shield(notify())
 
 
 class _FixedPlan:
@@ -317,6 +376,15 @@ def _file_error(exc: BaseException) -> str:
         f"Failed with {type(exc).__name__}; the message is withheld "
         "(details are in the server log)."
     )
+
+
+def _names_file(root: Path, document_id: str) -> bool:
+    """Whether ``document_id`` is the path of a file under ``root``."""
+    under = root / document_id
+    try:
+        return under.is_file() and fs._inside(root, under)
+    except (OSError, ValueError):
+        return False
 
 
 def _as_dict(value: Any) -> Any:
@@ -1239,7 +1307,7 @@ class GraphRAGToolkit:
             # it and replace its content hash (a plain ingest): refused either way.
             await self._refuse_file_document(inp.document_id)
             if inp.reextract:
-                async with self._lock("update"):
+                async with self._ingest_lock().exclusive():
                     result = await self._rag.update(
                         text=inp.text,
                         document_id=inp.document_id,
@@ -1249,7 +1317,10 @@ class GraphRAGToolkit:
                     )
                 status = "reextracted" if result.replaced_existing else "ingested"
             else:
-                result = await self._rag.ingest(text=inp.text, document_id=inp.document_id, ctx=ctx)
+                async with self._ingest_lock().shared():
+                    result = await self._rag.ingest(
+                        text=inp.text, document_id=inp.document_id, ctx=ctx
+                    )
                 unchanged = (result.metadata or {}).get("skipped_unchanged")
                 status = "unchanged" if unchanged else "ingested"
             out = IngestResult(
@@ -1303,8 +1374,10 @@ class GraphRAGToolkit:
         ``reextract`` replaces the stored document with the text given, and a
         plain ingest adds the text to it, so without this check text could
         overwrite any file the operator ingested. This toolkit's files have
-        ids starting with ``file:``; a document the SDK read from a file
-        stores a path other than its id, or is a table.
+        ids starting with ``file:``. A document the SDK read from a file
+        carries the name of its ``loader``, stores a path other than its id,
+        or is a table; one whose id names a file under the files root is
+        taken as read from that file too.
         """
         if document_id is None:
             return
@@ -1313,9 +1386,12 @@ class GraphRAGToolkit:
             record = await self._rag._graph_store.get_document_record(document_id)
             from_file = record is not None and (
                 record.kind == "structured"
+                or record.loader is not None
                 or (record.path is not None and record.path != document_id)
                 or os.path.isabs(record.path or "")
             )
+            if record is not None and not from_file and self._files_root is not None:
+                from_file = await asyncio.to_thread(_names_file, self._files_root, document_id)
         if from_file:
             message = (
                 f"Document id {document_id!r} starts with 'file:', which is kept for files."
@@ -1338,6 +1414,19 @@ class GraphRAGToolkit:
         if held is None or held[0] is not loop:
             held = (loop, asyncio.Lock())
             self._shared[name] = held
+        return held[1]
+
+    def _ingest_lock(self) -> _IngestLock:
+        """The ingest / update lock shared by every session copy of this toolkit.
+
+        Ingests share it and an update holds it alone (see :class:`_IngestLock`);
+        remade when the running loop changes, like :meth:`_lock`.
+        """
+        loop = asyncio.get_running_loop()
+        held = self._shared.get("ingest_lock")
+        if held is None or held[0] is not loop:
+            held = (loop, _IngestLock())
+            self._shared["ingest_lock"] = held
         return held[1]
 
     def _remember_plan(self, path: str, plan: Mapping[str, Any]) -> None:
@@ -1409,9 +1498,13 @@ class GraphRAGToolkit:
             )
             stored = [rel for rel, rec in zip(rels, records) if rec is not None]
         fresh = [rel for rel in rels if rel not in frozenset(stored)]
+        # New files are ingested first, each holding the lock shared, then the
+        # stored ones are updated, each holding it alone: one call never holds
+        # it shared while it waits to hold it alone.
+        lock = self._ingest_lock()
 
         async def first(rel: str) -> Any:
-            async with gate:
+            async with gate, lock.shared():
                 try:
                     return await self._rag.ingest(
                         rel,
@@ -1439,10 +1532,9 @@ class GraphRAGToolkit:
                 "unchanged" if meta.get("skipped_unchanged") else "ingested",
                 used,
             )
-        # update() runs one at a time across every session, as apply_changes()
-        # does: one document's orphan cleanup can delete an entity another
-        # document's update has just written but not yet linked.
-        writer = self._lock("update")
+        # update() runs alone across every session, as apply_changes() does:
+        # its orphan cleanup can delete an entity another document's ingest or
+        # update has just written but not yet linked.
 
         async def redo(rel: str) -> IngestedDocument:
             try:
@@ -1470,7 +1562,7 @@ class GraphRAGToolkit:
                         report=report,
                         loaded_document=document,
                     )
-                async with writer:
+                async with lock.exclusive():
                     res = await self._rag.update(
                         rel,
                         document_id=_file_id(rel),

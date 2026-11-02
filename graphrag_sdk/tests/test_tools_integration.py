@@ -536,6 +536,41 @@ async def test_file_documents_have_file_ids_text_cannot_take(real_falkordb_rag_f
     assert (await tk.call("status", {})).documents == 2
 
 
+async def test_text_cannot_replace_a_file_the_operator_ingested(
+    real_falkordb_rag_factory, tmp_path, monkeypatch
+):
+    from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "aspirin.md").write_text(FOLDER["notes/aspirin.md"])
+    monkeypatch.chdir(tmp_path)
+    resolver = ExactMatchResolution()
+    rag = real_falkordb_rag_factory(llm=_routing_llm(), resolver=resolver)
+    # Ingested from the corpus folder by its relative path: path == id.
+    await rag.ingest("notes/aspirin.md", resolver=resolver)
+    record = await rag._graph_store.get_document_record("notes/aspirin.md")
+    assert record is not None and record.path == "notes/aspirin.md"
+    assert record.loader == "markdown"
+    chunks = sorted(await rag._graph_store.get_document_chunk_ids("notes/aspirin.md"))
+    assert chunks
+
+    with_root = GraphRAGToolkit(rag, files_root=tmp_path, plan_limits=OFFLINE_LIMITS)
+    for toolkit_ in (GraphRAGToolkit(rag), with_root):
+        for reextract in (True, False):
+            with pytest.raises(ToolError, match="was read from a file"):
+                await toolkit_.call(
+                    "ingest",
+                    {
+                        "text": "Ibuprofen treats fever.",
+                        "document_id": "notes/aspirin.md",
+                        "reextract": reextract,
+                    },
+                )
+    after = await rag._graph_store.get_document_record("notes/aspirin.md")
+    assert after is not None and after.content_hash == record.content_hash
+    assert sorted(await rag._graph_store.get_document_chunk_ids("notes/aspirin.md")) == chunks
+
+
 async def test_read_tools_on_a_fresh_graph_create_no_keys(real_falkordb_rag_factory):
     from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
 

@@ -1261,6 +1261,15 @@ class TestGraphStoreDocumentLifecycle:
         assert "MATCH (d:Document {id: $id})" in cypher
         assert "content_hash" in cypher
 
+    async def test_get_document_record_reads_the_loader(self, graph_store, mock_connection):
+        result_mock = MagicMock()
+        result_mock.result_set = [["notes/a.md", "abc", None, None, "markdown"]]
+        mock_connection.query = AsyncMock(return_value=result_mock)
+
+        record = await graph_store.get_document_record("notes/a.md")
+        assert record is not None and record.loader == "markdown"
+        assert "d.loader AS loader" in mock_connection.query.call_args[0][0]
+
     async def test_get_document_record_returns_none_when_missing(
         self, graph_store, mock_connection
     ):

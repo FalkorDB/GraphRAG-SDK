@@ -75,10 +75,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plan a file was last ingested with is remembered in memory only; after a
   restart the plan's `reason` says none was remembered. A file already in the
   graph whose content changed goes through `update()` (`status: "updated"`)
-  instead of adding new chunks beside the old ones. Updates run one at a time
-  across every session of a toolkit. Text ingest and re-extraction refuse a
-  document read from a file, so text cannot overwrite or extend it: a text's
-  `document_id` cannot start with `file:`, even without a files root.
+  instead of adding new chunks beside the old ones. Across every session of a
+  toolkit, ingests run together but an update or re-extraction runs alone: it
+  waits for the ingests already running, and ingests that come after it wait
+  for it, since its orphan cleanup could delete an entity an ingest has
+  written but not linked yet. Text ingest and re-extraction refuse a document
+  read from a file, so text cannot overwrite or extend it: a text's
+  `document_id` cannot start with `file:`, even without a files root, nor be
+  the id of a stored document that carries a file loader's metadata
+  (`loader`), stores a path other than its id, is a table, or names a file
+  under the files root (`GraphRAG.ingest("notes/a.md")` stores the id
+  `notes/a.md`).
 - **`set_ontology` is atomic across sessions**: its load, merge and write run
   under one lock, an ontology given to `GraphRAG(...)` and not registered yet
   is registered first, and the extractor's ontology is refreshed from the
@@ -385,6 +392,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`SentenceTokenCapChunking` records the overlap each chunk has.** A chunk's
+  `overlap_sentences` metadata is now the number of its sentences the next
+  chunk repeats (0 on the last chunk), not the configured `overlap_sentences`,
+  so new Chunk nodes differ from older ones in that property; chunk text, ids
+  and cache hashes are unchanged. The new `max_overlap_fraction` option caps
+  the share of a chunk's tokens the next chunk may repeat (#275).
 - **`finalize()` deduplicates incrementally, with one judge pass, and
   survives a crash.** `finalize()` checks only the entities whose check is
   pending — against the whole graph, through the `__Entity__` vector index,

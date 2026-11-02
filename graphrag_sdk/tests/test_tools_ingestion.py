@@ -1701,6 +1701,185 @@ class TestUpdatesRunOneAtATime:
         assert rag.peak == 1
 
 
+class _Held(FakeRAG):
+    """Ingests and updates wait on ``gates[document_id]`` when one is set."""
+
+    def __init__(self):
+        super().__init__()
+        self.gates: dict[str, asyncio.Event] = {}
+        self.entered: list[str] = []
+        self.active = 0
+        self.peak = 0
+
+    async def _hold(self, key: str) -> None:
+        self.entered.append(key)
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        try:
+            if key in self.gates:
+                await self.gates[key].wait()
+        finally:
+            self.active -= 1
+
+    async def ingest(self, source=None, *, document_id=None, **kw):
+        await self._hold(document_id)
+        return await super().ingest(source, document_id=document_id, **kw)
+
+    async def update(self, source=None, *, document_id=None, **kw):
+        await self._hold(document_id)
+        return await super().update(source, document_id=document_id, **kw)
+
+
+async def _settle() -> None:
+    # Long enough for a file's load, which runs in a thread, to finish.
+    for _ in range(3):
+        await asyncio.sleep(0.02)
+        for _ in range(20):
+            await asyncio.sleep(0)
+
+
+def _lock_is_free(tk: GraphRAGToolkit) -> bool:
+    lock = tk._ingest_lock()
+    return lock._ingests == 0 and not lock._updating and lock._updates_waiting == 0
+
+
+class TestIngestsAndUpdatesDoNotOverlap:
+    """An update's orphan cleanup must not run beside an ingest in another session."""
+
+    async def test_an_update_waits_for_a_running_text_ingest(self, corpus):
+        rag = _Held()
+        rag.gates["a"] = asyncio.Event()
+        tk = toolkit(rag, corpus)
+        ingest = asyncio.create_task(tk.ingest(text="A", document_id="a"))
+        await _settle()
+        update = asyncio.create_task(
+            tk.new_session().ingest(text="B", document_id="b", reextract=True)
+        )
+        await _settle()
+        assert rag.entered == ["a"]
+        rag.gates["a"].set()
+        await asyncio.gather(ingest, update)
+        assert rag.entered == ["a", "b"] and rag.peak == 1
+        assert _lock_is_free(tk)
+
+    async def test_an_update_waits_for_a_new_file(self, corpus, fake_strategies):
+        rag = _Held()
+        rag.gates["file:notes/b.md"] = asyncio.Event()
+        tk = toolkit(rag, corpus)
+        ingest = asyncio.create_task(tk.ingest(files=["notes/b.md"]))
+        await _settle()
+        update = asyncio.create_task(tk.new_session().ingest(files=["notes/a.md"], reextract=True))
+        await _settle()
+        assert rag.entered == ["file:notes/b.md"]
+        rag.gates["file:notes/b.md"].set()
+        await asyncio.gather(ingest, update)
+        assert rag.entered == ["file:notes/b.md", "file:notes/a.md"]
+        assert ("update", ("notes/a.md", True, "ingest")) in rag.calls
+
+    async def test_an_ingest_waits_for_a_running_update(self, corpus, fake_strategies):
+        rag = _Held()
+        rag.gates["file:notes/a.md"] = asyncio.Event()
+        tk = toolkit(rag, corpus)
+        update = asyncio.create_task(tk.ingest(files=["notes/a.md"], reextract=True))
+        await _settle()
+        text = asyncio.create_task(tk.new_session().ingest(text="A", document_id="a"))
+        files = asyncio.create_task(tk.new_session().ingest(files=["notes/b.md"]))
+        await _settle()
+        assert rag.entered == ["file:notes/a.md"]
+        rag.gates["file:notes/a.md"].set()
+        await asyncio.gather(update, text, files)
+        assert rag.entered[0] == "file:notes/a.md"
+        assert sorted(rag.entered[1:]) == ["a", "file:notes/b.md"]
+
+    async def test_ingests_run_together(self, corpus, fake_strategies):
+        rag = _Held()
+        for key in ("a", "c", "file:notes/a.md", "file:notes/b.md"):
+            rag.gates[key] = asyncio.Event()
+        tk = toolkit(rag, corpus)
+        calls = [
+            asyncio.create_task(tk.ingest(text="A", document_id="a")),
+            asyncio.create_task(tk.new_session().ingest(text="C", document_id="c")),
+            asyncio.create_task(tk.new_session().ingest(files=["notes/*"])),
+        ]
+        await _settle()
+        assert rag.active == 4
+        for gate in rag.gates.values():
+            gate.set()
+        await asyncio.gather(*calls)
+        assert _lock_is_free(tk)
+
+    async def test_a_waiting_update_goes_before_later_ingests(self, corpus):
+        rag = _Held()
+        rag.gates["a"] = asyncio.Event()
+        rag.gates["b"] = asyncio.Event()
+        tk = toolkit(rag, corpus)
+        first = asyncio.create_task(tk.ingest(text="A", document_id="a"))
+        await _settle()
+        update = asyncio.create_task(
+            tk.new_session().ingest(text="B", document_id="b", reextract=True)
+        )
+        await _settle()
+        later = asyncio.create_task(tk.new_session().ingest(text="C", document_id="c"))
+        await _settle()
+        assert rag.entered == ["a"]
+        rag.gates["a"].set()
+        await _settle()
+        assert rag.entered == ["a", "b"]
+        rag.gates["b"].set()
+        await asyncio.gather(first, update, later)
+        assert rag.entered == ["a", "b", "c"]
+
+    async def test_cancelled_holders_give_the_lock_back(self, corpus):
+        rag = _Held()
+        for key in ("a", "b", "c"):
+            rag.gates[key] = asyncio.Event()
+        tk = toolkit(rag, corpus)
+        # A cancelled ingest lets the update through.
+        ingest = asyncio.create_task(tk.ingest(text="A", document_id="a"))
+        await _settle()
+        update = asyncio.create_task(
+            tk.new_session().ingest(text="B", document_id="b", reextract=True)
+        )
+        await _settle()
+        ingest.cancel()
+        await _settle()
+        assert rag.entered == ["a", "b"]
+        # A cancelled update lets the ingest through.
+        later = asyncio.create_task(tk.new_session().ingest(text="C", document_id="c"))
+        await _settle()
+        assert rag.entered == ["a", "b"]
+        update.cancel()
+        await _settle()
+        assert rag.entered == ["a", "b", "c"]
+        rag.gates["c"].set()
+        await later
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.gather(ingest, update)
+        assert _lock_is_free(tk)
+
+    async def test_a_cancelled_waiting_update_lets_held_back_ingests_through(self, corpus):
+        rag = _Held()
+        rag.gates["a"] = asyncio.Event()
+        tk = toolkit(rag, corpus)
+        running = asyncio.create_task(tk.ingest(text="A", document_id="a"))
+        await _settle()
+        update = asyncio.create_task(
+            tk.new_session().ingest(text="B", document_id="b", reextract=True)
+        )
+        await _settle()
+        later = asyncio.create_task(tk.new_session().ingest(text="C", document_id="c"))
+        await _settle()
+        assert rag.entered == ["a"]
+        update.cancel()
+        await later
+        assert rag.entered == ["a", "c"]
+        rag.gates["a"].set()
+        await running
+        with pytest.raises(asyncio.CancelledError):
+            await update
+        assert "b" not in rag.entered and _lock_is_free(tk)
+
+
 class TestStoredFilesGoThroughUpdate:
     async def test_edited_new_and_unchanged_files(self, corpus, fake_strategies):
         rag = FakeRAG()
@@ -1757,6 +1936,9 @@ class TestTextReextractOfAFile:
             DocumentRecord(path="/elsewhere/a.md"),  # read by the SDK from a file
             DocumentRecord(path="reports/q1.txt"),  # a path other than its id
             DocumentRecord(path="notes/a.md", kind="structured"),
+            # GraphRAG.ingest("notes/a.md") from the corpus folder: path == id
+            DocumentRecord(path="notes/a.md", loader="markdown"),
+            DocumentRecord(path="notes/a.md", loader="pdf"),
         ],
     )
     @pytest.mark.parametrize("reextract", [True, False])
@@ -1789,6 +1971,25 @@ class TestTextReextractOfAFile:
         result = await toolkit(rag, corpus).ingest(text="memo", document_id="notes/a.md")
         assert result.status == "ingested" and result.document_id == "notes/a.md"
         assert rag.calls == [("ingest_text", ("memo", "notes/a.md"))]
+
+    @pytest.mark.parametrize("reextract", [True, False])
+    async def test_a_stored_document_named_after_a_file_under_the_root_is_refused(
+        self, corpus, reextract
+    ):
+        # A document stored without loader metadata (a custom loader) whose id
+        # is the path of a file under the files root.
+        rag = FakeRAG()
+        rag.records["notes/a.md"] = DocumentRecord(path="notes/a.md")
+        with pytest.raises(ToolError, match="was read from a file"):
+            await toolkit(rag, corpus).ingest(
+                text="replacement", document_id="notes/a.md", reextract=reextract
+            )
+        assert not [c for c in rag.calls if c[0] in ("update", "ingest_text")]
+        # Without a files root nothing says it was a file.
+        result = await toolkit(rag).ingest(
+            text="replacement", document_id="notes/a.md", reextract=reextract
+        )
+        assert result.document_id == "notes/a.md"
 
     async def test_a_path_that_differs_from_the_id_is_refused(self):
         rag = FakeRAG()
