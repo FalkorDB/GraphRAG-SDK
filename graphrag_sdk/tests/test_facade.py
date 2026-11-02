@@ -2683,6 +2683,226 @@ class TestFinalizeReminder:
             await g.retrieve("after dedup")
         assert "without a deduplication pass" not in caplog.text
 
+    @staticmethod
+    def _stub_read_path(g):
+        g._validate_graph_config = AsyncMock()
+        g._retrieval_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[], metadata={})
+        )
+
+    @staticmethod
+    def _stub_finalize(g):
+        g._deduplicator.deduplicate = AsyncMock(return_value=0)
+        g._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[[0]]))
+        g._vector_store.embed_relationships = AsyncMock(return_value=0)
+        g._vector_store.ensure_indices = AsyncMock(return_value={})
+
+    @staticmethod
+    def _stub_prose_pipeline(
+        g, monkeypatch, *, failing: tuple[str, ...] = (), skipped_unchanged: bool = False
+    ):
+        from graphrag_sdk.core.models import IngestionResult
+        from graphrag_sdk.ingestion.pipeline import IngestionPipeline
+
+        async def run(self_obj, source, ctx, **kwargs):
+            if source.endswith(failing):
+                raise RuntimeError(f"extraction failed for {source}")
+            return IngestionResult(
+                nodes_created=0,
+                relationships_created=0,
+                chunks_indexed=0,
+                metadata={"skipped_unchanged": True} if skipped_unchanged else {},
+            )
+
+        monkeypatch.setattr(IngestionPipeline, "run", run)
+        g._vector_store.ensure_indices = AsyncMock(return_value={})
+        g._write_graph_config = AsyncMock()
+
+    async def test_unchanged_ingest_does_not_arm_the_reminder(self, graphrag, monkeypatch):
+        self._stub_prose_pipeline(graphrag, monkeypatch, skipped_unchanged=True)
+
+        result = await graphrag.ingest(text="Airbus builds aircraft.", document_id="doc")
+
+        assert result.metadata["skipped_unchanged"] is True
+        assert graphrag._docs_since_dedup == 0
+
+    @staticmethod
+    def _stub_structured_pipeline(
+        g, monkeypatch, *, fail: bool = False, incomplete_writes: tuple[str, ...] = ()
+    ):
+        from graphrag_sdk.api import main as api_main
+        from graphrag_sdk.ingestion.structured_pipeline import StructuredIngestionResult
+
+        class FakeStructuredPipeline:
+            def __init__(self, **kwargs):
+                pass
+
+            async def run(self, source, mapping, ctx, *, document_id=None, strict=False):
+                if fail:
+                    raise RuntimeError("row write failed")
+                result = StructuredIngestionResult(document_id)
+                result.incomplete_writes = list(incomplete_writes)
+                return result
+
+        monkeypatch.setattr(api_main, "StructuredIngestionPipeline", FakeStructuredPipeline)
+        g._validate_graph_config = AsyncMock()
+        g._ensure_ontology_initialized = AsyncMock()
+        g._register_structured_ontology = AsyncMock(return_value=g._global_ontology)
+        g._vector_store.create_id_range_indices = AsyncMock()
+
+    async def test_completion_warns_when_dedup_never_ran(self, mock_conn, embedder, caplog):
+        g = GraphRAG(
+            connection=mock_conn,
+            llm=MockLLM(responses=["An answer."]),
+            embedder=embedder,
+            embedding_dimension=8,
+        )
+        g._vector_store.ensure_indices = AsyncMock(return_value={})
+        await g.ingest(text="Airbus builds aircraft.")
+
+        self._stub_read_path(g)
+        with caplog.at_level(logging.WARNING):
+            await g.completion("who builds aircraft?")
+        assert "without a deduplication pass" in caplog.text
+
+    async def test_warning_reports_how_many_documents_are_pending(self, graphrag, caplog):
+        graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
+        await graphrag.ingest(text="Airbus builds aircraft.", document_id="a")
+        await graphrag.ingest(text="Boeing builds aircraft.", document_id="b")
+        assert graphrag._docs_since_dedup == 2
+
+        self._stub_read_path(graphrag)
+        with caplog.at_level(logging.WARNING):
+            await graphrag.retrieve("q")
+        assert "2 document(s) ingested without a deduplication pass" in caplog.text
+        assert "finalize()" in caplog.text
+
+    async def test_finalize_clears_the_reminder(self, graphrag, caplog):
+        graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
+        await graphrag.ingest(text="Airbus builds aircraft.")
+
+        self._stub_finalize(graphrag)
+        await graphrag.finalize()
+        assert graphrag._docs_since_dedup == 0
+
+        self._stub_read_path(graphrag)
+        with caplog.at_level(logging.WARNING):
+            await graphrag.retrieve("after finalize")
+        assert "without a deduplication pass" not in caplog.text
+
+    async def test_ingest_after_dedup_rearms_the_reminder(self, graphrag, caplog):
+        """The reminder is once per pending batch, not once per instance: new
+        content after a dedup pass is unchecked again and must be reported."""
+        graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
+        self._stub_read_path(graphrag)
+        await graphrag.ingest(text="Airbus builds aircraft.", document_id="a")
+        with caplog.at_level(logging.WARNING):
+            await graphrag.retrieve("q1")
+
+        self._stub_finalize(graphrag)
+        await graphrag.deduplicate_entities()
+        await graphrag.ingest(text="Airbus SE builds aircraft.", document_id="b")
+        assert graphrag._docs_since_dedup == 1
+        with caplog.at_level(logging.WARNING):
+            await graphrag.retrieve("q2")
+            await graphrag.retrieve("q3")
+        assert caplog.text.count("without a deduplication pass") == 2
+        assert "1 document(s) ingested without a deduplication pass" in caplog.text
+
+    async def test_failed_ingest_does_not_arm_the_reminder(self, graphrag, monkeypatch):
+        self._stub_prose_pipeline(graphrag, monkeypatch, failing=("doc",))
+        with pytest.raises(RuntimeError, match="extraction failed"):
+            await graphrag.ingest(text="Airbus builds aircraft.", document_id="doc")
+        assert graphrag._docs_since_dedup == 0
+
+    async def test_batch_ingest_counts_only_sources_that_were_written(
+        self, graphrag, monkeypatch, tmp_path
+    ):
+        self._stub_prose_pipeline(graphrag, monkeypatch, failing=("bad.txt",))
+        paths = []
+        for name in ("a.txt", "bad.txt", "b.txt"):
+            path = tmp_path / name
+            path.write_text(f"Contents of {name}.", encoding="utf-8")
+            paths.append(str(path))
+
+        results = await graphrag.ingest(paths)
+
+        assert [isinstance(r, Exception) for r in results] == [False, True, False]
+        assert graphrag._docs_since_dedup == 2
+
+    async def test_update_that_rewrites_a_document_arms_the_reminder(self, graphrag):
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "my-doc", "content_hash": "previous-hash"},
+            candidates=["entity-1"],
+        )
+
+        result = await graphrag.update(text="Revised content.", document_id="my-doc")
+
+        assert result.no_op is False
+        assert graphrag._docs_since_dedup == 1
+
+    async def test_no_op_update_does_not_arm_the_reminder(self, graphrag):
+        import hashlib
+
+        text = "Stable content."
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={
+                "path": "my-doc",
+                "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            },
+        )
+
+        result = await graphrag.update(text=text, document_id="my-doc")
+
+        assert result.no_op is True
+        assert graphrag._docs_since_dedup == 0
+
+    async def test_structured_write_arms_the_reminder(self, graphrag, monkeypatch, caplog):
+        """#364: a table's rows are entities that only finalize() resolves
+        against the rest of the graph, so writing one must count like a
+        document does."""
+        from graphrag_sdk import TableMapping
+
+        self._stub_structured_pipeline(graphrag, monkeypatch)
+        mapping = TableMapping(source="orgs.csv", label="Organization", key="org_id")
+
+        await graphrag._write_structured_source("orgs.csv", mapping, document_id="orgs.csv")
+        assert graphrag._docs_since_dedup == 1
+
+        self._stub_read_path(graphrag)
+        with caplog.at_level(logging.WARNING):
+            await graphrag.retrieve("how many organizations?")
+        assert "1 document(s) ingested without a deduplication pass" in caplog.text
+
+    async def test_failed_structured_write_does_not_arm_the_reminder(self, graphrag, monkeypatch):
+        from graphrag_sdk import TableMapping
+
+        self._stub_structured_pipeline(graphrag, monkeypatch, fail=True)
+        mapping = TableMapping(source="orgs.csv", label="Organization", key="org_id")
+
+        with pytest.raises(RuntimeError, match="row write failed"):
+            await graphrag._write_structured_source("orgs.csv", mapping, document_id="orgs.csv")
+        assert graphrag._docs_since_dedup == 0
+
+    async def test_partially_written_table_still_arms_the_reminder(self, graphrag, monkeypatch):
+        """``incomplete_writes`` reports a short edge or chunk write; the entity
+        writes raise on failure, so by the time it is returned every entity is in
+        the graph, unresolved. Leaving the content hash unset (for repair) does
+        not undo that, and the prose path counts its partial writes too."""
+        from graphrag_sdk import TableMapping
+
+        self._stub_structured_pipeline(graphrag, monkeypatch, incomplete_writes=("edges 1/2",))
+        mapping = TableMapping(source="orgs.csv", label="Organization", key="org_id")
+
+        result = await graphrag._write_structured_source(
+            "orgs.csv", mapping, document_id="orgs.csv"
+        )
+
+        assert result.incomplete_writes == ["edges 1/2"]
+        assert graphrag._docs_since_dedup == 1
+
 
 class TestDefaultResolver:
     """``ingest()`` resolves with ``ExactMatchResolution`` unless told otherwise;

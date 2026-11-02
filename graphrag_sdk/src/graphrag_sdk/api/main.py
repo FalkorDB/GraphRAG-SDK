@@ -3012,6 +3012,10 @@ class GraphRAG:
             document_id=document_id,
             strict=strict,
         )
+        # A table's rows are entities like any document's, and only finalize()
+        # resolves them against the rest of the graph. Arm the reminder the same
+        # way the prose path does; see _warn_if_finalize_missing.
+        self._docs_since_dedup += 1
         ctx_log = getattr(ctx, "log", lambda _m: None)
         ctx_log(
             f"Structured ingest complete for {result.document_id}. "
@@ -3336,8 +3340,10 @@ class GraphRAG:
         result = await pipeline.run(source, ctx, text=text, document_info=doc_info)
 
         # Cross-document duplicates can only be resolved by finalize(); see
-        # _warn_if_finalize_missing.
-        self._docs_since_dedup += 1
+        # _warn_if_finalize_missing. An unchanged-document short-circuit did
+        # not write anything and must not arm the reminder.
+        if not result.metadata.get("skipped_unchanged"):
+            self._docs_since_dedup += 1
 
         if not _skip_post:
             # Post-ingestion: create indices only.
@@ -4154,7 +4160,7 @@ class GraphRAG:
             if structured_result.identity_moved:
                 moved = structured_result.identity_moved
                 candidate_ids = list(dict.fromkeys(moved.get(eid, eid) for eid in candidate_ids))
-            return await self._finish_update(
+            structured_update = await self._finish_update(
                 resolved_id=resolved_id,
                 pending_id=pending_id,
                 doc_path=doc_path,
@@ -4168,6 +4174,10 @@ class GraphRAG:
                 result_metadata=structured_result.as_dict(),
                 ctx=ctx,
             )
+            # Same reason as the prose increment below: a re-synced table brings
+            # in rows the last finalize() never saw.
+            self._docs_since_dedup += 1
+            return structured_update
 
         active_extractor = extractor or self._default_extractor()
         cache_wrapper: CachedChunkExtraction | None = None
