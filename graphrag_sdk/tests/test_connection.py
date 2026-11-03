@@ -755,3 +755,172 @@ async def test_a_server_too_old_is_not_loaded_as_an_empty_ontology():
     conn.server_version = old
     with pytest.raises(FalkorDBVersionError):
         await OntologyStore(conn, "g").load()
+
+
+# ── Read-only queries: fail fast, never trip the breaker ────────
+
+
+def _ro_conn(side_effect, *, retry_count: int = 3):
+    """A connection whose graph raises/returns ``side_effect`` and whose
+    breaker is a mock, so attempts and breaker calls can be counted."""
+    from types import SimpleNamespace
+
+    conn = FalkorDBConnection.__new__(FalkorDBConnection)
+    graph = MagicMock()
+    graph.ro_query = AsyncMock(side_effect=side_effect)
+    graph.query = AsyncMock(side_effect=side_effect)
+    conn._graph = graph
+    conn._ensure_client = lambda: None  # type: ignore[method-assign]
+    conn._version_checked = True
+    breaker = MagicMock()
+    breaker.allow_request = AsyncMock(return_value=True)
+    breaker.record_success = AsyncMock()
+    breaker.record_failure = AsyncMock()
+    conn._breaker = breaker
+    conn.config = SimpleNamespace(query_timeout_ms=1000, retry_count=retry_count, retry_delay=0)
+    return conn, graph, breaker
+
+
+class TestReadOnlyFailFast:
+    async def test_read_only_uses_ro_query(self):
+        conn, graph, _ = _ro_conn(None, retry_count=1)
+        graph.query = AsyncMock(return_value="rw")
+        graph.ro_query = AsyncMock(return_value="ro")
+        assert await conn.query("MATCH (n) RETURN n", read_only=True) == "ro"
+        assert await conn.query("MATCH (n) RETURN n") == "rw"
+        graph.ro_query.assert_awaited_once()
+        assert graph.ro_query.await_args.kwargs == {"params": None, "timeout": 1000}
+        await conn.query("MATCH (n) RETURN n", {"a": 1}, read_only=True, timeout=50)
+        assert graph.ro_query.await_args.kwargs == {"params": {"a": 1}, "timeout": 50}
+
+    async def test_server_rejection_fails_once_without_breaker(self):
+        conn, graph, breaker = _ro_conn(ResponseError("Variable `m` not defined"))
+        with pytest.raises(DatabaseError, match="not defined"):
+            await conn.query("MATCH (n) RETURN m", read_only=True)
+        assert graph.ro_query.await_count == 1
+        breaker.record_failure.assert_not_awaited()
+        # The server answered, so it counts as reachable.
+        breaker.record_success.assert_awaited_once()
+
+    async def test_rejected_half_open_probe_does_not_strand_the_breaker(self):
+        import time
+        from types import SimpleNamespace
+
+        from graphrag_sdk.core.circuit_breaker import CircuitBreaker, CircuitState
+
+        conn, graph, _ = _ro_conn(ResponseError("Variable `m` not defined"))
+        breaker = CircuitBreaker()
+        breaker._state = CircuitState.OPEN
+        breaker._failure_count = breaker.failure_threshold
+        breaker._last_failure_time = time.monotonic() - breaker.recovery_timeout - 1
+        conn._breaker = breaker
+        # The half-open probe is a model-written query the server rejects.
+        with pytest.raises(DatabaseError, match="not defined"):
+            await conn.query("MATCH (n) RETURN m", read_only=True)
+        assert breaker.state == CircuitState.CLOSED
+        graph.query = AsyncMock(return_value=SimpleNamespace(result_set=[[1]]))
+        assert (await conn.query("RETURN 1")).result_set == [[1]]
+
+    async def test_network_errors_are_still_retried(self):
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        conn, graph, breaker = _ro_conn(RedisConnectionError("reset"))
+        with pytest.raises(DatabaseError):
+            await conn.query("MATCH (n) RETURN n", read_only=True)
+        assert graph.ro_query.await_count == 3
+        assert breaker.record_failure.await_count == 3
+
+    @pytest.mark.parametrize(
+        "reply", ["Max pending queries exceeded", "BUSY Redis is busy running a script"]
+    )
+    async def test_overload_replies_are_retried_as_failures(self, reply):
+        # The server is overloaded, not rejecting the query: retry it and
+        # count it against the breaker.
+        conn, graph, breaker = _ro_conn(ResponseError(reply))
+        with pytest.raises(DatabaseUnavailableError):
+            await conn.query("MATCH (n) RETURN n", read_only=True)
+        assert graph.ro_query.await_count == 3
+        assert breaker.record_failure.await_count == 3
+        breaker.record_success.assert_not_awaited()
+
+    async def test_cluster_redirects_are_still_retried(self):
+        from redis.exceptions import TryAgainError
+
+        conn, graph, _ = _ro_conn(TryAgainError("TRYAGAIN"))
+        with pytest.raises(DatabaseError):
+            await conn.query("MATCH (n) RETURN n", read_only=True)
+        assert graph.ro_query.await_count == 3
+
+    async def test_regular_queries_also_fail_once_on_a_server_rejection(self):
+        # Every query the server rejects fails on the first attempt (a retry
+        # re-sends the same bytes), read-only or not.
+        conn, graph, breaker = _ro_conn(ResponseError("Variable `m` not defined"))
+        with pytest.raises(DatabaseError):
+            await conn.query("MATCH (n) RETURN m")
+        assert graph.query.await_count == 1
+        breaker.record_failure.assert_not_awaited()
+
+
+# ── Topology version ────────────────────────────────────────────
+
+_TOPOLOGY_STATS = (
+    "nodes_created",
+    "nodes_deleted",
+    "relationships_created",
+    "relationships_deleted",
+)
+
+
+def _stats(**changed):
+    return MagicMock(**{**dict.fromkeys(_TOPOLOGY_STATS, 0), **changed})
+
+
+class TestTopologyVersion:
+    @pytest.mark.parametrize(
+        ("stats", "changes"),
+        [
+            ({"nodes_created": 1}, True),
+            ({"nodes_deleted": 3}, True),
+            ({"relationships_created": 1}, True),
+            ({"relationships_deleted": 2}, True),
+            ({}, False),
+        ],
+    )
+    def test_changes_topology(self, stats, changes):
+        from graphrag_sdk.core.connection import _changes_topology
+
+        assert _changes_topology(_stats(**stats)) is changes
+
+    def test_results_without_statistics_change_nothing(self):
+        from types import SimpleNamespace
+
+        from graphrag_sdk.core.connection import _changes_topology
+
+        assert not _changes_topology(SimpleNamespace(result_set=[]))
+        assert not _changes_topology(None)
+
+    def test_new_connection_starts_at_zero(self):
+        assert FalkorDBConnection(ConnectionConfig()).topology_version == 0
+
+    async def test_queries_that_change_the_graph_shape_bump_the_version(self):
+        from types import SimpleNamespace
+
+        conn = FalkorDBConnection(ConnectionConfig())
+        graph = MagicMock()
+        conn._graph = graph
+        conn._ensure_client = lambda: None  # type: ignore[method-assign]
+        conn._version_checked = True
+        conn.config = SimpleNamespace(query_timeout_ms=1000, retry_count=1, retry_delay=0)
+
+        graph.query = AsyncMock(return_value=_stats(nodes_created=2))
+        await conn.query("CREATE (:A)")
+        assert conn.topology_version == 1
+        graph.query = AsyncMock(return_value=_stats())  # SET / MATCH: shape unchanged
+        await conn.query("MATCH (n) SET n.x = 1")
+        assert conn.topology_version == 1
+        graph.ro_query = AsyncMock(return_value=_stats(nodes_created=5))
+        await conn.query("MATCH (n) RETURN n", read_only=True)
+        assert conn.topology_version == 1  # read-only results never count
+        graph.query = AsyncMock(return_value=_stats(relationships_deleted=1))
+        await conn.query("MATCH ()-[r]->() DELETE r")
+        assert conn.topology_version == 2

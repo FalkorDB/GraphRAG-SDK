@@ -64,6 +64,7 @@
                   "connectors",
                   "extraction",
                   "retrieval",
+        "agentic-retrieval",
                   "storage",
                   "graph-schema"
                 ]

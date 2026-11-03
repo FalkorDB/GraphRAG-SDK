@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "graphrag-sdk"
-version = "1.4.0"
+version = "1.6.0"
 description = "The most accurate Graph RAG framework. Build knowledge graphs and query them with natural language. Built on FalkorDB."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -61,6 +61,7 @@ spacy = ["spacy>=3.0"]
 # Sync from databases, file stores and REST APIs (graphrag_sdk.connectors). Add
 # dlt's own extras for a source's driver, e.g. dlt[sql_database] or dlt[gs].
 dlt = ["dlt>=1.31,<2"]
+mcp = ["mcp>=2,<3", "uvicorn>=0.23", "starlette>=0.37", "litellm>=1.84.0,<2.0"]
 all = [
     "openai>=1.0,<3.0",
     "anthropic>=0.20,<1.0",
@@ -69,6 +70,9 @@ all = [
     "pypdf>=6.15.0",
     "litellm>=1.84.0,<2.0",
     "dlt>=1.31,<2",
+    "mcp>=2,<3",
+    "uvicorn>=0.23",
+    "starlette>=0.37",
 ]
 dev = [
     "pytest>=9.0.3",
@@ -76,6 +80,9 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.4",
     "mypy>=1.10",
+    "jsonschema>=4.0",
+    # Runs tests/test_mcp_server.py in CI; same pin as the mcp extra.
+    "mcp>=2,<3",
 ]
 
 [project.urls]
@@ -84,6 +91,9 @@ Documentation = "https://docs.falkordb.com/graphrag"
 Repository = "https://github.com/FalkorDB/GraphRAG-SDK"
 "Bug Tracker" = "https://github.com/FalkorDB/GraphRAG-SDK/issues"
 Changelog = "https://github.com/FalkorDB/GraphRAG-SDK/blob/main/CHANGELOG.md"
+
+[project.scripts]
+graphrag-mcp = "graphrag_sdk.mcp.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/graphrag_sdk"]

@@ -25,9 +25,15 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.storage.deduplicator import properties_to_carry
 from graphrag_sdk.storage.merge_query import (
+    MAX_DESCRIPTION_MEMBERS,
+    SAID_VERSION,
+    SAID_VERSION_KEY,
+    combined_descriptions,
     copy_on_server,
+    description_members,
     fold_query,
     handled,
+    mention_update,
     read_for_merge,
     snapshot_params,
 )
@@ -67,18 +73,84 @@ logger = logging.getLogger(__name__)
 #: type, a node gone), and is read again.
 _FOLD_READS = 3
 
-# An entity's ``source_chunk_ids`` is every chunk that mentioned it, across
-# documents. ``SET n += props`` alone replaces the list with the incoming
-# write's, so the second document to mention an entity erased the first's
-# provenance — the same fault the RELATES edge path and the merge queries
-# (``merge_query``) already guard against, with the same union. Bound after the MERGE as
-# ``old`` (what the node has) and ``contrib`` (what this write brings).
-# A write carrying no list — a table row, a re-embed — leaves the node's list
-# alone rather than giving it ``[]``. ``strip_stale_provenance`` is the
-# counterpart that removes a deleted chunk's id.
-_UNION_NODE_PROVENANCE = (
-    "SET n.source_chunk_ids = CASE WHEN size(contrib) = 0 THEN n.source_chunk_ids "
-    "ELSE old + [c IN contrib WHERE NOT c IN old] END"
+# An entity carries no ``source_chunk_ids``: which chunks mention it is what its
+# MENTIONED_IN edges say, one edge per chunk, written once and deleted with the
+# chunk. A list on the node grew with every mention and was rewritten on every
+# write; ``_ENTITY_ONLY_ON_EDGES`` are the keys an entity write leaves off.
+_ENTITY_ONLY_ON_EDGES = ("source_chunk_ids", "spans")
+
+
+# An entity's descriptions are JOINED across writes: a second document
+# mentioning the entity adds what it says instead of replacing what the first
+# said (``SET n += props`` alone kept only the last write's). ``d_old`` is what
+# the node holds, ``d_new`` what this write brings (its ``descriptions`` list,
+# else its ``description`` as one member); ``description`` is the members
+# joined with " | ", ``descriptions`` the list when there is more than one. The
+# total is bounded by ``MAX_DESCRIPTION_MEMBERS`` per write and by finalize()'s
+# ``summarise_long_descriptions``.
+def _description_members(src: str) -> str:
+    return (
+        f"[d IN coalesce({src}.descriptions, CASE WHEN trim(coalesce({src}.description, '')) = '' "
+        f"THEN [] ELSE [trim({src}.description)] END) WHERE trim(d) <> '']"
+    )
+
+
+# What a write leaves on the node: what it held, plus this write's new members,
+# up to ``$cap`` — but never fewer than it held (a merge can leave more).
+_KEEP_DESCRIPTIONS = (
+    "CASE WHEN size(d_old) >= $cap THEN d_old "
+    "ELSE (d_old + [d IN d_new WHERE NOT d IN d_old])[..$cap] END"
+)
+
+_JOIN_DESCRIPTION = (
+    "SET n.description = CASE WHEN size(d_all) = 0 THEN null "
+    "ELSE reduce(acc = head(d_all), d IN tail(d_all) | acc + ' | ' + d) END, "
+    "n.descriptions = CASE WHEN size(d_all) > 1 THEN d_all ELSE null END"
+)
+
+
+def _mention_union(props: str) -> str:
+    """What a mention-edge write does after its MERGE of ``r``: mark an edge
+    it creates as this version's (``SAID_VERSION_KEY``; one that existed
+    keeps what it had), set the write's ``props``, then combine its spans and
+    descriptions with what the edge held, as a merge does
+    (``merge_query.mention_update``)."""
+    return (
+        f"ON CREATE SET r.{SAID_VERSION_KEY} = {SAID_VERSION} "
+        f"WITH r, {props} AS props, coalesce(r.spans, []) AS old_spans, "
+        f"{description_members('r')} AS old_ds "
+        "WITH r, props, old_spans, "
+        f"{combined_descriptions('old_ds', 'props')} AS all_ds "
+        f"SET r += props SET {mention_update('r', 'props')}"
+    )
+
+
+#: A node with more descriptions than this is summarised into one by finalize().
+SUMMARISE_OVER_MEMBERS = 5
+#: Longest summary written, in characters: the prompt asks for a length, this
+#: enforces it.
+MAX_SUMMARY_CHARS = 1000
+#: Entities one batch of summary calls covers, so a large graph is summarised
+#: page by page rather than with every prompt built at once.
+SUMMARY_PAGE = 200
+#: Marks an entity whose description holds an LLM summary. Text cannot be taken
+#: out of a summary, so after a delete that touched it, it is rebuilt from its
+#: mention edges instead.
+SUMMARISED_KEY = "description_summarised"
+#: Reads of an entity's description before a cleanup gives up taking a removed
+#: document's text off it: the write is skipped when something else wrote the
+#: description since the read, and the entity is read again, after a wait that
+#: grows by ``_DESCRIPTION_READ_WAIT_S`` each time.
+_DESCRIPTION_READS = 5
+_DESCRIPTION_READ_WAIT_S = 0.05
+
+_DESCRIPTION_SUMMARY_PROMPT = (
+    "Summarise the following descriptions of the entity '{name}' into a single "
+    "concise description (max {max_tokens} tokens). Keep every fact that "
+    "identifies it or tells it apart from similar entities, with names, "
+    "numbers, dates and codes exactly as written.\n\n"
+    "Descriptions:\n{passages}\n\n"
+    "Summary:"
 )
 
 # How long a write waits for an index it just created to finish building before
@@ -298,10 +370,17 @@ class GraphStore:
             folded: dict[str, tuple[GraphNode, dict[str, Any], int, set[Any] | None]] = {}
             for n, cid in cleaned_group:
                 props = self._clean_properties(n.properties)
+                if is_entity:
+                    for key in _ENTITY_ONLY_ON_EDGES:
+                        props.pop(key, None)
                 if cid in folded:
                     first, acc, weight, seen = folded[cid]
                     props, seen = self._fold_properties(
-                        acc, props, union_provenance=is_entity, seen=seen
+                        acc,
+                        props,
+                        union_provenance=False,
+                        seen=seen,
+                        join_descriptions=is_entity,
                     )
                     folded[cid] = (first, props, weight + 1, seen)
                 else:
@@ -317,16 +396,20 @@ class GraphStore:
                     # vector, and that is what the next finalize() looks for.
                     query += (
                         "WITH n, item, "
-                        "     coalesce(n.source_chunk_ids, []) AS old, "
-                        "     coalesce(item.properties.source_chunk_ids, []) AS contrib "
+                        f"     {_description_members('n')} AS d_old, "
+                        f"     {_description_members('item.properties')} AS d_new "
+                        "WITH n, item, "
+                        f"     {_KEEP_DESCRIPTIONS} AS d_all "
                         "SET n += item.properties "
-                        f"{_UNION_NODE_PROVENANCE} "
+                        f"{_JOIN_DESCRIPTION} "
                         "SET n:__Entity__"
                     )
                 else:
                     query += "SET n += item.properties"
                 try:
-                    await self._conn.query(query, {"batch": batch_data})
+                    await self._conn.query(
+                        query, {"batch": batch_data, "cap": MAX_DESCRIPTION_MEMBERS}
+                    )
                     count += sum(weight for *_, weight in batch)
                 except Exception as exc:
                     logger.warning(
@@ -341,15 +424,17 @@ class GraphStore:
                         if is_entity:
                             q += (
                                 "WITH n, $properties AS props, "
-                                "     coalesce(n.source_chunk_ids, []) AS old, "
-                                "     coalesce($properties.source_chunk_ids, []) AS contrib "
+                                f"     {_description_members('n')} AS d_old, "
+                                f"     {_description_members('$properties')} AS d_new "
+                                "WITH n, props, "
+                                f"     {_KEEP_DESCRIPTIONS} AS d_all "
                                 "SET n += props "
-                                f"{_UNION_NODE_PROVENANCE} "
+                                f"{_JOIN_DESCRIPTION} "
                                 "SET n:__Entity__"
                             )
                         else:
                             q += "SET n += $properties"
-                        params = {"id": cid, "properties": props}
+                        params = {"id": cid, "properties": props, "cap": MAX_DESCRIPTION_MEMBERS}
                         try:
                             await self._conn.query(q, params)
                             count += weight
@@ -726,6 +811,8 @@ class GraphStore:
             if not cleaned.strip():
                 continue
             cleaned_properties = self._clean_properties(dict(properties or {}))
+            for key in _ENTITY_ONLY_ON_EDGES:
+                cleaned_properties.pop(key, None)
             by_label.setdefault(label, []).append(
                 {
                     "id": cleaned,
@@ -757,10 +844,6 @@ class GraphStore:
                     f"ON MATCH SET n += item.claims, "
                     f"n.entity_key = coalesce(n.entity_key, item.properties.entity_key), "
                     f"n.is_stub = coalesce(n.is_stub, true) "
-                    f"WITH n, item, "
-                    f"     coalesce(n.source_chunk_ids, []) AS old, "
-                    f"     coalesce(item.properties.source_chunk_ids, []) AS contrib "
-                    f"{_UNION_NODE_PROVENANCE} "
                     f"SET n:__Entity__"
                 )
                 try:
@@ -773,6 +856,275 @@ class GraphStore:
                     raise DatabaseError(f"Reference upsert failed: {exc}") from exc
         logger.debug(f"Upserted {count} reference nodes")
         return count
+
+    @staticmethod
+    def _members(description: Any, descriptions: Any) -> list[str]:
+        """The description members of a node or a mention edge: its
+        ``descriptions`` list, else its ``description`` as one member. Never
+        split on " | ": one description can contain it (a table row)."""
+        items = descriptions if isinstance(descriptions, list) else [description]
+        out: list[str] = []
+        for d in items:
+            d = str(d or "").strip()
+            if d and d not in out:
+                out.append(d)
+        return out
+
+    async def _write_description(
+        self, eid: str, old: str, members: list[str], *, summarised: bool | None = None
+    ) -> int:
+        """Set an entity's description to ``members`` — only if it still reads
+        ``old``, so a write made meanwhile is never lost. ``summarised`` sets
+        (True) or clears (False) the summary marker; ``None`` leaves it."""
+        marker = ""
+        if summarised is not None:
+            marker = f", e.{SUMMARISED_KEY} = " + ("true" if summarised else "null")
+        r = await self._conn.query(
+            "MATCH (e:__Entity__ {id: $id}) WHERE coalesce(e.description, '') = $old "
+            "SET e.description = CASE WHEN size($members) = 0 THEN null ELSE $desc END, "
+            "e.descriptions = CASE WHEN size($members) > 1 THEN $members ELSE null END"
+            + marker
+            + " RETURN count(e)",
+            {"id": eid, "old": old, "desc": " | ".join(members), "members": members},
+        )
+        return r.result_set[0][0] if r.result_set else 0
+
+    async def summarise_long_descriptions(
+        self,
+        llm: Any,
+        *,
+        over: int = SUMMARISE_OVER_MEMBERS,
+        max_tokens: int = 150,
+        failures: list[str] | None = None,
+    ) -> int:
+        """finalize()'s description pass: every entity holding more than
+        ``over`` descriptions gets one, the LLM's summary of the descriptions
+        it holds — an earlier summary among them, so the input is bounded by
+        what a node holds however often the entity is mentioned. Found by one
+        scan, summarised ``SUMMARY_PAGE`` entities at a time (the LLM's own
+        concurrency limit applies within a page), cut to ``MAX_SUMMARY_CHARS``,
+        and each written only if the description is unchanged since it was
+        read. Returns how many were replaced; ``failures``, when given, gets
+        each entity whose summary failed, with its error. A page whose LLM
+        call or write raises is listed there and the pass goes on, so it
+        raises only when its scan fails, before anything is written."""
+        rows = (
+            await self._conn.query(
+                "MATCH (e:__Entity__) WHERE size(coalesce(e.descriptions, [])) > $over "
+                "RETURN e.id, e.name, coalesce(e.description, ''), e.descriptions",
+                {"over": over},
+            )
+        ).result_set or []
+        written = 0
+        failed: list[str] = failures if failures is not None else []
+        for start in range(0, len(rows), SUMMARY_PAGE):
+            page = [
+                (eid, name or eid, current, self._members(current, members))
+                for eid, name, current, members in rows[start : start + SUMMARY_PAGE]
+            ]
+            prompts = [
+                _DESCRIPTION_SUMMARY_PROMPT.format(
+                    name=name,
+                    max_tokens=max_tokens,
+                    passages="\n".join(f"- {m}" for m in members),
+                )
+                for _, name, _, members in page
+            ]
+            done = 0
+            try:
+                replies = await llm.abatch_invoke(prompts)
+                for (eid, _name, current, _members), item in zip(page, replies):
+                    text = (
+                        (item.response.content or "").strip() if item.ok and item.response else ""
+                    )
+                    if not text:
+                        failed.append(f"{eid} ({item.error or 'empty reply'})")
+                    if len(text) > MAX_SUMMARY_CHARS:
+                        text = text[: MAX_SUMMARY_CHARS - 1].rsplit(" ", 1)[0].rstrip() + "…"
+                    if text:
+                        written += await self._write_description(
+                            eid, current, [text], summarised=True
+                        )
+                    done += 1
+            except Exception as exc:
+                failed.extend(f"{eid} ({exc})" for eid, *_ in page[done:])
+        if failed:
+            # Still over the limit, so the next finalize() tries them again.
+            logger.warning(
+                "Could not summarise %d long entity description(s); kept as they are: %s",
+                len(failed),
+                ", ".join(failed[:10]),
+            )
+        logger.info("Summarised %d of %d long entity descriptions", written, len(rows))
+        return written
+
+    async def capture_cleanup_said(self, document_id: str, chunk_ids: list[str]) -> None:
+        """Record on the Document what its ``chunk_ids``' mention edges say,
+        before those chunks are deleted: ``cleanup_said_ids[i]`` is the entity
+        and ``cleanup_said[i]`` what one chunk said about it. The cleanup that
+        follows takes exactly that text off the entities' descriptions
+        (:meth:`rebuild_entity_descriptions`); stored with the rest of the
+        cleanup state, so a resumed cleanup still has it."""
+        ids: list[str] = []
+        said: list[str] = []
+        seen: set[tuple[str, str]] = set()
+        for start in range(0, len(chunk_ids), self._BATCH_SIZE):
+            rows = (
+                await self._conn.query(
+                    "UNWIND $cids AS cid "
+                    "MATCH (:Chunk {id: cid})<-[m:MENTIONED_IN]-(e:__Entity__) "
+                    "RETURN e.id, m.description, m.descriptions",
+                    {"cids": chunk_ids[start : start + self._BATCH_SIZE]},
+                )
+            ).result_set or []
+            for eid, description, descriptions in rows:
+                for d in self._members(description, descriptions):
+                    if (eid, d) not in seen:
+                        seen.add((eid, d))
+                        ids.append(eid)
+                        said.append(d)
+        await self._conn.query(
+            "MATCH (d:Document {id: $id}) SET d.cleanup_said_ids = $ids, d.cleanup_said = $said",
+            {"id": document_id, "ids": ids, "said": said},
+        )
+
+    async def get_cleanup_said(self, document_id: str) -> dict[str, set[str]]:
+        """What :meth:`capture_cleanup_said` recorded, by entity."""
+        rows = (
+            await self._conn.query(
+                "MATCH (d:Document {id: $id}) RETURN d.cleanup_said_ids, d.cleanup_said LIMIT 1",
+                {"id": document_id},
+            )
+        ).result_set or []
+        out: dict[str, set[str]] = {}
+        if rows:
+            ids, said = rows[0]
+            for eid, d in zip(ids or [], said or []):
+                if isinstance(eid, str) and isinstance(d, str):
+                    out.setdefault(eid, set()).add(d)
+        return out
+
+    async def rebuild_entity_descriptions(self, ids: list[str], said: dict[str, set[str]]) -> int:
+        """After a delete or an update cut some chunks away: take what those
+        chunks said (``said``, from :meth:`capture_cleanup_said`) off the
+        descriptions of the entities in ``ids`` (only those ``said`` has text
+        for are read), so nothing a removed document said stays on them. No
+        LLM call.
+
+        - A description only a removed chunk said is dropped; one a remaining
+          mention edge still says (an unchanged chunk an update kept) stays.
+          Everything else on the node stays: text from documents ingested by
+          an earlier version, whose edges record nothing, is never lost.
+        - A node that was full (``MAX_DESCRIPTION_MEMBERS``) may have left a
+          later mention's description on its edge only; the places the
+          removed text frees are filled from the remaining edges.
+        - An entity whose description holds an LLM summary cannot have the
+          removed text taken out of the summary. When every remaining mention
+          edge says something, it is rebuilt from them
+          (``MAX_DESCRIPTION_MEMBERS`` of them, in chunk-id order, summarised
+          again by the next finalize()); otherwise its summary is kept and the
+          removed text is dropped from beside it, as above. A table row's
+          edge never says anything and holds no text, so it does not count.
+
+        Each entity is written only if unchanged since read, and read again
+        when something else wrote it meanwhile. One that still changes after
+        ``_DESCRIPTION_READS`` reads is logged and left: this runs after the
+        delete or update has taken effect, so it does not fail it.
+        Returns how many were replaced.
+        """
+        ids = list(dict.fromkeys(eid for eid in ids if said.get(eid)))
+        written = 0
+        for start in range(0, len(ids), self._BATCH_SIZE):
+            batch = ids[start : start + self._BATCH_SIZE]
+            for attempt in range(_DESCRIPTION_READS):
+                if attempt:
+                    await asyncio.sleep(_DESCRIPTION_READ_WAIT_S * attempt)
+                batch, n = await self._take_said_off(batch, said)
+                written += n
+                if not batch:
+                    break
+            else:
+                logger.warning(
+                    "%d entity description(s) kept changing while a removed "
+                    "document's text was taken off them; it may remain on: %s",
+                    len(batch),
+                    batch[:10],
+                )
+        return written
+
+    async def _take_said_off(
+        self, ids: list[str], said: dict[str, set[str]]
+    ) -> tuple[list[str], int]:
+        """One read-and-write pass of :meth:`rebuild_entity_descriptions`.
+        Returns the entities written meanwhile by something else (to read
+        again) and how many were replaced."""
+        rows = (
+            await self._conn.query(
+                "UNWIND $ids AS eid MATCH (e:__Entity__ {id: eid}) "
+                "CALL { WITH e OPTIONAL MATCH (e)-[u:MENTIONED_IN]->(c:Chunk) "
+                f"RETURN collect(CASE WHEN u IS NOT NULL AND u.{SAID_VERSION_KEY} IS NULL "
+                "AND c.record_key IS NULL THEN 1 END)[..1] AS undescribed } "
+                "RETURN e.id, coalesce(e.description, ''), e.descriptions, "
+                f"coalesce(e.{SUMMARISED_KEY}, false), size(undescribed) > 0",
+                {"ids": ids},
+            )
+        ).result_set or []
+        changed: list[str] = []
+        written = 0
+        for eid, current, held, summarised, undescribed in rows:
+            gone = said.get(eid, set())
+            members = self._members(current, held)
+            rebuild = summarised and not undescribed
+            if rebuild:
+                # An update removes unchanged chunks too, whose new copies say
+                # the same: a summary nothing was taken from stays.
+                if set(await self._remaining_said(eid, among=list(gone))) >= gone:
+                    continue
+                kept = await self._remaining_said(eid, limit=MAX_DESCRIPTION_MEMBERS)
+            else:
+                dropped = [m for m in members if m in gone]
+                if not dropped:
+                    continue
+                still = await self._remaining_said(eid, among=dropped)
+                kept = [m for m in members if m not in gone or m in still]
+                # Not beside a kept summary, which may already cover them.
+                if not summarised and len(members) >= MAX_DESCRIPTION_MEMBERS > len(kept):
+                    kept += await self._remaining_said(
+                        eid, limit=MAX_DESCRIPTION_MEMBERS - len(kept), besides=kept
+                    )
+            if kept == members:
+                continue
+            if await self._write_description(
+                eid, current, kept, summarised=False if rebuild else None
+            ):
+                written += 1
+            else:
+                changed.append(eid)
+        return changed, written
+
+    async def _remaining_said(
+        self,
+        eid: str,
+        *,
+        limit: int | None = None,
+        among: list[str] | None = None,
+        besides: list[str] | None = None,
+    ) -> list[str]:
+        """What ``eid``'s remaining mention edges say, each description once,
+        in the order of the first chunk (by id) that says it: only those in
+        ``among`` when given, none in ``besides``, the first ``limit``."""
+        rows = (
+            await self._conn.query(
+                "MATCH (e:__Entity__ {id: $id})-[m:MENTIONED_IN]->(c:Chunk) "
+                "WHERE m.description IS NOT NULL "
+                "UNWIND coalesce(m.descriptions, [m.description]) AS d "
+                "WITH d, min(c.id) AS first "
+                "WHERE ($among IS NULL OR d IN $among) AND NOT d IN $besides "
+                "RETURN d ORDER BY first" + (" LIMIT $limit" if limit is not None else ""),
+                {"id": eid, "among": among, "besides": besides or [], "limit": limit},
+            )
+        ).result_set or []
+        return [d for (d,) in rows if isinstance(d, str) and d.strip()]
 
     async def upsert_relationships(
         self,
@@ -882,7 +1234,12 @@ class GraphStore:
                 if key in folded:
                     first, acc, weight, seen = folded[key]
                     props, seen = self._fold_properties(
-                        acc, props, union_provenance=is_relates, seen=seen
+                        acc,
+                        props,
+                        union_provenance=is_relates,
+                        seen=seen,
+                        join_descriptions=rel_type == "MENTIONED_IN",
+                        union_spans=rel_type == "MENTIONED_IN",
                     )
                     folded[key] = (first, props, weight + 1, seen)
                 else:
@@ -937,6 +1294,18 @@ class GraphStore:
                         f"[s IN sources WHERE NOT s IN old_sources]"
                         f"{batch_snapshot}"
                     )
+                elif rel_type == "MENTIONED_IN":
+                    # A mention edge is the only record of what its chunk
+                    # said: a second write of one (a backfill of an entity
+                    # extraction already found there) adds its spans and
+                    # descriptions instead of replacing them.
+                    query = (
+                        f"UNWIND $batch AS item "
+                        f"MATCH (a:`{safe_src}` {{id: item.start_id}}), "
+                        f"(b:`{safe_tgt}` {{id: item.end_id}}) "
+                        f"MERGE (a)-[r:MENTIONED_IN]->(b) "
+                        f"{_mention_union('item.properties')}"
+                    )
                 else:
                     query = (
                         f"UNWIND $batch AS item "
@@ -984,6 +1353,13 @@ class GraphStore:
                                 f"    r.structured_sources = old_sources + "
                                 f"[s IN sources WHERE NOT s IN old_sources]"
                                 f"{item_snapshot}"
+                            )
+                        elif rel.type == "MENTIONED_IN":
+                            q = (
+                                f"MATCH (a:`{safe_fb_src}` {{id: $start_id}}), "
+                                f"(b:`{safe_fb_tgt}` {{id: $end_id}}) "
+                                f"MERGE (a)-[r:MENTIONED_IN]->(b) "
+                                f"{_mention_union('$properties')}"
                             )
                         else:
                             q = (
@@ -1256,13 +1632,29 @@ class GraphStore:
             logger.warning(f"Failed to get entities for chunk {chunk_id}: {exc}")
             return []
 
-    async def query_raw(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
+    async def query_raw(
+        self,
+        cypher: str,
+        params: dict[str, Any] | None = None,
+        *,
+        read_only: bool = False,
+        timeout: int | None = None,
+    ) -> Any:
         """Execute a raw Cypher query.
 
         Escape hatch for advanced use cases. Prefer specific methods
         for standard operations.
+
+        Args:
+            cypher: The Cypher query string.
+            params: Optional query parameters.
+            read_only: Run with ``GRAPH.RO_QUERY`` so the database rejects
+                any write (use for model- or user-written queries).
+            timeout: Optional per-query timeout in milliseconds.
         """
-        return await self._conn.query(cypher, params)
+        if not read_only and timeout is None:
+            return await self._conn.query(cypher, params)
+        return await self._conn.query(cypher, params, timeout=timeout, read_only=read_only)
 
     # ── Statistics ────────────────────────────────────────────────
 
@@ -1352,8 +1744,9 @@ class GraphStore:
     # Cypher stays here per the repository pattern — facade calls these.
 
     async def get_document_record(self, document_id: str) -> DocumentRecord | None:
-        """Return persisted Document state (``path``, ``content_hash``, ``kind``)
-        as a typed ``DocumentRecord``, or ``None`` if no such Document.
+        """Return persisted Document state (``path``, ``content_hash``, ``kind``,
+        ``table``, ``loader``) as a typed ``DocumentRecord``, or ``None`` if no
+        such Document.
 
         Pre-1.1.0 Document nodes lack ``content_hash`` — the field will
         be ``None`` on those records and callers should treat that as
@@ -1361,7 +1754,8 @@ class GraphStore:
         """
         result = await self._conn.query(
             "MATCH (d:Document {id: $id}) RETURN d.path AS path, "
-            "d.content_hash AS content_hash, d.kind AS kind, d.table AS table LIMIT 1",
+            "d.content_hash AS content_hash, d.kind AS kind, d.table AS table, "
+            "d.loader AS loader LIMIT 1",
             {"id": document_id},
         )
         if not result.result_set:
@@ -1372,6 +1766,8 @@ class GraphStore:
             content_hash=row[1],
             kind=row[2] if len(row) > 2 else None,
             table=row[3] if len(row) > 3 else None,
+            # Written from the loader's metadata, which a custom loader fills.
+            loader=str(row[4]) if len(row) > 4 and row[4] is not None else None,
         )
 
     async def documents_of_table(self, signature: str) -> list[str]:
@@ -1706,13 +2102,28 @@ class GraphStore:
             batch = chunk_ids[start : start + self._BATCH_SIZE]
             result = await self._conn.query(
                 "UNWIND $cids AS cid "
-                "MATCH (e:__Entity__)-[:MENTIONED_IN]->(c:Chunk {id: cid}) "
-                "RETURN cid, e.id, labels(e), e.name, e.type, e.description, "
-                "e.source_chunk_ids",
+                "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(c:Chunk {id: cid}) "
+                # What this chunk's own edge says — never the entity's
+                # description, which joins every chunk's (and a summary) and
+                # would put other documents' text on this chunk's new edge.
+                "RETURN cid, e.id, labels(e), e.name, e.type, "
+                "m.description, e.source_chunk_ids, m.spans, m.descriptions, "
+                f"m.{SAID_VERSION_KEY} IS NOT NULL OR c.record_key IS NOT NULL",
                 {"cids": batch},
             )
             for row in result.result_set or []:
-                cid, eid, labels, name, etype, description, source_chunk_ids = row
+                (
+                    cid,
+                    eid,
+                    labels,
+                    name,
+                    etype,
+                    description,
+                    source_chunk_ids,
+                    spans,
+                    descriptions,
+                    recorded,
+                ) = row
                 if not cid or not eid:
                     continue
                 # Tampered/partial graphs may hold a scalar where a list is
@@ -1731,7 +2142,12 @@ class GraphStore:
                         name=name if isinstance(name, str) else None,
                         type=etype if isinstance(etype, str) else None,
                         description=description if isinstance(description, str) else None,
+                        descriptions=self._members(description, descriptions),
+                        recorded=bool(recorded),
                         source_chunk_ids=[s for s in source_chunk_ids if isinstance(s, str)],
+                        spans=[int(x) for x in spans if isinstance(x, int)]
+                        if isinstance(spans, list)
+                        else [],
                     )
                 )
         return rows
@@ -1811,7 +2227,11 @@ class GraphStore:
         (rollback is safe); a crash after this write but before the
         commit marker is also safe (the pending will be discarded along
         with its half-written cleanup state).
+
+        Also records what the old chunks' mention edges say
+        (:meth:`capture_cleanup_said`), while they still exist.
         """
+        await self.capture_cleanup_said(document_id, old_chunk_ids)
         await self._conn.query(
             "MATCH (d:Document {id: $id}) "
             "SET d.cleanup_candidates = $candidates, "
@@ -1849,7 +2269,9 @@ class GraphStore:
         """Remove cleanup-state properties — last step of the
         post-cutover cleanup. Idempotent."""
         await self._conn.query(
-            "MATCH (d:Document {id: $id}) REMOVE d.cleanup_candidates, d.cleanup_old_chunk_ids",
+            "MATCH (d:Document {id: $id}) "
+            "REMOVE d.cleanup_candidates, d.cleanup_old_chunk_ids, "
+            "d.cleanup_said_ids, d.cleanup_said",
             {"id": document_id},
         )
 
@@ -1872,7 +2294,12 @@ class GraphStore:
         check for ``== 1`` and refuse to proceed otherwise — a 0
         indicates the doc vanished between the existence check and the
         commit, and pressing on would silently delete nothing.
+
+        First records what the document's chunks' mention edges say
+        (:meth:`capture_cleanup_said`): before the marker, so a resumed delete
+        finds it; a crash between the two leaves the live document intact.
         """
+        await self.capture_cleanup_said(document_id, chunk_ids)
         result = await self._conn.query(
             "MATCH (d:Document {id: $id}) "
             "SET d.pending_delete = true, "
@@ -2660,6 +3087,8 @@ class GraphStore:
         *,
         union_provenance: bool,
         seen: set[Any] | None = None,
+        join_descriptions: bool = False,
+        union_spans: bool = False,
     ) -> tuple[dict[str, Any], set[Any] | None]:
         """Apply a later write of the same key on top of an earlier one.
 
@@ -2687,6 +3116,32 @@ class GraphStore:
         new_owners = props.get("structured_sources")
         if union_provenance and isinstance(owners, list) and isinstance(new_owners, list):
             merged["structured_sources"] = owners + [x for x in new_owners if x not in owners]
+        if join_descriptions:
+            members: list[str] = []
+            for side in (acc, props):
+                raw = side.get("descriptions")
+                items = raw if isinstance(raw, list) else [side.get("description") or ""]
+                for d in items:
+                    d = str(d or "").strip()
+                    if d and d not in members:
+                        members.append(d)
+            merged.pop("descriptions", None)
+            if members:
+                merged["description"] = " | ".join(members)
+                if len(members) > 1:
+                    merged["descriptions"] = members
+        # A mention edge's flat ``[start, end, ...]`` spans: both writes' pairs,
+        # each once, as the edge write itself combines them.
+        if union_spans:
+            pairs: list[tuple[Any, Any]] = []
+            for side in (acc, props):
+                flat = side.get("spans")
+                if isinstance(flat, list):
+                    for pair in zip(flat[0::2], flat[1::2]):
+                        if pair not in pairs:
+                            pairs.append(pair)
+            if pairs:
+                merged["spans"] = [x for pair in pairs for x in pair]
         old = acc.get("source_chunk_ids")
         contrib = props.get("source_chunk_ids")
         if union_provenance and isinstance(old, list):

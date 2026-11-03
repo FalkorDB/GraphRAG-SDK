@@ -330,10 +330,11 @@ Click `Maya Ellison` in the browser at `http://localhost:3000` and this is the p
 | `is_stub` | `false` | the SDK: this row's own source has arrived |
 | `entity_key` | `E-1` | the SDK: the value this row is keyed by, unsigned — what links and re-sync resolve through |
 | `description` | `Maya Ellison is an engineer at Northwind Energy who led the preparation of the remediation plan…` | **the PDF** — unsigned, so it can never collide with a column |
-| `source_chunk_ids`, `spans` | `[…]` | the SDK: which chunks mention her and where |
 | `embedding` | `<256 floats>` | `finalize()` |
 
-Read the signatures and the provenance is on the node itself. Anything `employees__` came from that file and only that file. Anything unsigned came from prose or from the SDK. There is no third possibility, which is why a table and a document cannot overwrite each other.
+Which chunks mention her, where (`spans`) and what each says (`description`) are on her `MENTIONED_IN` edges, one per chunk, not on the node.
+
+Read the signatures and the provenance of every property is on the node itself. Anything `employees__` came from that file and only that file. Anything unsigned came from prose or from the SDK. There is no third possibility, which is why a table and a document cannot overwrite each other.
 
 #### The node a foreign key created before its source arrived
 
