@@ -1358,7 +1358,11 @@ class TestContentHashRequiresCompleteWrites:
         mock_graph_store.upsert_nodes = AsyncMock(side_effect=_upsert_nodes)
         mock_graph_store.upsert_relationships = AsyncMock(side_effect=_upsert_relationships)
         pipeline = self._pipeline(mock_graph_store, mock_vector_store, extractor=MentionExtractor())
-        pipeline.ontology = Ontology(entities=[Entity(label="Person")])
+        pipeline.ontology = (
+            Ontology()
+            if not dropped.label.strip()
+            else Ontology(entities=[Entity(label="Person")])
+        )
         result = await pipeline.run("r.txt", ctx)
 
         mentioned = [
