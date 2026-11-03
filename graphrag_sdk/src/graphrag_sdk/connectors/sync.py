@@ -15,15 +15,15 @@ import logging
 import math
 import os
 import re
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from weakref import WeakKeyDictionary
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.models import DocumentInfo, DocumentOutput
+from graphrag_sdk.core.models import DocumentInfo, DocumentOutput, Ontology
 from graphrag_sdk.core.tables import TableMapping
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
@@ -66,8 +66,63 @@ class _SourceLock:
     changed: asyncio.Event = field(default_factory=asyncio.Event)
 
 
+@dataclass
+class _SourceLockReservation:
+    rag: GraphRAG
+    loop: asyncio.AbstractEventLoop
+    loops: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, _SourceLock]]
+    locks: dict[str, _SourceLock]
+    entries: list[tuple[str, _SourceLock]]
+    token: object
+    held: list[_SourceLock] = field(default_factory=list)
+    released: bool = False
+
+    async def __aenter__(self) -> None:
+        try:
+            for _, entry in self.entries:
+                while entry.waiters[0] is not self.token:
+                    changed = entry.changed
+                    await changed.wait()
+                await entry.lock.acquire()
+                self.held.append(entry)
+                entry.waiters.pop(0)
+                changed = entry.changed
+                entry.changed = asyncio.Event()
+                changed.set()
+        except BaseException:
+            self._release()
+            raise
+
+    async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> Literal[False]:
+        self._release()
+        return False
+
+    def _release(self) -> None:
+        if self.released:
+            return
+        self.released = True
+        for entry in reversed(self.held):
+            entry.lock.release()
+        for name, entry in self.entries:
+            if self.token in entry.waiters:
+                entry.waiters.remove(self.token)
+                changed = entry.changed
+                entry.changed = asyncio.Event()
+                changed.set()
+            entry.users -= 1
+            if not entry.users:
+                del self.locks[name]
+        if not self.locks:
+            self.loops.pop(self.loop, None)
+        if not self.loops:
+            _SOURCE_LOCKS.pop(self.rag, None)
+
+
 _SOURCE_LOCKS: WeakKeyDictionary[
     GraphRAG, WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, _SourceLock]]
+] = WeakKeyDictionary()
+_SOURCE_LOCK_PLANNERS: WeakKeyDictionary[
+    GraphRAG, WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]
 ] = WeakKeyDictionary()
 
 
@@ -222,6 +277,23 @@ async def _source_locks(rag: GraphRAG, names: Iterable[str]) -> AsyncIterator[No
     Reserve every source before waiting, in sorted order, so overlapping calls
     cannot overtake one another or deadlock.
     """
+    async with _source_lock_planner(rag):
+        reservation = _reserve_source_locks(rag, names)
+    async with reservation:
+        yield
+
+
+@asynccontextmanager
+async def _source_lock_planner(rag: GraphRAG) -> AsyncIterator[None]:
+    """Order mapping preflight and lock reservation across sync entry points."""
+    loop = asyncio.get_running_loop()
+    loops = _SOURCE_LOCK_PLANNERS.setdefault(rag, WeakKeyDictionary())
+    planner = loops.setdefault(loop, asyncio.Lock())
+    async with planner:
+        yield
+
+
+def _reserve_source_locks(rag: GraphRAG, names: Iterable[str]) -> _SourceLockReservation:
     loop = asyncio.get_running_loop()
     loops = _SOURCE_LOCKS.setdefault(rag, WeakKeyDictionary())
     locks = loops.setdefault(loop, {})
@@ -230,35 +302,7 @@ async def _source_locks(rag: GraphRAG, names: Iterable[str]) -> AsyncIterator[No
     for _, entry in entries:
         entry.users += 1
         entry.waiters.append(reservation)
-    held: list[_SourceLock] = []
-    try:
-        for _, entry in entries:
-            while entry.waiters[0] is not reservation:
-                changed = entry.changed
-                await changed.wait()
-            await entry.lock.acquire()
-            held.append(entry)
-            entry.waiters.pop(0)
-            changed = entry.changed
-            entry.changed = asyncio.Event()
-            changed.set()
-        yield
-    finally:
-        for entry in reversed(held):
-            entry.lock.release()
-        for name, entry in entries:
-            if reservation in entry.waiters:
-                entry.waiters.remove(reservation)
-                changed = entry.changed
-                entry.changed = asyncio.Event()
-                changed.set()
-            entry.users -= 1
-            if not entry.users:
-                del locks[name]
-        if not locks:
-            loops.pop(loop, None)
-        if not loops:
-            _SOURCE_LOCKS.pop(rag, None)
+    return _SourceLockReservation(rag, loop, loops, locks, entries, reservation)
 
 
 async def _sync_documents(
@@ -291,13 +335,16 @@ async def _sync_documents(
         if _PENDING_MARKER in doc_id:
             report.failed[doc_id] = f"ids may not contain {_PENDING_MARKER!r}"
             continue
-        known_hash, known_version, known_props = existing.get(doc_id, (None, None, {}))
+        known_hash, known_version, known_props, pending = existing.get(
+            doc_id, (None, None, {}, False)
+        )
         # A missing hash means the last write was incomplete, and a recovery marker
         # an interrupted delete or cleanup; update() repairs both, so neither skips.
         if (
             known_hash is not None
             and doc.version is not None
             and doc.version == known_version
+            and not pending
             and not _needs_recovery(known_props)
         ):
             if not dry_run:
@@ -416,8 +463,11 @@ async def sync_table(
     Raises:
         ValueError: No mapping in the ontology names ``table``.
     """
-    mapping = await _mapping_named(rag, table)
-    async with _source_locks(rag, [mapping.source]):
+    async with _source_lock_planner(rag):
+        ontology = await rag.get_ontology(initialize=False)
+        mapping = _mapping_named(ontology, table)
+        reservation = _reserve_source_locks(rag, [mapping.source])
+    async with reservation:
         return await _sync_table(rag, rows, table=table, ctx=ctx, mapping=mapping)
 
 
@@ -525,18 +575,22 @@ async def sync(
                 "advance between runs, and its partial read would delete the documents "
                 "or table rows it skipped. Remove the cursor."
             )
-    mappings = {resource.name: await _find_mapping(rag, resource.name) for resource in resources}
-    lock_names: list[str] = []
-    for resource in resources:
-        lock_names.append(resource.name)
-        mapping = mappings[resource.name]
-        if mapping is not None:
-            lock_names.append(mapping.source)
-    # Locked before reading, so overlapping calls apply their snapshots in order.
-    async with _source_locks(rag, lock_names):
+    async with _source_lock_planner(rag):
+        ontology = await rag.get_ontology(initialize=False)
+        mappings = {resource.name: _find_mapping(ontology, resource.name) for resource in resources}
+        lock_names = []
+        for resource in resources:
+            lock_names.append(resource.name)
+            mapping = mappings[resource.name]
+            if mapping is not None:
+                lock_names.append(mapping.source)
+        reservation = _reserve_source_locks(rag, lock_names)
+    # Reserved before reading, so overlapping calls apply their snapshots in order.
+    async with reservation:
         return await _sync_resources(
             rag,
             resources,
+            ontology=ontology,
             mappings=mappings,
             prune=prune,
             dry_run=dry_run,
@@ -551,6 +605,7 @@ async def _sync_resources(
     rag: GraphRAG,
     resources: list[Any],
     *,
+    ontology: Ontology,
     mappings: dict[str, TableMapping | None],
     prune: bool,
     dry_run: bool,
@@ -572,7 +627,7 @@ async def _sync_resources(
         ):
             documents[name] = items
         elif all(isinstance(item, dict) for item in items):
-            mapping = mappings[name] or await _mapping_named(rag, name)
+            mapping = mappings[name] or _mapping_named(ontology, name)
             _check_columns(mapping, items, name)
             tables[name] = items
         else:
@@ -600,7 +655,7 @@ async def _sync_resources(
     for name, rows in tables.items():
         result.table_rows[name] = len(rows)
         if not dry_run:
-            mapping = mappings[name] or await _mapping_named(rag, name)
+            mapping = mappings[name] or _mapping_named(ontology, name)
             result.tables[name] = await _sync_table(rag, rows, table=name, ctx=ctx, mapping=mapping)
     return result
 
@@ -744,19 +799,36 @@ def _needs_recovery(stored: dict[str, Any]) -> bool:
 
 async def _existing_documents(
     rag: GraphRAG, prefix: str
-) -> dict[str, tuple[str | None, str | None, dict[str, Any]]]:
-    """``{document id: (content hash, source version, properties)}`` under ``prefix``."""
+) -> dict[str, tuple[str | None, str | None, dict[str, Any], bool]]:
+    """``{logical document id: (hash, version, properties, has pending copy)}``."""
     rows = await rag.query(
         "MATCH (d:Document) WHERE d.id STARTS WITH $prefix "
-        "AND NOT d.id CONTAINS $pending "
         f"RETURN d.id, d.content_hash, d.{_VERSION_PROPERTY}, properties(d)",
-        {"prefix": prefix, "pending": _PENDING_MARKER},
+        {"prefix": prefix},
     )
-    return {row[0]: (row[1], row[2], row[3] or {}) for row in rows}
+    existing: dict[str, tuple[str | None, str | None, dict[str, Any], bool]] = {}
+    pending_priority: dict[str, int] = {}
+    for row in rows:
+        node_id = row[0]
+        logical_id, marker, suffix = node_id.partition(_PENDING_MARKER)
+        is_pending = bool(
+            marker and len(suffix) == 8 and all(c in "0123456789abcdef" for c in suffix)
+        )
+        if not is_pending:
+            logical_id = node_id
+        props = row[3] or {}
+        if is_pending:
+            priority = 2 if props.get("ready_to_commit") else 1
+            if pending_priority.get(logical_id, 0) > priority:
+                continue
+            pending_priority[logical_id] = priority
+            existing[logical_id] = (None, None, props, True)
+        elif logical_id not in pending_priority:
+            existing[logical_id] = (row[1], row[2], props, False)
+    return existing
 
 
-async def _find_mapping(rag: GraphRAG, table: str) -> TableMapping | None:
-    ontology = await rag.get_ontology(initialize=False)
+def _find_mapping(ontology: Ontology, table: str) -> TableMapping | None:
     for mapping in ontology.tables:
         base = os.path.basename(os.path.normpath(mapping.source))
         if table in (base, os.path.splitext(base)[0]):
@@ -764,11 +836,10 @@ async def _find_mapping(rag: GraphRAG, table: str) -> TableMapping | None:
     return None
 
 
-async def _mapping_named(rag: GraphRAG, table: str) -> TableMapping:
-    mapping = await _find_mapping(rag, table)
+def _mapping_named(ontology: Ontology, table: str) -> TableMapping:
+    mapping = _find_mapping(ontology, table)
     if mapping is not None:
         return mapping
-    ontology = await rag.get_ontology(initialize=False)
     declared = ", ".join(m.source for m in ontology.tables) or "none"
     raise ValueError(
         f"No TableMapping in the ontology is for table '{table}' (declared: "
@@ -872,10 +943,6 @@ async def _aiter(items: Iterable[Any] | AsyncIterable[Any]) -> AsyncIterator[Any
         for item in items:
             yield item
         return
-    iterator: Iterator[Any] = iter(items)
-    done = object()
-    while True:
-        item = await asyncio.to_thread(next, iterator, done)
-        if item is done:
-            return
+    materialized = await asyncio.to_thread(list, items)
+    for item in materialized:
         yield item

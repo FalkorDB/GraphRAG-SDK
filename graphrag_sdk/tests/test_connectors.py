@@ -10,8 +10,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -50,6 +53,7 @@ class FakeGraph:
         self.incomplete_on: set[str] = set()
         self.metadata_refreshes: list[tuple[str, dict[str, Any]]] = []
         self.metadata_removals: list[tuple[str, list[str]]] = []
+        self.ontology_loads = 0
         self.ontology = Ontology(entities=[Entity(label="Person")], tables=tables or [])
 
     async def query(self, cypher: str, params: dict[str, Any]) -> list[list[Any]]:
@@ -96,9 +100,13 @@ class FakeGraph:
     async def delete_document(self, document_id: str, *, if_missing: str = "error"):
         self.deletes.append(document_id)
         self.documents.pop(document_id, None)
+        pending_prefix = f"{document_id}__pending__"
+        for pending_id in [key for key in self.documents if key.startswith(pending_prefix)]:
+            self.documents.pop(pending_id, None)
 
     async def get_ontology(self, *, initialize: bool = True) -> Ontology:
         assert not initialize, "connector preflight must not initialize schema"
+        self.ontology_loads += 1
         return self.ontology
 
     async def ingest(self, source: str, *, record_loader: Any, ctx: Any = None):
@@ -513,6 +521,32 @@ async def test_a_mapping_declared_with_a_file_suffix_matches_the_table_name():
     assert graph.ingests[0][0] == "users.csv"
 
 
+async def test_delayed_table_mapping_preflight_keeps_call_order():
+    entered_preflight = asyncio.Event()
+    release_preflight = asyncio.Event()
+
+    class DelayedGraph(FakeGraph):
+        async def get_ontology(self, *, initialize: bool = True) -> Ontology:
+            self.ontology_loads += 1
+            if self.ontology_loads == 1:
+                entered_preflight.set()
+                await release_preflight.wait()
+            return self.ontology
+
+    graph = DelayedGraph(tables=[TableMapping(source="users.csv", label="Person", name="name")])
+    first = asyncio.create_task(sync_table(graph, [{"name": "Alice"}], table="users"))
+    await asyncio.wait_for(entered_preflight.wait(), 2)
+    second = asyncio.create_task(sync_table(graph, [{"name": "Bob"}], table="users.csv"))
+    try:
+        await asyncio.sleep(0.05)
+        assert not second.done()
+        assert graph.ingests == []
+    finally:
+        release_preflight.set()
+    await asyncio.wait_for(asyncio.gather(first, second), 2)
+    assert [rows for _, rows in graph.ingests] == [[{"name": "Alice"}], [{"name": "Bob"}]]
+
+
 async def test_table_aliases_share_the_canonical_lock():
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -631,6 +665,7 @@ async def test_sync_reads_every_resource_of_a_source(dlt):
 
     assert set(result.documents) == {"wiki", "tickets"}
     assert set(graph.documents) == {"wiki:w1", "tickets:t1"}
+    assert graph.ontology_loads == 1
 
 
 async def test_sync_resource_aliases_share_the_canonical_table_lock(dlt):
@@ -668,6 +703,41 @@ async def test_sync_resource_aliases_share_the_canonical_table_lock(dlt):
     finally:
         release.set()
     await asyncio.wait_for(asyncio.gather(first, second), 2)
+
+
+async def test_sync_delayed_mapping_preflight_keeps_resource_call_order(dlt):
+    entered_preflight = asyncio.Event()
+    release_preflight = asyncio.Event()
+
+    class DelayedGraph(FakeGraph):
+        async def get_ontology(self, *, initialize: bool = True) -> Ontology:
+            self.ontology_loads += 1
+            if self.ontology_loads == 1:
+                entered_preflight.set()
+                await release_preflight.wait()
+            return self.ontology
+
+    @dlt.resource(name="users")
+    def users():
+        yield {"name": "Alice"}
+
+    @dlt.resource(name="users.csv")
+    def users_csv():
+        yield {"name": "Bob"}
+
+    graph = DelayedGraph(tables=[TableMapping(source="users.csv", label="Person", name="name")])
+    first = asyncio.create_task(sync(graph, users()))
+    await asyncio.wait_for(entered_preflight.wait(), 2)
+    second = asyncio.create_task(sync(graph, users_csv()))
+    try:
+        await asyncio.sleep(0.05)
+        assert not second.done()
+        assert graph.ingests == []
+    finally:
+        release_preflight.set()
+    await asyncio.wait_for(asyncio.gather(first, second), 2)
+    assert [rows for _, rows in graph.ingests] == [[{"name": "Alice"}], [{"name": "Bob"}]]
+    assert graph.ontology_loads == 2
 
 
 @pytest.mark.parametrize("prune", [True, False])
@@ -927,6 +997,41 @@ async def test_multisource_lock_reserves_each_source_before_waiting():
     assert order == ["both", "b"]
 
 
+async def test_pending_document_is_pruned_by_its_logical_id():
+    pending_id = "wiki:gone__pending__deadbeef"
+    graph = FakeGraph({pending_id: _hash("interrupted")})
+    graph.metadata[pending_id] = {"ready_to_commit": True}
+
+    report = await sync_documents(
+        graph,
+        [SourceDocument("live", "still present")],
+        source="wiki",
+    )
+
+    assert report.deleted == ["wiki:gone"]
+    assert graph.deletes == ["wiki:gone"]
+    assert pending_id not in graph.documents
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_pending_document_inventory_does_not_write_during_dry_run(dry_run):
+    pending_id = "wiki:gone__pending__deadbeef"
+    graph = FakeGraph({pending_id: _hash("interrupted")})
+
+    report = await sync_documents(
+        graph,
+        [SourceDocument("live", "still present")],
+        source="wiki",
+        dry_run=dry_run,
+    )
+
+    assert report.deleted == ["wiki:gone"]
+    if dry_run:
+        assert graph.updates == []
+        assert graph.deletes == []
+        assert pending_id in graph.documents
+
+
 async def test_canceled_multisource_lock_releases_held_and_reserved_sources():
     from graphrag_sdk.connectors.sync import _source_locks
 
@@ -949,6 +1054,56 @@ async def test_canceled_multisource_lock_releases_held_and_reserved_sources():
             acquired_a = True
 
     assert acquired_a
+
+    async def acquire_b():
+        async with _source_locks(graph, ["b"]):
+            return True
+
+    assert await asyncio.wait_for(acquire_b(), 2)
+
+
+async def test_sync_iterable_is_materialized_on_one_worker(monkeypatch):
+    from graphrag_sdk.connectors.sync import _aiter
+
+    workers = [ThreadPoolExecutor(max_workers=1) for _ in range(2)]
+    calls = 0
+    loop = asyncio.get_running_loop()
+
+    async def use_alternating_workers(func, *args, **kwargs):
+        nonlocal calls
+        executor = workers[calls % len(workers)]
+        calls += 1
+        return await loop.run_in_executor(executor, partial(func, *args, **kwargs))
+
+    class ConnectionBoundRows:
+        def __init__(self):
+            self.connection = None
+            self.index = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.index == 0:
+                self.connection = sqlite3.connect(":memory:")
+                self.connection.execute("CREATE TABLE rows (value INTEGER)")
+                self.connection.execute("INSERT INTO rows VALUES (1), (2)")
+            if self.index >= 2:
+                self.connection.close()
+                raise StopIteration
+            value = self.connection.execute(
+                "SELECT value FROM rows LIMIT 1 OFFSET ?", (self.index,)
+            ).fetchone()[0]
+            self.index += 1
+            return value
+
+    monkeypatch.setattr(asyncio, "to_thread", use_alternating_workers)
+    try:
+        assert [item async for item in _aiter(ConnectionBoundRows())] == [1, 2]
+        assert calls == 1
+    finally:
+        for worker in workers:
+            worker.shutdown(wait=True)
 
 
 def test_source_locks_release_closed_event_loops():
