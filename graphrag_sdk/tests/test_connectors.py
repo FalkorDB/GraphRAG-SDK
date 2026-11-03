@@ -1160,7 +1160,7 @@ async def test_canceled_sync_keeps_its_source_lock_until_iteration_stops():
         release.set()
 
     with pytest.raises(asyncio.CancelledError):
-        await first
+        _ = await first
     result = await asyncio.wait_for(second, 2)
     assert result.added == ["wiki:b"]
 
