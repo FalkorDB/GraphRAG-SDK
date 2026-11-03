@@ -513,6 +513,35 @@ async def test_a_mapping_declared_with_a_file_suffix_matches_the_table_name():
     assert graph.ingests[0][0] == "users.csv"
 
 
+async def test_table_aliases_share_the_canonical_lock():
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    second_entered = asyncio.Event()
+
+    class BlockingGraph(FakeGraph):
+        calls = 0
+
+        async def ingest(self, source, *, record_loader, ctx=None):
+            self.calls += 1
+            if self.calls == 1:
+                entered.set()
+                await release.wait()
+            else:
+                second_entered.set()
+            return await super().ingest(source, record_loader=record_loader, ctx=ctx)
+
+    graph = BlockingGraph(tables=[TableMapping(source="users.csv", label="Person", name="name")])
+    first = asyncio.create_task(sync_table(graph, [{"name": "Alice"}], table="users"))
+    await asyncio.wait_for(entered.wait(), 2)
+    second = asyncio.create_task(sync_table(graph, [{"name": "Bob"}], table="users.csv"))
+    try:
+        await asyncio.sleep(0)
+        assert not second_entered.is_set()
+    finally:
+        release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), 2)
+
+
 async def test_an_empty_table_is_an_empty_snapshot_with_the_mapping_header():
     mapping = TableMapping(source="users", label="Person", key="id", name="name")
     graph = FakeGraph(tables=[mapping])
@@ -602,6 +631,43 @@ async def test_sync_reads_every_resource_of_a_source(dlt):
 
     assert set(result.documents) == {"wiki", "tickets"}
     assert set(graph.documents) == {"wiki:w1", "tickets:t1"}
+
+
+async def test_sync_resource_aliases_share_the_canonical_table_lock(dlt):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    second_entered = asyncio.Event()
+
+    class BlockingGraph(FakeGraph):
+        calls = 0
+
+        async def ingest(self, source, *, record_loader, ctx=None):
+            self.calls += 1
+            if self.calls == 1:
+                entered.set()
+                await release.wait()
+            else:
+                second_entered.set()
+            return await super().ingest(source, record_loader=record_loader, ctx=ctx)
+
+    @dlt.resource(name="users")
+    def users():
+        yield {"name": "Alice"}
+
+    @dlt.resource(name="users.csv")
+    def users_csv():
+        yield {"name": "Bob"}
+
+    graph = BlockingGraph(tables=[TableMapping(source="users.csv", label="Person", name="name")])
+    first = asyncio.create_task(sync(graph, users()))
+    await asyncio.wait_for(entered.wait(), 2)
+    second = asyncio.create_task(sync(graph, users_csv()))
+    try:
+        await asyncio.sleep(0)
+        assert not second_entered.is_set()
+    finally:
+        release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), 2)
 
 
 @pytest.mark.parametrize("prune", [True, False])
@@ -834,6 +900,55 @@ async def test_same_source_syncs_are_serialized():
         results = await asyncio.wait_for(asyncio.gather(first, second), 2)
     assert results[1].deleted == ["wiki:a"]
     assert graph.documents == {"wiki:b": _hash("B")}
+
+
+async def test_multisource_lock_reserves_each_source_before_waiting():
+    from graphrag_sdk.connectors.sync import _source_locks
+
+    graph = FakeGraph()
+    order = []
+
+    async with _source_locks(graph, ["a"]):
+
+        async def sync_both():
+            async with _source_locks(graph, ["a", "b"]):
+                order.append("both")
+
+        async def sync_b():
+            async with _source_locks(graph, ["b"]):
+                order.append("b")
+
+        first = asyncio.create_task(sync_both())
+        await asyncio.sleep(0)
+        second = asyncio.create_task(sync_b())
+        await asyncio.sleep(0)
+
+    await asyncio.wait_for(asyncio.gather(first, second), 2)
+    assert order == ["both", "b"]
+
+
+async def test_canceled_multisource_lock_releases_held_and_reserved_sources():
+    from graphrag_sdk.connectors.sync import _source_locks
+
+    graph = FakeGraph()
+    acquired_a = False
+
+    async with _source_locks(graph, ["b"]):
+
+        async def sync_both():
+            async with _source_locks(graph, ["a", "b"]):
+                raise AssertionError("the reserved source should remain blocked")
+
+        waiting = asyncio.create_task(sync_both())
+        await asyncio.sleep(0)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+
+        async with _source_locks(graph, ["a"]):
+            acquired_a = True
+
+    assert acquired_a
 
 
 def test_source_locks_release_closed_event_loops():

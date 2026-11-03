@@ -62,6 +62,8 @@ _PENDING_MARKER = "__pending__"
 class _SourceLock:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     users: int = 0
+    waiters: list[object] = field(default_factory=list)
+    changed: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 _SOURCE_LOCKS: WeakKeyDictionary[
@@ -217,24 +219,39 @@ async def sync_documents(
 async def _source_locks(rag: GraphRAG, names: Iterable[str]) -> AsyncIterator[None]:
     """Hold the per-source locks for ``names`` on this instance and event loop.
 
-    Taken in sorted order, so two calls over overlapping sources cannot deadlock.
+    Reserve every source before waiting, in sorted order, so overlapping calls
+    cannot overtake one another or deadlock.
     """
     loop = asyncio.get_running_loop()
     loops = _SOURCE_LOCKS.setdefault(rag, WeakKeyDictionary())
     locks = loops.setdefault(loop, {})
     entries = [(name, locks.setdefault(name, _SourceLock())) for name in sorted(set(names))]
+    reservation = object()
     for _, entry in entries:
         entry.users += 1
+        entry.waiters.append(reservation)
     held: list[_SourceLock] = []
     try:
         for _, entry in entries:
+            while entry.waiters[0] is not reservation:
+                changed = entry.changed
+                await changed.wait()
             await entry.lock.acquire()
             held.append(entry)
+            entry.waiters.pop(0)
+            changed = entry.changed
+            entry.changed = asyncio.Event()
+            changed.set()
         yield
     finally:
         for entry in reversed(held):
             entry.lock.release()
         for name, entry in entries:
+            if reservation in entry.waiters:
+                entry.waiters.remove(reservation)
+                changed = entry.changed
+                entry.changed = asyncio.Event()
+                changed.set()
             entry.users -= 1
             if not entry.users:
                 del locks[name]
@@ -399,8 +416,9 @@ async def sync_table(
     Raises:
         ValueError: No mapping in the ontology names ``table``.
     """
-    async with _source_locks(rag, [table]):
-        return await _sync_table(rag, rows, table=table, ctx=ctx)
+    mapping = await _mapping_named(rag, table)
+    async with _source_locks(rag, [mapping.source]):
+        return await _sync_table(rag, rows, table=table, ctx=ctx, mapping=mapping)
 
 
 async def _sync_table(
@@ -409,8 +427,8 @@ async def _sync_table(
     *,
     table: str,
     ctx: Context | None,
+    mapping: TableMapping,
 ) -> StructuredIngestionResult:
-    mapping = await _mapping_named(rag, table)
     records = [row async for row in _aiter(rows)]
     # An empty table still has a header. Without one the mapping's key and name
     # columns read as missing and the snapshot that removes every row is refused.
@@ -507,11 +525,19 @@ async def sync(
                 "advance between runs, and its partial read would delete the documents "
                 "or table rows it skipped. Remove the cursor."
             )
+    mappings = {resource.name: await _find_mapping(rag, resource.name) for resource in resources}
+    lock_names: list[str] = []
+    for resource in resources:
+        lock_names.append(resource.name)
+        mapping = mappings[resource.name]
+        if mapping is not None:
+            lock_names.append(mapping.source)
     # Locked before reading, so overlapping calls apply their snapshots in order.
-    async with _source_locks(rag, [r.name for r in resources]):
+    async with _source_locks(rag, lock_names):
         return await _sync_resources(
             rag,
             resources,
+            mappings=mappings,
             prune=prune,
             dry_run=dry_run,
             cache_unchanged_chunks=cache_unchanged_chunks,
@@ -525,6 +551,7 @@ async def _sync_resources(
     rag: GraphRAG,
     resources: list[Any],
     *,
+    mappings: dict[str, TableMapping | None],
     prune: bool,
     dry_run: bool,
     cache_unchanged_chunks: bool,
@@ -532,9 +559,7 @@ async def _sync_resources(
     extractor: ExtractionStrategy | None,
     ctx: Context | None,
 ) -> SyncResult:
-    table_names = {
-        name for name in (r.name for r in resources) if await _find_mapping(rag, name) is not None
-    }
+    table_names = {name for name, mapping in mappings.items() if mapping is not None}
 
     # Read and classify everything before the first write.
     documents: dict[str, list[SourceDocument]] = {}
@@ -547,7 +572,7 @@ async def _sync_resources(
         ):
             documents[name] = items
         elif all(isinstance(item, dict) for item in items):
-            mapping = await _mapping_named(rag, name)  # raises, naming what is declared
+            mapping = mappings[name] or await _mapping_named(rag, name)
             _check_columns(mapping, items, name)
             tables[name] = items
         else:
@@ -575,7 +600,8 @@ async def _sync_resources(
     for name, rows in tables.items():
         result.table_rows[name] = len(rows)
         if not dry_run:
-            result.tables[name] = await _sync_table(rag, rows, table=name, ctx=ctx)
+            mapping = mappings[name] or await _mapping_named(rag, name)
+            result.tables[name] = await _sync_table(rag, rows, table=name, ctx=ctx, mapping=mapping)
     return result
 
 
