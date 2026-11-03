@@ -67,6 +67,12 @@ class _SourceLock:
 
 
 @dataclass
+class _SourceLockPlanner:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+
+
+@dataclass
 class _SourceLockReservation:
     rag: GraphRAG
     loop: asyncio.AbstractEventLoop
@@ -122,7 +128,7 @@ _SOURCE_LOCKS: WeakKeyDictionary[
     GraphRAG, WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, _SourceLock]]
 ] = WeakKeyDictionary()
 _SOURCE_LOCK_PLANNERS: WeakKeyDictionary[
-    GraphRAG, WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]
+    GraphRAG, WeakKeyDictionary[asyncio.AbstractEventLoop, _SourceLockPlanner]
 ] = WeakKeyDictionary()
 
 
@@ -288,9 +294,17 @@ async def _source_lock_planner(rag: GraphRAG) -> AsyncIterator[None]:
     """Order mapping preflight and lock reservation across sync entry points."""
     loop = asyncio.get_running_loop()
     loops = _SOURCE_LOCK_PLANNERS.setdefault(rag, WeakKeyDictionary())
-    planner = loops.setdefault(loop, asyncio.Lock())
-    async with planner:
-        yield
+    planner = loops.setdefault(loop, _SourceLockPlanner())
+    planner.users += 1
+    try:
+        async with planner.lock:
+            yield
+    finally:
+        planner.users -= 1
+        if not planner.users and loops.get(loop) is planner:
+            del loops[loop]
+            if not loops:
+                _SOURCE_LOCK_PLANNERS.pop(rag, None)
 
 
 def _reserve_source_locks(rag: GraphRAG, names: Iterable[str]) -> _SourceLockReservation:
@@ -395,7 +409,16 @@ async def _sync_documents(
             # update() returns on a matching hash before writing anything, so a
             # moved page or a new author would otherwise never reach the graph.
             try:
-                await _refresh_metadata(rag, doc_id, doc, known_props)
+                current_props = known_props
+                if pending:
+                    latest = await _existing_documents(rag, f"{source}:")
+                    current = latest.get(doc_id)
+                    if current is None:
+                        raise RuntimeError(
+                            f"document {doc_id!r} disappeared during metadata refresh"
+                        )
+                    current_props = current[2]
+                await _refresh_metadata(rag, doc_id, doc, current_props)
             except Exception as exc:
                 logger.warning("metadata refresh of %s failed: %s", doc_id, exc)
                 report.failed[doc_id] = f"{type(exc).__name__}: {exc}"
@@ -943,6 +966,16 @@ async def _aiter(items: Iterable[Any] | AsyncIterable[Any]) -> AsyncIterator[Any
         for item in items:
             yield item
         return
-    materialized = await asyncio.to_thread(list, items)
+    worker = asyncio.create_task(asyncio.to_thread(list, items))
+    try:
+        materialized = await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+        worker.result()
+        raise
     for item in materialized:
         yield item

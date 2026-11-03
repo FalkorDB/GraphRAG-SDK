@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import re
 import sqlite3
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -223,6 +224,35 @@ async def test_a_recovery_marker_sends_a_matching_version_through_update(marker)
 
     assert graph.updates == ["notion:p1", "notion:p1"]
     assert report.unchanged == ["notion:p1"]
+
+
+async def test_recovery_no_op_refreshes_metadata_from_live_document():
+    pending_id = "notion:p1__pending__deadbeef"
+
+    class RecoveryGraph(FakeGraph):
+        async def update(self, source: str, *, document_id: str, loader: Any, **kwargs: Any):
+            assert document_id == "notion:p1"
+            self.documents.pop(pending_id)
+            self.metadata.pop(pending_id)
+            return UpdateResult(no_op=True)
+
+    graph = RecoveryGraph(
+        {
+            "notion:p1": _hash("Alice."),
+            pending_id: _hash("Alice."),
+        }
+    )
+    graph.metadata["notion:p1"] = {"url": "https://a"}
+    graph.metadata[pending_id] = {"url": "https://b"}
+
+    report = await sync_documents(
+        graph,
+        [SourceDocument("p1", "Alice.", metadata={"url": "https://b"})],
+        source="notion",
+    )
+
+    assert report.unchanged == ["notion:p1"]
+    assert graph.metadata["notion:p1"]["url"] == "https://b"
 
 
 async def test_overlapping_syncs_apply_their_snapshots_in_call_order(dlt):
@@ -1048,7 +1078,7 @@ async def test_canceled_multisource_lock_releases_held_and_reserved_sources():
         await asyncio.sleep(0)
         waiting.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await waiting
+            _ = await waiting
 
         async with _source_locks(graph, ["a"]):
             acquired_a = True
@@ -1106,23 +1136,58 @@ async def test_sync_iterable_is_materialized_on_one_worker(monkeypatch):
             worker.shutdown(wait=True)
 
 
+async def test_canceled_sync_keeps_its_source_lock_until_iteration_stops():
+    started = threading.Event()
+    release = threading.Event()
+    graph = FakeGraph()
+
+    class BlockingRows:
+        def __iter__(self):
+            started.set()
+            release.wait()
+            return iter([SourceDocument("a", "A")])
+
+    first = asyncio.create_task(sync_documents(graph, BlockingRows(), source="wiki"))
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        first.cancel()
+        second = asyncio.create_task(
+            sync_documents(graph, [SourceDocument("b", "B")], source="wiki")
+        )
+        await asyncio.sleep(0.05)
+        assert not second.done()
+    finally:
+        release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    result = await asyncio.wait_for(second, 2)
+    assert result.added == ["wiki:b"]
+
+
 def test_source_locks_release_closed_event_loops():
     import gc
     import weakref
 
-    from graphrag_sdk.connectors.sync import _SOURCE_LOCKS
+    from graphrag_sdk.connectors.sync import _SOURCE_LOCK_PLANNERS, _SOURCE_LOCKS
 
     class YieldingGraph(FakeGraph):
         async def query(self, cypher, params):
             await asyncio.sleep(0)
             return await super().query(cypher, params)
 
-    graph = YieldingGraph()
+        async def get_ontology(self, *, initialize: bool = True) -> Ontology:
+            await asyncio.sleep(0)
+            return self.ontology
+
+    graph = YieldingGraph(tables=[TableMapping(source="users", label="Person", name="name")])
 
     async def overlapping():
         await asyncio.gather(
             sync_documents(graph, [SourceDocument("a", "A")], source="wiki"),
             sync_documents(graph, [SourceDocument("b", "B")], source="wiki"),
+            sync_table(graph, [{"name": "Alice"}], table="users"),
+            sync_table(graph, [{"name": "Bob"}], table="users"),
         )
 
     for _ in range(3):
@@ -1133,6 +1198,7 @@ def test_source_locks_release_closed_event_loops():
         finally:
             loop.close()
         assert graph not in _SOURCE_LOCKS
+        assert graph not in _SOURCE_LOCK_PLANNERS
         del loop
         gc.collect()
         assert reference() is None
@@ -1228,7 +1294,6 @@ async def test_an_edited_file_is_the_only_one_read_again(dlt, tmp_path, monkeypa
 
 def test_demo_preparation_preserves_edits_and_deletions(dlt, tmp_path):
     import runpy
-    import sqlite3
 
     pytest.importorskip("sqlalchemy")
     demo = runpy.run_path(str(Path(__file__).parents[1] / "examples" / "12_connectors.py"))
