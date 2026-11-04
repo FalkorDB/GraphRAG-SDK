@@ -745,6 +745,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lines cannot crowd them all out.
 
 ### Fixed
+- **Missing ontology attributes no longer erase extracted values.**
+  Values absent from a chunk no longer overwrite values from other chunks or
+  system properties such as `description`; resolution merges also fill
+  `None` properties from duplicates and preserve every description during
+  cross-label merges (#362).
 - **A rejected `GraphRAG.set_ontology()` no longer sticks.** When the new
   ontology was refused (a contradiction with the stored one, a reserved
   label), it stayed on the instance and every later ingest failed on it. The
