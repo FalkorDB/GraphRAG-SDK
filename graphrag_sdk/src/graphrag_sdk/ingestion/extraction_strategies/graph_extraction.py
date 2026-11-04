@@ -1174,10 +1174,12 @@ class GraphExtraction(ExtractionStrategy):
                     for chunk_id, offsets in ent_spans.items():
                         existing_spans.setdefault(chunk_id, []).extend(offsets)
                     existing.spans = existing_spans  # type: ignore[attr-defined]
-                # Merge attributes: last-write-wins per key, matching FalkorDB's
-                # ``SET n += props`` semantics at the storage layer.
+                # Missing or invalid values in one chunk must not erase a
+                # value extracted from another chunk.
                 if ent.attributes:
-                    existing.attributes.update(ent.attributes)
+                    existing.attributes.update(
+                        {key: value for key, value in ent.attributes.items() if value is not None}
+                    )
             else:
                 seen[key] = ExtractedEntity(
                     name=ent.name,
@@ -1224,7 +1226,9 @@ class GraphExtraction(ExtractionStrategy):
                         existing_spans.setdefault(chunk_id, []).extend(offsets)
                     existing.spans = existing_spans  # type: ignore[attr-defined]
                 if rel.attributes:
-                    existing.attributes.update(rel.attributes)
+                    existing.attributes.update(
+                        {key: value for key, value in rel.attributes.items() if value is not None}
+                    )
             else:
                 seen[key] = ExtractedRelation(
                     source=rel.source,
@@ -1267,13 +1271,12 @@ class GraphExtraction(ExtractionStrategy):
             if len(members) > 1:
                 props["descriptions"] = members
             # Spans live on the MENTIONED_IN edges (one per chunk), not here.
-            # Merge ontology-declared attributes. The ontology layer does NOT
-            # validate against SDK-reserved keys (name, type, description,
-            # source_chunk_ids, spans, id) — declaring an Attribute with one
-            # of those names will shadow the system value. This is documented
-            # as user-responsibility; the trade-off is the smaller API surface.
+            # Merge ontology-declared attributes, but don't let an absent or
+            # invalid value shadow a system property such as description.
             if ent.attributes:
-                props.update(ent.attributes)
+                props.update(
+                    {key: value for key, value in ent.attributes.items() if value is not None}
+                )
             nodes.append(
                 GraphNode(
                     id=node_id,
@@ -1310,7 +1313,9 @@ class GraphExtraction(ExtractionStrategy):
             if spans:
                 props["spans"] = spans
             if rel.attributes:
-                props.update(rel.attributes)
+                props.update(
+                    {key: value for key, value in rel.attributes.items() if value is not None}
+                )
             relationships.append(
                 GraphRelationship(
                     start_node_id=compute_entity_id(rel.source, src_type),

@@ -1216,7 +1216,7 @@ class TestGraphExtractionSchemaAttributes:
             type="Person",
             description="",
             source_chunk_ids=["c2"],
-            attributes={"age": 58, "birth_year": 1867},
+            attributes={"age": 58, "country": None, "birth_year": 1867},
         )
         merged = GraphExtraction._aggregate_entities([e1, e2])
         assert len(merged) == 1
@@ -1235,13 +1235,54 @@ class TestGraphExtractionSchemaAttributes:
             type="Person",
             description="d",
             source_chunk_ids=["c1"],
-            attributes={"age": 56, "birth_date": "1867-11-07"},
+            attributes={"age": 56, "birth_date": "1867-11-07", "description": None},
         )
         nodes = GraphExtraction._entities_to_nodes([ent])
         assert nodes[0].properties["age"] == 56
         assert nodes[0].properties["birth_date"] == "1867-11-07"
-        # Reserved keys still present.
+        assert nodes[0].properties["description"] == "d"
         assert nodes[0].properties["name"] == "Marie Curie"
+
+    def test_aggregate_relation_attributes_ignore_missing_values(self):
+        from graphrag_sdk.core.models import ExtractedRelation
+
+        first = ExtractedRelation(
+            source="Alice",
+            target="Bob",
+            type="KNOWS",
+            description="",
+            source_chunk_ids=["c1"],
+            attributes={"status": "active"},
+        )
+        second = ExtractedRelation(
+            source="Alice",
+            target="Bob",
+            type="KNOWS",
+            description="",
+            source_chunk_ids=["c2"],
+            attributes={"status": None, "region": "EU"},
+        )
+
+        (merged,) = GraphExtraction._aggregate_relations([first, second])
+
+        assert merged.attributes == {"status": "active", "region": "EU"}
+
+    def test_none_relation_attribute_does_not_shadow_description(self):
+        from graphrag_sdk.core.models import ExtractedRelation
+
+        rel = ExtractedRelation(
+            source="Alice",
+            target="Bob",
+            type="KNOWS",
+            description="Alice knows Bob",
+            source_chunk_ids=["c1"],
+            attributes={"description": None, "confidence": None},
+        )
+
+        (relationship,) = GraphExtraction._relations_to_relationships([rel])
+
+        assert relationship.properties["description"] == "Alice knows Bob"
+        assert "confidence" not in relationship.properties
 
     def test_property_less_schema_keeps_attributes_empty(self):
         """Deterministic-extractor regression: ontology declares no
