@@ -2470,6 +2470,9 @@ class GraphRAG:
         if document_id is not None:
             self._check_no_pending_marker(document_id)
 
+        if auto:
+            ctx.ensure_budget("ingestion planner")
+
         # ── Config validation (cached, runs at most once per session) ──
         # Catches dim/model mismatches up-front instead of mid-ingest, where
         # FalkorDB would reject vectors with a less-actionable error.
@@ -5796,6 +5799,13 @@ class GraphRAG:
             raise
         except LatencyBudgetExceededError:
             raise
+        except DatabaseError as exc:
+            if "empty key" not in str(exc).casefold():
+                self._schedule_config_validation_retry(generation)
+                logger.debug("Failed to validate graph config", exc_info=True)
+                return False
+            # A graph with no key has never been written, so it cannot have
+            # persisted config to compare. Continue to the embedder probe.
         except Exception:
             self._schedule_config_validation_retry(generation)
             logger.debug("Failed to validate graph config", exc_info=True)
