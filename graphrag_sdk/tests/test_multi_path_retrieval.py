@@ -1086,6 +1086,10 @@ class TestProvenanceMetadata:
         graph_store = MagicMock()
 
         async def route_query(cypher, params=None):
+            if "pending_delete" in cypher and "RETURN DISTINCT c.id" in cypher:
+                return _rows([])  # document-state check: every document live
+            if "neighbor:__Entity__" in cypher:
+                return _rows([])  # 2-hop chunk path
             if "toLower(e.name) = toLower(kw)" in cypher:  # exact entity match
                 return _rows([["e1", "Alice", "Engineer"]])
             if "CONTAINS toLower(kw)" in cypher:  # CONTAINS discovery path
@@ -1162,6 +1166,8 @@ class TestProvenanceMetadata:
         graph_store = MagicMock()
 
         async def route_query(cypher, params=None):
+            if "pending_delete" in cypher:
+                return _rows([])  # document state and graph chunk paths
             if "PART_OF" in cypher:
                 return _rows([["c1", "docs/a.md"], ["c2", "docs/b.md"]])
             return _rows([])
@@ -1202,6 +1208,8 @@ class TestProvenanceMetadata:
         graph_store = MagicMock()
 
         async def route_query(cypher, params=None):
+            if "pending_delete" in cypher:
+                return _rows([])  # document state and graph chunk paths
             if "PART_OF" in cypher:
                 return _rows([["c1", "docs/a.md"], ["c2", "docs/b.md"]])
             return _rows([])
