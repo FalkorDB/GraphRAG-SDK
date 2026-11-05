@@ -10,6 +10,7 @@ from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+from graphrag_sdk.retrieval.strategies.result_assembly import format_relation_line
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +49,11 @@ async def search_relates_edges(
             src = rel.get("src_name", "")
             tgt = rel.get("tgt_name", "")
             rel_type = rel.get("type", "")
-            fact = rel.get("fact", "")
             score = float(rel.get("score", 0.0))
             if src and rel_type and tgt:
-                line = f"{src} —[{rel_type}]→ {tgt}"
-                if fact:
-                    line += f": {fact}"
+                line = format_relation_line(
+                    src, rel_type, tgt, rel.get("description", ""), rel.get("fact", "")
+                )
                 fact_strings.append((line, score))
             # Add entities as graph entry points, by their stored ids (typed,
             # e.g. "alice__person") so expansion can walk from them. A store
@@ -61,6 +61,11 @@ async def search_relates_edges(
             # with no name (a relation edge from a table sets none) still
             # seeds expansion, but gets an empty name so the answer's Key
             # Entities never show its raw id; a later edge may name it.
+            # Their descriptions stay out: the fact line already says how they
+            # relate to the question, and describing every endpoint of every
+            # matched edge filled the entity section with side entities that
+            # pulled single-fact answers off course (GraphRAG-Bench Fact
+            # Retrieval, gpt-4.1: 65.3 -> 60.7 with them shown).
             for name, stored_id in ((src, rel.get("src_id")), (tgt, rel.get("tgt_id"))):
                 eid = stored_id or (name or "").strip().lower().replace(" ", "_")
                 if not eid:
@@ -121,6 +126,10 @@ async def discover_entities(
             continue
         seen_kw.add(k_low)
         kw_batch.append(kw)
+    # Short acronyms ("US", "EU", kept as entities since 1.5.0) only match
+    # exactly or by fulltext: as a substring they hit unrelated names
+    # ("Austria", "Museum") and spend the per-keyword quota on noise.
+    contains_batch = [kw for kw in kw_batch if not (len(kw) <= 3 and kw.isupper())]
 
     if use_cypher and kw_batch:
         # Pass a1: exact-name matches, capped per keyword. Inserted first
@@ -133,8 +142,16 @@ async def discover_entities(
                 "UNWIND $keywords AS kw "
                 "CALL { "
                 "  WITH kw "
-                "  MATCH (e:__Entity__) WHERE toLower(e.name) = toLower(kw) "
+                "  MATCH (e:__Entity__) "
+                "  WHERE toLower(e.name) = toLower(kw) "
+                # A dedup merge keeps the names it folded away as aliases.
+                "     OR any(al IN coalesce(e.aliases, []) WHERE toLower(al) = toLower(kw)) "
+                # A direct name match beats an alias match; id breaks ties.
+                # The rank is computed in a WITH: FalkorDB 6.0 rejects an
+                # outer variable (kw) referenced in a subquery's ORDER BY.
+                "  WITH e, CASE WHEN toLower(e.name) = toLower(kw) THEN 0 ELSE 1 END AS rank "
                 "  RETURN e.id AS id, e.name AS name, e.description AS desc "
+                "  ORDER BY rank ASC, id ASC "
                 "  LIMIT 3 "
                 "} "
                 "RETURN id, name, desc",
@@ -157,36 +174,41 @@ async def discover_entities(
         # Pass a2: CONTAINS with per-keyword quota and shorter-name priority.
         # Excludes exact matches (already added in pass a1) so the quota
         # isn't spent re-fetching them.
-        try:
-            if ctx is not None:
-                ctx.ensure_budget("entity contains search")
-            result = await graph_store.query_raw(
-                "UNWIND $keywords AS kw "
-                "CALL { "
-                "  WITH kw "
-                "  MATCH (e:__Entity__) "
-                "  WHERE toLower(e.name) CONTAINS toLower(kw) "
-                "    AND toLower(e.name) <> toLower(kw) "
-                "  RETURN e.id AS id, e.name AS name, e.description AS desc "
-                "  ORDER BY size(e.name) ASC, toLower(e.name) ASC, e.id ASC "
-                "  LIMIT 5 "
-                "} "
-                "RETURN id, name, desc",
-                {"keywords": kw_batch},
-            )
-            for row in result.result_set:
-                _add(
-                    row[0],
-                    {
-                        "name": row[1] if len(row) > 1 else "",
-                        "description": row[2] if len(row) > 2 else "",
-                    },
-                    "cypher_contains",
+        # Skipped when every keyword is a short acronym.
+        if contains_batch:
+            try:
+                if ctx is not None:
+                    ctx.ensure_budget("entity contains search")
+                result = await graph_store.query_raw(
+                    "UNWIND $keywords AS kw "
+                    "CALL { "
+                    "  WITH kw "
+                    "  MATCH (e:__Entity__) "
+                    "  WHERE (toLower(e.name) CONTAINS toLower(kw) "
+                    "         OR any(al IN coalesce(e.aliases, []) "
+                    "                WHERE toLower(al) CONTAINS toLower(kw))) "
+                    "    AND toLower(e.name) <> toLower(kw) "
+                    "    AND none(al IN coalesce(e.aliases, []) WHERE toLower(al) = toLower(kw)) "
+                    "  RETURN e.id AS id, e.name AS name, e.description AS desc "
+                    "  ORDER BY size(e.name) ASC, toLower(e.name) ASC, e.id ASC "
+                    "  LIMIT 5 "
+                    "} "
+                    "RETURN id, name, desc",
+                    {"keywords": contains_batch},
                 )
-        except LatencyBudgetExceededError:
-            raise
-        except Exception as exc:
-            logger.debug("Entity CONTAINS search failed: %s", exc)
+                for row in result.result_set:
+                    _add(
+                        row[0],
+                        {
+                            "name": row[1] if len(row) > 1 else "",
+                            "description": row[2] if len(row) > 2 else "",
+                        },
+                        "cypher_contains",
+                    )
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:
+                logger.debug("Entity CONTAINS search failed: %s", exc)
 
     # Path b: Fulltext search on entity index
     for kw in all_keywords[:6] if use_fulltext else []:
@@ -264,7 +286,7 @@ async def expand_sibling_entities(
             "WHERE NOT sibling.id IN $found_ids "
             "RETURN DISTINCT sibling.id AS id, sibling.name AS name, "
             "sibling.description AS desc "
-            "ORDER BY sibling.name "
+            "ORDER BY sibling.name, sibling.id "
             "LIMIT $limit",
             {"found_ids": found_ids, "limit": max_siblings},
         )

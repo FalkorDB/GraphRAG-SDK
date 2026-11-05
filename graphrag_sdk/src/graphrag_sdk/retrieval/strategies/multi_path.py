@@ -81,7 +81,8 @@ class MultiPathRetrieval(RetrievalStrategy):
         vector_store: Vector data access object.
         embedder: Embedding provider.
         llm: LLM provider for keyword extraction.
-        chunk_top_k: Final chunks after reranking (default: 15).
+        chunk_top_k: Final chunks after reranking (default: 20, sized for
+            the default 384-token chunks).
         max_entities: Max entities to keep (default: 30).
         max_relationships: Max relationships to keep (default: 20).
         rel_top_k: RELATES edge vector search results (default: 15).
@@ -174,10 +175,13 @@ class MultiPathRetrieval(RetrievalStrategy):
         embedder: Embedder,
         llm: LLMInterface,
         *,
-        chunk_top_k: int = 15,  # Passage diversity without overwhelming LLM context
+        # 20 chunks of the default 384-token chunker carry the same text as the
+        # 15 chunks of 512 tokens this was tuned on; at 15 the move to 384
+        # silently cut a quarter of the passage text the answer sees.
+        chunk_top_k: int = 20,
         max_entities: int = 30,  # Upper bound before reranking; balances recall vs noise
         max_relationships: int = 20,  # Cap on RELATES edges per query
-        rel_top_k: int = 15,  # Matched to chunk_top_k for balanced fact/passage coverage
+        rel_top_k: int = 15,
         keyword_limit: int = 10,  # Fulltext search keyword budget from query decomposition
         enable_cypher: bool = False,  # Text-to-Cypher path (experimental, off by default)
         router: Any | None = None,  # Optional path router (per-query path selection)
@@ -263,7 +267,9 @@ class MultiPathRetrieval(RetrievalStrategy):
         max_entities_out = _nonneg_int("max_entities_out", 25)
         max_relationships_out = _nonneg_int("max_relationships_out", 20)
         max_facts_out = _nonneg_int("max_facts_out", 15)
-        max_passages_out = _nonneg_int("max_passages_out", 15)
+        # The reranker already keeps chunk_top_k passages; showing fewer by
+        # default would silently override that setting.
+        max_passages_out = _nonneg_int("max_passages_out", chunk_top_k)
 
         # 1. Extract keywords
         ctx.ensure_budget("MultiPath keyword extraction")
@@ -384,9 +390,21 @@ class MultiPathRetrieval(RetrievalStrategy):
         # 5. Relationship expansion
         entity_list = list(found_entities.items())[:max_entities]
         if "expansion" in plan:
-            relationship_strings = await expand_relationships(
-                self._graph, entity_list, max_relationships, ctx=ctx
-            )
+            # Facts and expansion often reach the same edge; a line already in
+            # the facts section would only spend a relationship slot, so ask
+            # for enough to fill the cap after dropping those.
+            fact_lines = set(fact_strings)
+            relationship_strings = [
+                line
+                for line in await expand_relationships(
+                    self._graph,
+                    entity_list,
+                    max_relationships + len(fact_lines),
+                    ctx=ctx,
+                    query_vector=query_vector,
+                )
+                if line not in fact_lines
+            ][:max_relationships]
         else:
             relationship_strings = []
         ctx.log(f"MultiPath [5/9]: {len(relationship_strings)} relationships")
@@ -401,6 +419,7 @@ class MultiPathRetrieval(RetrievalStrategy):
                 simple_kw,
                 entity_list,
                 ctx=ctx,
+                vector_top_k=max(15, chunk_top_k),
             )
         else:
             candidate_chunks, _chunk_sources, chunk_embeddings = {}, {}, {}
