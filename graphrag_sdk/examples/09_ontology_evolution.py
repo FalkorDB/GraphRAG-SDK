@@ -21,7 +21,7 @@ chunks before committing the schema change.
 Prereqs::
 
     pip install graphrag-sdk[litellm]
-    docker run -p 6379:6379 falkordb/falkordb
+    docker run -p 6379:6379 falkordb/falkordb:v4.22.2
     export OPENAI_API_KEY=...
 
 Run::

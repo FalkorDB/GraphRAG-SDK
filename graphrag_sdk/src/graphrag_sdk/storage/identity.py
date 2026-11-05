@@ -1,10 +1,11 @@
 # GraphRAG SDK — Storage: near-miss identity
 #
 # Finding entities that are probably the same thing but did not merge, because
-# the merge is exact string equality on the display name and real sources do not
-# agree on spelling. An HR export says "Maya Ellison"; the board review says
-# "M. Ellison"; the graph keeps two people, one holding her age and the other
-# holding what she did, and every question that needs both comes back wrong.
+# the exact phase groups by canonical name, real sources do not always agree on
+# spelling in ways it can unify, and the judge did not merge them. An HR export
+# says "Maya Ellison"; the board review says "M. Ellison"; the graph keeps two
+# people, one holding her age and the other holding what she did, and every
+# question that needs both comes back wrong.
 #
 # This module only *finds* pairs. It never merges. See the note on recall below.
 

@@ -7,7 +7,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship, ResolutionResult
@@ -143,7 +143,6 @@ async def exact_match_merge(
     resolve_property: str = "name",
     label_gate: Callable[[str, str], bool] | None = None,
     cross_label_vote: bool = False,
-    rejected_out: set[frozenset[str]] | None = None,
 ) -> tuple[list[GraphNode], dict[str, str], int]:
     """Phase 1: group nodes by normalized name and merge exact duplicates.
 
@@ -334,20 +333,6 @@ async def exact_match_merge(
     if prompts and llm is not None:
         batch_results = await llm.abatch_invoke(prompts)
 
-    def _record_rejection(cl_idx: int) -> None:
-        """Remember a DEFINITIVE refusal so a later run need not pay to re-ask.
-
-        Only ever called for an explicit NO — never for a failed call or an
-        unparseable reply, which carry no decision at all. Recording those
-        would turn one transient error into a permanent "distinct" verdict.
-        """
-        if rejected_out is None:
-            return
-        ids = cl_candidates[cl_idx]["ids"]
-        for x in range(len(ids)):
-            for y in range(x + 1, len(ids)):
-                rejected_out.add(frozenset((ids[x], ids[y])))
-
     # ── Stage 4: parse results ──
     sl_summaries: dict[int, str] = {}  # sl_entry_idx -> summary text
     cl_approvals: dict[int, tuple[str, str]] = {}  # cl_idx -> (chosen_type, summary)
@@ -355,10 +340,9 @@ async def exact_match_merge(
         idx = item.index
         if idx < cl_prompt_start:
             sl_entry_idx, descs = summary_prompt_refs[idx]
-            if item.ok:
+            # A failed summary leaves the joined descriptions in place.
+            if item.ok and item.response.content.strip():
                 sl_summaries[sl_entry_idx] = item.response.content.strip()
-            else:
-                sl_summaries[sl_entry_idx] = " | ".join(descs)
         else:
             cl_idx = idx - cl_prompt_start
             if not item.ok:
@@ -367,11 +351,7 @@ async def exact_match_merge(
             content = item.response.content.strip()
             first_line = content.split("\n", 1)[0].strip()
             if not first_line.upper().startswith("YES"):
-                # NO or malformed → fail-safe: preserve homographs. Only the
-                # explicit NO is a decision; a malformed reply is not one, and
-                # must stay askable on a later run.
-                if first_line.upper().startswith("NO"):
-                    _record_rejection(cl_idx)
+                # NO or malformed → fail-safe: preserve homographs.
                 continue
             parts = first_line.split(None, 1)
             chosen = parts[1].strip() if len(parts) >= 2 else ""
@@ -425,10 +405,6 @@ async def exact_match_merge(
                     cl_candidates[cl_idx]["name"],
                     cl_candidates[cl_idx]["types"],
                 )
-                # An explicit NO on the re-ask is a decision; an unanswered one
-                # only withdraws the approval.
-                if k in agreed:
-                    _record_rejection(cl_idx)
                 del cl_approvals[cl_idx]
 
     # ── Stage 5: apply same-label merges, producing one survivor per sl group ──
@@ -443,10 +419,6 @@ async def exact_match_merge(
         survivor = group_nodes[0]
         if entry["descriptions"]:
             set_merged_descriptions(survivor, group_nodes[1:])
-            if i in sl_summaries:
-                # An LLM summary (force_summary_threshold reached) replaces the
-                # joined string only; the member list is kept intact.
-                survivor.properties["description"] = sl_summaries[i]
         if entry["all_source_ids"]:
             survivor.properties["source_chunk_ids"] = entry["all_source_ids"]
         for dup in group_nodes[1:]:
@@ -455,6 +427,16 @@ async def exact_match_merge(
                     survivor.properties[k] = v
             id_remap[dup.id] = survivor.id
             merged_count += 1
+        if entry["descriptions"] and i in sl_summaries:
+            # An LLM summary (force_summary_threshold reached) is the one
+            # description the survivor keeps: the store joins a
+            # ``descriptions`` list it is handed, so leaving the list — the
+            # survivor's, or one the copy above took from a duplicate — would
+            # throw the summary away. What each chunk said stays on its
+            # MENTIONED_IN edge. Last, so nothing writes these keys after it.
+            survivor.properties["description"] = sl_summaries[i]
+            survivor.properties.pop("descriptions", None)
+            survivor.properties["description_summarised"] = True
         sl_survivor_by_idx[i] = survivor
 
     # ── Stage 6: apply approved cross-label merges ──
@@ -520,6 +502,8 @@ async def exact_match_merge(
         # and it is the field search, the fulltext index and the prompts read.
         if cl_summary:
             cl_survivor.properties["description"] = cl_summary
+            cl_survivor.properties.pop("descriptions", None)
+            cl_survivor.properties["description_summarised"] = True
 
     # ── Stage 7: resolve transitive id_remap chains (sl-loser → sl-survivor →
     # cl-survivor becomes sl-loser → cl-survivor directly) ──
@@ -591,48 +575,48 @@ def remap_relationships(
     which that later pass removed. Flattening here rather than at each
     call site means no caller can forget it; it is a no-op on a mapping
     that is already one hop deep.
+
+    The first edge per key is kept, and a dropped duplicate's
+    ``source_chunk_ids`` are added to it. Merging ``acme_corp`` into ``acme``
+    turns ``Alice WORKS_AT Acme Corp`` (chunk 1) and ``Alice WORKS_AT Acme``
+    (chunk 2) into one edge; keeping only the first edge's list forgot that
+    chunk 2 says it too, so deleting chunk 1's document deleted the fact.
     """
     id_remap = flatten_remap(id_remap)
     deduplicated_rels: list[GraphRelationship] = []
-    seen_rels: set[tuple[str, str, str, str]] = set()
+    kept: dict[tuple[str, str, str, str], tuple[GraphRelationship, set[Any] | None]] = {}
     for rel in relationships:
         start = id_remap.get(rel.start_node_id, rel.start_node_id)
         end = id_remap.get(rel.end_node_id, rel.end_node_id)
         rel_key = (start, rel.type, rel.properties.get("rel_type", ""), end)
-        if rel_key not in seen_rels:
-            seen_rels.add(rel_key)
-            deduplicated_rels.append(
-                GraphRelationship(
-                    start_node_id=start,
-                    end_node_id=end,
-                    type=rel.type,
-                    properties=rel.properties,
-                )
+        if rel_key not in kept:
+            first = GraphRelationship(
+                start_node_id=start,
+                end_node_id=end,
+                type=rel.type,
+                properties=rel.properties,
             )
+            kept[rel_key] = (first, None)
+            deduplicated_rels.append(first)
+            continue
+        first, seen = kept[rel_key]
+        extra = rel.properties.get("source_chunk_ids")
+        if not isinstance(extra, list) or not extra:
+            continue
+        if seen is None:
+            # Copy before the first change: the dict may still be the
+            # caller's input relationship's.
+            current = first.properties.get("source_chunk_ids")
+            chunk_ids = list(current) if isinstance(current, list) else []
+            first.properties = {**first.properties, "source_chunk_ids": chunk_ids}
+            seen = set(chunk_ids)
+        chunk_ids = first.properties["source_chunk_ids"]
+        for chunk_id in extra:
+            if chunk_id not in seen:
+                seen.add(chunk_id)
+                chunk_ids.append(chunk_id)
+        kept[rel_key] = (first, seen)
     return deduplicated_rels
-
-
-#: ``ctx.metadata`` key: ``set[frozenset[str]]`` of node-id pairs already judged to
-#: be two things. A strategy must not merge such a pair and should not spend a
-#: call asking about it again. Set by the caller.
-RESOLUTION_SKIP_PAIRS = "resolution_skip_pairs"
-
-#: ``ctx.metadata`` key: ``set[frozenset[str]]`` of node-id pairs the caller wants
-#: judged even where the strategy's own candidate search would not surface them —
-#: a table's "M. Ellison" beside a document's "Maya Ellison", which a name rule
-#: spotted and an embedding threshold did not. Set by the caller.
-RESOLUTION_ASK_PAIRS = "resolution_ask_pairs"
-
-#: ``ctx.metadata`` key: ``set[str]`` of node ids whose identity was declared, not
-#: extracted — rows of a table, each keyed. No two of them are one thing, so a
-#: strategy should not merge, or ask about, a pair drawn from this set. Set by
-#: the caller; a set rather than pairs because a table has n rows and n² pairs.
-RESOLUTION_DISTINCT_IDS = "resolution_distinct_ids"
-
-#: ``ctx.metadata`` key: ``set[frozenset[str]]`` of node-id pairs the strategy
-#: examined and judged to be two things. Written by the strategy, so the caller
-#: can remember the answer and pass it back as ``RESOLUTION_SKIP_PAIRS`` next time.
-RESOLUTION_REJECTED_PAIRS = "resolution_rejected_pairs"
 
 
 class ResolutionStrategy(ABC):
@@ -648,15 +632,7 @@ class ResolutionStrategy(ABC):
                 # Use embeddings to find near-duplicate entities
                 ...
 
-    A strategy is run within one document by ``ingest`` and, when passed to
-    ``finalize(resolver=...)``, over the whole graph. In the second setting the
-    caller knows things the strategy does not, and says so through
-    ``ctx.metadata``: :data:`RESOLUTION_SKIP_PAIRS` are pairs already decided
-    against, :data:`RESOLUTION_DISTINCT_IDS` are ids that are pairwise distinct
-    by declaration, :data:`RESOLUTION_ASK_PAIRS` are pairs it wants an answer
-    on. A strategy that judges pairs reports the ones it rejected under
-    :data:`RESOLUTION_REJECTED_PAIRS`. All four are optional; a strategy that
-    ignores them is still correct, only less economical.
+    A strategy is run within one document by ``ingest``.
     """
 
     @abstractmethod

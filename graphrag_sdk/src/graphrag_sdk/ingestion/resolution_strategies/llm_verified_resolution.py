@@ -34,10 +34,6 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.resolution_strategies.base import (
-    RESOLUTION_ASK_PAIRS,
-    RESOLUTION_DISTINCT_IDS,
-    RESOLUTION_REJECTED_PAIRS,
-    RESOLUTION_SKIP_PAIRS,
     ResolutionStrategy,
     exact_match_merge,
     flatten_remap,
@@ -905,22 +901,8 @@ class LLMVerifiedResolution(ResolutionStrategy):
         names = [_name(n) for n in valid]
         token_sets = [_name_tokens(nm) for nm in names]
 
-        # What the caller has already settled, read exactly as the embedding
-        # pass reads it. Without this, finalize() could re-merge a cross-label
-        # pair the model had already rejected on an earlier run, or fuse two
-        # rows the caller declared distinct — the doors below do not care what
-        # a previous run decided, so the resolver's contract was only being
-        # honoured on one of its two passes.
-        skip_pairs: set[frozenset[str]] = set(ctx.metadata.get(RESOLUTION_SKIP_PAIRS) or ())
-        distinct_ids: set[str] = set(ctx.metadata.get(RESOLUTION_DISTINCT_IDS) or ())
-
-        def _settled(gi: int, gj: int) -> bool:
-            pair = frozenset((valid[gi].id, valid[gj].id))
-            return pair in skip_pairs or pair <= distinct_ids
-
         candidates: list[tuple[int, int, float, str]] = []
         gated_pairs = 0
-        settled_pairs = 0
         for i in range(len(valid)):
             sims_i = mat_normed[i] @ mat_normed.T
             for j in range(i + 1, len(valid)):
@@ -928,9 +910,6 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     continue  # PASS 1 already owns same-label pairs
                 sim = float(sims_i[j])
                 if sim < self.cross_label_rank_floor:
-                    continue
-                if (skip_pairs or distinct_ids) and _settled(i, j):
-                    settled_pairs += 1
                     continue
                 # The family gate belongs here most of all: this pass exists to
                 # look at pairs whose labels DIFFER, so it is where "Person vs
@@ -951,9 +930,6 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 else:
                     continue
                 candidates.append((i, j, sim, door))
-
-        if settled_pairs:
-            ctx.log(f"PASS 2 (cross-label): {settled_pairs} pair(s) already settled by the caller")
 
         if gated_pairs:
             ctx.log(
@@ -1082,15 +1058,8 @@ class LLMVerifiedResolution(ResolutionStrategy):
             parent[ry] = rx
             return True
 
-        rejected: set[frozenset[str]] = ctx.metadata.setdefault(RESOLUTION_REJECTED_PAIRS, set())
         yes_positions = [pos for pos in range(len(capped)) if verdicts.get(pos)]
         unanswered = [pos for pos in range(len(capped)) if pos not in verdicts]
-        for pos in range(len(capped)):
-            # An explicit NO is a decision worth persisting; an unanswered pair
-            # is not, and must stay askable on a later run.
-            if verdicts.get(pos) is False:
-                i, j, _sim, _door = capped[pos]
-                rejected.add(frozenset((valid[i].id, valid[j].id)))
         if unanswered:
             logger.warning(
                 "PASS 2 left %d of %d pairs unanswered; they stay unmerged",
@@ -1150,11 +1119,6 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 else:
                     vetoed += 1
                     i, j = capped[pos][0], capped[pos][1]
-                    # Same distinction as everywhere else: an explicit NO on the
-                    # re-ask is remembered, an unanswered one only withdraws the
-                    # YES.
-                    if k in second:
-                        rejected.add(frozenset((valid[i].id, valid[j].id)))
                     logger.debug(
                         "PASS 2 cross-label vote %s '%s' (%s) + '%s' (%s)",
                         "vetoed" if k in second else "left unconfirmed",
@@ -1276,17 +1240,8 @@ class LLMVerifiedResolution(ResolutionStrategy):
         )
 
         # ── Phase 1: Normalized name exact-match merge ────────────────────────
-        # A node the caller declared distinct from another, or already decided
-        # a pair about, is not merged on its name: two keyed rows called Alice
-        # Smith are two rows, and a mention between them is not either. Those
-        # nodes go straight to the embedding phase, which honours the hints.
-        skip_pairs: set[frozenset[str]] = set(ctx.metadata.get(RESOLUTION_SKIP_PAIRS) or ())
-        protected = set(ctx.metadata.get(RESOLUTION_DISTINCT_IDS) or ()) | {
-            node_id for pair in skip_pairs for node_id in pair
-        }
-        held_out = [node for node in graph_data.nodes if node.id in protected]
         deduplicated_nodes, id_remap, merged_count = await exact_match_merge(
-            [node for node in graph_data.nodes if node.id not in protected],
+            graph_data.nodes,
             self.llm,
             force_summary_threshold=self.force_summary_threshold,
             max_summary_tokens=self.max_summary_tokens,
@@ -1297,9 +1252,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
             # second vote ever ran.
             label_gate=labels_compatible if self.label_family_gate else None,
             cross_label_vote=self.cross_label_vote,
-            rejected_out=ctx.metadata.setdefault(RESOLUTION_REJECTED_PAIRS, set()),
         )
-        deduplicated_nodes = held_out + deduplicated_nodes
         ctx.log(
             f"Phase 1 (exact-match): {merged_count} merged, {len(deduplicated_nodes)} surviving"
         )
@@ -1439,14 +1392,6 @@ class LLMVerifiedResolution(ResolutionStrategy):
             "unified_embedding_cache" if self.unified_stage else "embedding_cache", {}
         )
         soft_floor = self.unified_threshold if self.unified_stage else self.soft_threshold
-        # What the caller already knows. Pairs are of post-phase-1 ids, which for
-        # a caller passing graph ids is the same thing: phase 1 finds nothing
-        # left to merge in a graph the deduplicator has already been over.
-        skip_pairs: set[frozenset[str]] = set(ctx.metadata.get(RESOLUTION_SKIP_PAIRS) or ())
-        distinct_ids: set[str] = set(ctx.metadata.get(RESOLUTION_DISTINCT_IDS) or ())
-        ask_pairs: set[frozenset[str]] = set(ctx.metadata.get(RESOLUTION_ASK_PAIRS) or ())
-        ask_pairs = {p for p in ask_pairs if p not in skip_pairs and not p <= distinct_ids}
-        rejected: set[frozenset[str]] = ctx.metadata.setdefault(RESOLUTION_REJECTED_PAIRS, set())
 
         for label, label_nodes in by_label.items():
             if len(label_nodes) < 2:
@@ -1613,38 +1558,6 @@ class LLMVerifiedResolution(ResolutionStrategy):
 
             hard_pairs = [(i, j) for i, j in hard_pairs if not _codes_apart(i, j)]
             ambiguous_pairs = [(i, j, s) for i, j, s in ambiguous_pairs if not _codes_apart(i, j)]
-
-            if skip_pairs or ask_pairs or distinct_ids:
-                index_of = {node.id: k for k, node in enumerate(valid_nodes)}
-
-                def _known(gi: int, gj: int) -> frozenset[str]:
-                    return frozenset((valid_nodes[gi].id, valid_nodes[gj].id))
-
-                def _settled(gi: int, gj: int) -> bool:
-                    # Decided against on an earlier run, or two declared identities:
-                    # not asked about, and not merged however close the names embed.
-                    pair = _known(gi, gj)
-                    return pair in skip_pairs or pair <= distinct_ids
-
-                hard_pairs = [(i, j) for i, j in hard_pairs if not _settled(i, j)]
-                ambiguous_pairs = [
-                    (i, j, sim) for i, j, sim in ambiguous_pairs if not _settled(i, j)
-                ]
-                # A pair the caller wants judged goes to the model whatever it
-                # scored, at its real similarity so the prompt does not lie.
-                seen = {frozenset((i, j)) for i, j in hard_pairs}
-                seen |= {frozenset((i, j)) for i, j, _ in ambiguous_pairs}
-                for pair in sorted(ask_pairs, key=sorted):
-                    ids = [index_of[node_id] for node_id in pair if node_id in index_of]
-                    if len(ids) != 2 or frozenset(ids) in seen:
-                        continue
-                    gi, gj = sorted(ids)
-                    sim_val = float(mat_normed[gi] @ mat_normed[gj])
-                    ambiguous_pairs.append((gi, gj, sim_val))
-                    seen.add(frozenset(ids))
-                    # Deliberately not gated on label family: an ask_pair is the
-                    # caller naming this pair, which outranks a candidate-
-                    # generation heuristic. It still only reaches the LLM.
 
             # Hard merges — no LLM needed
             for gi, gj in hard_pairs:
@@ -1937,12 +1850,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
                                     confirmed[req.prompt_index] = False
                                 else:
                                     # No verdict at all — a failed call or an
-                                    # unparseable reply. Drop the YES, but do
-                                    # NOT record False: the later loop persists
-                                    # a False into RESOLUTION_REJECTED_PAIRS,
-                                    # which would turn one transient failure
-                                    # into a permanent "these are distinct" that
-                                    # no later run ever retries.
+                                    # unparseable reply. Drop the YES.
                                     confirmed.pop(req.prompt_index, None)
                                 logger.debug(
                                     "Cross-label vote %s '%s' (%s) + '%s' (%s)",
@@ -1959,13 +1867,6 @@ class LLMVerifiedResolution(ResolutionStrategy):
                         if verdict:
                             union(req.idx_a, req.idx_b)
                             llm_confirmed += 1
-                        elif verdict is False:
-                            # An explicit NO is remembered so the next
-                            # incremental run does not pay to ask again. A pair
-                            # that is ABSENT from `confirmed` carries no verdict
-                            # at all — it is not a NO, and recording it as one
-                            # would make an unanswered pair permanent.
-                            rejected.add(frozenset((req.node_a.id, req.node_b.id)))
 
                     total_llm += llm_confirmed
                     ctx.log(

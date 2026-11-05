@@ -113,22 +113,26 @@ class TestGraphStoreUpsertNodes:
 
 
 class TestUpsertNodesKeepsProvenance:
-    """Entity-level ``source_chunk_ids`` is a union across writes, never a replace.
+    """An entity carries no ``source_chunk_ids`` or ``spans``: which chunks
+    mention it, and where, is on its ``MENTIONED_IN`` edges, one per chunk.
+    A list on the node grew with every mention and was rewritten on every
+    write."""
 
-    Two documents mentioning one entity both leave their chunks on it; the
-    ``MENTIONED_IN`` edges already said so and the property must agree.
-    """
-
-    async def test_an_entity_write_unions_source_chunk_ids(self, graph_store, mock_connection):
+    async def test_an_entity_write_leaves_provenance_to_the_edges(
+        self, graph_store, mock_connection
+    ):
         await graph_store.upsert_nodes(
-            [GraphNode(id="acme", label="Organization", properties={"source_chunk_ids": ["c2"]})]
+            [
+                GraphNode(
+                    id="acme",
+                    label="Organization",
+                    properties={"name": "Acme", "source_chunk_ids": ["c2"], "spans": "{}"},
+                )
+            ]
         )
-        cypher = upsert_calls(mock_connection)[0][0][0]
-        assert "coalesce(n.source_chunk_ids, []) AS old" in cypher
-        assert "SET n += item.properties" in cypher
-        assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in cypher
-        assert "old + [c IN contrib WHERE NOT c IN old]" in cypher
-        assert cypher.index("SET n += item.properties") < cypher.index("n.source_chunk_ids = CASE")
+        cypher, params = upsert_calls(mock_connection)[0][0]
+        assert "source_chunk_ids" not in cypher
+        assert params["batch"] == [{"id": "acme", "properties": {"name": "Acme"}}]
 
     async def test_a_structural_write_replaces_as_before(self, graph_store, mock_connection):
         await graph_store.upsert_nodes(
@@ -138,7 +142,67 @@ class TestUpsertNodesKeepsProvenance:
         assert "SET n += item.properties" in cypher
         assert "source_chunk_ids = CASE" not in cypher
 
-    async def test_the_per_item_fallback_unions_too(self, graph_store, mock_connection):
+    async def test_the_per_item_fallback_leaves_it_off_too(self, graph_store, mock_connection):
+        async def fail_the_batch(cypher, params=None):
+            if "UNWIND" in cypher:
+                raise Exception("batch fail")
+            return MagicMock()
+
+        mock_connection.query = AsyncMock(side_effect=fail_the_batch)
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="acme",
+                    label="Organization",
+                    properties={"name": "Acme", "source_chunk_ids": ["c1"]},
+                )
+            ]
+        )
+        fallback = [
+            call
+            for call in mock_connection.query.call_args_list
+            if "UNWIND" not in call[0][0] and not _is_index_housekeeping(call[0][0])
+        ]
+        assert len(fallback) == 1
+        assert "source_chunk_ids" not in fallback[0][0][0]
+        assert fallback[0][0][1]["properties"] == {"name": "Acme"}
+
+
+class TestUpsertNodesMarksNothingForDedup:
+    """Ingest writes nothing onto an entity for dedup. A new entity has no name
+    vector, and that is what the next finalize looks for; it lists the entity
+    in a system record before it embeds it."""
+
+    async def test_a_new_entity_carries_no_dedup_marker(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes(
+            [GraphNode(id="acme", label="Organization", properties={"name": "Acme"})]
+        )
+        cypher = upsert_calls(mock_connection)[0][0][0]
+        assert "dedup" not in cypher and "ON CREATE" not in cypher
+        assert "embedding" not in cypher
+
+    async def test_a_property_named_like_the_old_flag_is_the_users(
+        self, graph_store, mock_connection
+    ):
+        """``dedup_pending`` was once an SDK flag; it is ordinary data now."""
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="acme",
+                    label="Organization",
+                    properties={"name": "Acme", "dedup_pending": False},
+                )
+            ]
+        )
+        params = upsert_calls(mock_connection)[0][0][1]
+        assert params["batch"][0]["properties"] == {"name": "Acme", "dedup_pending": False}
+
+    async def test_a_structural_node_is_never_marked(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes([GraphNode(id="c1", label="Chunk", properties={})])
+        cypher = upsert_calls(mock_connection)[0][0][0]
+        assert "dedup" not in cypher
+
+    async def test_the_per_item_fallback_marks_nothing_either(self, graph_store, mock_connection):
         async def fail_the_batch(cypher, params=None):
             if "UNWIND" in cypher:
                 raise Exception("batch fail")
@@ -153,8 +217,206 @@ class TestUpsertNodesKeepsProvenance:
             for call in mock_connection.query.call_args_list
             if "UNWIND" not in call[0][0] and not _is_index_housekeeping(call[0][0])
         ]
-        assert len(fallback) == 1
-        assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in fallback[0]
+        assert len(fallback) == 1 and "dedup" not in fallback[0]
+
+
+class TestOneKeyTwiceInOneCall:
+    """A batch holding one key twice gave engine-dependent values and dropped
+    one write's chunks, so writes sharing a key are folded before sending."""
+
+    async def test_duplicate_entity_ids_become_one_row(self, graph_store, mock_connection):
+        count = await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="x", label="Person", properties={"name": "A", "source_chunk_ids": ["c1"]}
+                ),
+                GraphNode(id="y", label="Person", properties={"name": "Y"}),
+                GraphNode(
+                    id="x",
+                    label="Person",
+                    properties={"name": "B", "age": 3, "source_chunk_ids": ["c2", "c1"]},
+                ),
+                GraphNode(id="x", label="Person", properties={"source_chunk_ids": []}),
+            ]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert batch == [
+            {"id": "x", "properties": {"name": "B", "age": 3}},
+            {"id": "y", "properties": {"name": "Y"}},
+        ]
+        assert count == 4
+
+    async def test_a_structural_label_keeps_the_last_list(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(id="c", label="Chunk", properties={"source_chunk_ids": ["a"]}),
+                GraphNode(id="c", label="Chunk", properties={"source_chunk_ids": ["b"]}),
+            ]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert batch == [{"id": "c", "properties": {"source_chunk_ids": ["b"]}}]
+
+    async def test_duplicate_relates_keys_become_one_row(self, graph_store, mock_connection):
+        def rel(rel_type, chunks, **extra):
+            return GraphRelationship(
+                start_node_id="a",
+                end_node_id="b",
+                type="RELATES",
+                properties={"rel_type": rel_type, "source_chunk_ids": chunks, **extra},
+            )
+
+        count = await graph_store.upsert_relationships(
+            [rel("KNOWS", ["c1"], w=1), rel("WORKS_AT", ["c9"]), rel("KNOWS", ["c2"], w=2)]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert [item["properties"] for item in batch] == [
+            {"rel_type": "KNOWS", "source_chunk_ids": ["c1", "c2"], "w": 2},
+            {"rel_type": "WORKS_AT", "source_chunk_ids": ["c9"]},
+        ]
+        assert count == 3
+
+    async def test_rel_type_keys_compare_like_the_merge(self, graph_store, mock_connection):
+        """FalkorDB's MERGE treats 5 and 5.0 as one key but keeps true apart
+        from 1 and "5" apart from 5; the fold must agree or a batch still
+        carries one MERGE key twice."""
+
+        def rel(rel_type, chunk):
+            return GraphRelationship(
+                start_node_id="a",
+                end_node_id="b",
+                type="RELATES",
+                properties={"rel_type": rel_type, "source_chunk_ids": [chunk]},
+            )
+
+        await graph_store.upsert_relationships(
+            [rel(5, "c1"), rel(5.0, "c2"), rel(True, "c3"), rel(1, "c4"), rel("5", "c5")]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert [item["properties"]["source_chunk_ids"] for item in batch] == [
+            ["c1", "c2"],  # 5 and 5.0: one key
+            ["c3"],  # true
+            ["c4"],  # 1
+            ["c5"],  # "5"
+        ]
+
+    async def test_other_edge_types_are_keyed_by_the_pair(self, graph_store, mock_connection):
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a", end_node_id="b", type="LIKES", properties={"w": 1}
+                ),
+                GraphRelationship(
+                    start_node_id="a", end_node_id="b", type="LIKES", properties={"w": 2}
+                ),
+            ]
+        )
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert batch == [{"start_id": "a", "end_id": "b", "properties": {"w": 2}}]
+
+    @staticmethod
+    def _fail_batches(mock_connection):
+        """Fail every UNWIND batch, so each key goes through the per-item path."""
+
+        async def query(cypher, params=None):
+            if "UNWIND" in cypher:
+                raise Exception("batch fail")
+            result = MagicMock()
+            result.result_set = []
+            return result
+
+        mock_connection.query = AsyncMock(side_effect=query)
+
+    @staticmethod
+    def _per_item_calls(mock_connection):
+        return [
+            call[0]
+            for call in mock_connection.query.call_args_list
+            if "UNWIND" not in call[0][0] and not _is_index_housekeeping(call[0][0])
+        ]
+
+    async def test_the_per_item_fallback_sends_each_node_key_once(
+        self, graph_store, mock_connection
+    ):
+        """A failed batch falls back to one query per row; a key that appeared
+        twice must still be one write carrying both writes' chunks."""
+        self._fail_batches(mock_connection)
+
+        count = await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="x", label="Person", properties={"name": "A", "source_chunk_ids": ["c1"]}
+                ),
+                GraphNode(
+                    id="x", label="Person", properties={"name": "B", "source_chunk_ids": ["c2"]}
+                ),
+            ]
+        )
+
+        calls = self._per_item_calls(mock_connection)
+        assert [params["properties"] for _, params in calls] == [{"name": "B"}]
+        assert count == 2
+
+    async def test_the_per_item_fallback_sends_each_edge_key_once(
+        self, graph_store, mock_connection
+    ):
+        self._fail_batches(mock_connection)
+
+        def rel(rel_type, chunks):
+            return GraphRelationship(
+                start_node_id="a",
+                end_node_id="b",
+                type="RELATES",
+                properties={"rel_type": rel_type, "source_chunk_ids": chunks},
+            )
+
+        count = await graph_store.upsert_relationships(
+            [rel("KNOWS", ["c1"]), rel("WORKS_AT", ["c9"]), rel("KNOWS", ["c2"])]
+        )
+
+        calls = self._per_item_calls(mock_connection)
+        assert sorted(
+            (params["properties"]["rel_type"], params["properties"]["source_chunk_ids"])
+            for _, params in calls
+        ) == [("KNOWS", ["c1", "c2"]), ("WORKS_AT", ["c9"])]
+        assert count == 3
+
+    def test_repeats_extend_one_list_and_reuse_one_seen_set(self):
+        """Copying and scanning the chunk list on every repeat cost O(n²): one
+        edge repeated on 100,000 table rows took 28 s, blocking the event loop.
+        Each repeat must extend the same list and reuse the same set."""
+        merged, seen = GraphStore._fold_properties(
+            {"source_chunk_ids": ["c1"]}, {"source_chunk_ids": ["c2"]}, union_provenance=True
+        )
+        chunk_ids = merged["source_chunk_ids"]
+
+        merged, seen_again = GraphStore._fold_properties(
+            merged, {"source_chunk_ids": ["c3", "c1"]}, union_provenance=True, seen=seen
+        )
+
+        assert seen_again is seen
+        assert merged["source_chunk_ids"] is chunk_ids
+        assert chunk_ids == ["c1", "c2", "c3"]
+        assert seen == {"c1", "c2", "c3"}
+
+    async def test_a_key_repeated_on_every_row_keeps_every_chunk_in_order(
+        self, graph_store, mock_connection
+    ):
+        rels = [
+            GraphRelationship(
+                start_node_id="store",
+                end_node_id="region",
+                type="RELATES",
+                properties={"rel_type": "IN_REGION", "source_chunk_ids": [f"row{i}"]},
+            )
+            for i in range(5_000)
+        ]
+
+        count = await graph_store.upsert_relationships(rels)
+
+        batch = upsert_calls(mock_connection)[0][0][1]["batch"]
+        assert len(batch) == 1
+        assert batch[0]["properties"]["source_chunk_ids"] == [f"row{i}" for i in range(5_000)]
+        assert count == 5_000
 
 
 class TestUpsertReferenceNodes:
@@ -188,7 +450,7 @@ class TestUpsertReferenceNodes:
             " the name, not the unsigned identity it gets via coalesce, and not provenance,"
             " which is unioned like every other write's"
         )
-        assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in cypher
+        assert "source_chunk_ids" not in cypher
 
     async def test_empty_input_writes_nothing(self, graph_store, mock_connection):
         assert await graph_store.upsert_reference_nodes([]) == 0
@@ -301,6 +563,59 @@ class TestReconcileKeyedIdentity:
             " the key is not such a rival"
         )
 
+    async def test_a_renamed_row_is_pending_dedup_and_its_old_id_recorded(
+        self, graph_store, mock_connection
+    ):
+        """A re-sync that renames a row gives it a name no dedup run has seen.
+        Its vector (of the old name) goes, so the next finalize embeds and
+        checks it under the new one; the old id leaves a deleted record in the
+        same query, so a merge a running dedup planned on it is not applied."""
+        mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[]))
+        assert await graph_store._move_entity("globex__org", "initech__org") == (1, 0)
+        (rename,) = [
+            c[0][0] for c in mock_connection.query.call_args_list if "SET n.id = $new" in c[0][0]
+        ]
+        assert "REMOVE n.embedding" in rename and "dedup_pending" not in rename
+        assert "kind: 'deleted', eid: _eid" in rename
+
+    async def test_a_row_folded_into_an_existing_node_is_one_query(
+        self, graph_store, mock_connection
+    ):
+        """Every edge moved, the old node's properties carried, the survivor
+        made pending (no vector), both ids recorded deleted and the old node
+        deleted, in one query: a dedup merge cannot land in between."""
+
+        async def answer(cypher, params=None):
+            if "RETURN properties(k)" in cypher:
+                keep, dup = {"id": "initech__org"}, {"id": "globex__org", "role": "x"}
+                return MagicMock(result_set=[[keep, dup, [], [], ["RELATES", "OWNS"], []]])
+            return MagicMock(result_set=[[True]])
+
+        mock_connection.query = AsyncMock(side_effect=answer)
+        assert await graph_store._move_entity("globex__org", "initech__org") == (0, 1)
+        (fold,) = [
+            c[0] for c in mock_connection.query.call_args_list if "DETACH DELETE d" in c[0][0]
+        ]
+        cypher, params = fold
+        assert "MERGE (s)-[nr:`RELATES`" in cypher and "MERGE (s)-[nr:`OWNS`]" in cypher
+        assert "SET s.embedding = null" in cypher and "kind: 'deleted', eid: _eid" in cypher
+        # both ids: a merge planned on either must find it changed
+        assert "CASE WHEN ok THEN [$old, $new] ELSE [] END" in cypher
+        assert params["old"] == "globex__org" and params["new"] == "initech__org"
+        assert params["carry"] == {"role": "x"}
+        assert params["handled"] == ["OWNS:out", "RELATES:out"]
+
+    async def test_a_fold_does_not_carry_the_folded_nodes_identity_or_vector(self):
+        """The id, the name vector and the stub flag are each node's own."""
+        from graphrag_sdk.storage.deduplicator import properties_to_carry
+        from graphrag_sdk.storage.graph_store import GraphStore
+
+        dup = {"id": "old", "embedding": [0.1], "is_stub": True, "role": "engineer"}
+        carried = properties_to_carry(
+            {"id": "new"}, dup, never=GraphStore._NEVER_CARRY_ON_RECONCILE
+        )
+        assert carried == {"role": "engineer"}
+
     async def test_the_key_it_matches_on_is_indexed_first(self, graph_store, mock_connection):
         mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[]))
 
@@ -312,10 +627,10 @@ class TestReconcileKeyedIdentity:
             for call in mock_connection.query.call_args_list
             if "CREATE INDEX" in call[0][0]
         ]
+        # One statement: FalkorDB 6.0.2 sometimes left the last of several
+        # back-to-back CREATE INDEX statements on one label empty.
         assert indexes == [
-            "CREATE INDEX FOR (n:`Person`) ON (n.id)",
-            "CREATE INDEX FOR (n:`Person`) ON (n.entity_key)",
-            "CREATE INDEX FOR (n:`Person`) ON (n.`hr__employee_id`)",
+            "CREATE INDEX FOR (n:`Person`) ON (n.id, n.entity_key, n.`hr__employee_id`)",
         ], "both lookups run once per keyed row; indexed once per label, not per call"
 
     async def test_an_index_the_graph_already_has_is_not_created_again(
@@ -325,7 +640,7 @@ class TestReconcileKeyedIdentity:
         listing = MagicMock(result_set=[["Person", ["id", "entity_key"]], ["Chunk", ["uid"]]])
         mock_connection.query = AsyncMock(
             side_effect=lambda cypher, *a, **k: (
-                listing if "db.indexes()" in cypher else MagicMock(result_set=[])
+                listing if "YIELD label, properties" in cypher else MagicMock(result_set=[])
             )
         )
 
@@ -333,10 +648,9 @@ class TestReconcileKeyedIdentity:
         await graph_store.resolve_by_entity_key("Organization", ["O1"])
 
         queries = [call[0][0] for call in mock_connection.query.call_args_list]
-        assert sum("db.indexes()" in q for q in queries) == 1, "read once per instance"
+        assert sum("YIELD label, properties" in q for q in queries) == 1, "read once per instance"
         assert [q for q in queries if "CREATE INDEX" in q] == [
-            "CREATE INDEX FOR (n:`Organization`) ON (n.id)",
-            "CREATE INDEX FOR (n:`Organization`) ON (n.entity_key)",
+            "CREATE INDEX FOR (n:`Organization`) ON (n.id, n.entity_key)",
         ]
 
     async def test_nothing_to_reconcile_touches_nothing(self, graph_store, mock_connection):
@@ -412,6 +726,196 @@ class TestGraphStoreUpsertRelationships:
         assert params["batch"][0]["end_id"] == "b"
         assert params["batch"][0]["properties"]["note"] == "ABC"
 
+    async def test_relationship_source_ownership_is_unioned(self, graph_store, mock_connection):
+        """In the batch write and in the per-row fallback a failed batch takes.
+
+        ``SET r += ...`` alone replaces the list, so a second relationship
+        table writing an edge would take it from the first, and the first
+        table's next re-ingest or drop would delete an edge the second still
+        lists.
+        """
+
+        async def fail_batch(cypher, params=None):
+            if "UNWIND $batch AS item" in cypher:
+                raise Exception("fail")
+            return MagicMock()
+
+        mock_connection.query = AsyncMock(side_effect=fail_batch)
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={
+                        "rel_type": "CONSUMED_BATCH",
+                        "structured_sources": ["consumed_batch"],
+                    },
+                )
+            ]
+        )
+        batch, fallback = (call[0][0] for call in upsert_calls(mock_connection))
+        for cypher, incoming in ((batch, "item.properties"), (fallback, "$properties")):
+            assert "coalesce(r.structured_sources, []) AS old_sources" in cypher
+            assert f"coalesce({incoming}.structured_sources, []) AS sources" in cypher
+            assert (
+                "r.structured_sources = old_sources + [s IN sources WHERE NOT s IN old_sources]"
+            ) in cypher
+            assert cypher.index("AS old_sources") < cypher.index("SET r +=")
+            assert cypher.index("SET r +=") < cypher.index("r.structured_sources = old_sources")
+            assert "old_snapshot" not in cypher
+
+    async def test_snapshot_number_never_moves_back(self, graph_store, mock_connection):
+        """A run that started earlier and writes later keeps the newer run's number."""
+
+        async def fail_batch(cypher, params=None):
+            if "UNWIND $batch AS item" in cypher:
+                raise Exception("fail")
+            return MagicMock()
+
+        mock_connection.query = AsyncMock(side_effect=fail_batch)
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={
+                        "rel_type": "CONSUMED_BATCH",
+                        "structured_sources": ["consumed_batch"],
+                        "relationship_mapping_consumed_batch": 7,
+                    },
+                )
+            ],
+            snapshot_property="relationship_mapping_consumed_batch",
+        )
+        batch, fallback = (call[0][0] for call in upsert_calls(mock_connection))
+        for cypher, incoming in ((batch, "item.properties"), (fallback, "$properties")):
+            assert "r.`relationship_mapping_consumed_batch` AS old_snapshot" in cypher
+            assert cypher.index("AS old_snapshot") < cypher.index("SET r +=")
+            assert (
+                "SET r.`relationship_mapping_consumed_batch` = CASE WHEN old_snapshot > "
+                f"{incoming}.`relationship_mapping_consumed_batch` THEN old_snapshot "
+                f"ELSE {incoming}.`relationship_mapping_consumed_batch` END"
+            ) in cypher
+
+    async def test_null_signed_relationship_property_is_removed(self, graph_store, mock_connection):
+        """A blank cell is sent as null, which ``SET r += ...`` removes.
+
+        A REMOVE clause per combination of blank cells split a 500-row batch
+        into up to one query per row: 64 combinations with six optional
+        columns.
+        """
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id=end,
+                    type="RELATES",
+                    properties={
+                        "rel_type": "CONSUMED_BATCH",
+                        "consumed_batch__consumed_on": on,
+                        "consumed_batch__shift": shift,
+                        "note": None,
+                    },
+                )
+                for end, on, shift in (
+                    ("b1", None, "night"),
+                    ("b2", "2026-09-20", None),
+                    ("b3", None, None),
+                    ("b4", "2026-09-21", "day"),
+                )
+            ],
+            snapshot_property="relationship_mapping_consumed_batch",
+        )
+        (write,) = upsert_calls(mock_connection)
+        cypher, params = write[0]
+        assert "REMOVE" not in cypher
+        assert "SET r += item.properties" in cypher
+        assert [item["properties"] for item in params["batch"]] == [
+            {
+                "rel_type": "CONSUMED_BATCH",
+                "consumed_batch__consumed_on": None,
+                "consumed_batch__shift": "night",
+            },
+            {
+                "rel_type": "CONSUMED_BATCH",
+                "consumed_batch__consumed_on": "2026-09-20",
+                "consumed_batch__shift": None,
+            },
+            {
+                "rel_type": "CONSUMED_BATCH",
+                "consumed_batch__consumed_on": None,
+                "consumed_batch__shift": None,
+            },
+            {
+                "rel_type": "CONSUMED_BATCH",
+                "consumed_batch__consumed_on": "2026-09-21",
+                "consumed_batch__shift": "day",
+            },
+        ], "only signed (table) properties are cleared; other blanks are left alone as before"
+
+    async def test_one_call_writing_an_edge_for_two_tables_keeps_both_owners(
+        self, graph_store, mock_connection
+    ):
+        """The fold kept the later write's ``structured_sources``; dropping
+        that table could then delete an edge the other one still lists."""
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={"rel_type": "CONSUMED_BATCH", "structured_sources": [source]},
+                )
+                for source in ("consumed_batch", "usage_log")
+            ]
+        )
+        (write,) = upsert_calls(mock_connection)
+        assert write[0][1]["batch"][0]["properties"]["structured_sources"] == [
+            "consumed_batch",
+            "usage_log",
+        ]
+
+    async def test_a_node_tables_link_edge_leaves_blank_properties_out(
+        self, graph_store, mock_connection
+    ):
+        """Only a relationship table's write sends blanks as null. A node
+        table's link edges kept leaving them out, so a later blank row in one
+        batch could otherwise clear what an earlier row wrote."""
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="WORKS_IN",
+                    properties={"hr__since": None, "hr__teams": []},
+                )
+            ]
+        )
+        (write,) = upsert_calls(mock_connection)
+        assert write[0][1]["batch"][0]["properties"] == {}
+
+    async def test_an_empty_signed_list_clears_the_prior_value(self, graph_store, mock_connection):
+        """A LIST cell with no items casts to ``[]``, which ``_clean_properties``
+        drops; left out of the write, the edge kept an earlier run's list."""
+        await graph_store.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={"rel_type": "TAGGED", "tagged__tags": [], "notes": []},
+                )
+            ],
+            snapshot_property="relationship_mapping_tagged",
+        )
+        (write,) = upsert_calls(mock_connection)
+        assert write[0][1]["batch"][0]["properties"] == {
+            "rel_type": "TAGGED",
+            "tagged__tags": None,
+        }, "an empty signed list is cleared; other empty lists are left out as before"
+
     async def test_upsert_drops_rels_with_empty_sanitized_ids(self, graph_store, mock_connection):
         rels = [
             GraphRelationship(start_node_id="\x00", end_node_id="valid", type="R"),
@@ -452,6 +956,155 @@ class TestGraphStoreUpsertRelationships:
         assert result == 1  # only R2 batch succeeded
 
 
+class TestRelationshipEndpointResolution:
+    async def test_property_lookup_is_batched(self, graph_store, mock_connection):
+        keys = [f"K-{index}" for index in range(1001)]
+        await graph_store.resolve_by_property("Unit", "units__unit_id", keys)
+        lookups = [
+            call
+            for call in mock_connection.query.call_args_list
+            if "UNWIND $keys AS k" in call[0][0]
+        ]
+        assert [len(call[0][1]["keys"]) for call in lookups] == [500, 500, 1]
+
+    @staticmethod
+    def _answer(mock_connection, *found, stripped=None, snapshot=None):
+        """Index housekeeping finds nothing. Each cleanup read finds the next
+        count of stale edges, then none; each change strips what was found
+        (``stripped`` overrides that)."""
+        found = iter(found)
+        last = {"n": 0}
+
+        async def answer(cypher, params=None, **kwargs):
+            if _is_index_housekeeping(cypher):
+                return MagicMock(result_set=[])
+            if "max(r." in cypher:
+                return MagicMock(result_set=[[snapshot]])
+            if "LIMIT $limit" in cypher:
+                last["n"] = next(found, 0)
+                return MagicMock(result_set=[[index, index, index] for index in range(last["n"])])
+            if "UNWIND $edges" in cypher:
+                return MagicMock(result_set=[[last["n"] if stripped is None else stripped]])
+            return MagicMock(result_set=[])
+
+        mock_connection.query = AsyncMock(side_effect=answer)
+
+    @staticmethod
+    def _work(mock_connection):
+        return [
+            call[0]
+            for call in mock_connection.query.call_args_list
+            if not _is_index_housekeeping(call[0][0])
+        ]
+
+    async def test_snapshot_cleanup_removes_only_one_sources_contribution(
+        self, graph_store, mock_connection
+    ):
+        self._answer(mock_connection, 2)
+        deleted = await graph_store.finalize_relationship_snapshot(
+            "consumed_batch",
+            "relationship_mapping_consumed_batch",
+            1_700_000_000_000,
+            ["consumed_batch__consumed_on", "consumed_batch__shift"],
+        )
+        assert deleted == 2
+        (find, find_params), (strip, strip_params), (again, _) = self._work(mock_connection)
+        assert again == find, "reads again until nothing stale is left"
+        # Only rows an older run left are stale; a newer run's are not.
+        for cypher, params in ((find, find_params), (strip, strip_params)):
+            assert "coalesce(r.`relationship_mapping_consumed_batch`, 0) < $snapshot" in cypher
+            assert params["snapshot"] == 1_700_000_000_000
+            assert params["signature"] == "consumed_batch"
+        assert strip_params["edges"] == [{"a": 0, "r": 0, "b": 0}, {"a": 1, "r": 1, "b": 1}]
+        # The change finds each edge again by the ids of both ends — binding
+        # only the start node walked all its edges per row (rows x out-degree)
+        # — and checks it is still stale ...
+        assert "WHERE id(a) = edge.a" in strip and "WHERE id(b) = edge.b" in strip
+        assert "MATCH (a)-[r:RELATES]->(b) WHERE id(r) = edge.r" in strip
+        assert "any(s IN r.structured_sources WHERE s = $signature)" in strip
+        # ... strips the source, its marker and every signed property ...
+        assert "SET r.structured_sources = rest" in strip
+        assert "[s IN r.structured_sources WHERE s <> $signature] AS rest" in strip
+        assert (
+            "REMOVE r.`relationship_mapping_consumed_batch`, r.`consumed_batch__consumed_on`, "
+            "r.`consumed_batch__shift`"
+        ) in strip
+        # ... and deletes an edge nothing else supports.
+        assert "size(rest) = 0 AND size(coalesce(r.source_chunk_ids, [])) = 0" in strip
+        assert "FOREACH (x IN unsupported | DELETE x)" in strip
+
+    async def test_snapshot_queries_read_only_the_sources_edges(self, graph_store, mock_connection):
+        """Each query used to read every RELATES edge in the graph, documents' too."""
+        self._answer(mock_connection, 1, 0, 1, snapshot=7)
+        await graph_store.next_relationship_snapshot(
+            "relationship_mapping_consumed_batch", "consumed_batch"
+        )
+        await graph_store.finalize_relationship_snapshot(
+            "consumed_batch", "relationship_mapping_consumed_batch", 7, []
+        )
+        await graph_store.drop_relationship_source("consumed_batch", [])
+        await graph_store.clear_relationship_source_property(
+            "consumed_batch", "CONSUMED_BATCH", "consumed_batch__shift"
+        )
+        creates = [
+            call[0][0]
+            for call in mock_connection.query.call_args_list
+            if "CREATE INDEX" in call[0][0]
+        ]
+        assert creates == ["CREATE INDEX FOR ()-[r:RELATES]-() ON (r.structured_sources)"], (
+            "one index shared by every table, created once"
+        )
+        work = self._work(mock_connection)
+        reads = [(cypher, params) for cypher, params in work if "UNWIND $edges" not in cypher]
+        assert len(reads) == 6, "the snapshot, two reads per cleanup, the property removal"
+        for cypher, params in reads:
+            # Not wrapped in coalesce(): FalkorDB 4.x then skips the index.
+            assert "WHERE $signature IN r.structured_sources" in cypher
+            assert "coalesce(r.structured_sources" not in cypher
+            assert params["signature"] == "consumed_batch"
+        for cypher, _ in work:
+            if "SET r.structured_sources" in cypher:
+                # FalkorDB 6.0.2 crashed setting the indexed list on edges a
+                # LIMIT left it still reading through that index.
+                assert "$signature IN r.structured_sources" not in cypher
+
+    async def test_a_large_cleanup_runs_in_bounded_chunks(self, graph_store, mock_connection):
+        """Dropping a 1M-edge table was one write that held the graph for seconds."""
+        chunk = graph_store._RELATIONSHIP_CLEANUP_BATCH
+        self._answer(mock_connection, chunk, chunk, 3)
+        deleted = await graph_store.drop_relationship_source("consumed_batch", [])
+        assert deleted == 2 * chunk + 3
+        work = self._work(mock_connection)
+        finds = [params for cypher, params in work if "LIMIT $limit" in cypher]
+        strips = [params for cypher, params in work if "UNWIND $edges" in cypher]
+        assert [params["limit"] for params in finds] == [chunk] * 4, "until a read finds none"
+        assert [len(params["edges"]) for params in strips] == [chunk, chunk, 3]
+
+    async def test_a_cleanup_that_strips_nothing_stops(self, graph_store, mock_connection):
+        """An edge the read keeps finding but the change cannot strip would loop."""
+        self._answer(mock_connection, 5, 5, 5, stripped=0)
+        assert await graph_store.drop_relationship_source("consumed_batch", []) == 0
+        assert len(self._work(mock_connection)) == 2
+
+    async def test_snapshot_number_is_the_clock_or_one_past_the_newest(
+        self, graph_store, mock_connection
+    ):
+        self._answer(mock_connection, snapshot=1_700_000_000_001)
+        number = await graph_store.next_relationship_snapshot(
+            "relationship_mapping_consumed_batch", "consumed_batch"
+        )
+        assert number == 1_700_000_000_001
+        ((cypher, _),) = self._work(mock_connection)
+        assert "max(r.`relationship_mapping_consumed_batch`) AS newest" in cypher
+        assert "timestamp() AS now" in cypher
+        assert "THEN now ELSE newest + 1 END" in cypher
+
+    async def test_dropping_a_source_outranks_every_run(self, graph_store, mock_connection):
+        self._answer(mock_connection, 1)
+        await graph_store.drop_relationship_source("consumed_batch", [])
+        assert {params["snapshot"] for _, params in self._work(mock_connection)} == {2**63 - 1}
+
+
 class TestGraphStoreGetConnectedEntities:
     async def test_get_entities(self, graph_store, mock_connection):
         result_mock = MagicMock()
@@ -484,6 +1137,18 @@ class TestGraphStoreGetConnectedEntities:
         await graph_store.get_connected_entities("c1", max_hops=3)
         cypher = mock_connection.query.call_args[0][0]
         assert "*1..3" in cypher
+
+    @pytest.mark.parametrize(("max_hops", "ordered"), [(1, True), (2, False), (5, False)])
+    async def test_only_one_hop_is_ordered(self, graph_store, mock_connection, max_hops, ordered):
+        """An order needs every path before the LIMIT; beyond one hop the
+        paths multiply, and 3 hops over 40k nodes took 16.6 s on 4.x."""
+        result_mock = MagicMock()
+        result_mock.result_set = []
+        mock_connection.query = AsyncMock(return_value=result_mock)
+        await graph_store.get_connected_entities("c1", max_hops=max_hops)
+        cypher = mock_connection.query.call_args[0][0]
+        assert ("ORDER BY id LIMIT 50" in cypher) is ordered
+        assert cypher.endswith("LIMIT 50")
 
 
 class TestGraphStoreQueryRaw:
@@ -604,6 +1269,15 @@ class TestGraphStoreDocumentLifecycle:
         cypher = mock_connection.query.call_args[0][0]
         assert "MATCH (d:Document {id: $id})" in cypher
         assert "content_hash" in cypher
+
+    async def test_get_document_record_reads_the_loader(self, graph_store, mock_connection):
+        result_mock = MagicMock()
+        result_mock.result_set = [["notes/a.md", "abc", None, None, "markdown"]]
+        mock_connection.query = AsyncMock(return_value=result_mock)
+
+        record = await graph_store.get_document_record("notes/a.md")
+        assert record is not None and record.loader == "markdown"
+        assert "d.loader AS loader" in mock_connection.query.call_args[0][0]
 
     async def test_get_document_record_returns_none_when_missing(
         self, graph_store, mock_connection
@@ -908,6 +1582,27 @@ class TestGraphStoreDocumentLifecycle:
         assert n == 6
         assert mock_connection.query.await_count == 3
 
+    async def test_delete_stale_relationships_keeps_table_backed_edges(
+        self, graph_store, mock_connection
+    ):
+        """An edge a relationship table lists is not the document's to delete.
+
+        A table-only edge has ``source_chunk_ids = []``, so without the
+        ``structured_sources`` check any document cleanup that touches one of
+        its endpoints deleted it.
+        """
+        mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[[0]]))
+        await graph_store.delete_stale_relationships(["unit-1"], ["chunk-1"])
+        strip, delete, unembed = (call[0][0] for call in mock_connection.query.call_args_list)
+        assert "SET r.source_chunk_ids = remaining" in strip
+        assert "DELETE r" in delete
+        assert "AND size(r.source_chunk_ids) = 0 " in delete
+        assert "AND size(coalesce(r.structured_sources, [])) = 0 " in delete
+        # The survivor a table still owns loses its document-era embedding:
+        # it is no longer embedded, and the old vector kept taking search slots.
+        assert "AND size(coalesce(r.structured_sources, [])) > 0 " in unembed
+        assert "REMOVE r.embedding" in unembed
+
 
 class TestMergedLabelsBecomeRealLabels:
     """Labels absorbed during resolution must be queryable as Cypher labels.
@@ -1111,21 +1806,21 @@ class TestGraphStoreIdIndex:
     async def test_creates_index_for_node_label_and_entity(self, graph_store, mock_connection):
         await graph_store.upsert_nodes([GraphNode(id="n1", label="Person", properties={})])
         idx = self.index_calls(mock_connection)
-        assert "CREATE INDEX FOR (n:`Person`) ON (n.id)" in idx
+        assert "CREATE INDEX FOR (n:`Person`) ON (n.id, n.entity_key)" in idx
         # MERGE targets :Person but relationship MATCHes target :__Entity__.
-        assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id)" in idx
+        assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id, n.entity_key)" in idx
 
     async def test_structural_labels_get_index_but_not_entity(self, graph_store, mock_connection):
         await graph_store.upsert_nodes([GraphNode(id="c1", label="Chunk", properties={})])
         idx = self.index_calls(mock_connection)
-        assert "CREATE INDEX FOR (n:`Chunk`) ON (n.id)" in idx
-        assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id)" not in idx
+        assert "CREATE INDEX FOR (n:`Chunk`) ON (n.id, n.entity_key)" in idx
+        assert not any("`__Entity__`" in q for q in idx)
 
     async def test_index_created_once_per_label(self, graph_store, mock_connection):
         for i in range(5):
             await graph_store.upsert_nodes([GraphNode(id=f"n{i}", label="Person", properties={})])
         idx = self.index_calls(mock_connection)
-        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 1
+        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id, n.entity_key)") == 1
 
     async def test_relationship_upsert_indexes_both_endpoints(self, graph_store, mock_connection):
         await graph_store.upsert_relationships(
@@ -1139,13 +1834,13 @@ class TestGraphStoreIdIndex:
             ]
         )
         idx = self.index_calls(mock_connection)
-        assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id)" in idx
-        assert "CREATE INDEX FOR (n:`Chunk`) ON (n.id)" in idx
+        assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id, n.entity_key)" in idx
+        assert "CREATE INDEX FOR (n:`Chunk`) ON (n.id, n.entity_key)" in idx
 
     async def test_index_failure_does_not_break_the_write(self, graph_store, mock_connection):
         """A missing index is slow; a raised exception would be data loss."""
 
-        def side_effect(cypher, params=None):
+        def side_effect(cypher, params=None, **kwargs):
             if "CREATE INDEX" in cypher:
                 raise Exception("index unsupported")
             return MagicMock()
@@ -1159,7 +1854,7 @@ class TestGraphStoreIdIndex:
         life of the store — the label is memoised only once the query succeeds."""
         attempts = {"n": 0}
 
-        def side_effect(cypher, params=None):
+        def side_effect(cypher, params=None, **kwargs):
             if "CREATE INDEX" in cypher:
                 attempts["n"] += 1
                 if attempts["n"] == 1:
@@ -1172,7 +1867,7 @@ class TestGraphStoreIdIndex:
         await graph_store.upsert_nodes([GraphNode(id="c3", label="Chunk", properties={})])
         idx = self.index_calls(mock_connection)
         # First attempt failed, second succeeded, third was served from the memo.
-        assert idx.count("CREATE INDEX FOR (n:`Chunk`) ON (n.id)") == 2
+        assert idx.count("CREATE INDEX FOR (n:`Chunk`) ON (n.id, n.entity_key)") == 2
 
     async def test_delete_all_resets_index_memo(self, graph_store, mock_connection):
         """GRAPH.DELETE drops the indexes, so a re-ingest on the same store
@@ -1182,8 +1877,8 @@ class TestGraphStoreIdIndex:
         await graph_store.delete_all()
         await graph_store.upsert_nodes([GraphNode(id="n2", label="Person", properties={})])
         idx = self.index_calls(mock_connection)
-        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 2
-        assert idx.count("CREATE INDEX FOR (n:`__Entity__`) ON (n.id)") == 2
+        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id, n.entity_key)") == 2
+        assert idx.count("CREATE INDEX FOR (n:`__Entity__`) ON (n.id, n.entity_key)") == 2
 
     async def test_delete_all_fallback_also_resets_index_memo(self, graph_store, mock_connection):
         """Clearing on the DETACH DELETE fallback is harmless (one idempotent
@@ -1193,5 +1888,146 @@ class TestGraphStoreIdIndex:
         await graph_store.delete_all()
         await graph_store.upsert_nodes([GraphNode(id="n2", label="Person", properties={})])
         idx = self.index_calls(mock_connection)
-        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 2
+        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id, n.entity_key)") == 2
         assert any("DETACH DELETE" in c[0][0] for c in mock_connection.query.call_args_list)
+
+
+# ── query_raw: read-only and timeout passthrough ─────────────────
+
+
+class TestQueryRawPassthrough:
+    async def test_plain_query_keeps_the_two_argument_call(self):
+        conn = MagicMock()
+        conn.query = AsyncMock(return_value="r")
+        store = GraphStore(conn)
+        assert await store.query_raw("MATCH (n) RETURN n") == "r"
+        conn.query.assert_awaited_with("MATCH (n) RETURN n", None)
+
+    async def test_read_only_and_timeout_are_forwarded(self):
+        conn = MagicMock()
+        conn.query = AsyncMock(return_value="r")
+        store = GraphStore(conn)
+        await store.query_raw("MATCH (n) RETURN n", {"a": 1}, read_only=True, timeout=50)
+        conn.query.assert_awaited_with("MATCH (n) RETURN n", {"a": 1}, timeout=50, read_only=True)
+        await store.query_raw("MATCH (n) RETURN n", read_only=True)
+        conn.query.assert_awaited_with("MATCH (n) RETURN n", None, timeout=None, read_only=True)
+        await store.query_raw("MATCH (n) RETURN n", timeout=20)
+        conn.query.assert_awaited_with("MATCH (n) RETURN n", None, timeout=20, read_only=False)
+
+
+class TestNewIndexIsReadyBeforeItsFirstQuery:
+    """``CREATE INDEX`` returns at once; FalkorDB builds the index afterwards.
+
+    A lookup sent straight after it was planned without the index: on a 1M-node
+    label the first 500-key lookup scanned the label once per key and timed out.
+    And on FalkorDB 6.0.2, several CREATE INDEX statements sent back to back for
+    one label sometimes left the last field's index empty while it reported
+    OPERATIONAL, so every key looked missing.
+    """
+
+    @staticmethod
+    def _graph(mock_connection, *, listings=(), statuses=(), refuse=0):
+        """``listings``/``statuses`` answer successive index reads; the first
+        ``refuse`` CREATE statements fail as FalkorDB fails one naming a field
+        that is already indexed."""
+        listings, statuses = iter(listings), iter(statuses)
+        refused = {"n": 0}
+
+        async def answer(cypher, params=None, **kwargs):
+            if "YIELD label, properties" in cypher:
+                return MagicMock(result_set=next(listings, []))
+            if "YIELD label, status" in cypher:
+                return MagicMock(result_set=[[next(statuses, "OPERATIONAL")]])
+            if "CREATE INDEX" in cypher and refused["n"] < refuse:
+                refused["n"] += 1
+                raise DatabaseError("Attribute 'id' is already indexed")
+            return MagicMock(result_set=[])
+
+        mock_connection.query = AsyncMock(side_effect=answer)
+
+    @staticmethod
+    def _steps(mock_connection):
+        steps = []
+        for call in mock_connection.query.call_args_list:
+            cypher = call[0][0]
+            if "CREATE INDEX" in cypher:
+                steps.append(cypher)
+            elif "YIELD label, status" in cypher:
+                steps.append("status")
+            elif "UNWIND $keys AS k" in cypher:
+                steps.append("lookup")
+        return steps
+
+    @pytest.fixture(autouse=True)
+    def _no_sleeping(self, monkeypatch):
+        monkeypatch.setattr("graphrag_sdk.storage.graph_store.asyncio.sleep", AsyncMock())
+
+    async def test_the_lookup_waits_until_the_new_index_is_built(
+        self, graph_store, mock_connection
+    ):
+        building = "[Indexing] 599/1000: UNDER CONSTRUCTION"
+        self._graph(mock_connection, statuses=[building, building, "OPERATIONAL"])
+
+        await graph_store.resolve_by_property("Unit", "code", ["U-1"])
+
+        assert self._steps(mock_connection) == [
+            "CREATE INDEX FOR (n:`Unit`) ON (n.id, n.entity_key, n.`code`)",
+            "status",
+            "status",
+            "status",
+            "lookup",
+        ]
+        status = next(
+            call for call in mock_connection.query.call_args_list if "status" in call[0][0]
+        )
+        assert status[0][1] == {"label": "Unit", "entity_type": "NODE"}
+
+    async def test_an_index_already_in_place_is_not_waited_for(self, graph_store, mock_connection):
+        self._graph(mock_connection, listings=[[["Unit", ["id", "entity_key", "code"]]]])
+
+        await graph_store.resolve_by_property("Unit", "code", ["U-1"])
+        await graph_store.resolve_by_property("Unit", "code", ["U-2"])
+
+        assert self._steps(mock_connection) == ["lookup", "lookup"]
+
+    async def test_the_wait_is_bounded(self, graph_store, mock_connection, monkeypatch, caplog):
+        monkeypatch.setattr("graphrag_sdk.storage.graph_store._INDEX_READY_WAIT_S", 0.0)
+        self._graph(mock_connection, statuses=["[Indexing] 1/9: UNDER CONSTRUCTION"] * 99)
+
+        with caplog.at_level("WARNING", logger="graphrag_sdk.storage.graph_store"):
+            found = await graph_store.resolve_by_property("Unit", "code", ["U-1"])
+
+        assert found == {}
+        assert self._steps(mock_connection)[-1] == "lookup", "a slow build only costs speed"
+        assert "still building" in caplog.text
+
+    async def test_an_already_indexed_field_is_read_back_and_the_rest_created(
+        self, graph_store, mock_connection
+    ):
+        """FalkorDB refuses the whole statement when one field is indexed, and
+        creates none of them; another instance indexed ``id`` in between."""
+        self._graph(mock_connection, listings=[[], [["Unit", ["id"]]]], refuse=1)
+
+        await graph_store.resolve_by_property("Unit", "code", ["U-1"])
+
+        assert self._steps(mock_connection) == [
+            "CREATE INDEX FOR (n:`Unit`) ON (n.id, n.entity_key, n.`code`)",
+            "CREATE INDEX FOR (n:`Unit`) ON (n.entity_key, n.`code`)",
+            "status",
+            "lookup",
+        ]
+        assert {("Unit", "id"), ("Unit", "entity_key"), ("Unit", "code")} <= graph_store._indexed
+
+    async def test_already_indexed_does_not_mark_fields_it_did_not_create(
+        self, graph_store, mock_connection
+    ):
+        """The refusal names one field; the others were not created either."""
+        self._graph(mock_connection, refuse=99)
+
+        await graph_store.resolve_by_property("Unit", "code", ["U-1"])
+
+        assert not {("Unit", "entity_key"), ("Unit", "code")} & graph_store._indexed, (
+            "not remembered, so the next write asks again"
+        )
+        creates = [step for step in self._steps(mock_connection) if "CREATE" in step]
+        assert len(creates) == 3, "bounded retries"

@@ -561,8 +561,9 @@ class TestASharedNodeKeepsWhatEachSourceGave:
     async def test_the_second_document_adds_its_chunks_instead_of_replacing_the_first(
         self, real_falkordb_rag_factory, scripted_llm, resolver, employees_csv
     ):
-        """Two notes mention the row's Alice. ``source_chunk_ids`` must name both;
-        deleting one note must take only that note's chunk back out."""
+        """Two notes mention the row's Alice: she has a MENTIONED_IN edge to
+        each note's chunk, and no chunk list on the node. Deleting one note
+        takes only that note's edge away."""
         llm = scripted_llm(
             [("Alice Smith", "Person", "Presented the plan")],
             [("Alice Smith", "Person", "Was promoted")],
@@ -591,16 +592,17 @@ class TestASharedNodeKeepsWhatEachSourceGave:
         age, listed, mentioned, docs = await provenance()
         assert age == 34
         assert docs == ["note1.txt", "note2.txt"]
-        assert listed == mentioned, "the property must agree with the MENTIONED_IN edges"
-        assert len(listed) == 2
+        # Which chunks mention her is on her MENTIONED_IN edges, not a list on the node.
+        assert listed == []
+        assert len(mentioned) == 2
 
         await rag.delete_document("note2.txt")
 
         age, listed, mentioned, docs = await provenance()
         assert age == 34
         assert docs == ["note1.txt"]
-        assert listed == mentioned, "note2's chunk is gone from the list, note1's is not"
-        assert len(listed) == 1
+        assert listed == []
+        assert len(mentioned) == 1, "note2's mention went with its chunk, note1's did not"
         await rag.close()
 
 
@@ -1565,7 +1567,9 @@ class TestIngestOrderMustNotDecideTheGraph:
     ):
         """The guard that matters stays. Neither label is declared by a mapping,
         so there is nothing authoritative to prefer, and "Apple" the company must
-        not become "Apple" the fruit."""
+        not become "Apple" the fruit by the name rule. (The judge is asked here,
+        but the scripted model has no answer left for it and the call fails, so
+        this checks the rule alone.)"""
         llm = scripted_llm(
             [
                 ("Apple", "Organization", "A technology company"),
@@ -1599,8 +1603,8 @@ class TestIngestOrderMustNotDecideTheGraph:
 class TestAdoptionMovesEverythingItShould:
     """The adoption pass deletes a node, so what was on it must survive.
 
-    Merging across labels is the one place the resolver crosses a line it
-    otherwise holds, and it does so by deleting the guessed node. Anything the
+    Adoption is one of two places a merge crosses labels (the judge is the
+    other), and it does so by deleting the guessed node. Anything the
     document contributed has to arrive on the survivor first.
     """
 

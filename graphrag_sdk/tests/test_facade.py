@@ -15,6 +15,7 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import (
     ConfigError,
+    DatabaseError,
     DocumentNotFoundError,
     LatencyBudgetExceededError,
 )
@@ -23,6 +24,7 @@ from graphrag_sdk.core.models import (
     ChatMessage,
     DeleteDocumentResult,
     Entity,
+    DocumentRecord,
     GraphData,
     IngestionResult,
     Ontology,
@@ -33,6 +35,7 @@ from graphrag_sdk.core.models import (
     UpdateResult,
 )
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
+from graphrag_sdk.storage.dedup_judges import DedupJudge, LLMJudge
 
 from .conftest import MockEmbedder, MockLLM
 
@@ -329,84 +332,331 @@ class TestGraphRAGIngest:
         graphrag._vector_store.backfill_entity_embeddings.assert_not_awaited()
         assert "entities_backfilled" not in result.metadata
 
+    async def test_ingest_auto_true_plans_and_loads_source_once(
+        self, mock_conn, embedder, llm, tmp_path, monkeypatch
+    ):
+        """End-to-end wiring test for ``ingest(auto=True)`` on a real file.
 
-class TestGraphRAGDeduplicateEntities:
-    async def test_deduplicate_entities_merges_duplicates(self, mock_conn, embedder, llm):
-        """deduplicate_entities should merge entities with the same normalized name."""
+        Closes the review gap noted on PR #275: earlier tests only drove
+        ``_plan_ingestion_strategies`` in isolation via a stub; nothing
+        exercised the real ``ingest()`` path where the planner runs after
+        loader resolution + ontology init. This also guards the double-load
+        fix: the planner's content sample must be reused by the pipeline,
+        so the loader's ``load()`` should be invoked exactly once.
+        """
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+        from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+
+        md_file = tmp_path / "doc.md"
+        md_file.write_text("# Title\n\nSome content for the agentic ingestion test.\n")
+
+        load_calls = {"count": 0}
+        original_load = MarkdownLoader.load
+
+        async def counting_load(self_loader, source, ctx):
+            load_calls["count"] += 1
+            return await original_load(self_loader, source, ctx)
+
+        monkeypatch.setattr(MarkdownLoader, "load", counting_load)
+
+        class FixedPlanner:
+            """Stub planner asserting it saw the real loaded content, not
+            just the file path, then picks known-safe strategies."""
+
+            async def plan(self, text, *, source=None, ctx=None):
+                assert text is not None
+                assert "agentic ingestion test" in text
+                return IngestionPlan(chunker="structural", extractor="llm", resolver="exact")
+
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
 
-        # First query returns entities with duplicate names (4 cols: id, name, desc, label)
-        entity_result = MagicMock()
-        entity_result.result_set = [
-            ["e1", "Alice", "A software engineer", "Person"],
-            ["e2", "alice", "An engineer", "Person"],  # duplicate by (name, label)
-        ]
-        empty_result = MagicMock()
-        empty_result.result_set = []
+        result = await g.ingest(str(md_file), auto=True, planner=FixedPlanner())
 
-        # entity query, pagination end, three edge remaps, the property read
-        # (nothing to carry), then the absorb statement, which RETURNs the
-        # survivor's id to confirm the duplicate was actually deleted.
-        absorbed_result = MagicMock()
-        absorbed_result.result_set = [["e1"]]
-        read_result = MagicMock()
-        read_result.result_set = [[{}, {}, [], []]]  # both nodes exist, nothing to carry
-        g._graph_store.query_raw = AsyncMock(
-            side_effect=[
-                entity_result,
-                empty_result,  # pagination end
-                read_result,  # property read runs first: abort here means no writes
-                empty_result,  # remap: outgoing RELATES
-                empty_result,  # remap: incoming RELATES
-                empty_result,  # remap: MENTIONED_IN
-                absorbed_result,  # absorb + DETACH DELETE
-            ]
+        assert isinstance(result, IngestionResult)
+        assert load_calls["count"] == 1
+        assert result.metadata["plan"]["plan"]["chunker"] == "structural"
+
+    @staticmethod
+    def _counting_planner():
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+
+        calls: list[str | None] = []
+
+        class P:
+            async def plan(self, text, *, source=None, ctx=None):
+                calls.append(source)
+                return IngestionPlan()
+
+        return P(), calls
+
+    async def test_ingest_auto_skips_planner_for_unchanged_text(self, mock_conn, embedder, llm):
+        import hashlib
+
+        txt = "Alice works at Acme."
+        planner, calls = self._counting_planner()
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        record = DocumentRecord(path="d1", content_hash=hashlib.sha256(txt.encode()).hexdigest())
+        g._graph_store.get_document_record = AsyncMock(return_value=record)
+        result = await g.ingest(text=txt, document_id="d1", auto=True, planner=planner)
+        assert calls == []
+        assert result.metadata["skipped_unchanged"] is True
+        assert result.metadata["plan"]["planner"] is None
+        assert "unchanged" in result.metadata["plan"]["notes"][0]
+
+    async def test_ingest_auto_skips_planner_for_unchanged_file(
+        self, mock_conn, embedder, llm, tmp_path, monkeypatch
+    ):
+        import hashlib
+
+        from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+
+        f = tmp_path / "a.txt"
+        f.write_text("Alice works at Acme.")
+        loads: list[str] = []
+        original_load = TextLoader.load
+
+        async def counting_load(self_loader, source, ctx):
+            loads.append(source)
+            return await original_load(self_loader, source, ctx)
+
+        monkeypatch.setattr(TextLoader, "load", counting_load)
+        text = (await original_load(TextLoader(), str(f), Context())).text
+        planner, calls = self._counting_planner()
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        record = DocumentRecord(path=str(f), content_hash=hashlib.sha256(text.encode()).hexdigest())
+        g._graph_store.get_document_record = AsyncMock(return_value=record)
+        result = await g.ingest(str(f), auto=True, planner=planner)
+        assert calls == []
+        assert len(loads) == 1  # loaded once, reused by the pipeline
+        assert result.metadata["skipped_unchanged"] is True
+
+    async def test_ingest_auto_plans_changed_content_once_loaded(
+        self, mock_conn, embedder, llm, tmp_path, monkeypatch
+    ):
+        from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+
+        f = tmp_path / "a.txt"
+        f.write_text("Alice works at Acme.")
+        loads: list[str] = []
+        original_load = TextLoader.load
+
+        async def counting_load(self_loader, source, ctx):
+            loads.append(source)
+            return await original_load(self_loader, source, ctx)
+
+        monkeypatch.setattr(TextLoader, "load", counting_load)
+        planner, calls = self._counting_planner()
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        record = DocumentRecord(path=str(f), content_hash="old-hash")
+        g._graph_store.get_document_record = AsyncMock(return_value=record)
+        result = await g.ingest(str(f), auto=True, planner=planner)
+        assert len(calls) == 1
+        assert len(loads) == 1
+        assert "skipped_unchanged" not in result.metadata
+        assert result.metadata["plan"]["planner"] == "P"
+
+    async def test_ingest_auto_records_plan_in_metadata(self, mock_conn, embedder, llm):
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+
+        class P:
+            async def plan(self, text, *, source=None, ctx=None):
+                return IngestionPlan(
+                    chunker="fixed",
+                    extractor="llm",
+                    resolver="exact",
+                    reason="dense tables",
+                    chunker_params={"chunk_size": 1500},
+                )
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        result = await g.ingest(text="Alice works at Acme.", document_id="d1", auto=True, planner=P())
+        report = result.metadata["plan"]
+        assert report["planner"] == "P"
+        assert report["plan"]["chunker"] == "fixed"
+        assert report["plan"]["chunker_params"] == {"chunk_size": 1500}
+        assert report["plan"]["reason"] == "dense tables"
+        assert report["slots"] == {
+            "chunker": "planner",
+            "extractor": "planner",
+            "resolver": "planner",
+        }
+        assert report["notes"] == []
+
+    async def test_ingest_auto_records_caller_slots_and_failures(
+        self, mock_conn, embedder, llm, caplog
+    ):
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+            ExactMatchResolution,
         )
 
-        # Exact-name phase only; the judge phase has its own tests in
-        # test_judge_dedup.py and is wired in TestDefaultResolver below.
-        count = await g.deduplicate_entities(judge=False)
-        assert count == 1  # one duplicate merged
+        class Boom:
+            async def plan(self, *a, **k):
+                raise RuntimeError("planner down")
 
-    async def test_deduplicate_entities_judge_is_opt_in(
-        self, mock_conn, embedder, llm, monkeypatch, caplog
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        with caplog.at_level("WARNING"):
+            result = await g.ingest(
+                text="Alice works at Acme.",
+                document_id="d2",
+                auto=True,
+                planner=Boom(),
+                resolver=ExactMatchResolution(),
+            )
+        report = result.metadata["plan"]
+        assert report["plan"] is None
+        assert report["slots"] == {"chunker": "default", "extractor": "default", "resolver": "caller"}
+        assert "planner down" in report["notes"][0]
+        assert "Ingestion planner failed" in caplog.text
+
+    async def test_ingest_auto_with_all_strategies_skips_planner(self, mock_conn, embedder, llm):
+        from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+        from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+            GraphExtraction,
+        )
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+            ExactMatchResolution,
+        )
+
+        class MustNotRun:
+            async def plan(self, *a, **k):
+                raise AssertionError("planner ran although every slot was given")
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        result = await g.ingest(
+            text="Alice works at Acme.",
+            document_id="d3",
+            auto=True,
+            planner=MustNotRun(),
+            chunker=FixedSizeChunking(),
+            extractor=GraphExtraction(llm=llm),
+            resolver=ExactMatchResolution(),
+        )
+        assert result.metadata["plan"]["planner"] is None
+        assert "did not run" in result.metadata["plan"]["notes"][0]
+
+    async def test_ingest_batch_auto_plans_each_file(self, mock_conn, embedder, llm, tmp_path):
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+
+        seen: list[str] = []
+
+        class P:
+            async def plan(self, text, *, source=None, ctx=None):
+                seen.append(source)
+                chunker = "fixed" if "a.txt" in source else "sentence"
+                return IngestionPlan(chunker=chunker)
+
+        a = tmp_path / "a.txt"
+        b = tmp_path / "b.txt"
+        a.write_text("Alice works at Acme.")
+        b.write_text("Bob lives in Berlin.")
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        results = await g.ingest([str(a), str(b)], auto=True, planner=P())
+        assert len(seen) == 2
+        assert all(isinstance(r, IngestionResult) for r in results), results
+        chunkers = sorted(r.metadata["plan"]["plan"]["chunker"] for r in results)
+        assert chunkers == ["fixed", "sentence"]
+
+    async def test_ingest_auto_does_not_plan_a_table(
+        self, mock_conn, embedder, llm, tmp_path, monkeypatch
     ):
-        """The standalone ``deduplicate_entities()`` makes no LLM call unless
-        asked — a caller running it after every ingest batch must not start
-        paying for two judge passes with no source change. ``judge=True`` uses
-        the facade's LLM unless ``judge_llm`` is given; ``finalize()`` is where
-        the judge is on by default."""
+        planned: list[object] = []
+
+        class MustNotRun:
+            async def plan(self, *a, **k):
+                # Recorded, not raised: the planner path swallows exceptions.
+                planned.append(a)
+                raise AssertionError("planner ran for a table")
+
+        csv = tmp_path / "people.csv"
+        csv.write_text("name,city\nAlice,Berlin\n")
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        sentinel = IngestionResult(nodes_created=0, relationships_created=0, chunks_indexed=0)
+        monkeypatch.setattr(g, "_mapping_for", AsyncMock(return_value=object()))
+        monkeypatch.setattr(g, "_ingest_structured", AsyncMock(return_value=sentinel))
+        result = await g.ingest(str(csv), auto=True, planner=MustNotRun())
+        assert result is sentinel
+        assert planned == []
+        assert g._planned_ingest is False  # update() has no plan to warn about
+
+
+class TestGraphRAGDeduplicateEntities:
+    async def test_deduplicate_entities_passes_its_options_and_returns_the_merges(
+        self, mock_conn, embedder, llm, monkeypatch
+    ):
+        """The run itself — records, plan, merges — is the deduplicator's and is
+        tested on a real FalkorDB (test_dedup_run); the facade hands it the
+        options and returns its count."""
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
         seen: dict = {}
 
         async def fake_dedup(**kw):
             seen.update(kw)
+            return 1
+
+        monkeypatch.setattr(g._deduplicator, "deduplicate", fake_dedup)
+        g._ensure_ontology_initialized = AsyncMock()
+        count = await g.deduplicate_entities(dedup_all=True)
+        assert count == 1
+        assert isinstance(seen["judge"], LLMJudge) and seen["dedup_all"] is True
+
+    async def test_every_dedup_run_has_a_judge(self, mock_conn, embedder, llm, monkeypatch):
+        """There is no dedup without a judge: ``LLMJudge`` over the facade's
+        LLM by default, or any ``DedupJudge`` given. Anything else — the old
+        ``judge=False`` among them — is refused before a run starts."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        seen: list[dict] = []
+
+        async def fake_dedup(**kw):
+            seen.append(kw)
             return 0
 
         monkeypatch.setattr(g._deduplicator, "deduplicate", fake_dedup)
         await g.deduplicate_entities()
-        assert seen["judge_llm"] is None and seen["resolver"] is None
+        assert isinstance(seen[0]["judge"], LLMJudge) and seen[0]["judge"]._llm is g.llm
 
-        seen.clear()
-        await g.deduplicate_entities(judge=True)
-        assert seen["judge_llm"] is g.llm and seen["judge_vote"] is True
+        class Mine(DedupJudge):
+            async def judge(self, sets, *, retry=False):
+                return [None] * len(sets)
 
-        other = MagicMock()
-        seen.clear()
-        await g.deduplicate_entities(judge=True, judge_llm=other, judge_vote=False)
-        assert seen["judge_llm"] is other and seen["judge_vote"] is False
+        mine = Mine()
+        await g.deduplicate_entities(judge=mine)
+        assert seen[1]["judge"] is mine
 
-        # judge_llm alone does not switch the phase on — but a judge model is
-        # an unambiguous signal the caller wanted the judge, so it says so
-        seen.clear()
-        with caplog.at_level("WARNING", logger="graphrag_sdk.api.main"):
-            await g.deduplicate_entities(judge_llm=other)
-        assert seen["judge_llm"] is None
-        assert "judge_llm was given but judge=False" in caplog.text
-        caplog.clear()
-        with caplog.at_level("WARNING", logger="graphrag_sdk.api.main"):
-            await g.deduplicate_entities(judge=True, judge_llm=other)
-        assert "judge_llm was given" not in caplog.text
+        for wrong in (False, True, g.llm):
+            with pytest.raises(TypeError, match="every dedup run has a judge"):
+                await g.deduplicate_entities(judge=wrong)
+        assert len(seen) == 2
+
+    async def test_the_removed_fuzzy_arguments_are_deprecated_not_broken(
+        self, mock_conn, embedder, llm, monkeypatch
+    ):
+        """``fuzzy`` and ``similarity_threshold`` shipped in 1.4.0. The phase is
+        gone, but a call that passes them keeps working for a release: ``False``
+        and a threshold are ignored with a DeprecationWarning, and ``True`` says
+        the phase no longer exists instead of silently doing nothing."""
+        import warnings
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        calls: list[dict] = []
+
+        async def fake_dedup(**kw):
+            calls.append(kw)
+            return 0
+
+        monkeypatch.setattr(g._deduplicator, "deduplicate", fake_dedup)
+
+        with pytest.warns(DeprecationWarning, match="fuzzy"):
+            await g.deduplicate_entities(fuzzy=False, similarity_threshold=0.9)
+        assert len(calls) == 1 and "fuzzy" not in calls[0]
+
+        with pytest.raises(ValueError, match="no longer supported"):
+            await g.deduplicate_entities(fuzzy=True)
+        assert len(calls) == 1
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            await g.deduplicate_entities()
+        assert len(calls) == 2
 
     async def test_finalize_runs_the_judge_by_default(self, mock_conn, embedder, llm, monkeypatch):
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
@@ -420,54 +670,65 @@ class TestGraphRAGDeduplicateEntities:
         empty = MagicMock()
         empty.result_set = [[0]]
         g._graph_store.query_raw = AsyncMock(return_value=empty)
-        g._vector_store.backfill_entity_embeddings = AsyncMock(return_value=0)
         g._vector_store.embed_relationships = AsyncMock(return_value=0)
         g._vector_store.ensure_indices = AsyncMock(return_value={})
         await g.finalize()
-        assert seen["judge_llm"] is g.llm and seen["resolver"] is not None
-        seen.clear()
-        await g.finalize(resolve=False, judge=False)
-        assert seen["judge_llm"] is None and seen["resolver"] is None
+        assert isinstance(seen["judge"], LLMJudge) and seen["judge"]._llm is g.llm
+        assert "resolver" not in seen
+        queries = g._graph_store.query_raw.await_count
+        with pytest.raises(TypeError, match="every dedup run has a judge"):
+            await g.finalize(judge=False)
+        assert g._graph_store.query_raw.await_count == queries, "refused before any work"
 
-    async def test_finalize_embeds_after_dedup_and_counts_the_judge_vectors(
+    async def test_finalize_writes_entity_vectors_only_through_dedup(
         self, mock_conn, embedder, llm
     ):
-        """The backfill runs after the merges, so a duplicate about to be
-        deleted is not embedded first, and ``entities_embedded`` is what this
-        call wrote: the backfill's vectors plus the judge's."""
+        """An entity with a vector and no pending record counts as checked, so
+        no step of finalize() but dedup — which lists an entity before it
+        embeds it — may give one a vector: a backfill after dedup would embed
+        what ingest added meanwhile, unchecked. ``entities_embedded`` is what
+        dedup wrote."""
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
-        order: list[str] = []
 
         async def dedup(**kw):
-            order.append("dedup")
-            g._deduplicator.last_judge_stats = {"embedded": 5, "merged": 1}
+            g._deduplicator.names_embedded = 5
             return 1
-
-        async def backfill():
-            order.append("backfill")
-            return 2
 
         g.deduplicate_entities = dedup
         empty = MagicMock()
         empty.result_set = [[0]]
         g._graph_store.query_raw = AsyncMock(return_value=empty)
-        g._vector_store.backfill_entity_embeddings = backfill
+        g._vector_store.backfill_entity_embeddings = AsyncMock(return_value=2)
         g._vector_store.embed_relationships = AsyncMock(return_value=0)
         g._vector_store.ensure_indices = AsyncMock(return_value={})
         result = await g.finalize()
-        assert order == ["dedup", "backfill"]
-        assert result.entities_embedded == 7
+        g._vector_store.backfill_entity_embeddings.assert_not_awaited()
+        assert result.entities_embedded == 5
 
-    async def test_deduplicate_entities_no_duplicates(self, mock_conn, embedder, llm):
-        """deduplicate_entities with < 2 entities should return 0."""
+    async def test_finalize_reports_what_dedup_left(self, mock_conn, embedder, llm):
+        """Pending, unresolved and changed come from the run's report."""
+        from graphrag_sdk.storage.deduplicator import DedupReport
+        from graphrag_sdk.storage.system_store import Unresolved
+
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
 
-        empty_result = MagicMock()
-        empty_result.result_set = []
-        g._graph_store.query_raw = AsyncMock(return_value=empty_result)
+        async def dedup(**kw):
+            g._deduplicator.last_report = DedupReport(
+                pending=2,
+                unresolved={"e9": Unresolved(3, "no usable verdict", "Tim Cook")},
+                changed=1,
+            )
+            return 0
 
-        count = await g.deduplicate_entities()
-        assert count == 0
+        g.deduplicate_entities = dedup
+        g._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[[0]]))
+        g._vector_store.embed_relationships = AsyncMock(return_value=0)
+        g._vector_store.ensure_indices = AsyncMock(return_value={})
+        result = await g.finalize()
+        assert result.dedup_pending == 2 and result.dedup_merges_changed == 1
+        assert result.dedup_unresolved == [
+            "e9: no usable verdict (3 judged runs); kept from Tim Cook"
+        ]
 
 
 class TestGraphRAGDefaultExtractor:
@@ -507,7 +768,7 @@ class TestGraphRAGFinalize:
         empty.result_set = [[0]]
         graphrag._graph_store.query_raw = AsyncMock(return_value=empty)
         graphrag.deduplicate_entities = AsyncMock(return_value=4)
-        graphrag._vector_store.backfill_entity_embeddings = AsyncMock(return_value=7)
+        graphrag._deduplicator.names_embedded = 7
         graphrag._vector_store.embed_relationships = AsyncMock(return_value=2)
         graphrag._vector_store.ensure_indices = AsyncMock(return_value={"vector_Chunk": True})
 
@@ -1371,6 +1632,29 @@ class TestGraphRAGConfigNode:
         result = await g.retrieve("test?")
         assert isinstance(result, RetrieverResult)
 
+    async def test_config_check_is_read_only(self, mock_conn, embedder):
+        """Checking the config must not create a graph that was never written."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
+
+        await g._validate_graph_config()
+
+        assert g._graph_store.query_raw.await_args.kwargs.get("read_only") is True
+        assert g._config_validated is True
+
+    async def test_missing_graph_still_probes_the_embedder(self, mock_conn, embedder):
+        """A graph that was never written has no stored config; the embedder
+        probe still runs and its dimension check still applies."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=4)
+        g._graph_store.query_raw = AsyncMock(
+            side_effect=DatabaseError("Invalid graph operation on empty key")
+        )
+
+        with pytest.raises(ConfigError, match="dimension"):
+            await g._validate_graph_config()
+
 
 class TestSameEmbeddingModel:
     """Model-name comparison used by the config guard.
@@ -2163,6 +2447,80 @@ class TestGraphRAGUpdate:
         graphrag._graph_store.rollforward_cutover.assert_awaited_once()
         graphrag._graph_store.delete_orphan_entities.assert_awaited_once_with(["entity-1"])
 
+    async def test_force_update_preserves_loader_structural_elements(self, graphrag, tmp_path):
+        """A file update must retain the loader's parsed structure so a
+        document-aware chunker does not silently fall back to plain text."""
+        import hashlib
+
+        from graphrag_sdk.core.models import (
+            DocumentElement,
+            DocumentInfo,
+            DocumentOutput,
+            DocumentRecord,
+            TextChunk,
+            TextChunks,
+        )
+        from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
+        from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+        from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+
+        text = "# Heading\n\nParagraph."
+        path = tmp_path / "doc.md"
+        path.write_text(text)
+        elements = [
+            DocumentElement(type="header", content="# Heading", level=1),
+            DocumentElement(type="paragraph", content="Paragraph.", breadcrumbs=["Heading"]),
+        ]
+
+        class _StructuredLoader(LoaderStrategy):
+            async def load(self, source, ctx):
+                return DocumentOutput(
+                    text=text,
+                    document_info=DocumentInfo(path=source, metadata={"loader": "test"}),
+                    elements=elements,
+                )
+
+        class _CapturingChunker(ChunkingStrategy):
+            seen_elements = None
+
+            async def chunk(self, text, ctx):
+                return TextChunks(chunks=[TextChunk(text=text, index=0)])
+
+            async def chunk_document(self, document, ctx):
+                self.seen_elements = document.elements
+                return await self.chunk(document.text, ctx)
+
+        class _CleanExtractor(ExtractionStrategy):
+            async def extract(self, chunks, ontology, ctx):
+                return GraphData(chunks_attempted=len(chunks.chunks))
+
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={
+                "path": str(path),
+                "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            },
+        )
+        live = DocumentRecord(
+            path=str(path),
+            content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        )
+        graphrag._graph_store.get_document_record = AsyncMock(
+            side_effect=lambda doc_id: live if "__pending__" not in doc_id else None
+        )
+        chunker = _CapturingChunker()
+
+        result = await graphrag.update(
+            source=str(path),
+            loader=_StructuredLoader(),
+            chunker=chunker,
+            extractor=_CleanExtractor(),
+            force=True,
+        )
+
+        assert result.no_op is False
+        assert chunker.seen_elements == elements
+
     def test_update_sync_forwards_force(self, graphrag):
         """Keep ``update_sync`` in step with ``update``."""
         import inspect
@@ -2485,7 +2843,7 @@ class TestGraphRAGUpdate:
         graphrag._graph_store.cleanup_pending_documents.assert_awaited_once()
 
     async def test_does_not_call_finalize(self, graphrag):
-        """update() must NOT trigger the O(graph size) dedup pass."""
+        """update() must NOT trigger the dedup pass."""
         _stub_graph_store_for_update(
             graphrag,
             existing_record={"path": "my-doc", "content_hash": "old"},
@@ -2593,6 +2951,60 @@ class TestGraphRAGDeleteDocument:
 
 class TestApplyChanges:
     """v1.1.0: heterogeneous batch dispatcher (the CI use case)."""
+
+    @pytest.mark.parametrize("bucket", ["added", "modified"])
+    async def test_relationship_tables_use_ingest_and_serializable_batch_results(
+        self, graphrag, bucket
+    ):
+        from graphrag_sdk import EndpointMapping, RelationshipMapping
+        from graphrag_sdk.ingestion.structured_pipeline import RelationshipIngestionResult
+
+        mapping = RelationshipMapping(
+            source="edges.csv",
+            start=EndpointMapping("Unit", "units__id", "unit"),
+            end=EndpointMapping("Batch", "batches__id", "batch"),
+            type="CONSUMED_BATCH",
+        )
+        outcome = RelationshipIngestionResult("edges.csv")
+        outcome.rows = 3
+        outcome.relationships_written = 2
+        outcome.rows_skipped = 1
+        graphrag._mapping_for = AsyncMock(return_value=mapping)
+        graphrag.ingest = AsyncMock(return_value=outcome)
+        graphrag.update = AsyncMock()
+        result = await graphrag.apply_changes(**{bucket: ["edges.csv"]})
+        entry = getattr(result, bucket)[0]
+        assert entry.is_success
+        assert entry.result.relationships_created == 2
+        assert entry.result.nodes_created == entry.result.chunks_indexed == 0
+        assert entry.result.metadata["rows_skipped"] == 1
+        if bucket == "modified":
+            assert entry.result.replaced_existing is False
+        assert '"relationships_written":2' in result.model_dump_json()
+        graphrag.ingest.assert_awaited_once()
+        graphrag.update.assert_not_awaited()
+
+    @pytest.mark.parametrize("bucket", ["added", "modified"])
+    async def test_relationship_table_errors_remain_per_file(self, graphrag, bucket):
+        from graphrag_sdk import EndpointMapping, RelationshipMapping
+        from graphrag_sdk.ingestion.structured_pipeline import RelationshipIngestionResult
+
+        graphrag._mapping_for = AsyncMock(
+            return_value=RelationshipMapping(
+                source="edges.csv",
+                start=EndpointMapping("Unit", "units__id", "unit"),
+                end=EndpointMapping("Batch", "batches__id", "batch"),
+                type="CONSUMED_BATCH",
+            )
+        )
+        graphrag.ingest = AsyncMock(
+            side_effect=[ValueError("missing endpoint"), RelationshipIngestionResult("ok.csv")]
+        )
+        result = await graphrag.apply_changes(**{bucket: ["edges.csv", "ok.csv"]})
+        failed, succeeded = getattr(result, bucket)
+        assert failed.error_type == "ValueError"
+        assert failed.error == "missing endpoint"
+        assert succeeded.is_success
 
     async def test_dispatches_to_each_primitive(self, graphrag, tmp_path):
         """One call routes added/modified/deleted to the right method."""
@@ -2903,6 +3315,7 @@ class TestFinalizeReminder:
         empty_result = MagicMock()
         empty_result.result_set = []
         g._graph_store.query_raw = AsyncMock(return_value=empty_result)
+        g._deduplicator.deduplicate = AsyncMock(return_value=0)
         await g.deduplicate_entities()
         assert g._docs_since_dedup == 0
 
@@ -2918,8 +3331,8 @@ class TestFinalizeReminder:
 
 class TestDefaultResolver:
     """``ingest()`` resolves with ``ExactMatchResolution`` unless told otherwise;
-    cross-document dedup belongs to ``finalize()``'s LLM-judged phase, where it
-    sees every document.
+    cross-document dedup belongs to ``finalize()``'s LLM-judged phase, which
+    compares each new entity with its nearest names across documents.
 
     These pin that ingest stays zero-LLM-cost for resolution, that an explicit
     ``resolver=`` still wins, and that ``finalize()`` runs the judge with the
@@ -3012,39 +3425,26 @@ class TestDefaultResolver:
         assert res.relationships[0].start_node_id == survivor.id  # edge re-pointed, not lost
         assert res.relationships[0].end_node_id == "x"
 
-    async def test_finalize_runs_the_judge_with_the_facade_llm(self, graphrag, monkeypatch):
+    async def test_finalize_reports_the_judge_and_runs_one_it_is_given(self, graphrag, monkeypatch):
         seen: dict = {}
-        order: list[str] = []
 
         async def fake_dedup(**kw):
             seen.update(kw)
-            order.append("dedup")
-            return 0
-
-        async def fake_backfill(*a, **kw):
-            order.append("backfill")
             return 0
 
         monkeypatch.setattr(graphrag._deduplicator, "deduplicate", fake_dedup)
-        graphrag._deduplicator.last_judge_stats = {"merged": 2, "linked": 3, "llm_calls": 4}
+        graphrag._deduplicator.last_judge_stats = {"merged": 2, "judge_calls": 4}
         graphrag._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[[0]]))
-        graphrag._vector_store.backfill_entity_embeddings = AsyncMock(side_effect=fake_backfill)
         graphrag._vector_store.embed_relationships = AsyncMock(return_value=0)
         graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
 
         result = await graphrag.finalize()
-        assert seen["judge_llm"] is graphrag.llm and seen["judge_vote"] is True
-        assert result.entities_linked == 3 and result.judge_llm_calls == 4
-        assert result.judge_stats == {"merged": 2, "linked": 3, "llm_calls": 4}
-        # Dedup (with the judge) runs first, so a duplicate about to be removed
-        # is not embedded; the judge writes the name vectors it needs itself,
-        # and the backfill then covers whatever is still missing one.
-        assert order == ["dedup", "backfill"]
+        assert result.judge_calls == 4
+        assert result.judge_stats == {"merged": 2, "judge_calls": 4}
 
-        seen.clear()
-        result = await graphrag.finalize(judge=False)
-        assert seen["judge_llm"] is None
-        assert result.judge_stats == {} and result.entities_linked == 0
+        other = LLMJudge(MagicMock())
+        await graphrag.finalize(judge=other)
+        assert seen["judge"] is other
 
     async def test_explicit_resolver_is_honoured(self, graphrag, monkeypatch):
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
@@ -3055,3 +3455,121 @@ class TestDefaultResolver:
         mine = ExactMatchResolution()
         await graphrag.ingest(text="Airbus builds aircraft.", resolver=mine)
         assert captured["resolver"] is mine
+
+
+# ── Retrieval edges: history and per-call ontology ───────────────
+
+
+class TestRetrievalEdges:
+    @pytest.fixture
+    def rag(self, mock_conn):
+        return GraphRAG(
+            connection=mock_conn,
+            llm=MockLLM(responses=["Generated."]),
+            embedder=MockEmbedder(dimension=8),
+            embedding_dimension=8,
+        )
+
+    def test_retrieve_sync_forwards_every_argument(self, rag):
+        import inspect
+
+        seen: dict = {}
+
+        async def fake_retrieve(question, **kwargs):
+            seen.update(question=question, **kwargs)
+            return RetrieverResult(items=[])
+
+        rag.retrieve = fake_retrieve  # type: ignore[method-assign]
+        strategy, reranker, ctx = object(), object(), Context()
+        rag.retrieve_sync("q", strategy=strategy, reranker=reranker, ctx=ctx)
+        assert seen == {"question": "q", "strategy": strategy, "reranker": reranker, "ctx": ctx}
+        # The sync wrapper takes exactly what retrieve() takes (no history:
+        # retrieval strategies never see the conversation).
+        assert inspect.signature(GraphRAG.retrieve_sync).parameters.keys() == (
+            inspect.signature(GraphRAG.retrieve).parameters.keys()
+        )
+        with pytest.raises(TypeError):
+            rag.retrieve_sync("q", history=[{"role": "user", "content": "hi"}])
+
+    async def test_strategies_get_no_history(self, rag):
+        strategy = MagicMock(spec=RetrievalStrategy)
+        strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="ctx")])
+        )
+        with pytest.raises(TypeError):
+            await rag.retrieve("q", strategy=strategy, history=[{"role": "user", "content": "x"}])
+        result = await rag.completion(
+            "q", strategy=strategy, history=[{"role": "user", "content": "x"}]
+        )
+        assert result.answer == "Generated."  # regular completion still generates
+        strategy.search.assert_awaited_once()
+        assert "history" not in strategy.search.await_args.kwargs
+        assert strategy.search.await_args.args[0] == "q"
+
+    async def test_caller_ontology_is_kept(self, rag):
+        from graphrag_sdk.core.models import Ontology
+
+        strategy = MagicMock()
+        strategy._ontology = Ontology()
+        strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
+        await rag.retrieve("q", strategy=strategy)
+        strategy.set_ontology.assert_not_called()
+
+    async def test_strategy_without_an_ontology_slot_is_left_alone(self, rag):
+        strategy = MagicMock(spec=RetrievalStrategy)
+        assert not hasattr(strategy, "_ontology")
+        strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
+        await rag.retrieve("q", strategy=strategy)
+        strategy.set_ontology.assert_not_called()
+
+    async def test_per_call_strategy_without_ontology_gets_the_facades(self, rag):
+        strategy = MagicMock()
+        strategy._ontology = None
+        strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
+        await rag.retrieve("q", strategy=strategy)
+        # Lent for the call, then taken back.
+        assert strategy.set_ontology.call_args_list == [
+            ((rag._global_ontology,),),
+            ((None,),),
+        ]
+
+    async def test_the_lent_ontology_is_taken_back(self, rag):
+        from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+
+        strategy = MultiPathRetrieval(
+            graph_store=rag._graph_store,
+            vector_store=rag._vector_store,
+            embedder=rag.embedder,
+            llm=rag.llm,
+        )
+        seen = []
+
+        async def search(question, ctx, **kwargs):
+            seen.append(strategy._ontology)
+            return RetrieverResult(items=[])
+
+        strategy.search = search
+        await rag.retrieve("q", strategy=strategy)
+        assert seen == [rag._global_ontology]
+        assert strategy._ontology is None  # the caller's strategy is left as it was
+
+    async def test_concurrent_calls_share_the_lent_ontology(self, rag):
+        import asyncio
+
+        strategy = MagicMock()
+        strategy._ontology = None
+        strategy.set_ontology = lambda o: setattr(strategy, "_ontology", o)
+        gate = asyncio.Event()
+        seen = []
+
+        async def search(question, ctx, **kwargs):
+            await gate.wait()
+            seen.append(strategy._ontology)
+            return RetrieverResult(items=[])
+
+        strategy.search = search
+        calls = [asyncio.create_task(rag.retrieve(q, strategy=strategy)) for q in "ab"]
+        await asyncio.sleep(0)
+        gate.set()
+        await asyncio.gather(*calls)
+        assert seen == [rag._global_ontology] * 2 and strategy._ontology is None

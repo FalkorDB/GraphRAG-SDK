@@ -24,7 +24,7 @@ TARGET edges.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -34,6 +34,7 @@ from graphrag_sdk.core.models import (
     Ontology,
     Relation,
 )
+from graphrag_sdk.core.tables import Column, EndpointMapping, RelationshipMapping
 from graphrag_sdk.storage.ontology_store import (
     OntologyContradictionError,
     OntologyModificationNotAllowedError,
@@ -96,6 +97,9 @@ class _FakeGraph:
             return _FakeQueryResult(self._rel_prop_rows)
         return _FakeQueryResult([])
 
+    async def ro_query(self, cypher: str, params: dict | None = None):
+        return await self.query(cypher, params)
+
 
 @pytest.fixture
 def fake_graph():
@@ -109,6 +113,7 @@ def store_factory(fake_graph):
     def _make(data_graph_name: str = "kg") -> OntologyStore:
         conn = MagicMock()
         conn._ensure_client = MagicMock()
+        conn._check_server_version = AsyncMock()  # a supported server
         conn._driver = SimpleNamespace(select_graph=MagicMock(return_value=fake_graph))
         return OntologyStore(conn, data_graph_name)
 
@@ -122,6 +127,71 @@ class TestOntologyStoreGraphName:
     def test_suffix(self, store_factory):
         store = store_factory("my_kg")
         assert store.graph_name == "my_kg__ontology"
+
+
+class TestRelationshipMappingStorage:
+    def test_relationship_mapping_rows_round_trip(self):
+        mappings = OntologyStore._load_relationship_tables_sync(
+            [
+                [
+                    "consumed_batch.csv",
+                    "Unit",
+                    "units__unit_id",
+                    "source",
+                    "Batch",
+                    "batches__batch_id",
+                    "target",
+                    "CONSUMED_BATCH",
+                    None,
+                    [],
+                    "OUTGOING",
+                    "error",
+                    "skip",
+                    "Consumption",
+                ]
+            ],
+            [
+                [
+                    "consumed_batch.csv",
+                    "consumed_on",
+                    "consumed_on",
+                    "DATE",
+                    "Consumption date",
+                ]
+            ],
+        )
+        assert mappings == [
+            RelationshipMapping(
+                source="consumed_batch.csv",
+                start=EndpointMapping("Unit", "units__unit_id", "source"),
+                end=EndpointMapping("Batch", "batches__batch_id", "target"),
+                type="CONSUMED_BATCH",
+                properties={
+                    "consumed_on": Column("consumed_on", "DATE", "Consumption date")
+                },
+                ambiguous_endpoint="skip",
+                description="Consumption",
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_register_persists_relationship_mapping(self, store_factory, fake_graph):
+        store = store_factory()
+        mapping = RelationshipMapping(
+            source="consumed_batch.csv",
+            start=EndpointMapping("Unit", "units__unit_id", "source"),
+            end=EndpointMapping("Batch", "batches__batch_id", "target"),
+            type="CONSUMED_BATCH",
+            properties={"consumed_on": Column("consumed_on", "DATE")},
+        )
+        await store.register(Ontology(relationship_tables=[mapping]))
+        calls = [
+            params
+            for query, params in fake_graph.calls
+            if "MERGE (t:RelationshipMapping" in query
+        ]
+        assert calls[0]["start_key"] == "units__unit_id"
+        assert calls[0]["end_key"] == "batches__batch_id"
 
 
 # ── register — entity shape ──────────────────────────────────────
@@ -246,7 +316,7 @@ class TestRegisterRelationShape:
         open_merges = [
             c
             for c in fake_graph.calls
-            if c[0].startswith("MERGE (r:Relation {label: $rel_label}) SET")
+            if c[0].startswith("MERGE (r:Relation {label: $rel_label}) ")
         ]
         assert len(open_merges) == 1
         # Open-mode property attaches to a Relation that lacks SOURCE.
@@ -269,6 +339,29 @@ class TestLoad:
         result = await store.load()
         assert result.entities == []
         assert result.relations == []
+
+    @pytest.mark.asyncio
+    async def test_load_only_reads(self, store_factory, fake_graph):
+        """GRAPH.QUERY on a missing key creates it; load() uses RO_QUERY."""
+        store = store_factory()
+        write_calls: list[str] = []
+        ro_calls: list[str] = []
+
+        # load() swallows exceptions, so record calls and assert afterwards.
+        async def no_write_query(cypher, params=None):
+            write_calls.append(cypher)
+            return _FakeQueryResult([])
+
+        async def missing(cypher, params=None):
+            ro_calls.append(cypher)
+            raise RuntimeError("Invalid graph operation on empty key")
+
+        fake_graph.query = no_write_query
+        fake_graph.ro_query = missing
+        result = await store.load()
+        assert write_calls == []
+        assert ro_calls
+        assert result.entities == [] and result.relations == []
 
     @pytest.mark.asyncio
     async def test_reconstructs_entity_with_property_nodes(self, store_factory, fake_graph):

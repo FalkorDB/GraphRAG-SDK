@@ -9,6 +9,173 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Agentic ingestion: an agent builds the graph from a folder (#275)
+
+- **`GraphRAGToolkit(rag, files_root=...)` lets an agent ingest files.**
+  `preview_files` returns one sample from the middle of each file, paged, so the
+  agent can design one ontology for the whole corpus; `set_ontology` declares
+  or extends it (adds only); `ingest(files=[...], plan=[rules])` ingests up to
+  50 files per call, each with the chunker, extractor and resolver of the
+  first rule matching its path. Paths stay inside the root and are read under
+  their real on-disk spelling (symlinks resolved), so two spellings of one
+  file, or a link and its target, ingest as one document; a file's document id
+  is `file:` and that path relative to the root (`file:reports/q1.pdf`). On
+  POSIX each file is opened folder by folder without following symlinks
+  (`O_NOFOLLOW`, and `O_NONBLOCK` so a FIFO cannot block), from a root checked
+  to be the folder recorded at start, checked with `fstat` to be a regular
+  file, and read from that open handle, so a symlink swapped in after the
+  check cannot read outside the root. On Windows the path is checked under the
+  root and then reopened by name, so this guarantee is POSIX-only.
+  `preview_files` reads only a window around the middle of each file (a few
+  pages of a PDF), marks estimated lengths (`chars_estimated`) and shortens a
+  page to fit the result size, with `next_offset` naming the first file left
+  out; `ingest` refuses files over `max_file_bytes` (default 50 MiB). The
+  `files` and `plan` arguments are offered only when a files root is set, and
+  each `files` entry is capped at 1,024 characters.
+- **Agent plans stay cheap.** Plan choices are limited by `plan_limits`
+  (default `CHEAP_PLAN_LIMITS`: sentence, fixed or structural chunking, GLiNER
+  extraction, exact resolution, and at most 1,000 chunks per file); anything
+  else is replaced and the plan's `reason` says so. The `ingest` tool
+  description and the server's guide tell the agent what each allowed option
+  costs (`contextual`: +1 LLM call per chunk, each sending the whole document;
+  `llm` extractor: +1 LLM call per chunk; `llm_verified`: up to `max_llm_pairs`
+  LLM pair checks per document, a second ask for each confirmed cross-type
+  match, one check per name shared across types and description summaries),
+  so it chooses per file within the limits.
+- **`GraphRAG.ingest(auto=True)` is cheap by default.** Without `plan_limits`,
+  the default `LLMIngestionPlanner` may pick only `CHEAP_PLAN_LIMITS`, with
+  `max_chunks=1000`; pass `plan_limits={...}` (which turns `auto` on) to allow
+  contextual chunking, the `llm` extractor or `llm_verified` resolution. It is
+  merged over `CHEAP_PLAN_LIMITS` (in `GraphRAGToolkit(plan_limits=...)` too): a
+  key left out keeps its cheap value.
+  `plan_limits` and `planner` together raise `ValueError`. The planner prompt
+  quotes the document sample in a `<document>` block marked as data, whose
+  instructions are to be ignored. `CHEAP_PLAN_LIMITS` (read-only) and
+  `ChunkBudgetExceededError` are exported from `graphrag_sdk`.
+- **`max_chunks` caps the chunks per document.** `LLMIngestionPlanner`
+  and `RuleBasedIngestionPlanner` take `max_chunks=`: a document that splits
+  into more chunks is refused with `ChunkBudgetExceededError` before anything
+  of it is written or extracted. It is a chunk limit, not a request ceiling:
+  `max_chunks=N` allows `N` extraction requests with `gliner` and about `2N`
+  with the `llm` backend, before retries. For `contextual` chunking the base
+  chunks are counted before the per-chunk context calls. The default `None`
+  sets no limit. `max_llm_pairs` caps `llm_verified` pairs per document
+  (cross-type rechecks, same-name cross-type checks and summary calls come on top), defaults to 500 for both
+  planners, and is now kept with `tune_params=False` too. A tuned
+  sentence-based window repeats at most half its tokens, so it advances by at
+  least half.
+- **Each ingest says what the ontology misses.** `IngestionResult.metadata
+  ["pruned"]` and the tool's `pruned` count dropped entity and relation types,
+  undeclared relation patterns, dangling relations and entities stored as
+  `Unknown`. Relations dropped because an end is `Unknown` are counted in
+  `unknown_endpoints`, with a hint to declare the missing entity type, not in
+  `pattern_mismatches`. `ingest(files=..., reextract=true)` extracts those
+  files again after the ontology is extended, planned and chunked like a first
+  ingest (`ingest(text=..., document_id=..., reextract=true)` for text). The
+  plan a file was last ingested with is remembered in memory only; after a
+  restart the plan's `reason` says none was remembered. A file already in the
+  graph whose content changed goes through `update()` (`status: "updated"`)
+  instead of adding new chunks beside the old ones. Across every session of a
+  toolkit, ingests run together but an update or re-extraction runs alone: it
+  waits for the ingests already running, and ingests that come after it wait
+  for it, since its orphan cleanup could delete an entity an ingest has
+  written but not linked yet. Text ingest and re-extraction refuse a document
+  read from a file, so text cannot overwrite or extend it: a text's
+  `document_id` cannot start with `file:`, even without a files root, nor be
+  the id of a stored document that carries a file loader's metadata
+  (`loader`), stores a path other than its id, is a table, or names a file
+  under the files root (`GraphRAG.ingest("notes/a.md")` stores the id
+  `notes/a.md`).
+- **`set_ontology` is atomic across sessions**: its load, merge and write run
+  under one lock, an ontology given to `GraphRAG(...)` and not registered yet
+  is registered first, and the extractor's ontology is refreshed from the
+  store afterwards.
+- **`set_ontology` is annotated destructive over MCP** and refuses labels with
+  `:`, line breaks or other control characters, `__X__` names, and the SDK's
+  own `Chunk`, `Document` and `Unknown`, each with a hint.
+- **`finalize_policy="on_write"` skips finalize when nothing changed** (every
+  document unchanged, or refused before writing). A finalize that fails after
+  documents were written keeps the ingest result and says so in its `hint`.
+- **Planner arguments are checked.** A `planner` that is not an instance with
+  an async `plan()` raises `TypeError`; the planner call gets what is left of
+  `ctx`'s latency budget and raises `LatencyBudgetExceededError` when it runs
+  out. A document that cannot be loaded raises `LoaderError`. `update()` says
+  in `metadata["plan_note"]` which strategies it defaulted (it does not
+  re-plan), and logs it at WARNING after a planned ingest. A reply naming a
+  strategy twice keeps the last; params are kept only with a valid id of
+  their own, and replies are read up to 20,000 characters.
+- **`RuleBasedIngestionPlanner`** maps glob rules to strategies with no LLM
+  call, for `rag.ingest(paths, planner=...)` too.
+- **`graphrag-mcp --files-root`** (or `GRAPHRAG_MCP_FILES_ROOT`) serves the
+  file tools; without it no files are read. The filesystem root and the home
+  folder are refused. The server's guide tells the agent to ask the user for
+  their ontology first, and names `set_ontology` and `finalize` only when they
+  are served.
+
+#### Graph tools for your own agent, and an MCP server (#274)
+
+- **`GraphRAGToolkit` gives an agent you already run read-only tools on the
+  graph**: `status`, `get_ontology`, `retrieve` and
+  `check_citations`, plus `ingest` and
+  `finalize` for agents allowed to write: wrap a `GraphRAG` in
+  `GraphRAGToolkit(rag)`.
+  The SDK runs no agent loop: your agent plans, calls the tools and writes
+  the answer. Every tool validates its input with a strict schema, caps its
+  result size (its database queries use the configured per-query timeout), and
+  returns a typed result
+  whose `to_llm_text()` stays under a fixed size (8,000 characters by
+  default), shared across its sections so a long relation list cannot push
+  out the passages (which get twice the share, up to about 1,200 characters
+  each); a cut section says how many items it omitted.
+- **Every piece of evidence is numbered.** Entities, relations, facts and passages,
+  and each `status` / `get_ontology` result, carry an `[n]` from a per-session ledger
+  (`toolkit.new_session()`), and `check_citations(answer)` reports which `[n]`
+  in a draft answer are real and whether the answer cites anything at all.
+- **`retrieve` runs every search path unless the agent names a few.**
+  `paths` picks from `facts`, `exact_names`, `fuzzy_names`, `links` and
+  `passages`, so a question that only needs the source text skips the entity
+  searches and the relation expansion. Leave it out to run them all; when the chosen
+  paths find nothing, the result says to run again without them. With
+  `expand_hops` 2–5 every hop gets a share of the relation cap, so the first
+  hop cannot fill it and starve the deeper ones.
+- **`graphrag-mcp` serves the same tools over MCP** (`pip install
+  "graphrag-sdk[mcp]"`) to Claude Code, Cursor and any other MCP client, on
+  stdio or SSE with a bearer token. `--read-only` (or
+  `GRAPHRAG_MCP_READ_ONLY=1`) hides the write tools. The server sends a usage
+  guide as its instructions and keeps one evidence ledger per client
+  connection, including stateless SSE clients (the `mcp.Client` default), so
+  one client can never cite another's evidence. Requires `mcp` 2.x; on stdio
+  LiteLLM's debug output is silenced so stdout carries only the protocol.
+- **Tool results never include internal nodes or embedding vectors**, and
+  the read tools never write: the toolkit's own graph queries run as
+  `GRAPH.RO_QUERY`, so the database refuses writes. `retrieve`'s search
+  paths run the SDK's standard retrieval queries, which only read.
+- **Read tools on a graph that does not exist** (never written, or deleted
+  since) raise an error naming it and create nothing; the read-only check
+  runs on every call. When the graph store cannot be reached they raise
+  "Could not reach the graph store" instead of reporting an empty graph.
+- **`check_citations`** accepts `[1, 2]` and `[1-3]`, and matches names as
+  whole words, case-insensitively: every word of a multi-word name must be
+  in the cited evidence, and a sentence's first word is checked when it is
+  part of a name. Figures ignore trailing zeros (`2.80` = `2.8`). A sentence
+  that says the graph lacks something needs no citation.
+- **`MultiPathRetrieval(router=...)` runs only the paths a question needs.**
+  `HeuristicPathRouter()` picks them from the question with no model call;
+  `LLMPathRouter(llm)` asks the model once. Plans name ids from
+  `RETRIEVAL_PATHS` (`relates`, `entity_cypher`, `entity_fulltext`,
+  `expansion`, `chunks`), MultiPath's internal paths; the `retrieve` tool's
+  agent-facing `paths` are `graphrag_sdk.tools.specs.RETRIEVE_PATHS`. An
+  empty plan or a failing router runs every path, unless the latency budget
+  is exhausted. `enable_cypher` still runs its path whatever the plan.
+- **`ingest` and `finalize` are marked destructive** in their MCP
+  annotations, so clients ask before running them. The MCP server keeps
+  every reply valid JSON within its size limit (evidence cut or shortened
+  to fit cannot be cited), and reports unexpected
+  errors with a next step and with API keys and tokens masked.
+- `pip install "graphrag-sdk[all]"` includes the MCP server.
+- New example `graphrag_sdk/examples/12_agent_toolkit.py` and docs page
+  *Agentic Retrieval*.
+
 #### Structured ingestion — tables declared on the ontology, one node for a row and its mention
 
 - **`Ontology(tables=[TableMapping(...)])`** declares what a table's columns mean,
@@ -26,7 +193,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each table is written on its own, so one bad row cannot fail the batch.
   `ingest_sync()` mirrors the call.
 
-- **`TableMapping`, `Column` and `Link` are the whole declaration surface.** A
+- **`TableMapping`, `Column` and `Link` remain the entity-anchored declaration
+  surface.** A
   table describes one entity per record: `key=` identifies the row, `name=` is
   its display name, `properties={"age": Column("age", "INTEGER")}` types the
   columns (`STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`) and
@@ -39,6 +207,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inf`; `LIST` is parsed as a CSV row. Also exported: `CsvRecordLoader` (sniffs
   comma, semicolon, tab and pipe), `RecordLoaderStrategy` and `RecordBatch` for
   other formats, and `TextLoader`.
+
+- **`Ontology(relationship_tables=[RelationshipMapping(...)])` reads a file
+  whose every row is an edge between entities that already exist** —
+  `consumed_batch.csv` joining a `Unit` to a `Batch` — and
+  `ingest("consumed_batch.csv")` writes those edges and nothing else: no
+  entity, event, `Document` or `Chunk`. `EndpointMapping(entity=, key=,
+  column=)` finds each side by an exact label and a declared `STRING` key
+  property, normally the signed key a `TableMapping` stores (`units__unit_id`),
+  never the shared `entity_key` or a prose name. A fixed `type=` or an
+  allow-listed `type_column=` gives the relationship type, and
+  `direction="INCOMING"` swaps the ends. Typed edge properties, direction and
+  the `missing_endpoint`/`ambiguous_endpoint` policies (`"error"` by default,
+  or `"skip"`) are persisted with the ontology and round-trip through JSON. The
+  whole file is validated and every endpoint resolved before the first write,
+  each distinct key looked up once; under `"error"` a key that matches no node,
+  or several, raises `RelationshipResolutionError` with the counts and up to
+  100 samples, and nothing is written. Exact duplicate rows collapse; two rows
+  for one edge with different properties are refused, unless a skip policy
+  drops them anyway; a bad value in a row a skip policy drops does not fail
+  the file either. Writes go in batches of 500, a blank cell (or a `LIST`
+  cell with no items) clears the edge's value, and `RelationshipIngestionResult`
+  reports the counts. Relationship (vector) search does not return these edges
+  — every edge of one mapping carries the same template `fact` and no endpoint
+  names — so `finalize()` does not embed an edge only relationship tables own,
+  and they are found by graph queries, or from an entity found by name. On an
+  edge a document also supports, the document's `fact` and embedding are kept.
+
+- **A relationship table is a snapshot of its source, and an edge is shared,
+  not owned.** The table's properties are signed (`consumed_batch__consumed_on`)
+  and each edge lists the tables that wrote it in `structured_sources`. A
+  re-ingest takes this source's contribution off the edges its file no longer
+  has, a row a skip policy drops included, and deletes an edge only when no
+  other relationship table and no document chunk supports it. Deleting a
+  document keeps an edge a table still lists, and merging two nodes keeps every
+  table on the merged edge. Each run is numbered from the database clock and
+  its cleanup removes only what older runs left, which keeps most edges when
+  two workers ingest one file at once; the runs are not serialized, so ingest
+  one relationship file at a time. Cleanup waits until every batch is
+  written, so after a short write (`incomplete_writes`) or an exception a plain
+  retry converges. It reads only the table's own edges, through one range index
+  on `RELATES.structured_sources` that the first relationship-table ingest on a
+  graph creates (FalkorDB rebuilds the `RELATES` index once for it), and
+  changes at most 10,000 edges per write.
+
+- **Relationship tables in the rest of the API.** `drop_table(source)` removes
+  the mapping, its contribution to every edge (deleting the edges nothing else
+  supports) and its edge-property declarations, matching the exact stored path
+  before the basename. `apply_changes()` takes relationship tables in `added`
+  and `modified` and runs them after every other entry, so endpoints written in
+  the same batch exist whatever order a git diff lists them in.
+  `deleted=[path]` deletes a `Document` with that id when one exists, and
+  otherwise removes the table's edges and keeps its mapping, as it does for a
+  node table. `update()` refuses a relationship table, and so does
+  `ingest(document_id=...)` unless the id names the table's source, which is
+  how a renamed export finds its table. `rename_relation()` /
+  `drop_relation()` refuse a type a relationship table writes, naming it. Declaring a file the SDK
+  already proposed as a node table as a `RelationshipMapping` replaces the
+  proposal; a declared `TableMapping` is never replaced, and a relationship
+  table cannot share a property signature with any other table. While a
+  relationship table resolves an endpoint by a key, `drop_table()` of the node
+  table that signs it, `drop_attribute()` and `rename_attribute()` of it,
+  redeclaring that table with another key column (unless the same declaration
+  moves the endpoint to the new key), and declaring a proposal whose key it uses
+  as a relationship table raise `ValueError` naming the relationship table. A
+  declaration is checked as a whole at startup -- property types, endpoint
+  keys, keys a table stops signing, signatures -- before any of it is written,
+  so a failure changes nothing. A stored mapping whose key is already gone is
+  skipped with a warning when the ontology loads, so the graph still opens.
 
 - **A row and a prose mention of the same thing are one node from the first
   write.** An entity's id is derived from its name for a table row exactly as
@@ -116,30 +352,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the extractor uses the real labels instead of guessing from a built-in list
   — which is what makes the order sources arrive in stop mattering.
 
-- **`finalize()` lets a resolver judge across sources.** The strategy that
-  decides within one document whether two mentions are one entity —
-  `LLMVerifiedResolution`: embed, then ask the model about the close pairs — now
-  runs inside `finalize()` over the whole graph, the only place a table's
-  "Priya Raman" and a note's "Ms. Raman" ever meet. By default it is built over
-  the instance's own `llm` and `embedder`, asking from cosine 0.6 rather than the
-  within-document 0.8 because names differ more across sources;
-  `finalize(resolver=...)` substitutes your own and `finalize(resolve=False)`
-  calls no model. The merge keeps the keyed node and every value it signed,
-  moves the mention's description and edges onto it, and never folds two rows of
-  one table into each other. A declared type beats a guessed one, so a `Concept`
-  the extractor guessed is absorbed by the `MitigationPractice` a mapping
-  declared, while two declared labels sharing a name stay apart. A NO is
-  remembered as a `DISTINCT_FROM` edge, so the pair is neither asked about nor
-  merged on a threshold again; the edge goes with either node, so a re-read
-  document is judged afresh. Everything found is on `FinalizeResult` —
-  `resolved_duplicates`, `rejected_duplicates`, `probable_duplicates`,
+- **`finalize()` reports what it found.** A declared type beats a guessed one,
+  so a `Concept` the extractor guessed is absorbed by the `MitigationPractice` a
+  mapping declared, while two declared labels sharing a name stay apart.
+  Everything else found is on `FinalizeResult` — `probable_duplicates`,
   `unmerged_name_collisions`, `property_conflicts`, `unresolved_references`,
   `entities_without_a_name`, `proposed_mappings`, `mapping_changed`,
   `stale_signed_properties` — and reported at WARNING, since nothing is resolved
-  for you. The hand-off to a custom strategy is four documented `ctx.metadata`
-  keys on `ResolutionStrategy` (`RESOLUTION_SKIP_PAIRS`,
-  `RESOLUTION_DISTINCT_IDS`, `RESOLUTION_ASK_PAIRS`,
-  `RESOLUTION_REJECTED_PAIRS`); a strategy that ignores them still works.
+  for you.
 
 - **`GraphRAG(enable_cypher=True)`** turns on text-to-Cypher retrieval, which
   answers the questions no passage contains — counts, averages, "how many of
@@ -173,10 +393,232 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`SentenceTokenCapChunking` records the overlap each chunk has.** A chunk's
+  `overlap_sentences` metadata is now the number of its sentences the next
+  chunk repeats (0 on the last chunk), not the configured `overlap_sentences`,
+  so new Chunk nodes differ from older ones in that property; chunk text, ids
+  and cache hashes are unchanged. The new `max_overlap_fraction` option caps
+  the share of a chunk's tokens the next chunk may repeat (#275).
+- **An entity stays the same size however often it is mentioned.** Its node
+  held a `source_chunk_ids` list and a `spans` JSON that grew with every
+  mention and were rewritten on every write, and a merge appended every
+  member's description to `descriptions`, without limit. Now which chunks
+  mention an entity, where (`spans`) and what each says it is (`description`,
+  and `descriptions` when there is more than one, each kept whole) are on its
+  `MENTIONED_IN` edges, one per chunk, written once and deleted with the
+  chunk; the node holds no chunk list. Ingest-time remaps and dedup merges
+  carry both onto the surviving entity's edge, combining them when two land on
+  one chunk, and a second write of an edge (`backfill_entity()` finding an
+  entity extraction already found there) adds to it instead of replacing it. A second document that mentions an entity adds its description
+  instead of replacing the first's (`SET n += props` kept only the last). A
+  write adds descriptions up to 20 per node (it never cuts what a node already
+  holds), and `finalize()`, after dedup, replaces those of every entity holding
+  more than 5 with one LLM summary, marked `description_summarised`; a failed
+  summary leaves the descriptions as they are and is listed in the new
+  `FinalizeResult.description_summary_failures` (`descriptions_summarised`
+  counts the rest), and dedup's work stays in place.
+  `delete_document()` and `update()` record what the removed chunks' mention
+  edges said, with their crash-safe cleanup state, and the cleanup takes
+  exactly that text off the entities' descriptions (no LLM call), keeping what
+  a remaining chunk still says and refilling a full node from the remaining
+  edges; a summarised entity is rebuilt from its edges when all of them say
+  something, and otherwise keeps its summary with the removed text beside it
+  dropped. On the Verdantix benchmark (57 documents, a
+  `finalize()` after every 10, the same three extractions for both): dedup F1
+  0.53 → 0.70, precision 0.955 → 0.987, wrong merges 1.8 → 0.7 per run,
+  answers unchanged; at most 5 descriptions per node after `finalize()` (was
+  up to 15); LLM cost +3%; `finalize()` ~3 s longer (median 3.2 → 6.1 s),
+  ingest and queries unchanged. Graphs written by an earlier version keep their
+  entity `source_chunk_ids` lists, which the update and delete paths still
+  trim; their mention edges record no description and no `said_version` (an
+  edge this version creates carries it, and a later write that adds a
+  description to an older edge does not), so text a document ingested by an
+  earlier version wrote is kept when that document is deleted.
+
+- **The dedup judge's fixed instructions come first in its prompt, so the
+  provider caches them.** The set count sat ~150 tokens in and the decision
+  procedure followed the sets, so no two judge prompts shared a prefix the
+  provider could cache. The instructions are unchanged except that "Below are
+  N independent SETS" now says the sets come at the end, the count moves to a
+  heading over them, and one line before them marks the types and sets as data,
+  never instructions. The ~1,080 tokens before them are identical in every
+  call, past the 1,024 tokens Azure OpenAI and OpenAI's current models need to
+  cache a prefix automatically. The minimum depends on the model: Anthropic
+  models also need explicit `cache_control`, and their minimum varies (2,048
+  tokens for Claude Haiku). Measured with gpt-4.1 on Azure: 44% of judge input
+  served from the provider's cache (was 9%), judge cost −26%, dedup
+  unchanged.
+
+- **`finalize()` deduplicates incrementally, with one judge pass, and
+  survives a crash.** `finalize()` checks only the entities whose check is
+  pending — against the whole graph, through the `__Entity__` vector index,
+  never by reading every entity. Nothing is written on an entity to mark it:
+  ingest writes entities without a name vector, and a run lists them in a
+  `pending` system record *before* it embeds them, so no crash can leave an
+  unchecked entity looking checked. A `finalize()` with nothing pending does no
+  dedup work. Measured: +1,000 new entities on a ~39k-entity graph finalize in
+  4.5 s (fake LLM), where the previous flow spent about 256 s of dedup and
+  5,982 LLM calls on every call; on a labeled set of 277 entities (138 true
+  pairs, gpt-4.1, 3 runs) precision rose from 0.81 to 0.92–0.93 and F1 from
+  0.71–0.73 to 0.83–0.84, with 5 LLM calls instead of 14.
+  - Candidates come from each pending entity's nearest names in the vector
+    index, searched from the vector stored on it (one name embedding per
+    entity, also used by search); descriptions are no longer embedded, but the
+    judge still reads them.
+  - The judge runs **once** per set and names each merged group (the survivor
+    takes that name and its vector; its old name moves to `aliases`; a table
+    row keeps its declared name). It also sees each entity's existing aliases.
+    The answer lists only groups of two or more, or `SET n NONE` (a member no
+    line lists stands alone), which cut answer tokens by about two thirds,
+    and ends with `END`. Only a clean answer is a verdict — a member number
+    the set lacks, overlapping groups, or a merged name on a one-member group
+    is no answer — and a set without one is asked again on its own, up to 2
+    more times. An answer that stops after a group line, before `END`, leaves
+    that set unanswered: the groups it did not reach would otherwise read as
+    "different". An output limit below 4,096 tokens set on the LLM is raised
+    to 4,096 for judge calls (`LLMJudge(min_output_tokens=)`; `None` keeps the
+    LLM's own limit, for a small-context server); the judge never sets one
+    itself. Agreed pairs
+    chain across sets, but never into a group holding a pair the judge kept
+    apart.
+  - **Every merge is decided before any is written.** The run's merges, from
+    both phases, are written as a merge plan, sealed, and applied one atomic
+    query per merge that moves every relationship of every type (the old remap
+    moved only `RELATES` and `MENTIONED_IN`), folds the properties, deletes the
+    duplicate and ticks the plan. An interrupted `finalize()` is finished by
+    the next one, from the ticks; nothing is merged twice or half. One dedup
+    run per graph at a time: a second — from another process, or a second
+    `finalize()` on the same `GraphRAG` — raises `DedupRunActiveError` and
+    leaves the running one untouched, and a run that stalls past its
+    10-minute heartbeat is taken over and writes nothing more.
+  - `update()`, `delete_document()` and table re-syncs never wait for a running
+    `finalize()`: each SDK delete or re-key leaves a `deleted` record in the
+    same query, and a merge that would touch the entity is skipped and decided
+    again next run (`FinalizeResult.dedup_merges_changed`). A table re-key into
+    a taken id is one query that moves every edge type and, like a merge,
+    writes nothing if either node changed since it was read — a property, or
+    a label (`rename_entity()`).
+  - Extracted mentions with the same spelling are judged rather than merged on
+    the name alone (Paris, France and Paris, Texas); a table row still absorbs
+    a same-named mention by rule — unless two rows share the name (also for a
+    declared label adopting a guessed one), or the mention's nearest-name
+    search did not finish, which go to the report or the judge instead.
+  - A "different" answer writes nothing to the graph; the pair is judged
+    again only if a later pending entity brings it into a set. An entity whose
+    check did not complete — a failed lookup or judge call, an answer that was
+    not a clean partition, a group held because one of its sets got no verdict,
+    a merge an update changed — stays pending (`FinalizeResult.dedup_pending`).
+    After 3 judged runs without a usable verdict it is unresolved
+    (`FinalizeResult.dedup_unresolved`): reported, left out of every set and
+    never merged automatically; `finalize(dedup_all=True)` retries it. When all
+    of a pending entity's 10 nearest names are exact-phase matches, the lookup
+    widens (up to 1,000) to find matches beyond the tenth. A table re-sync that
+    renames a row drops its vector, so it is checked under its new name.
+  - **The judge sees your ontology's attributes.** Each entity shows the values
+    of the attributes its types declare (`born: 1960; role: "CEO"`), under a
+    header listing those types and attributes — only the types in that prompt.
+    Two different values of a fact that does not change mean different entities;
+    on a small labelled set (gpt-4.1) namesakes told apart only by a birth year or
+    birthplace were merged every time without the values and kept apart every
+    time with them. Where a merged group's members disagree, the judge picks
+    whose value stays (`KEEP: born=1`); the other value is kept on the merged
+    entity in `<property>__dropped` (a list), and `FinalizeResult.dedup_collisions`
+    names each. A merge by rule (a table row absorbing a mention) keeps the
+    survivor's value the same way.
+  - **The judge is a pluggable component, and every run has one.**
+    `finalize(judge=...)` and `deduplicate_entities(judge=...)` take any
+    `DedupJudge`; the default is `LLMJudge` with the instance's `llm`, and
+    `LLMJudge(other_llm)` picks another model. A judge is given each candidate
+    set as a `JudgeSet` (each member's name, labels, aliases, description and
+    declared attribute values, with its types' declared attributes) and returns
+    a `SetVerdict` per set (groups of member positions, the merged entity's
+    name, `keep` picks), or `None` for a set it could not decide. The run
+    checks every judge's answer with the rules above and asks a set without
+    a usable one again (`retry=True`); the merge stays the run's. A judge may
+    report what it spent through `usage()`; `judge_stats` gets the run's
+    share (`LLMJudge`: `llm_calls`, `llm_failed`). There is no
+    run without a judge: `judge=False` raises `TypeError`, so no entity waits
+    for a judged run that may never come.
+  - The bookkeeping lives in SDK system nodes in the data graph, beside the
+    existing `__GraphRAGConfig__`: `__GraphRAGProcessing__` records (the lock,
+    pending, unresolved and deleted records, the plan), with no edges and no
+    vector; `get_statistics()` does not count them.
+  - **Requires FalkorDB 4.20 or later.** Earlier versions left a stale
+    vector-index entry on every write to an embedded node, so search and dedup
+    missed entities. Each connection asks the server its version once, before
+    its first query, and refuses an older one with `FalkorDBVersionError` (a
+    `DatabaseError`): `ingest()`, `query()`, `finalize()` and the rest fail
+    before anything is written. A server that refuses to report its version
+    (an ACL, a disabled `MODULE LIST`) is let through with a warning; any other
+    error reply is retried like a query, and `close()` makes the next query ask
+    again. CI tests `v4.22.2` and the Rust engine's 6.0.2 (which reports 6.0.2
+    and passes); `docker-compose.yml`, the docs' `docker run` lines and the
+    examples use `v4.22.2`.
+  - `finalize()` no longer calls `backfill_entity_embeddings()`: dedup writes
+    every entity's name vector, listing the entity first, and a backfill after
+    it would embed entities ingested meanwhile without a check.
+  - **Deprecated:** the fuzzy name-embedding phase is removed. For one
+    release `deduplicate_entities()` still accepts `fuzzy=False` and
+    `similarity_threshold=` (ignored, with a `DeprecationWarning`);
+    `fuzzy=True` raises `ValueError`. Finalize dedup is the exact phase plus
+    the judge. Ingest-time resolvers
+    (`ingest(resolver=...)`) are unchanged.
+  - **Upgrading:** upgrade the FalkorDB server to 4.20 or later first — 1.4.0
+    ran on older servers, this release refuses them. `finalize()` and
+    `deduplicate_entities()` now call the LLM (the judge), where 1.4.0's made
+    no LLM call; to keep dedup LLM-free, pass a `DedupJudge` of your own, such
+    as one that groups by spelling (see Strategies). Entities a graph built by
+    an earlier release already holds vectors for count as checked; the new ones
+    are checked by the next `finalize()`. To check every entity once, run
+    `finalize(dedup_all=True)`.
+- **Entity fulltext search returns name matches first.** The `__Entity__`
+  index covers `name` and `description` alike, so for a common term every hit
+  scored the same and `LIMIT` kept arbitrary rows: "Northwind Robotics" returned
+  dates whose descriptions mention it, not the company. Results are now ordered
+  by exact name match, then name containing the query (both case-insensitive,
+  ignoring surrounding spaces), then score, then id.
+- **A relation keeps its first (declared) description.** When a relation's
+  patterns carry different descriptions, `OntologyStore.load()` now reports the
+  oldest one instead of whichever row the engine listed last, so a description
+  derived from a table no longer replaces the one the user declared. A new
+  pattern copies properties from its oldest sibling. Relation nodes get a
+  creation stamp, since FalkorDB reuses the ids of deleted nodes.
+- **A query the server rejects, or one the server stops with "Query timed
+  out", raises `DatabaseError` on its first attempt, not
+  `DatabaseUnavailableError` after the retries.** Everything that is not a
+  server reply is still retried, as before: a lost connection, a client-side
+  socket timeout (no reply in time), `LOADING`, an error raised in the driver.
+  Of the server's replies only the temporary ones are: a full query queue,
+  `BUSY`, `NOREPLICAS`, `MISCONF`, cluster redirect/failover, a read-only
+  replica, out of memory. A rejection counts as a healthy answer for the circuit
+  breaker: it resets the failure count and closes a half-open breaker. The
+  server's "Query timed out" reply is not tried again, since each attempt costs
+  the full timeout, and two of them opened the breaker for every caller.
+  If you catch `DatabaseUnavailableError` to detect an outage, these errors no
+  longer reach that handler; catch `DatabaseError` for them.
+  `update(cache_unchanged_chunks=True)` now falls back to extraction on such an
+  error instead of stopping. On FalkorDB 4.x, a chunk or entity vector search
+  sent while its index is still being built in another process now returns no
+  hits at once; the old retries (about 1.5–4.5 s) could outlast a short build,
+  but counted each attempt against the breaker. In the process that builds the
+  index, `ensure_indices()` now waits for the build (see **Fixed**).
+- **On a server that accepts connections but never answers, a query takes
+  longer to raise `DatabaseUnavailableError`: about 47 s at the defaults, was
+  about 18 s.** Each of the `retry_count` attempts waits `query_timeout_ms` +
+  5 s for a reply, plus the backoff between them; that is the price of waiting
+  long enough for a slow query to finish. Lower `query_timeout_ms` or `retry_count` to fail
+  sooner. `ping()` still answers within 5 s.
 - **CI runs the FalkorDB-backed tests.** The integration job used to run one
   file (`tests/test_integration.py`); the whole suite now runs with
   `RUN_INTEGRATION=1`, so every test that needs a live graph is exercised on
   every push rather than skipped.
+- **The integration tests refuse port 6379 unless asked.** They create and drop
+  `test_*` graphs, and a plain `RUN_INTEGRATION=1 pytest` ran them on
+  `localhost:6379`, where a local FalkorDB with real data usually listens. With
+  `RUN_INTEGRATION` set and `FALKOR_PORT` unset or 6379, the run now stops
+  before anything connects: point `FALKOR_PORT` at a disposable server, or set
+  `FALKOR_TEST_ALLOW_6379=1` if the one on 6379 is disposable. CI sets the
+  opt-in for its service container.
 - **A label a `Link` points at has one key column.** Two tables may both
   describe `Person` under their own keys and a person in both is one node
   holding both; but a link to `Person` cannot tell which id space its column
@@ -186,72 +628,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`drop_entity()` refuses a label a table maps rows to or links to**, naming
   the table and pointing at `drop_table()`: the mapping would re-register the
   label on the next load, so the drop could only be undone.
-- **`finalize()` calls the model by default.** It used to deduplicate on exact
-  names only. It now also runs `LLMVerifiedResolution` over the whole graph —
-  one embedding pass, then one model call per close pair, each pair asked once —
-  unless `finalize(resolve=False)` is passed, which restores the previous
-  behaviour. A resolver that fails, because no model is reachable, is logged and
-  `finalize()` completes without it.
-
-- **`finalize()` now also runs an LLM-judged cross-document dedup phase**
-  (`storage/judge_dedup.py`, `finalize(judge=True)` — the default) after the
-  exact-name phase and the resolver pass. Ingest keeps `ExactMatchResolution`
-  as its default: a resolver at ingest only ever sees one document, so the
-  cross-document duplicates that matter (`Airbus` in one file, `Airbus SE` in
-  another) are unreachable there by construction. At finalize: every entity's
-  name is embedded first (and stored on the node for retrieval), descriptions
-  are embedded, and three LLM-free doors nominate candidate pairs — top-10
-  name neighbours ≥ 0.65, top-10 description neighbours ≥ 0.55, and "A's name
-  appears in B's description"; candidates are grouped into dense sets of at
-  most 8 and packed into ≤ 3,000-token prompts; the judge LLM partitions each
-  set; a second pass over shuffled sets must agree. Agreed pairs are
-  **merged** through the same absorb path as every other finalize merge —
-  survivor by the same rank (a table's row over a mention), every member's
-  description kept in `descriptions` and joined with `" | "`, other names kept
-  in `aliases`, provenance and missing properties carried, edges remapped
-  before the loser is deleted — and the survivor additionally gains every
-  member's label; disagreements become **`SAME_AS` edges**
-  (`source='llm_judge'`) instead — nothing is lost. Two keyed rows, a mention
-  two rows could own, and any pair a resolver remembered as `DISTINCT_FROM`
-  are never put to the judge, never grouped with each other through a third
-  member, and never linked. `FinalizeResult` gains `entities_linked`,
-  `judge_llm_calls`, `judge_stats`. Use a gpt-4.1-class `judge_llm` (defaults
-  to the instance's `llm`): on the benchmark corpus it made 9 wrong merges
-  where gpt-4o-mini made 51; the two-pass vote (`judge_vote=True`) cut wrong
-  merges by two thirds at 2× judge cost. `finalize(judge=False)` skips the
-  phase (the resolver pass still runs); `finalize(resolve=False,
-  judge=False)` keeps finalize LLM-free. On the standalone
-  `deduplicate_entities()` the judge is opt-in (`judge=True`), so a caller
-  running it after every batch keeps making no LLM calls. `finalize()` now
-  deduplicates *before* embedding entity names, so a duplicate the merge
-  removes is not embedded first; the judge stores the name vectors it
-  computes, and `FinalizeResult.entities_embedded` counts both. Absorbed
-  labels are recorded in `merged_labels` as well as set as Cypher labels, so
-  a survivor's later merge carries them on and its primary label stays the
-  one it was written as; label validity follows `sanitize_cypher_label`.
-  Agreements are unioned within one set only — so a genuine duplicate pair
-  that reached the judge as a straddling 2-member set beside a dense set
-  (a chain A–B–C–D–E arrives as `[A,B,C,D]` and `[D,E]`) is linked, never
-  merged, once its endpoint has merged inside the dense set: a deliberate
-  trade of recall for the chain guarantee. A set whose prompt failed in one
-  pass is left unjudged rather than counted as a disagreement, and the
-  entity text in the judge prompt is flattened, quoted and declared
-  untrusted. `SAME_AS.agreement` is the number of passes that said SAME, so
-  a cross-set link written without the vote carries `1`, never `2`.
-  Description vectors are cached on the node (`description_embedding`,
-  keyed on `description_embedding_hash`, the digest of the text, the
-  embedder's `model_name` and the vector's dimension), so a later run
-  embeds only descriptions that are new, changed, or embedded by another
-  model; a cached vector of another dimension than the ones embedded now is
-  re-embedded with a warning rather than dropped. The judge's `embedded`
-  count leaves out a node its own merges then deleted. If the
-  `DISTINCT_FROM` pairs cannot be read, the fuzzy, resolver and judge
-  phases are skipped with a warning (`last_judge_stats["skipped_reason"]`)
-  instead of running as if none existed. A label holding `|` — the
-  separator of the `merged_labels` record — is refused by a mapping and by
-  a merge, and the record is split on the exact `" | "`.
-  `deduplicate_entities(judge_llm=...)` without `judge=True` warns that the
-  judge did not run. An adoption into a declared label drops the labels the
+- **`finalize()` now also runs a judged cross-document dedup phase**
+  (`storage/judge_dedup.py`; the judge is a `DedupJudge`, `LLMJudge` by default) after the
+  exact-name phase; see the incremental-dedup entry under Changed for how it
+  picks candidates. Ingest keeps `ExactMatchResolution` as its default: a
+  resolver at ingest only ever sees one document, so the cross-document
+  duplicates that matter (`Airbus` in one file, `Airbus SE` in another) are
+  unreachable there by construction. Agreed pairs are **merged** through the
+  same absorb path as the exact phase — survivor by the same rank (a table's
+  row over a mention), every member's description kept in `descriptions` and
+  joined with `" | "`, other names kept in `aliases`, provenance and missing
+  properties carried, every edge moved in the query that deletes the loser — and the
+  survivor additionally gains every member's label, recorded in
+  `merged_labels` as well as set as Cypher labels. Two keyed rows and a
+  mention two rows could own are never put to the judge. `FinalizeResult`
+  gains `judge_calls` and `judge_stats`. Give the default `LLMJudge` a
+  gpt-4.1-class model (`finalize(judge=LLMJudge(gpt41))`; it defaults to the
+  instance's `llm`): on the benchmark corpus it made 9 wrong merges where
+  gpt-4o-mini made 51. The entity text in the
+  judge prompt is flattened, quoted and declared untrusted. A label holding
+  `|` — the separator of the `merged_labels` record — is refused by a mapping
+  and by a merge. An adoption into a declared label drops the labels the
   adopted guess had itself absorbed, not only its primary.
 
 - `GraphExtraction`'s verification prompt now tells the model that entity
@@ -273,9 +670,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   punctuation, apostrophes and `&`, `Surname, Given` inversion, common
   abbreviations (`Corp.` → `corporation`) and one trailing legal form
   (`Ltd`, `Inc`, `GmbH`) are normalised, word order is not — `Morgan Stanley`
-  and `Stanley Morgan` stay apart. Spellings the rule deliberately declines to
-  join (`M. Ellison` / `Maya Ellison`, a pure reordering) are listed in
-  `FinalizeResult.probable_duplicates` with the reason, never merged.
+  and `Stanley Morgan` stay apart. A group holding a table row merges by rule;
+  a group of extracted mentions only goes to the judge.
+  Spellings the rule deliberately declines to join (`M. Ellison` / `Maya
+  Ellison`, a pure reordering) are never merged by the rule; the judge may
+  merge them, and a pair it leaves apart is listed in
+  `FinalizeResult.probable_duplicates` with the reason.
 
 - **`ingest()` of a tabular file returns a `StructuredIngestionResult`.** It
   is not an `IngestionResult`: a row is not a chunk, so it reports `records`,
@@ -293,10 +693,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run. For a corpus with no structured sources only the degree and tie-break
   steps are new.
 
-- `EntityDeduplicator.deduplicate()` and `GraphRAG.deduplicate_entities()`
-  default `similarity_threshold` raised from `0.9` to `0.95`: at `0.9` the
-  name-embedding tier merged 2 of 33 deliberate hard-negative pairs for no
-  added recall.
 - `GraphExtraction` now ships a default relation vocabulary,
   `DEFAULT_RELATION_TYPES` (31 UPPER_SNAKE_CASE labels: `LOCATED_IN`,
   `PART_OF`, `EMPLOYED_AT`, `AUTHORED`, ...), the counterpart of
@@ -332,8 +728,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/*.md` to `docs/*.mdx`, navigation is declared in `docs/docs.json`, and
   `mkdocs.yml` plus the GitHub Pages deploy workflow were removed in favour of
   MDX/link validation in CI.
+- GraphRAG SDK now depends on `falkordb[hiredis]>=1.8.0`, which installs the
+  `hiredis` C reply parser. Retrieval reads each chunk's embedding back to
+  rerank, and parsing those replies in pure Python was most of the client's
+  CPU per question: about 48 ms down to 11 ms in our tests, so one process
+  serves more concurrent questions.
+- **Relationship expansion now starts from the endpoints of matched `RELATES`
+  edges, by their stored ids.** `search_relationships()` /
+  `search_relates_edges()` return each edge's `src_id` / `tgt_id`, and
+  expansion walks from those ids instead of ids guessed from names, which
+  missed typed ids such as `alice__person`. So the default `rag.retrieve()` /
+  `completion()` context can include more relationship lines than before. An
+  endpoint with no name (a relation edge from a table) seeds expansion but is
+  not listed under Key Entities. When there are more lines than
+  `max_relationships`, 2-hop lines keep up to a third of the room, so 1-hop
+  lines cannot crowd them all out.
 
 ### Fixed
+- **A rejected `GraphRAG.set_ontology()` no longer sticks.** When the new
+  ontology was refused (a contradiction with the stored one, a reserved
+  label), it stayed on the instance and every later ingest failed on it. The
+  previous ontology is now restored before the error is raised.
+- **Reading the ontology no longer creates its graph.** `OntologyStore.load()`
+  read with `GRAPH.QUERY`, which on a graph nothing was declared on yet left an
+  empty `<graph>__ontology` key behind. It now reads with `GRAPH.RO_QUERY` and
+  treats a missing key as an empty ontology.
+- **With coreference resolution on, spans pointed at the wrong text.** The
+  models read the resolved chunk ("She hired Bob" becomes "Alice Smith hired
+  Bob"), the spans were found in it, but the chunk node stores the original,
+  so every span after a rewritten pronoun selected other text or ran past the
+  chunk's end. A `MENTIONED_IN` edge's spans are now found in the stored text;
+  the NER offsets are used only when coreference left the chunk unchanged, and
+  a rewritten chunk's `RELATES` evidence offsets are left out. The sentence
+  that stands in for a missing description is still cut from the resolved
+  text. Coreference resolution is off by default.
+- **A write batch holding the same entity or relationship twice lost a write.**
+  In one `UNWIND ... MERGE` call FalkorDB 4.x kept the first row's values and
+  6.0.x the last, and on both only one row's `source_chunk_ids` survived, so an
+  entity seen in two chunks stayed linked to one. `upsert_nodes()` and
+  `upsert_relationships()` now merge writes that share a key before sending
+  the batch, as if they were written one at a time: later properties win, and
+  for entities and `RELATES` edges the chunk lists are combined (other labels
+  and edge types keep the last write's list, as before). On 4.x a repeated key
+  now keeps its last values instead of its first.
+- **Entity resolution dropped a merged fact's sources.** Merging `acme_corp`
+  into `acme` turns `Alice WORKS_AT Acme Corp` (chunk 1) and `Alice WORKS_AT
+  Acme` (chunk 2) into one edge; `remap_relationships()` kept the first edge
+  and its `source_chunk_ids` only, so the graph forgot chunk 2, and deleting
+  chunk 1's document deleted the fact. The kept edge now also gets the
+  dropped duplicates' chunks; its other properties are still the first edge's.
+- **Results cut by a `LIMIT` or a cap depended on the engine's row order.**
+  FalkorDB 4.x and 6.0.x list unordered rows differently, so these returned
+  different data after an upgrade, and now order before cutting:
+  `get_connected_entities()` (which 50 entities it returns; only with
+  `max_hops=1`, since beyond one hop an order would need every path first, so
+  the engine's order stays),
+  `list_chunks_for_relation_pattern_backfill()` (which pairs the cap shows the
+  LLM), `search_chunks()` / `search_entities()` (which of equally close nodes:
+  ties are cut by id, fetching 2×`top_k` and more while the cut is still a tie),
+  `GraphVisualizer.sample_nodes()` and `add_relation_pattern_node()`.
+- **FalkorDB 6.0.x: fulltext indexes were never created.** 6.0.x rejects the
+  multi-argument `db.idx.fulltext.createNodeIndex(label, field, ...)` procedure,
+  so `ensure_indices()` left `Chunk(text)` and `__Entity__(name, description)`
+  unindexed and fulltext search returned nothing. Each failing statement was
+  also retried and counted against the circuit breaker, which then opened and
+  refused every query for the recovery timeout. Fulltext indexes are now created
+  with `CREATE FULLTEXT INDEX`, which works on 4.x and 6.0.x, one field per
+  statement so an existing index on `name` cannot leave `description` unindexed.
+- **A query the server rejects is no longer retried.** Only replies matching a
+  short list were treated as permanent; anything else — division by zero, an
+  unknown variable, a `MERGE` on a null key, a missing index, a procedure called
+  with the wrong arity — was tried three times and counted against the circuit
+  breaker, so two such statements in a row opened it and refused every caller
+  for the recovery timeout, on 4.x as well as 6.0.x. See **Changed** for the
+  error type it now raises.
+- **Queries slower than 5 seconds always failed.** redis-py stops waiting for a
+  reply after 5 s unless told otherwise, and the SDK never told it, so a query
+  needing 5–10 s failed on the client before the server's 10 s
+  `query_timeout_ms` could answer. Each attempt was retried, counted against
+  the circuit breaker and left running on the server: a 7 s query failed after
+  16–20 s, and two of them opened the breaker. The client now waits
+  `query_timeout_ms` plus 5 s for a reply (no limit when `query_timeout_ms` is
+  `None`). Opening a connection, `ping()` and the driver's first probe of the
+  server still give up after 5 s.
+- **A search right after `ensure_indices()` on a large graph found nothing.**
+  `CREATE ... INDEX` returns while FalkorDB is still building the index over
+  existing data; until it finishes, 4.x rejects a vector search and 6.0.x
+  answers with no rows. With 20,000 chunks, `ensure_indices()` (and so
+  `ingest()`) returned with the chunk index half built and the entity index not
+  started, and chunk and entity search came back empty. Each index statement
+  also waited on the server for the previous build, past the client's socket
+  timeout, and was re-sent. `ensure_indices()` now waits until `db.indexes()`
+  reports every index built (up to 10 minutes, logging progress every 10 s).
+- **FalkorDB 6.0.2: a label's new key index could come up empty.** The range
+  indexes a write adds to a label — `id`, `entity_key` and a table's signed
+  key — were created one statement each, and sent back to back for one label
+  6.0.2 sometimes left the last one empty while reporting it `OPERATIONAL`, so
+  every lookup on that key, and any `MATCH` filtering on it, found nothing (8
+  of 450 fresh 10,000-node graphs). A label's missing fields now go in one
+  `CREATE INDEX`. The write that creates the index also waits for the build,
+  up to 60 s and then warns and continues: FalkorDB plans without an index
+  until it is built, and a 500-key lookup sent right after the `CREATE` on a
+  1M-node label scanned the label once per key and timed out.
+- `drop_chunk_vector_index()`, `drop_entity_vector_index()` and
+  `drop_relates_vector_index()` called `db.idx.vector.drop`, which exists on no
+  FalkorDB version, so nothing was dropped. They now use `DROP VECTOR INDEX`, and
+  a later `ensure_indices()` on the same store recreates the index.
+- **FalkorDB 6.0.x: relationship search returned nothing without a `RELATES`
+  vector index.** The cosine-scan fallback only ran when the index query raised;
+  4.x raises for a missing index, 6.0.x answers with no rows. An empty answer now
+  falls back too, unless `db.indexes()` shows the `RELATES` vector index in
+  place, in which case the empty answer stands. The scan reads every embedded
+  edge, so the first fallback per store logs a warning.
 - `delete_all()` forgot to reset the memo for the per-label `id` range
   indexes. The graph drop took the indexes with it, but in the same process
   `create_id_range_indices()` believed they still existed, so the next ingest
@@ -382,7 +888,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block are compared — the same pairs, under a second at 5k.
 - A merge kept the survivor's description even when the deleted node's was
   the longer one (the paragraph from the PDF, lost to the row's template
-  line). The longer description is carried.
+  line). Both descriptions are kept.
 - Re-ingesting the same file no longer duplicates its chunks. Chunk ids are
   now derived from document id + position + text instead of a fresh
   `uuid4()`, so `MERGE` finds the existing node (17 → 17 → 17 chunks across
@@ -480,13 +986,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Alice Smith` in the rows and `Alice Smith` as a manager reference no longer
   fall back to key-derived ids and split. When two keyed rows do share a name, a
   prose mention of it is left unmerged by `finalize()` and reported in
-  `probable_duplicates` rather than handed to whichever row was listed first.
-  That held for `finalize(resolve=False)` only: the resolver's own exact-name
-  pass merged the mention into a row regardless. The undecidable mention/row
-  pairs are now passed to the resolver as settled (`RESOLUTION_SKIP_PAIRS`),
-  `LLMVerifiedResolution` keeps hinted nodes out of its name-merge phase, and
-  the merge loop refuses such a pair from a resolver that ignores hints — so
-  the default `finalize()` keeps the three nodes too.
+  `probable_duplicates` rather than handed to whichever row was listed first,
+  and the judge never merges such a pair either.
 
 - **A name collision is looked for on the id the rows would get.** Node ids
   lower-case the name *and* turn spaces into underscores, but the collision
@@ -574,12 +1075,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A merge no longer discards the duplicate's properties.** The deduplicator
   remapped edges only, so `DETACH DELETE` took the duplicate's properties with
-  it — its description, which entity vector search embeds, and every value only
-  it knew. Properties are now carried onto the survivor in the same statement
-  that deletes the duplicate, with a value already on the survivor always
-  winning; the two descriptions are joined with `" | "` and the duplicate's
-  name is recorded in the survivor's `aliases`. The same policy applies when a
-  renamed table row is folded into a node that already holds its new id.
+  it — its description and every value only it knew. Properties are now carried onto the survivor in the same statement
+  that deletes the duplicate: a value only the duplicate holds is copied, and
+  where both hold different values the judge's pick (`KEEP`) or else the
+  survivor's stays and the other goes to `<property>__dropped`; the two
+  descriptions are joined with `" | "` and the duplicate's name is recorded in
+  the survivor's `aliases`. When a renamed table row is folded into a node
+  that already holds its new id, that node's own values stay.
 
 - **Edge identity includes `rel_type`.** Every data edge is `RELATES` with its
   semantic type in `rel_type`, but the deduplicator's remap and the writers that
@@ -614,8 +1116,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that holds the same key; the lookup used to match on the bare `entity_key`,
   so `hr.csv` row `7` claimed `payroll.csv` row `7` when both wrote `Person`.
   It now matches only a placeholder or a node carrying the table's *own* signed
-  key, and the fuzzy phase of `finalize()` leaves two keyed rows apart without
-  asking the model — the keys already say they are different people.
+  key, and `finalize()`'s judge leaves two keyed rows apart without asking the
+  model — the keys already say they are different people.
 
 - **A row the export dropped, but still points at, becomes a placeholder.** A
   manager whose own row left `staff.csv` while a report still named her stayed

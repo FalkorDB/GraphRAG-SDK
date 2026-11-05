@@ -5,7 +5,7 @@ Minimal example: ingest a short text and query it.
 No external files needed -- just an LLM API key and FalkorDB.
 
 Prerequisites:
-    docker run -p 6379:6379 falkordb/falkordb
+    docker run -p 6379:6379 falkordb/falkordb:v4.22.2
     pip install graphrag-sdk[litellm]
 
 Option A -- OpenAI (simplest, 1 env var):

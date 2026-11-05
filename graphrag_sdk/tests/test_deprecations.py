@@ -10,7 +10,7 @@ attribute on :py:class:`GraphRAG`.
 from __future__ import annotations
 
 import warnings
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -406,6 +406,7 @@ class TestOntologyStoreRegisterKwargAlias:
 
         conn = MagicMock()
         conn._ensure_client = MagicMock()
+        conn._check_server_version = AsyncMock()  # a supported server
         conn._driver = SimpleNamespace(select_graph=MagicMock(return_value=_FakeGraph()))
         return OntologyStore(conn, "test")
 
