@@ -198,6 +198,20 @@ def _relates_row(src, rel, tgt, fact, score, description="", src_id="", tgt_id="
 
 
 class TestVectorStoreSearch:
+    async def test_relationship_search_widens_past_a_tie_at_the_cutoff(
+        self, vector_store, mock_connection
+    ):
+        tied = [_relates_row(f"S{i}", "R", f"T{i}", "f", 0.5, src_id=f"s{i}") for i in range(4)]
+        first, wider = MagicMock(), MagicMock()
+        first.result_set = tied  # 4 rows for top_k=2: the cutoff and the last row tie
+        wider.result_set = tied + [_relates_row("S9", "R", "T9", "f", 0.4, src_id="s9")]
+        mock_connection.query = AsyncMock(side_effect=[first, wider])
+
+        results = await vector_store.search_relationships(query_vector=[0.1] * 8, top_k=2)
+
+        assert [c.args[1]["top_k"] for c in mock_connection.query.call_args_list] == [4, 8]
+        assert [r["src_id"] for r in results] == ["s0", "s1"]
+
     async def test_search_chunks(self, vector_store, mock_connection):
         result_mock = MagicMock()
         result_mock.result_set = [

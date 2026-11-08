@@ -560,16 +560,33 @@ class VectorStore:
             f"RETURN {_RELATES_HIT_COLUMNS}, (1-score) AS score "
             "ORDER BY score DESC, src_id, tgt_id, type"
         )
+        if top_k <= 0:
+            return []
         try:
-            result = await self._conn.query(
-                query,
-                {
-                    "top_k": top_k,
-                    "vector": query_vector,
-                },
-                expected_errors=_MISSING_VECTOR_INDEX_MARKERS,
-            )
-            rows = [_relates_hit(row) for row in result.result_set]
+            # The index decides which of several equally close edges make its
+            # top k, so ask for more and widen while the cutoff is still a tie
+            # (as _nearest_rows does for nodes); the ORDER BY then picks the
+            # same edges on every run.
+            fetch_k = top_k * 2
+            while True:
+                result = await self._conn.query(
+                    query,
+                    {
+                        "top_k": fetch_k,
+                        "vector": query_vector,
+                    },
+                    expected_errors=_MISSING_VECTOR_INDEX_MARKERS,
+                )
+                rows = [_relates_hit(row) for row in result.result_set]
+                if (
+                    len(rows) <= top_k
+                    or len(rows) < fetch_k
+                    or fetch_k >= _MAX_TIE_FETCH
+                    or rows[top_k - 1]["score"] != rows[-1]["score"]
+                ):
+                    rows = rows[:top_k]
+                    break
+                fetch_k = min(fetch_k * 2, _MAX_TIE_FETCH)
             if rows:
                 return rows
             # With the index in place an empty answer is genuine: nothing to

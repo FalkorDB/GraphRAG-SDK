@@ -133,6 +133,13 @@ def render_ontology_block(ontology: Ontology | None) -> str:
         for name, typ, desc in ent_props.get(label, []):
             d = f" — {desc}" if desc else ""
             lines.append(f"      - {name} ({typ}){d}")
+    # Extraction keeps an entity it could not type under ``Unknown`` (not an
+    # ontology label), so a query on the declared labels alone misses it.
+    if "Unknown" not in labels:
+        lines.append(
+            "- Unknown: an entity extraction found but could not type "
+            "(`(e:Unknown)`; `(e:__Entity__)` includes these too)"
+        )
 
     lines.append("")
     lines.append("### Edge types:")
@@ -443,7 +450,9 @@ def validate_cypher(cypher: str, ontology: Ontology | None = None, **legacy: Any
         errors.append("Missing RETURN clause")
 
     # Check referenced labels exist in ontology
-    allowed_labels = _labels_from_ontology(ontology) | _STRUCTURAL_LABELS
+    # ``Unknown`` is no ontology label, but extraction stores untyped entities
+    # under it, and the schema prompt says so.
+    allowed_labels = _labels_from_ontology(ontology) | _STRUCTURAL_LABELS | {"Unknown"}
     label_pattern = re.findall(r"\((?:\w+)?:(\w+)", cypher_norm)
     for label in label_pattern:
         if label not in allowed_labels:

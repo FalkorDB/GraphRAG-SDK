@@ -521,3 +521,22 @@ class TestCypherResultsAreInterpretable:
             "Who is there?",
         )
         assert facts == ["Alice Smith | 34"]
+
+
+class TestUnknownLabel:
+    def test_the_schema_prompt_names_the_unknown_label(self):
+        from graphrag_sdk.core.models import Entity, Ontology
+        from graphrag_sdk.retrieval.strategies.cypher_generation import render_ontology_block
+
+        block = render_ontology_block(Ontology(entities=[Entity(label="Person")]))
+        assert "- Unknown: an entity extraction found but could not type" in block
+
+    def test_a_query_on_unknown_entities_is_valid(self):
+        from graphrag_sdk.core.models import Entity, Ontology
+        from graphrag_sdk.retrieval.strategies.cypher_generation import validate_cypher
+
+        errors = validate_cypher(
+            "MATCH (e:Unknown) RETURN e.name AS name LIMIT 25",
+            Ontology(entities=[Entity(label="Person")]),
+        )
+        assert errors == []
