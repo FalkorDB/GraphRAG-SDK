@@ -294,6 +294,7 @@ async def expand_triples(
     hops: int,
     cap: int = 60,
     per_hop_limit: int | None = None,
+    query_vector: list[float] | None = None,
 ) -> list[dict[str, str]]:
     """``{source, type, target, fact}`` RELATES edges around ``seed_ids``, hop by hop.
 
@@ -311,6 +312,12 @@ async def expand_triples(
     hop gets to run; whatever a hop does not use rolls forward to the next.
     ``per_hop_limit`` caps a hop further. An endpoint with no ``name`` is
     shown by its stored id.
+
+    With ``query_vector`` each hop keeps the edges closest to the question
+    (by the edge embedding ``finalize()`` writes; an edge without one comes
+    after every embedded edge), so the cap keeps what is relevant rather
+    than what sorts first. A relationship table's own values (its signed
+    columns) are shown in ``fact``; its stored fact is only a template.
     """
     triples: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
@@ -325,21 +332,32 @@ async def expand_triples(
         limit = max(1, left // (hops - hop))
         if per_hop_limit is not None:
             limit = min(limit, per_hop_limit)
+        params: dict[str, Any] = {"ids": frontier, "seen_edges": list(seen_edges), "limit": limit}
+        if query_vector is not None:
+            distance = (
+                "CASE WHEN r.embedding IS NULL THEN 3.0 "
+                "ELSE vec.cosineDistance(r.embedding, vecf32($qv)) END"
+            )
+            params["qv"] = query_vector
+        else:
+            distance = "0.0"
         result = await _read(
             store,
             "MATCH (a:__Entity__)-[r:RELATES]-(b:__Entity__) "
             "WHERE a.id IN $ids AND NOT ID(r) IN $seen_edges "
             "AND (NOT b.id IN $ids OR a.id <= b.id) "
             "WITH r, b, coalesce(startNode(r).name, r.src_name, startNode(r).id) AS src, "
-            "coalesce(endNode(r).name, r.tgt_name, endNode(r).id) AS tgt "
+            "coalesce(endNode(r).name, r.tgt_name, endNode(r).id) AS tgt, "
+            f"{distance} AS dist "
             # The edge's evidence, else its fact (whose "(src, TYPE, tgt): "
             # prefix fact_body drops: it repeats extraction-time names).
             "RETURN src, r.rel_type, tgt, "
             "CASE WHEN trim(coalesce(r.description, '')) <> '' THEN r.description "
-            "ELSE coalesce(r.fact, '') END, b.id, ID(r) "
-            "ORDER BY src, r.rel_type, tgt, b.id "
+            "ELSE coalesce(r.fact, '') END, b.id, ID(r), "
+            "[k IN keys(r) WHERE k CONTAINS '__' AND NOT k ENDS WITH '__dropped' | [k, r[k]]] "
+            "ORDER BY dist, src, r.rel_type, tgt, b.id "
             "LIMIT $limit",
-            {"ids": frontier, "seen_edges": list(seen_edges), "limit": limit},
+            params,
         )
         next_frontier: list[str] = []
         for row in _rows(result):
@@ -348,6 +366,11 @@ async def expand_triples(
             other = row[4] if len(row) > 4 else ""
             if len(row) > 5 and isinstance(row[5], int):
                 seen_edges.append(row[5])
+            values = "; ".join(
+                f"{k}: {v}"
+                for k, v in sorted(row[6] if len(row) > 6 and row[6] else [])
+                if isinstance(v, str | int | float | bool) and v != ""
+            )
             key = (str(src).lower(), str(rel_type), str(tgt).lower())
             if src and rel_type and tgt and key not in seen:
                 seen.add(key)
@@ -356,7 +379,9 @@ async def expand_triples(
                         "source": str(src),
                         "type": str(rel_type),
                         "target": str(tgt),
-                        "fact": fact_body(str(fact or ""), str(rel_type)),
+                        "fact": "; ".join(
+                            p for p in (fact_body(str(fact or ""), str(rel_type)), values) if p
+                        ),
                     }
                 )
             if other and other not in visited:

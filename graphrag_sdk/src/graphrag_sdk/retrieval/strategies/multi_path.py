@@ -217,6 +217,9 @@ class MultiPathRetrieval(RetrievalStrategy):
         self._keyword_limit = keyword_limit
         self._enable_cypher = enable_cypher
         self._router = router
+        # The last question vector, for a caller that walks the graph after
+        # the search (the tools' relation walk ranks edges by it).
+        self.last_query_vector: list[float] | None = None
         self._ontology = ontology
 
     def set_ontology(self, ontology: Ontology | None) -> None:
@@ -284,6 +287,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             query,
             timeout=ctx.provider_timeout_seconds("MultiPath question embedding"),
         )
+        self.last_query_vector = query_vector
 
         # 2b. Plan which retrieval paths to run. Without a router this is
         # "all paths" (unchanged behavior). With a router, an LLM/heuristic
