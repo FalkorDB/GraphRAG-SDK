@@ -10,7 +10,11 @@ from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
-from graphrag_sdk.retrieval.strategies.result_assembly import format_relation_line
+from graphrag_sdk.retrieval.strategies.result_assembly import (
+    INTERNAL_ENTITY_PROPS,
+    format_relation_line,
+    shown_attributes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -305,3 +309,41 @@ async def expand_sibling_entities(
         logger.debug("Sibling entity expansion failed: %s", exc)
 
     return added
+
+
+async def fetch_entity_attributes(
+    graph_store: Any,
+    entity_ids: list[str],
+    ctx: Context | None = None,
+) -> dict[str, list[tuple[str, Any]]]:
+    """Entity id -> its own data: the typed columns a table wrote
+    (``employees__age``) and the declared attributes extraction filled.
+
+    Entity discovery reads only name and description, so without this a
+    table's values never reached the answer. SDK bookkeeping and vectors are
+    left out in the query, before the values travel.
+    """
+    if not entity_ids:
+        return {}
+    try:
+        if ctx is not None:
+            ctx.ensure_budget("entity attribute fetch")
+        result = await graph_store.query_raw(
+            "UNWIND $ids AS eid "
+            "MATCH (e:__Entity__ {id: eid}) "
+            "RETURN e.id, [k IN keys(e) WHERE NOT k IN $hidden | [k, e[k]]]",
+            {"ids": entity_ids, "hidden": sorted(INTERNAL_ENTITY_PROPS)},
+        )
+    except LatencyBudgetExceededError:
+        raise
+    except Exception as exc:
+        logger.debug("Entity attribute fetch failed: %s", exc)
+        return {}
+    out: dict[str, list[tuple[str, Any]]] = {}
+    for row in result.result_set:
+        if not row or not row[0]:
+            continue
+        pairs = {str(k): v for k, v in (row[1] if len(row) > 1 and row[1] else [])}
+        if attrs := shown_attributes(pairs):
+            out[row[0]] = attrs
+    return out

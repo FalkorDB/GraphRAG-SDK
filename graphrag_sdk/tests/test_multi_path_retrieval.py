@@ -1711,3 +1711,100 @@ class TestCypherPromptKnowsTheGraph:
         assert "startNode(r).name" in block  # src_name is marked as possibly outdated
         prompt = build_ontology_prompt(None, "Who?")
         assert "coalesce(e.aliases, [])" in prompt
+
+
+class TestValuesAndSourceText:
+    async def test_a_contextual_chunk_is_served_as_its_original_text(
+        self, mp_graph_store, mp_vector_store
+    ):
+        from graphrag_sdk.retrieval.strategies.chunk_retrieval import retrieve_chunks
+
+        mp_vector_store.search_chunks = AsyncMock(
+            return_value=[{"id": "c1", "text": "Model-written context.\n\nAlice works at Acme."}]
+        )
+
+        async def query_raw(cypher, params=None):
+            if "c.original_chunk" in cypher:
+                return MagicMock(result_set=[["c1", [0.1, 0.2], "Alice works at Acme."]])
+            return MagicMock(result_set=[])
+
+        mp_graph_store.query_raw = AsyncMock(side_effect=query_raw)
+        chunks, _, embeddings = await retrieve_chunks(
+            mp_vector_store, mp_graph_store, "q", [0.1], [], [], []
+        )
+        assert chunks == {"c1": "Alice works at Acme."}
+        assert embeddings == {"c1": [0.1, 0.2]}
+
+    async def test_entity_values_reach_the_entity_section(self):
+        from graphrag_sdk.retrieval.strategies.entity_discovery import fetch_entity_attributes
+
+        store = MagicMock()
+        store.query_raw = AsyncMock(
+            return_value=MagicMock(
+                result_set=[
+                    ["bob__person", [["employees__age", 45], ["born", 1979], ["x__dropped", [1]]]]
+                ]
+            )
+        )
+        attrs = await fetch_entity_attributes(store, ["bob__person"])
+        assert attrs == {"bob__person": [("born", 1979), ("employees__age", 45)]}
+        cypher, params = store.query_raw.call_args[0]
+        assert "NOT k IN $hidden" in cypher and "embedding" in params["hidden"]
+
+        raw = assemble_raw_result(
+            [
+                (
+                    "bob__person",
+                    {"name": "Bob", "description": "The CFO.", "attributes": attrs["bob__person"]},
+                )
+            ],
+            [],
+            [],
+            [],
+        )
+        assert "- Bob: The CFO. (born: 1979; employees__age: 45)" in str(raw.records)
+
+    def test_two_entities_sharing_a_name_with_different_descriptions_are_both_listed(self):
+        raw = assemble_raw_result(
+            [
+                ("paris__location", {"name": "Paris", "description": "Capital of France."}),
+                ("paris__person", {"name": "Paris", "description": "A Trojan prince."}),
+                ("paris__other", {"name": "Paris", "description": ""}),
+            ],
+            [],
+            [],
+            [],
+        )
+        shown = str(raw.records)
+        assert "- Paris: Capital of France." in shown and "- Paris: A Trojan prince." in shown
+        assert shown.count("- Paris") == 2
+
+    async def test_relation_lines_show_table_values_and_unnamed_endpoints(self):
+        from graphrag_sdk.retrieval.strategies.relationship_expansion import expand_relationships
+
+        rows = [
+            # src, rel, tgt, description, fact, distance, far end, edge values
+            [
+                "unit-7",
+                "CONSUMED",
+                "Batch 3",
+                None,
+                "(Unit, CONSUMED, Batch)",
+                0.2,
+                "b3",
+                [["consumed_batch__consumed_on", "2024-01-01"]],
+            ],
+        ]
+        store = MagicMock()
+        store.query_raw = AsyncMock(
+            side_effect=[
+                MagicMock(result_set=rows),
+                MagicMock(result_set=[]),
+                MagicMock(result_set=[]),
+            ]
+        )
+        lines = await expand_relationships(store, [("u7", {"name": ""})], query_vector=[0.1])
+        assert lines == ["unit-7 —[CONSUMED]→ Batch 3 [consumed_batch__consumed_on: 2024-01-01]"]
+        cypher = store.query_raw.call_args_list[0][0][0]
+        assert "coalesce(startNode(r).name, startNode(r).id) AS src" in cypher
+        assert "k CONTAINS '__' AND NOT k ENDS WITH '__dropped'" in cypher

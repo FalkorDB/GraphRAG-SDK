@@ -180,7 +180,10 @@ async def retrieve_chunks(
         chunks.pop(cid, None)
         sources.pop(cid, None)
 
-    # Batch-fetch stored embeddings for all collected chunks
+    # Batch-fetch stored embeddings for all collected chunks, and the source
+    # text of chunks ContextualChunking wrote: their ``text`` starts with a
+    # model-written context sentence, which helped find them but is not what
+    # the document says, so the passage shows ``original_chunk`` instead.
     embeddings: dict[str, list[float]] = {}
     missing_ids = list(chunks.keys())
     if missing_ids:
@@ -190,13 +193,17 @@ async def retrieve_chunks(
             result = await graph_store.query_raw(
                 "UNWIND $ids AS cid "
                 "MATCH (c:Chunk {id: cid}) "
-                "WHERE c.embedding IS NOT NULL "
-                "RETURN c.id, c.embedding",
+                "RETURN c.id, c.embedding, c.original_chunk",
                 {"ids": missing_ids},
             )
             for row in result.result_set:
-                if row[0] and row[1] is not None:
+                if not row[0]:
+                    continue
+                if len(row) > 1 and row[1] is not None:
                     embeddings[row[0]] = list(row[1])
+                original = row[2] if len(row) > 2 else None
+                if isinstance(original, str) and original.strip() and row[0] in chunks:
+                    chunks[row[0]] = original
         except LatencyBudgetExceededError:
             raise
         except Exception as exc:

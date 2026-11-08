@@ -13,6 +13,7 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import RawSearchResult
 from graphrag_sdk.core.providers import Embedder
+from graphrag_sdk.core.tables import RESERVED_PROPERTY_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -28,17 +29,73 @@ _MAX_ENTITY_DESCRIPTION_CHARS = 400
 _FACT_TRIPLE_PREFIX_RE = re.compile(r"^\((?:[^()]|\([^()]*\))*\)(?::\s*)?")
 
 
+# Properties the SDK writes for itself on an entity: the reserved keys, plus
+# dedup and description bookkeeping. Everything else is the application's
+# data (a table's ``employees__salary``, an extracted ``born``) and is shown.
+INTERNAL_ENTITY_PROPS = RESERVED_PROPERTY_NAMES | {
+    "descriptions",
+    "aliases",
+    "merged_labels",
+    "mention_edge_count",
+    "description_summarised",
+}
+DROPPED_SUFFIX = "__dropped"
+# Longest attribute list shown for one entity or relation line.
+_MAX_ATTRIBUTES_CHARS = 200
+
+
+def shown_attributes(props: dict[str, Any], hidden: frozenset[str] | set[str] = frozenset()):
+    """``(key, value)`` pairs of an entity's or edge's own data, by key.
+
+    Scalars only, leaving out the SDK's bookkeeping (``hidden`` adds keys)
+    and the values a merge set aside (``<key>__dropped``).
+    """
+    return [
+        (key, value)
+        for key, value in sorted(props.items())
+        if key not in INTERNAL_ENTITY_PROPS
+        and key not in hidden
+        and not key.endswith(DROPPED_SUFFIX)
+        and isinstance(value, (str, int, float, bool))
+        and value != ""
+    ]
+
+
+def attributes_text(pairs: list[tuple[str, Any]]) -> str:
+    """``key: value; key: value``, cut at a pair boundary near 200 characters."""
+    out: list[str] = []
+    size = 0
+    for key, value in pairs:
+        part = f"{key}: {value}"
+        if out and size + len(part) + 2 > _MAX_ATTRIBUTES_CHARS:
+            out.append("…")
+            break
+        out.append(part)
+        size += len(part) + 2
+    return "; ".join(out)
+
+
 def format_relation_line(
-    src: str, rel_type: str, tgt: str, description: str = "", fact: str = ""
+    src: str,
+    rel_type: str,
+    tgt: str,
+    description: str = "",
+    fact: str = "",
+    attributes: list[tuple[str, Any]] | None = None,
 ) -> str:
-    """``src —[TYPE]→ tgt: text``, the one format for every relation line.
+    """``src —[TYPE]→ tgt: text [key: value]``, the one format for every relation line.
 
     ``description`` is the edge's evidence text; ``fact`` is used when an
     edge has none (older graphs), with its leading "(src, TYPE, tgt)" removed.
+    ``attributes`` are the edge's own values, such as the signed columns a
+    relationship table writes (whose ``fact`` is only a template).
     """
     text = (description or "").strip() or _FACT_TRIPLE_PREFIX_RE.sub("", (fact or "").strip())
     line = f"{src} —[{rel_type}]→ {tgt}"
-    return f"{line}: {text}" if text else line
+    line = f"{line}: {text}" if text else line
+    if attributes:
+        line += f" [{attributes_text(attributes)}]"
+    return line
 
 
 def cosine_sim(a: list[float], b: list[float]) -> float:
@@ -276,17 +333,27 @@ def assemble_raw_result(
             }
         )
 
-    # Entity section
+    # Entity section. Two entities sharing a name (Paris the city, Paris the
+    # person) are two lines when they say different things; a bare name adds
+    # nothing once that name is listed.
+    seen: set[tuple[str, str]] = set()
     seen_names: set[str] = set()
     entity_lines: list[str] = []
     for _, einfo in entity_list:
         name = einfo.get("name", "")
-        if name and name.lower() not in seen_names:
-            seen_names.add(name.lower())
-            desc = einfo.get("description", "") or ""
-            if len(desc) > _MAX_ENTITY_DESCRIPTION_CHARS:
-                desc = desc[:_MAX_ENTITY_DESCRIPTION_CHARS].rsplit(" ", 1)[0] + " …"
-            entity_lines.append(f"- {name}: {desc}" if desc else f"- {name}")
+        desc = (einfo.get("description", "") or "").strip()
+        key = (name.lower(), desc.lower())
+        if not name or key in seen or (not desc and name.lower() in seen_names):
+            continue
+        seen.add(key)
+        seen_names.add(name.lower())
+        if len(desc) > _MAX_ENTITY_DESCRIPTION_CHARS:
+            cut = desc[:_MAX_ENTITY_DESCRIPTION_CHARS].rsplit(" ", 1)[0]
+            desc = (cut or desc[:_MAX_ENTITY_DESCRIPTION_CHARS]) + " …"
+        line = f"- {name}: {desc}" if desc else f"- {name}"
+        if attrs := einfo.get("attributes"):
+            line += f" ({attributes_text(attrs)})"
+        entity_lines.append(line)
     capped_entities = entity_lines[:max_entities]
     if capped_entities:
         records.append(

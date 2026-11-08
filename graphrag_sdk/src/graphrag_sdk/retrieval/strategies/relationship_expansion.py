@@ -8,7 +8,10 @@ from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
-from graphrag_sdk.retrieval.strategies.result_assembly import format_relation_line
+from graphrag_sdk.retrieval.strategies.result_assembly import (
+    format_relation_line,
+    shown_attributes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +30,17 @@ _UNEMBEDDED_DISTANCE = 3.0
 
 # Columns of one relation row, given the edge as ``r``. Direction and names
 # come from the edge's endpoints: the walk matches edges in either direction,
-# and a dedup merge leaves the stored src_name/tgt_name behind.
+# and a dedup merge leaves the stored src_name/tgt_name behind. An endpoint
+# with no name (a table row without a name column) is shown by its id.
 _RELATION_COLUMNS = (
-    "startNode(r).name AS src, r.rel_type AS rel, endNode(r).name AS tgt, "
+    "coalesce(startNode(r).name, startNode(r).id) AS src, r.rel_type AS rel, "
+    "coalesce(endNode(r).name, endNode(r).id) AS tgt, "
     "r.description AS description, r.fact AS fact"
 )
+
+# The edge's own values: the signed columns a relationship table writes
+# (``consumed_batch__consumed_on``); its ``fact`` is only the mapping's template.
+_EDGE_VALUES = "[k IN keys(r) WHERE k CONTAINS '__' AND NOT k ENDS WITH '__dropped' | [k, r[k]]]"
 
 
 def _distance_expr(edge: str, has_vector: bool) -> str:
@@ -102,7 +111,7 @@ async def expand_relationships(
                 "  RETURN r, b.id AS other, dist ORDER BY dist ASC, other ASC, r.rel_type ASC "
                 f"  LIMIT {per_entity} "
                 "} "
-                f"RETURN {_RELATION_COLUMNS}, dist, other",
+                f"RETURN {_RELATION_COLUMNS}, dist, other, {_EDGE_VALUES} AS edge_values",
                 {"eids": eids, **params_base},
             )
         except LatencyBudgetExceededError:
@@ -120,12 +129,15 @@ async def expand_relationships(
             fact = row[4] if len(row) > 4 and row[4] else ""
             dist = float(row[5]) if len(row) > 5 and row[5] is not None else _UNEMBEDDED_DISTANCE
             other = row[6] if len(row) > 6 and row[6] else ""
+            edge_values = {str(k): v for k, v in (row[7] if len(row) > 7 and row[7] else [])}
             if other:
                 reached.append((dist, other))
             key = (src.lower(), rel_type, tgt.lower())
             if src and rel_type and tgt and key not in seen:
                 seen.add(key)
-                line = format_relation_line(src, rel_type, tgt, description, fact)
+                line = format_relation_line(
+                    src, rel_type, tgt, description, fact, shown_attributes(edge_values)
+                )
                 scored.append((dist, len(scored), line, round_no))
         # Next round: the far ends of this round's closest edges.
         reached.sort()  # by distance, then id: ties break the same way every run

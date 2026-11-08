@@ -9,25 +9,13 @@ from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import RawSearchResult
-from graphrag_sdk.core.tables import RESERVED_PROPERTY_NAMES
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
+from graphrag_sdk.retrieval.strategies.result_assembly import shown_attributes
 
 logger = logging.getLogger(__name__)
 
 # Longest entity description shown next to a chunk.
 _MAX_ENTITY_DESCRIPTION_CHARS = 300
-
-# Properties the SDK writes for itself: the reserved keys, plus dedup
-# bookkeeping. Everything else on an entity is the application's data (a
-# table's ``employees__salary``, an extracted ``age``) and is shown.
-_INTERNAL_PROPS = RESERVED_PROPERTY_NAMES | {
-    "descriptions",
-    "aliases",
-    "merged_labels",
-    "mention_edge_count",
-    "description_summarised",
-}
-_DROPPED_SUFFIX = "__dropped"
 
 
 def _entity_text(entity: dict[str, Any]) -> str:
@@ -50,14 +38,7 @@ def _entity_text(entity: dict[str, Any]) -> str:
         if len(desc) > _MAX_ENTITY_DESCRIPTION_CHARS:
             desc = desc[:_MAX_ENTITY_DESCRIPTION_CHARS].rsplit(" ", 1)[0] + " …"
         text += f": {desc}"
-    attrs = [
-        f"{key}: {value}"
-        for key, value in sorted(props.items())
-        if key not in _INTERNAL_PROPS
-        and not key.endswith(_DROPPED_SUFFIX)
-        and isinstance(value, (str, int, float, bool))
-        and value != ""
-    ]
+    attrs = [f"{key}: {value}" for key, value in shown_attributes(props)]
     if attrs:
         text += f" [{', '.join(attrs)}]"
     return text

@@ -30,6 +30,7 @@ from graphrag_sdk.retrieval.strategies.cypher_generation import (
 from graphrag_sdk.retrieval.strategies.entity_discovery import (
     discover_entities,
     expand_sibling_entities,
+    fetch_entity_attributes,
     is_enumeration_query,
     search_relates_edges,
 )
@@ -389,6 +390,14 @@ class MultiPathRetrieval(RetrievalStrategy):
                 )
         # 5. Relationship expansion
         entity_list = list(found_entities.items())[:max_entities]
+        # The entities' own values (a table's typed columns, declared
+        # attributes) go with them into the entity section.
+        attributes = await fetch_entity_attributes(
+            self._graph, [eid for eid, _ in entity_list], ctx=ctx
+        )
+        for eid, einfo in entity_list:
+            if eid in attributes:
+                einfo["attributes"] = attributes[eid]
         if "expansion" in plan:
             # Facts and expansion often reach the same edge; a line already in
             # the facts section would only spend a relationship slot, so ask
