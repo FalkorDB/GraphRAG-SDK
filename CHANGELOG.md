@@ -158,7 +158,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`finalize()` gives chunks a readable name.** A `Chunk` written without a
   `name` is shown by its UUID in a graph browser; `finalize()` now sets it to
   `"<document id> · chunk <index>"`. A chunk that already has a name is left
-  alone, so a repeat call names only chunks that are still unnamed, and a document that `update()` is still
+  alone, so a repeat call names only chunks that are still unnamed, a chunk that
+  is a table row is left alone (its cells are its properties, and a column called
+  `name` is `Chunk.name`), and a document that `update()` is still
   replacing is skipped. `finalize(name_chunks=False)` leaves chunks as written,
   and `FinalizeResult.chunks_named` counts what was named (#226).
 

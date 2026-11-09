@@ -57,22 +57,24 @@ async def _chunks(rag):
 
 
 class TestFinalizeNamesChunks:
-    async def test_prose_and_record_chunks_get_readable_names(
+    async def test_prose_chunks_get_readable_names_and_table_rows_are_left_alone(
         self, real_falkordb_rag_factory, llm, resolver, ontology, tmp_path
     ):
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
         await _load(rag, resolver, tmp_path)
         before = await _chunks(rag)
-        assert before, "the fixture documents wrote no chunks"
+        assert {doc_id for doc_id, _, _ in before} == {"hr.csv", "note.txt"}
         assert all(name is None for _, _, name in before)
 
         result = await rag.finalize()
 
         after = await _chunks(rag)
-        assert result.chunks_named == len(before)
-        assert "note.txt" in {doc_id for doc_id, _, _ in after}
-        for doc_id, index, name in after:
+        prose = [row for row in after if row[0] == "note.txt"]
+        assert result.chunks_named == len(prose) > 0
+        for doc_id, index, name in prose:
             assert name == f"{doc_id} · chunk {index}"
+        # A table row is a record chunk: its cells are its properties, not ours to name.
+        assert all(name is None for doc_id, _, name in after if doc_id == "hr.csv")
 
     async def test_a_second_finalize_names_nothing(
         self, real_falkordb_rag_factory, llm, resolver, ontology, tmp_path
@@ -123,6 +125,38 @@ class TestFinalizeNamesChunks:
             ("draft.txt__pending__ab12cd34", 0, None),
             ("note.txt", 0, "note.txt · chunk 0"),
         ]
+
+    async def test_a_table_column_called_name_is_neither_filled_nor_overwritten(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        ontology = Ontology(
+            entities=[Entity(label="Person")],
+            tables=[
+                TableMapping(
+                    source="people.csv",
+                    label="Person",
+                    key="employee_id",
+                    name="full_name",
+                    properties={"age": Column("age", "INTEGER")},
+                )
+            ],
+        )
+        # A record chunk stores each cell under its column's name, so this one is
+        # c.name; the blank cell is stored as no property at all.
+        (tmp_path / "people.csv").write_text(
+            "employee_id,full_name,name,age\nE-1,Maya Ellison,Mayka,34\nE-2,Tim Cook,,60\n"
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
+        await rag.ingest(str(tmp_path / "people.csv"))
+
+        result = await rag.finalize()
+
+        assert result.chunks_named == 0
+        rows = await rag._graph_store.query_raw(
+            "MATCH (c:Chunk) WHERE c.record_key IS NOT NULL "
+            "RETURN c.record_key, c.name ORDER BY c.record_key"
+        )
+        assert [tuple(row) for row in rows.result_set] == [("E-1", "Mayka"), ("E-2", None)]
 
     async def test_name_chunks_false_leaves_chunks_as_written(
         self, real_falkordb_rag_factory, llm, resolver, ontology, tmp_path

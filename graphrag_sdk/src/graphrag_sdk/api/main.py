@@ -4770,22 +4770,28 @@ class GraphRAG:
         # update() is skipped — its id carries the pending marker, which a caller's
         # own id cannot (see _check_no_pending_marker) — so no chunk is named after
         # a transient id. Only unnamed chunks are touched, which is also what makes
-        # a second run a no-op.
+        # a second run a no-op. A record chunk (one table row) is left out: it keeps
+        # each cell under its column's name, so a column called "name" is c.name, and
+        # an empty cell would be filled with a value the source never had.
         chunks_named = 0
         if name_chunks:
             try:
                 r = await self._graph_store.query_raw(
                     "MATCH (d:Document)-[:PART_OF]->(c:Chunk) "
-                    "WHERE c.name IS NULL AND NOT d.id CONTAINS '__pending__' "
+                    "WHERE c.name IS NULL AND c.record_key IS NULL "
+                    "AND NOT d.id CONTAINS '__pending__' "
                     "SET c.name = d.id + $separator + toString(c.index) "
                     "RETURN count(c)",
                     {"separator": " · chunk "},
                 )
                 chunks_named = r.result_set[0][0] if r.result_set else 0
                 ctx_log(f"finalize: named {chunks_named} chunks")
-            except Exception:
+            except Exception as exc:
                 logger.debug("Chunk naming failed", exc_info=True)
-                report("finalize: could not give chunks readable names; the graph is unaffected")
+                report(
+                    "finalize: could not give chunks readable names; the graph is unaffected "
+                    f"({type(exc).__name__}: {exc})"
+                )
 
         # Signed properties whose owning source no longer mentions the node. Runs
         # after dedup, because a merge moves properties onto the survivor and the

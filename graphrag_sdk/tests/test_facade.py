@@ -508,8 +508,10 @@ class TestGraphRAGFinalize:
         assert params == {"separator": " · chunk "}
         # Only chunks without a name are touched, and never a document that
         # update() is still replacing: that is what makes a second run a no-op
-        # and keeps a transient id out of a name.
+        # and keeps a transient id out of a name. A record chunk keeps its row's
+        # cells under their column names, so `name` is not ours to write there.
         assert "WHERE c.name IS NULL" in cypher
+        assert "c.record_key IS NULL" in cypher
         assert "__pending__" in cypher
 
     async def test_finalize_can_leave_chunks_unnamed(self, graphrag):
@@ -536,6 +538,8 @@ class TestGraphRAGFinalize:
         assert result.entities_deduplicated == 4
         assert result.chunks_named == 0
         assert "readable names" in caplog.text
+        # The warning says what failed, so it is not mistaken for "nothing to name".
+        assert "RuntimeError: graph went away" in caplog.text
 
 
 class TestGraphRAGSyncWrappers:
