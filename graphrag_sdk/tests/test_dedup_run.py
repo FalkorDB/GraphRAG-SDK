@@ -367,6 +367,23 @@ async def test_a_failed_check_stays_pending_and_three_make_it_unresolved(graph):
     assert dd.last_report.unresolved == {}, "dedup_all retries it"
 
 
+@pytest.mark.parametrize("emptied", ["p.reasons = []", "p.attempts = [], p.reasons = []"])
+async def test_a_pending_record_whose_lists_lost_their_entries_is_still_checked(graph, emptied):
+    """FalkorDB 4.22.2 was seen to change a stored pending record no query
+    wrote: ``ids`` kept 28 entries while ``reasons``, and later ``attempts``,
+    read back empty. Every later finalize() then crashed with IndexError, in
+    the claim (``reasons``) or in the move to unresolved (``attempts``). A list
+    that lost entries is reset instead — counts 0, reasons empty — and the
+    entity is checked."""
+    await checked_graph(graph)
+    await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([APPLE], fail={"Timothy Cook"})))
+    await graph.query_raw(f"MATCH (p:__GraphRAGProcessing__ {{kind: 'pending'}}) SET {emptied}")
+
+    dd = dedup(graph)
+    assert await dd.deduplicate(judge=LLMJudge(NameOracleLLM([TIM]))) == 1
+    assert dd.last_report.checked == 1 and await records(graph) == []
+
+
 async def test_a_retry_of_the_unresolved_cut_short_lists_them_once(graph):
     """dedup_all lists the unresolved entities as pending, then drops them
     from their record. A crash between the two left both, and the next
@@ -589,3 +606,90 @@ async def test_statistics_do_not_count_system_nodes(graph):
     stats = await graph.get_statistics()
     assert stats["node_count"] == 5
     assert not any(label.startswith("__GraphRAG") for label in stats["entity_types"])
+
+
+async def test_a_merge_keeps_both_mentions_of_a_chunk_they_share(graph):
+    """Naseem's repro: two duplicates mention one chunk. The survivor's edge
+    to it keeps both spans and both descriptions; the duplicate's no longer
+    replaces it."""
+    await checked_graph(graph)
+    await graph.query_raw(
+        "CREATE (c:Chunk {id: 'c1'}) WITH c "
+        "MATCH (t:__Entity__ {id: 'tim'}), (u:__Entity__ {id: 'timothy'}) "
+        "CREATE (t)-[:MENTIONED_IN {spans: [0, 8], description: 'CEO of Apple'}]->(c), "
+        "(u)-[:MENTIONED_IN {spans: [40, 52], description: 'Dr. Cook'}]->(c)"
+    )
+    await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([TIM, APPLE])))
+    edges = await rows(
+        graph,
+        "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(:Chunk {id: 'c1'}) "
+        "RETURN e.id, m.spans, m.description",
+    )
+    assert len(edges) == 1
+    _, spans, description = edges[0]
+    assert sorted(zip(spans[0::2], spans[1::2])) == [(0, 8), (40, 52)]
+    assert set(description.split(" | ")) == {"CEO of Apple", "Dr. Cook"}
+
+
+async def test_a_merged_mention_edge_is_this_versions_only_if_both_were(graph):
+    """An edge an earlier version wrote never recorded what its chunk put on
+    the node; merged into one this version wrote, the result has not either."""
+    await checked_graph(graph)
+    await graph.query_raw(
+        "CREATE (c:Chunk {id: 'c1'}), (c2:Chunk {id: 'c2'}) WITH c, c2 "
+        "MATCH (t:__Entity__ {id: 'tim'}), (u:__Entity__ {id: 'timothy'}) "
+        "CREATE (t)-[:MENTIONED_IN {description: 'CEO of Apple', said_version: 1}]->(c), "
+        "(u)-[:MENTIONED_IN {description: 'Dr. Cook'}]->(c), "
+        "(u)-[:MENTIONED_IN {description: 'Runs Apple', said_version: 1}]->(c2)"
+    )
+    await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([TIM, APPLE])))
+    edges = await rows(
+        graph,
+        "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(c:Chunk) RETURN c.id, m.said_version "
+        "ORDER BY c.id",
+    )
+    assert edges == [["c1", None], ["c2", 1]]
+
+
+async def test_a_merge_keeps_a_full_edges_and_the_merged_edges_text(graph):
+    """A write stops adding to an edge holding the cap; a merge must not, or
+    the node keeps text no edge records and a delete cannot take it off."""
+    await checked_graph(graph)
+    full = [f"wording {i}" for i in range(20)]
+    await graph.query_raw(
+        "CREATE (c:Chunk {id: 'c1'}) WITH c "
+        "MATCH (t:__Entity__ {id: 'tim'}), (u:__Entity__ {id: 'timothy'}) "
+        "CREATE (t)-[:MENTIONED_IN {description: 'x', descriptions: $full}]->(c), "
+        "(u)-[:MENTIONED_IN {description: 'Dr. Cook'}]->(c)",
+        {"full": full},
+    )
+    await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([TIM, APPLE])))
+    ((descs,),) = await rows(
+        graph,
+        "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(:Chunk {id: 'c1'}) RETURN m.descriptions",
+    )
+    assert sorted(descs) == sorted([*full, "Dr. Cook"])
+
+
+async def test_a_merge_adds_each_description_of_a_shared_chunk_once_and_whole(graph):
+    """One duplicate's edge holds two descriptions, one of them with " | "
+    inside; the other's says one of them again. Whichever survives, each is
+    kept once and whole: merging "A | B" into "A" no longer gives "A | A | B"."""
+    await checked_graph(graph)
+    await graph.query_raw(
+        "CREATE (c:Chunk {id: 'c1'}) WITH c "
+        "MATCH (t:__Entity__ {id: 'tim'}), (u:__Entity__ {id: 'timothy'}) "
+        "CREATE (t)-[:MENTIONED_IN {description: 'CEO of Apple', spans: [0, 8]}]->(c), "
+        "(u)-[:MENTIONED_IN {description: 'Dr. Cook | Apple | CEO of Apple', "
+        "descriptions: ['Dr. Cook | Apple', 'CEO of Apple'], spans: [0, 8]}]->(c)"
+    )
+    await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([TIM, APPLE])))
+    edges = await rows(
+        graph,
+        "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(:Chunk {id: 'c1'}) "
+        "RETURN m.spans, m.description, m.descriptions",
+    )
+    ((spans, description, descriptions),) = edges
+    assert spans == [0, 8]
+    assert sorted(descriptions) == ["CEO of Apple", "Dr. Cook | Apple"]
+    assert description == " | ".join(descriptions)

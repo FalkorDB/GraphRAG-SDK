@@ -1204,7 +1204,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     if lbl and lbl != survivor.label and lbl not in merged_labels:
                         merged_labels.append(lbl)
                 for key, value in dup.properties.items():
-                    if key not in survivor.properties:
+                    if survivor.properties.get(key) is None and value is not None:
                         survivor.properties[key] = value
             if merged_labels:
                 existing = str(survivor.properties.get("merged_labels", "") or "")
@@ -1934,7 +1934,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
                         if lbl and lbl != survivor.label and lbl not in merged_labels:
                             merged_labels.append(lbl)
                     for key, value in dup.properties.items():
-                        if key not in survivor.properties:
+                        if survivor.properties.get(key) is None and value is not None:
                             survivor.properties[key] = value
                 if merged_labels:
                     # Same " | " convention as `description` above.

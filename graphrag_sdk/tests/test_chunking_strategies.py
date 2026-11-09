@@ -130,6 +130,36 @@ class TestSentenceTokenCapChunking:
         assert len(result.chunks) >= 1
         assert "strategy" in result.chunks[0].metadata
 
+    async def test_max_overlap_fraction_caps_the_repeated_tokens(self, ctx):
+        text = (
+            "Alpha is short. Beta is a much longer sentence with many more words in it. "
+            "Gamma is short. " + "Huge " * 60 + "end. Tail one. Tail two."
+        )
+        plain = await SentenceTokenCapChunking(max_tokens=30, overlap_sentences=2).chunk(text, ctx)
+        capped = await SentenceTokenCapChunking(
+            max_tokens=30, overlap_sentences=2, max_overlap_fraction=0.5
+        ).chunk(text, ctx)
+        # Without the fraction the long Beta sentence is repeated; with it only
+        # Gamma is, so the next chunk advances by more than half the tokens.
+        assert plain.chunks[1].text.startswith("Beta")
+        assert plain.chunks[0].metadata["overlap_sentences"] == 2
+        assert capped.chunks[1].text == "Gamma is short."
+        assert capped.chunks[0].metadata["overlap_sentences"] == 1
+        # The oversized sentence is a chunk of its own and repeats nothing.
+        huge = next(c for c in capped.chunks if c.text.startswith("Huge"))
+        assert huge.metadata["token_count"] > 30
+        assert huge.metadata["overlap_sentences"] == 0
+        assert capped.chunks[-1].metadata["overlap_sentences"] == 0
+
+    async def test_one_large_last_sentence_drops_the_overlap_to_zero(self, ctx):
+        text = "Alpha is short. " + "Beta " * 15 + "end. Gamma is short."
+        out = await SentenceTokenCapChunking(
+            max_tokens=24, overlap_sentences=2, max_overlap_fraction=0.5
+        ).chunk(text, ctx)
+        assert out.chunks[0].text.endswith("Beta end.")
+        assert out.chunks[0].metadata["overlap_sentences"] == 0
+        assert out.chunks[1].text == "Gamma is short."
+
     async def test_small_cap_more_chunks_than_large(self, ctx):
         small = await SentenceTokenCapChunking(max_tokens=30, overlap_sentences=0).chunk(
             SAMPLE_TEXT, ctx

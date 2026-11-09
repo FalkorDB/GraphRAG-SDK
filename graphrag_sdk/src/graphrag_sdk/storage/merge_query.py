@@ -358,6 +358,70 @@ _ABSORB_HEAD = (
 _CARRIED = f"{_TICKED}, d, s, present, fresh, unhandled, ok"
 
 
+#: Most descriptions a write may leave on a node or a mention edge. Past it, a
+#: new mention's description is kept on its MENTIONED_IN edge only, so a node
+#: stays bounded however much is ingested before the next finalize(); an edge
+#: (one chunk, ingested again after an incomplete run) stops taking new
+#: wordings. A write never cuts what either already holds (a merge can leave
+#: more); finalize() summarises a node.
+MAX_DESCRIPTION_MEMBERS = 20
+
+#: On a MENTIONED_IN edge: this version wrote it when it was created, so it
+#: records everything its chunk put on the entity's description. An edge an
+#: earlier version wrote has none, even after a later write adds a
+#: description to it: the text its chunk put on the node then was never
+#: recorded, so the node cannot be rebuilt from its edges.
+SAID_VERSION_KEY = "said_version"
+SAID_VERSION = 1
+
+
+def description_members(edge: str) -> str:
+    """A mention edge's descriptions as a list: its ``descriptions``, else its
+    ``description`` as one member, trimmed, blank ones left out (as on a
+    node)."""
+    return (
+        f"[x IN [y IN coalesce({edge}.descriptions, "
+        f"CASE WHEN {edge}.description IS NULL THEN [] ELSE [{edge}.description] END) "
+        "| trim(y)] WHERE x <> '']"
+    )
+
+
+def combined_descriptions(old: str, new: str, *, cap: bool = True) -> str:
+    """``old`` (a list in scope) plus ``new``'s description members it lacks:
+    up to ``MAX_DESCRIPTION_MEMBERS`` and never fewer than ``old`` holds, or,
+    without ``cap`` (a merge, which must keep what both edges recorded), all
+    of them."""
+    added = f"({old} + [x IN {description_members(new)} WHERE NOT x IN {old}])"
+    if not cap:
+        return added
+    return (
+        f"CASE WHEN size({old}) >= {MAX_DESCRIPTION_MEMBERS} THEN {old} "
+        f"ELSE {added}[..{MAX_DESCRIPTION_MEMBERS}] END"
+    )
+
+
+def mention_update(edge: str, new: str) -> str:
+    """The SET items that combine what mention edge ``edge`` holds with what
+    ``new`` (an edge or a map) brings: the spans, each pair once, and the
+    descriptions, each once and each whole, stored as on a node. Needs
+    ``old_spans`` (``edge``'s spans) and ``all_ds``
+    (:func:`combined_descriptions`) in scope."""
+    spans = f"coalesce({new}.spans, [])"
+    return (
+        f"{edge}.spans = CASE WHEN size(old_spans) + size({spans}) = 0 "
+        "THEN null ELSE old_spans + reduce(acc = [], "
+        f"i IN range(0, size({spans}) - 2, 2) | "
+        "CASE WHEN any(j IN range(0, size(old_spans) - 2, 2) "
+        f"WHERE old_spans[j] = {new}.spans[i] AND old_spans[j + 1] = {new}.spans[i + 1]) "
+        "OR any(k IN range(0, size(acc) - 2, 2) "
+        f"WHERE acc[k] = {new}.spans[i] AND acc[k + 1] = {new}.spans[i + 1]) "
+        f"THEN acc ELSE acc + [{new}.spans[i], {new}.spans[i + 1]] END) END, "
+        f"{edge}.description = CASE WHEN size(all_ds) = 0 THEN null "
+        "ELSE reduce(acc = head(all_ds), x IN tail(all_ds) | acc + ' | ' + x) END, "
+        f"{edge}.descriptions = CASE WHEN size(all_ds) > 1 THEN all_ds ELSE null END"
+    )
+
+
 def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
     """Move the duplicate's ``rel_type`` edges of one direction to the survivor.
     ``carried`` are the variables in scope, ``d``, ``s`` and ``ok`` among them."""
@@ -377,16 +441,47 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
         )
     if key:
         # Provenance is unioned, not overwritten: the survivor's edge keeps the
-        # chunks that already vouched for it (``delete_stale_relationships``).
+        # chunks that already vouched for it (``delete_stale_relationships``),
+        # and the relationship tables that own it (``structured_sources``) —
+        # left to ``+=`` it kept only the duplicate's tables, so dropping one
+        # of those deleted an edge another, now forgotten, table still lists.
         # Read before the MERGE, which inside FOREACH cannot be followed by WITH.
         read_old = (
             f"OPTIONAL MATCH {existing} "
-            f"WITH {carried}, e, b, coalesce(ex.source_chunk_ids, []) AS old "
+            f"WITH {carried}, e, b, coalesce(ex.source_chunk_ids, []) AS old, "
+            "coalesce(ex.structured_sources, []) AS old_sources "
         )
         update = (
             "SET nr += properties(e) "
             "SET nr.source_chunk_ids = old + "
-            "[c IN coalesce(e.source_chunk_ids, []) WHERE NOT c IN old]"
+            "[c IN coalesce(e.source_chunk_ids, []) WHERE NOT c IN old], "
+            # Not on edges no table owns: they keep having no such property.
+            "nr.structured_sources = CASE WHEN size(old_sources) = 0 "
+            "AND size(coalesce(e.structured_sources, [])) = 0 THEN null "
+            "ELSE old_sources + [x IN coalesce(e.structured_sources, []) "
+            "WHERE NOT x IN old_sources] END"
+        )
+    elif safe == "MENTIONED_IN":
+        # Both entities mention the chunk: the survivor's edge keeps what each
+        # said there — both spans, each pair once, and both edges' description
+        # members, each once and each whole, stored as on a node. Left to
+        # ``+=`` the duplicate's edge replaced the survivor's, and its
+        # description, the only record of what that chunk said about the
+        # survivor, was gone.
+        # The combined edge records everything only if both did: one an
+        # earlier version wrote keeps the merged edge an earlier version's.
+        read_old = (
+            f"OPTIONAL MATCH {existing} "
+            f"WITH {carried}, e, b, coalesce(ex.spans, []) AS old_spans, "
+            f"{description_members('ex')} AS old_ds, ex IS NULL AS no_ex, "
+            f"ex.{SAID_VERSION_KEY} AS old_v "
+            f"WITH {carried}, e, b, old_spans, no_ex, old_v, "
+            f"{combined_descriptions('old_ds', 'e', cap=False)} AS all_ds "
+        )
+        update = (
+            f"SET nr += properties(e) SET {mention_update('nr', 'e')}, "
+            f"nr.{SAID_VERSION_KEY} = CASE WHEN no_ex THEN e.{SAID_VERSION_KEY} "
+            f"WHEN old_v IS NULL OR e.{SAID_VERSION_KEY} IS NULL THEN null ELSE old_v END"
         )
     else:
         read_old, update = "", "SET nr += properties(e)"

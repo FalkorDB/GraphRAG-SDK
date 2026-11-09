@@ -333,6 +333,12 @@ class VectorStore:
                 result = await self._conn.query(
                     "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
                     "WHERE r.embedding IS NULL AND r.fact IS NOT NULL "
+                    # Not an edge only relationship tables own: each carries its
+                    # mapping's one template fact and no endpoint names, so it
+                    # took relationship-search slots retrieval then threw away.
+                    # An edge a document also supports is embedded as before.
+                    "AND (size(coalesce(r.structured_sources, [])) = 0 "
+                    "OR size(coalesce(r.source_chunk_ids, [])) > 0) "
                     "RETURN id(a) AS aid, id(b) AS bid, id(r) AS rid, r.fact AS fact "
                     "LIMIT $limit",
                     {"limit": batch_size},
@@ -507,8 +513,9 @@ class VectorStore:
             top_k: Number of results to return.
 
         Returns:
-            List of dicts with src_name, type, tgt_name, fact, and similarity
-            score (higher is closer).
+            List of dicts with src_name, type, tgt_name, fact, similarity
+            score (higher is closer), and the stored endpoint ids src_id and
+            tgt_id.
         """
         # Try edge vector index query first (FalkorDB >= 4.2)
         query = (
@@ -516,7 +523,8 @@ class VectorStore:
             "'RELATES', 'embedding', $top_k, vecf32($vector)) "
             "YIELD relationship AS r, score "
             "RETURN r.src_name AS src, r.rel_type AS type, "
-            "r.tgt_name AS tgt, r.fact AS fact, (1-score) AS score "
+            "r.tgt_name AS tgt, r.fact AS fact, (1-score) AS score, "
+            "startNode(r).id AS src_id, endNode(r).id AS tgt_id "
             "ORDER BY score DESC"
         )
         try:
@@ -535,6 +543,8 @@ class VectorStore:
                     "tgt_name": row[2] if len(row) > 2 and row[2] else "",
                     "fact": row[3] if len(row) > 3 and row[3] else "",
                     "score": row[4] if len(row) > 4 else 0.0,
+                    "src_id": row[5] if len(row) > 5 and row[5] else "",
+                    "tgt_id": row[6] if len(row) > 6 and row[6] else "",
                 }
                 for row in result.result_set
             ]
@@ -578,7 +588,8 @@ class VectorStore:
             "WHERE r.embedding IS NOT NULL "
             "WITH a, r, b, vec.cosineDistance(r.embedding, vecf32($vector)) AS dist "
             "RETURN r.src_name AS src, r.rel_type AS type, "
-            "r.tgt_name AS tgt, r.fact AS fact, (1-dist) AS score "
+            "r.tgt_name AS tgt, r.fact AS fact, (1-dist) AS score, "
+            "a.id AS src_id, b.id AS tgt_id "
             "ORDER BY dist ASC LIMIT $top_k"
         )
         try:
@@ -596,6 +607,8 @@ class VectorStore:
                     "tgt_name": row[2] if len(row) > 2 and row[2] else "",
                     "fact": row[3] if len(row) > 3 and row[3] else "",
                     "score": row[4] if len(row) > 4 else 0.0,
+                    "src_id": row[5] if len(row) > 5 and row[5] else "",
+                    "tgt_id": row[6] if len(row) > 6 and row[6] else "",
                 }
                 for row in result.result_set
             ]

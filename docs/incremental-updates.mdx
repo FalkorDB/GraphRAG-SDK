@@ -24,7 +24,7 @@ To understand the effect of each primitive, it helps to know the node shapes the
 | ------------------ | ----------------------------------------------------------------------- |
 | `Document`         | One per ingested source. Carries `content_hash`, `path`, how it was written (prose or records), and metadata. |
 | `Chunk`            | Linked to its `Document` via `PART_OF`. Holds embeddings. A table row is a chunk too (`kind: "record"`). |
-| `__Entity__`       | Extracted entities and table rows. Linked to chunks via `MENTIONED_IN`. Carries `source_chunk_ids`, the union of every chunk that mentioned it. |
+| `__Entity__`       | Extracted entities and table rows. Linked to chunks via `MENTIONED_IN`, one edge per chunk that mentions it; that is its provenance. |
 | `RELATES` (edge)   | Fact between two entities, keyed on its `rel_type`. Carries `source_chunk_ids` for provenance. |
 
 Incremental updates are scoped via these relationships — orphan cleanup never goes global, it only inspects entities the touched document actually referenced.
@@ -83,7 +83,7 @@ result = await rag.update(
 | `text`                                  | Raw text. Skips the loader. Requires an explicit `document_id`.                                                                                                   |
 | `document_id`                           | Stable id of the `Document` node to update. Required for text mode.                                                                                               |
 | `loader` / `chunker` / `extractor` / `resolver` | Per-call strategy overrides, identical to `ingest()`. `chunker` and `extractor` are refused (`ValueError`) for a table.                                   |
-| `cache_unchanged_chunks`                | `False` (default) re-extracts every chunk. `True` reuses the graph's existing extraction for new chunks whose text is byte-identical to a chunk of this document. See [Chunk-level extraction cache](#chunk-level-extraction-cache). Refused for a table. |
+| `cache_unchanged_chunks`                | `False` (default) extracts every chunk again. `True` copies what the graph already holds for a chunk whose text is unchanged, so only changed chunks pay for extraction, and its entities keep their summaries (the new edge says exactly what the old one did). A chunk whose edges an earlier SDK version wrote is extracted again either way, so its new edge records what it says. The graph is the cache: an entity deleted by hand is not brought back, and a changed ontology, prompt or model does not reach unchanged chunks. Counts are in `metadata["cache_stats"]`. Refused for a table. |
 | `if_missing`                            | `"error"` (default) raises `DocumentNotFoundError` if the id is unknown. `"ingest"` falls through to a fresh `ingest()` — upsert semantics.                       |
 | `force`                                 | `False` (default) returns `no_op=True` when the content hash is unchanged. `True` re-extracts anyway — the way to apply a new ontology, chunker, extractor or model to existing text, since `ingest()` also skips unchanged documents. Keep `cache_unchanged_chunks=False` with it, or the cache hands back the previous extraction. |
 | `record_loader` / `strict_mapping`      | For a table only, identical to `ingest()`: how to read the source, and whether a column the mapping never reads is an error. Refused (`ValueError`) for prose.     |
@@ -112,7 +112,7 @@ For a table, `metadata` carries the structured counts (`records`, `entities`, `r
 | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Content hash matches (touch-only edit)    | **Nothing.** SHA-256 short-circuits the call to a single Cypher lookup. `no_op=True`. Use this for CRLF/formatter-only PRs. Pass `force=True` to re-extract regardless.                     |
 | Real content change                       | New chunks written under a pending Document, then atomically cut over to the canonical id. Old chunks are deleted. Entities previously mentioned only by this document are removed.          |
-| Entity still referenced by another doc    | **Preserved.** Orphan cleanup is scoped to candidates from this document — never global. The deleted chunks are removed from its `source_chunk_ids`.                                       |
+| Entity still referenced by another doc    | **Preserved.** Orphan cleanup is scoped to candidates from this document — never global. Its `MENTIONED_IN` edges to the deleted chunks go with them.                                     |
 | `RELATES` edge sourced only from old chunks | **Removed** as a stale fact (cleanup keyed on `source_chunk_ids`).                                                                                                                          |
 | `if_missing="ingest"` and id unknown      | Behaves like a fresh `ingest()`. `replaced_existing=False`.                                                                                                                                  |
 | A table's new export                      | A **re-sync**: a row deleted from the export is removed, a blanked cell loses its column, a moved foreign key leaves its old target, and a node another source still mentions survives with the table's signed columns and identity taken back. See [Structured Ingestion](/structured-ingestion). |
@@ -200,11 +200,13 @@ DeleteDocumentResult(
 | -------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | All `Chunk` nodes linked to the Document via `PART_OF`                           | Unconditional — the chunks belong only to this Document.             |
 | The `Document` node itself                                                       | Removed last, after cleanup completes.                               |
-| `__Entity__` nodes that the doc referenced and have **no** remaining `MENTIONED_IN` | Scoped to candidates from this document; entities still cited elsewhere are kept, minus the deleted chunks in their `source_chunk_ids`. |
+| `__Entity__` nodes that the doc referenced and have **no** remaining `MENTIONED_IN` | Scoped to candidates from this document; entities still cited elsewhere are kept, minus their `MENTIONED_IN` edges to the deleted chunks. |
 | `RELATES` edges whose `source_chunk_ids` are entirely from this Document's chunks | Stale-fact cleanup. Edges with multi-document provenance survive.    |
 | For a table: the columns it signed on entities that survive                      | A node another source still mentions keeps its name and prose facts and loses the table's columns and identity. |
 
 To take a table out entirely, including its stored mapping, use [`drop_table()`](/structured-ingestion), which calls `delete_document()` for the table's rows and then removes what it signed.
+
+The surviving entities' descriptions are rewritten: what this document's chunks said about them is taken off, unless another chunk still says it (no LLM call). A summarised entity cannot have text taken out of its summary: when the removed text is no longer said by any remaining edge, it is rebuilt from its remaining `MENTIONED_IN` edges if every one of them was written by this version (`said_version`; a table row's edge does not count), and otherwise its summary is kept and the removed text beside it is still dropped. An unchanged chunk keeps its entities' summaries for sure only with [`cache_unchanged_chunks=True`](#parameters); without it the chunk is extracted again, and a summary is kept only if the model describes the entity in the same words. An entity still holding more than five descriptions is summarised by the next `finalize()`. `update()` does the same for the chunks a new version replaces. Text a document ingested by an earlier SDK version wrote cannot be told apart, and is kept.
 
 ### Crash safety
 
@@ -260,7 +262,7 @@ result = await rag.apply_changes(
 | `max_concurrency`    | Parallelism cap for `ingest()` of the `added` list. Safe to raise — adds have no orphan-cleanup race surface.                                                                                          |
 | `update_concurrency` | **Default 1, and you almost certainly should not raise it.** The orphan-cleanup invariant only holds while updates serialize. See [Concurrency](#concurrency-and-the-update_concurrency-trap) below.   |
 
-The order `deletes → updates → adds` is part of the public contract; do not assume reordering is safe.
+The order `deletes → updates → adds` is part of the public contract; do not assume reordering is safe. Relationship tables (a `RelationshipMapping` in the ontology) in `added` or `modified` run after all of it, `modified` first, because their endpoints resolve against nodes the entity tables in the same batch write. A git diff that lists `consumed_batch.csv` before `unit.csv` still writes every edge, and each entry keeps its position in the result.
 
 Overlapping ids across input lists raise `ValueError` at the input boundary — this is almost always a broken git-diff parser.
 
@@ -345,11 +347,12 @@ result = await rag.finalize(
 
 1. Removes NULL-name stub entities (legacy cleanup). Entities a table wrote are never removed here, since a table may have no name column.
 2. `deduplicate_entities()` — incremental: the pending entities (added since the last `finalize()`, or left pending by it) are checked against the whole graph through the `__Entity__` vector index — the exact phase by canonical name, then one judge pass over each pending entity and its nearest names. Every merge is written as a sealed plan and applied one atomic query at a time, so an interrupted `finalize()` is finished by the next one. Dedup also writes every new entity's name embedding (there is no separate entity backfill step). See [Storage](/storage) for the full algorithm.
+   Then every entity holding more than five descriptions gets one LLM summary of them (`descriptions_summarised`); one whose summary fails keeps them and is listed in `description_summary_failures`, to be tried again by the next run.
 3. `embed_relationships()` — embeds fact text on `RELATES` edges.
 4. `ensure_indices()` — rebuilds/verifies all indexes and waits for any build in progress.
 5. Checks the graph for what it should report — signed properties left behind, properties more than one table supplies, mappings nobody declared, placeholders nothing filled, entities without a name, near-duplicates that did not merge — and logs each finding at WARNING. Nothing in this step changes the graph.
 
-`finalize()` calls the LLM through the default judge. To keep it LLM-free, pass a `DedupJudge` of your own (see [Storage](/storage#the-judge-component)).
+`finalize()` calls the LLM through the default judge, and for the description summaries in step 2, which always use the instance's `llm`. A `DedupJudge` of your own (see [Storage](/storage#the-judge-component)) keeps dedup LLM-free; the summary pass still runs on `llm`.
 
 ### FinalizeResult
 
@@ -362,6 +365,8 @@ result = await rag.finalize(
 | `null_stubs_removed` | `int` | NULL-name stub entities removed in step 1 |
 | `entities_deduplicated` | `int` | Duplicates merged, both phases, including merges finished from an interrupted run's plan |
 | `entities_embedded` | `int` | Entity name vectors dedup wrote this run |
+| `descriptions_summarised` | `int` | Entities holding more than five descriptions that got one LLM summary in step 2 |
+| `description_summary_failures` | `list[str]` | Entities whose summary failed; they keep their descriptions and are tried again by the next run |
 | `relationships_embedded` | `int` | `RELATES` facts embedded |
 | `indexes` | `dict[str, bool]` | Each index `ensure_indices()` checks (`range_ids`, `vector_Chunk`, `vector_Entity`, `vector_RELATES`, `fulltext_Chunk`, `fulltext_Entity`), and whether it is in place: `True` when created now or already there, `False` when creation failed. `finalize()` forces the check, so every key is always present |
 

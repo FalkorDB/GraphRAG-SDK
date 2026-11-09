@@ -42,7 +42,7 @@ entities, properties and edges come from the mapping you declare.
                      │   - Entity types (+ descriptions) │
                      │   - Relation vocabulary           │
                      │   - Pre-extracted entities        │
-                     │   - Original text                 │
+                     │   - Chunk text (coref-resolved)   │
                      │                                   │
                      │ LLM returns:                      │
                      │   - Verified entities (fixed/added)│
@@ -237,7 +237,7 @@ A structured prompt (`VERIFY_EXTRACT_RELS_PROMPT`) containing:
 - The relation vocabulary (see [Relation Types](#relation-types))
 - The declared attributes to fill, when the ontology declares any
 - The pre-extracted entities from step 1 (as JSON)
-- The original chunk text
+- The chunk text, with pronouns resolved when coreference is on
 
 The prompt asks for an **exhaustive** extraction, not a summary: there is no maximum, and a dense paragraph often yields 20 or more relationships. Measured: +15 % relations for +4 % ingest time. Relationship endpoints must come from the *verified* entity list the model returns, so an edge is never anchored to an entity it removed.
 
@@ -395,13 +395,13 @@ Name hygiene continues when entities are compared for deduplication. At `finaliz
 
 After extraction runs on all chunks, entities are **deduplicated across chunks** by `(normalized_name.lower(), type.lower())`:
 
-- If the same entity appears in multiple chunks, the one with the **longer description** wins
+- What each chunk said about it is kept per chunk: every distinct description, two from the same chunk included. The node gets them joined (see below)
 - `source_chunk_ids` are merged (the entity knows every chunk it appeared in)
 - `spans` are merged (character offsets from every chunk)
 - Capitalized names are preferred over lowercase
 - Declared attribute values are merged per attribute, the later chunk winning — including a later chunk that does not state the attribute, whose empty value replaces an earlier one
 
-**Example:** "Alice" appears in chunks 3, 7, and 12. After aggregation, there's one entity with `source_chunk_ids = ["chunk_3", "chunk_7", "chunk_12"]` and spans from all three chunks.
+**Example:** "Alice" appears in chunks 3, 7, and 12. After aggregation, there's one entity with `source_chunk_ids = ["chunk_3", "chunk_7", "chunk_12"]` and spans from all three chunks. Written to the graph, that is three `MENTIONED_IN` edges, each holding that chunk's spans and descriptions; the node holds neither the chunk list nor the spans.
 
 ---
 
@@ -421,7 +421,7 @@ After aggregation, each entity becomes a `GraphNode`:
 
 - **ID:** `compute_entity_id(name, type)` — deterministic: `"alice__person"` (lowercase, spaces replaced with underscores, type-qualified to prevent collisions). A table row's id is derived the same way from its name, which is why a row and a mention of the same name are one node
 - **Label:** The entity type (e.g., `Person`, `Organization`)
-- **Properties:** `name`, `type`, `description`, `source_chunk_ids`, optionally `spans`, and any declared attribute values
+- **Properties:** `name`, `type` and `description` — what the document's chunks that named it said, joined with `" | "` (with `descriptions`, the list, when there is more than one). The store adds these to what the entity already holds from other documents, and `finalize()` summarises an entity holding more than 5. Which chunks named it, where in each (`spans`), and what each said about it go on its `MENTIONED_IN` edges, one per chunk, not on the node. Declared attribute values are set on the node too
 
 ---
 
@@ -470,6 +470,8 @@ extractor = GraphExtraction(
 2. Find the canonical mention for each cluster (the longest non-pronoun span)
 3. Replace pronouns with canonical mentions, right-to-left to preserve offsets
 4. Handles possessives: "her" becomes "Voss's"
+
+The resolved text is what both steps read, and the sentence that stands in for a missing description is cut from it. The chunk node stores the original text, so the spans on `MENTIONED_IN` edges are found in the original. `RELATES` evidence offsets are omitted when coreference rewrites a chunk, because the model gave them for the resolved text.
 
 If coreference fails for a chunk, the original text is used and a warning is logged.
 

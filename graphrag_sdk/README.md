@@ -93,18 +93,18 @@ answer = await rag.completion(
 
 Supported roles: `"system"`, `"user"`, `"assistant"`. Invalid roles raise `ValueError`.
 
-### Schema Definition
+### Ontology Definition
 
 ```python
-from graphrag_sdk import GraphSchema, EntityType, RelationType
+from graphrag_sdk import Ontology, Entity, Relation
 
-schema = GraphSchema(
+ontology = Ontology(
     entities=[
-        EntityType(label="Person", description="A human being"),
-        EntityType(label="Organization", description="A company or institution"),
+        Entity(label="Person", description="A human being"),
+        Entity(label="Organization", description="A company or institution"),
     ],
     relations=[
-        RelationType(
+        Relation(
             label="WORKS_AT",
             description="Is employed by",
             patterns=[("Person", "Organization")],
@@ -112,7 +112,7 @@ schema = GraphSchema(
     ],
 )
 
-rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)  # conn, llm, embedder from above
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)  # conn, llm, embedder from above
 ```
 
 ### Strategy Customization

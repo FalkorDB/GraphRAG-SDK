@@ -1,10 +1,10 @@
 ---
 title: "GraphRAG SDK API Reference"
 sidebarTitle: "API Reference"
-description: "Complete API reference for every public class and method exported by graphrag_sdk, from the GraphRAG entry point to strategy ABCs."
+description: "API reference for the main public classes and methods exported by graphrag_sdk, from the GraphRAG entry point to strategy ABCs."
 ---
 
-Complete reference for the public classes and methods exported by `graphrag_sdk`. Everything listed in the package's `__all__` is importable from the top level (`from graphrag_sdk import ...`); a few supporting classes live in submodules, and their import path is given where they appear. `graphrag_sdk.__version__` holds the package version string.
+Reference for the main public classes and methods exported by `graphrag_sdk`. Some newer names (the ingestion planners, path routers, relationship mappings and agent toolkit) are documented on their own pages: [Ingestion](/ingestion), [Retrieval](/retrieval), [Structured Ingestion](/structured-ingestion) and [Agentic Retrieval](/agentic-retrieval). Everything listed in the package's `__all__` is importable from the top level (`from graphrag_sdk import ...`); a few supporting classes live in submodules, and their import path is given where they appear. `graphrag_sdk.__version__` holds the package version string.
 
 ## Table of Contents
 
@@ -405,7 +405,7 @@ async def finalize(
 Run all post-ingestion steps after the documents and tables are ingested. Call it once per batch, not once per file. Bundles:
 
 1. Remove NULL-name stub entities left by legacy writes (only nodes no mapping wrote).
-2. `deduplicate_entities(judge=..., dedup_all=...)`: exact-name and acronym dedup of the pending entities, then one judge pass over their nearest names. Dedup writes each entity's name embedding, listing the entity as pending first; `entities_embedded` counts them.
+2. `deduplicate_entities(judge=..., dedup_all=...)`: exact-name and acronym dedup of the pending entities, then one judge pass over their nearest names. Dedup writes each entity's name embedding, listing the entity as pending first; `entities_embedded` counts them. Then every entity holding more than five descriptions gets one LLM summary of them, written by the instance's `llm`.
 3. `embed_relationships()`: fact-text embeddings on `RELATES` edges.
 4. `ensure_indices()`: all indexes, waiting until FalkorDB reports them built.
 5. A consistency report over the whole graph, logged at WARNING and returned on the result.
@@ -415,7 +415,7 @@ Run all post-ingestion steps after the documents and tables are ingested. Call i
 | `judge` | `DedupJudge \| None` | `None` | The dedup judge. `None` is `LLMJudge` with the instance's `llm`; give it a gpt-4.1-class model (`finalize(judge=LLMJudge(gpt41))`): on the benchmark corpus a gpt-4.1-class judge made 9 wrong merges where gpt-4o-mini made 51 |
 | `dedup_all` | `bool` | `False` | Check every entity instead of only the pending ones, and retry the unresolved ones. Run it once after entity vectors were written outside `finalize()` |
 
-`finalize()` calls the LLM (the judge). To keep dedup LLM-free, pass a `DedupJudge` of your own. `finalize()` does not call `backfill_entity_embeddings()`.
+`finalize()` calls the LLM twice over: the default judge, and the description summaries in step 2, which always use the instance's `llm`. A `DedupJudge` of your own keeps *dedup* LLM-free; the summary pass still runs on `llm`. `finalize()` does not call `backfill_entity_embeddings()`.
 
 **Returns:** [`FinalizeResult`](#finalizeresult).
 
@@ -731,6 +731,8 @@ Returned by `finalize()`. Every non-empty report field is also logged at WARNING
 | `dedup_unresolved` | `list[str]` | Entities no longer retried after 3 judged runs without a usable verdict, with the reason. `finalize(dedup_all=True)` retries them |
 | `dedup_collisions` | `list[str]` | Merges whose entities held different values for one property: which value stayed (the judge's `keep` pick, else the survivor's) and which went to `<property>__dropped` |
 | `dedup_merges_changed` | `int` | Planned merges skipped because an entity changed while the run applied them; decided again next run |
+| `descriptions_summarised` | `int` | Entities whose descriptions (more than five) were summarised into one by the LLM |
+| `description_summary_failures` | `list[str]` | Entities whose summary failed; they keep their descriptions and are tried again next run |
 | `entities_embedded` | `int` | Entity name embeddings written by dedup |
 | `relationships_embedded` | `int` | `RELATES` fact embeddings written |
 | `indexes` | `dict[str, bool]` | Result per index from `ensure_indices()` (`range_ids`, `vector_Chunk`, `vector_Entity`, `vector_RELATES`, `fulltext_Chunk`, `fulltext_Entity`) |
