@@ -745,6 +745,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lines cannot crowd them all out.
 
 ### Fixed
+- **Missing ontology attributes no longer erase extracted values.**
+  Values absent from a chunk no longer overwrite values from other chunks or
+  system properties such as `description`; resolution merges also fill
+  `None` properties from duplicates and preserve every description during
+  cross-label merges (#362).
 - **`update()` with `cache_unchanged_chunks` kept one fact per entity pair.**
   `CachedChunkExtraction` keyed `RELATES` edges on the pair (rebuilding from
   the cache) or on `(start, "RELATES", end)` (merging), never on `rel_type`, so
