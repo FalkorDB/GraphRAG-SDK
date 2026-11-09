@@ -55,8 +55,14 @@ async def search_relates_edges(
             rel_type = rel.get("type", "")
             score = float(rel.get("score", 0.0))
             if src and rel_type and tgt:
+                edge_values = {str(k): v for k, v in rel.get("edge_values") or []}
                 line = format_relation_line(
-                    src, rel_type, tgt, rel.get("description", ""), rel.get("fact", "")
+                    src,
+                    rel_type,
+                    tgt,
+                    rel.get("description", ""),
+                    rel.get("fact", ""),
+                    shown_attributes(edge_values),
                 )
                 fact_strings.append((line, score))
             # Add entities as graph entry points, by their stored ids (typed,
@@ -133,7 +139,9 @@ async def discover_entities(
     # Short acronyms ("US", "EU", kept as entities since 1.5.0) only match
     # exactly or by fulltext: as a substring they hit unrelated names
     # ("Austria", "Museum") and spend the per-keyword quota on noise.
-    contains_batch = [kw for kw in kw_batch if not (len(kw) <= 3 and kw.isupper())]
+    # Judged over every spelling, so "us, US" still counts "us" as an acronym.
+    acronyms = {kw.lower() for kw in llm_kw[:8] if kw and len(kw) <= 3 and kw.isupper()}
+    contains_batch = [kw for kw in kw_batch if kw.lower() not in acronyms]
 
     if use_cypher and kw_batch:
         # Pass a1: exact-name matches, capped per keyword. Inserted first
@@ -331,7 +339,8 @@ async def fetch_entity_attributes(
         result = await graph_store.query_raw(
             "UNWIND $ids AS eid "
             "MATCH (e:__Entity__ {id: eid}) "
-            "RETURN e.id, [k IN keys(e) WHERE NOT k IN $hidden | [k, e[k]]]",
+            "RETURN e.id, [k IN keys(e) WHERE NOT k IN $hidden AND NOT k ENDS WITH '__dropped' "
+            "| [k, e[k]]]",
             {"ids": entity_ids, "hidden": sorted(INTERNAL_ENTITY_PROPS)},
         )
     except LatencyBudgetExceededError:

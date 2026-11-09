@@ -183,7 +183,7 @@ class TestLocalRetrieval:
         result = await local_strategy.search("test", ctx)
         content = result.items[0].content
         assert (
-            "Bob Jones (Person): The CFO. [age: 45, employees__salary: 120000]" in content
+            "Bob Jones (Person): The CFO. [age: 45; employees__salary: 120000]" in content
         )
         for leaked in ("0.123", "chunk-1", "is_stub", "B. Jones"):
             assert leaked not in content

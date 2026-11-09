@@ -260,7 +260,7 @@ async def enrich_entities(store: Any, entity_ids: list[str]) -> dict[str, dict[s
         cards[str(eid)] = {
             "id": str(eid),
             "name": str(name or ""),
-            "label": next(iter(_public_labels(labels)), ""),
+            "label": ", ".join(_public_labels(labels)),
             "description": desc or None,
             "properties": clean if isinstance(clean, dict) else {},
         }
@@ -367,7 +367,7 @@ async def expand_triples(
             if len(row) > 5 and isinstance(row[5], int):
                 seen_edges.append(row[5])
             values = "; ".join(
-                f"{k}: {v}"
+                f"{k}: {to_jsonable(v, max_chars=300)}"
                 for k, v in sorted(row[6] if len(row) > 6 and row[6] else [])
                 if isinstance(v, str | int | float | bool) and v != ""
             )

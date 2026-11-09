@@ -255,7 +255,7 @@ class TestExecuteCypherRetrieval:
         assert entities == {"alice__person": {"name": "Alice", "description": "An engineer."}}
         resolve_cypher, resolve_params = mock_graph.query_raw.call_args_list[1][0]
         assert "e.aliases" in resolve_cypher
-        assert resolve_params == {"names": ["alice", "bob"]}
+        assert resolve_params == {"names": ["Alice", "Bob"]}
 
 
 # ── Schema-aware prompt + validator ──────────────────────────────
@@ -445,7 +445,7 @@ class TestCypherResultsAreInterpretable:
             "What?",
         )
         # The relation column is never looked up.
-        assert graph.query_raw.call_args_list[1][0][1] == {"names": ["acme"]}
+        assert graph.query_raw.call_args_list[1][0][1] == {"names": ["Acme"]}
 
     async def test_an_underscore_entity_name_is_looked_up(self):
         from unittest.mock import AsyncMock, MagicMock
@@ -464,7 +464,7 @@ class TestCypherResultsAreInterpretable:
             self._llm("MATCH (e:Technology) RETURN e.name AS name LIMIT 25"),
             "Which model?",
         )
-        assert graph.query_raw.call_args_list[1][0][1] == {"names": ["gpt_4"]}
+        assert graph.query_raw.call_args_list[1][0][1] == {"names": ["GPT_4"]}
         assert "gpt_4__technology" in entities
 
     async def test_names_keep_first_seen_order_before_the_cap(self):

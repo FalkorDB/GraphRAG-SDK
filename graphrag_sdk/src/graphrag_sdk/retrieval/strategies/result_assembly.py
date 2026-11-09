@@ -96,7 +96,13 @@ def format_relation_line(
     ``attributes`` are the edge's own values, such as the signed columns a
     relationship table writes (whose ``fact`` is only a template).
     """
-    text = (description or "").strip() or _FACT_TRIPLE_PREFIX_RE.sub("", (fact or "").strip())
+    text = (description or "").strip()
+    if not text:
+        text = (fact or "").strip()
+        # Only an ingestion triple is removed; "(2024 estimate) ..." is text.
+        prefix = _FACT_TRIPLE_PREFIX_RE.match(text)
+        if prefix and f", {rel_type}, " in prefix.group(0):
+            text = text[prefix.end() :]
     line = f"{src} —[{rel_type}]→ {tgt}"
     line = f"{line}: {text}" if text else line
     if attributes:
@@ -345,10 +351,16 @@ def assemble_raw_result(
     # name adds nothing once that name is listed.
     seen: set[tuple[str, str, str]] = set()
     seen_names: set[str] = set()
+    # Where a bare name's line sits, so a described entity of the same name
+    # that arrives later takes its slot instead of adding a second line.
+    bare_slots: dict[str, int] = {}
     entity_lines: list[str] = []
     for _, einfo in entity_list:
-        name = einfo.get("name", "")
+        name = einfo.get("name") or ""
         desc = (einfo.get("description", "") or "").strip()
+        if len(desc) > _MAX_ENTITY_DESCRIPTION_CHARS:
+            cut = desc[:_MAX_ENTITY_DESCRIPTION_CHARS].rsplit(" ", 1)[0]
+            desc = (cut or desc[:_MAX_ENTITY_DESCRIPTION_CHARS]) + " …"
         attrs = einfo.get("attributes")
         attrs_line = attributes_text(attrs) if attrs else ""
         key = (name.lower(), desc.lower(), attrs_line)
@@ -357,12 +369,15 @@ def assemble_raw_result(
             continue
         seen.add(key)
         seen_names.add(name.lower())
-        if len(desc) > _MAX_ENTITY_DESCRIPTION_CHARS:
-            cut = desc[:_MAX_ENTITY_DESCRIPTION_CHARS].rsplit(" ", 1)[0]
-            desc = (cut or desc[:_MAX_ENTITY_DESCRIPTION_CHARS]) + " …"
         line = f"- {name}: {desc}" if desc else f"- {name}"
         if attrs_line:
             line += f" ({attrs_line})"
+        slot = bare_slots.pop(name.lower(), None)
+        if slot is not None:
+            entity_lines[slot] = line
+            continue
+        if bare:
+            bare_slots[name.lower()] = len(entity_lines)
         entity_lines.append(line)
     capped_entities = entity_lines[:max_entities]
     if capped_entities:

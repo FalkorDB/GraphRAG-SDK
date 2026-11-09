@@ -554,7 +554,13 @@ def _render_value(val: Any) -> str:
     A node or edge printed whole would carry every property, including the
     embedding vector and dedup bookkeeping (``descriptions``,
     ``merged_labels``, ``*__dropped``); only what reads as an answer is kept.
+    Lists and maps are rendered element by element, so nodes inside them read
+    the same way, and a whole Chunk node reads as its passage.
     """
+    if isinstance(val, list):
+        return "[" + ", ".join(_render_value(v) for v in val) + "]"
+    if isinstance(val, dict):
+        return "{" + ", ".join(f"{k}: {_render_value(v)}" for k, v in val.items()) + "}"
     props = getattr(val, "properties", None)
     if not isinstance(props, dict):
         return str(val)
@@ -563,6 +569,10 @@ def _render_value(val: Any) -> str:
         desc = desc[:_MAX_VALUE_DESCRIPTION_CHARS].rsplit(" ", 1)[0] + " …"
     head = props.get("name") if hasattr(val, "labels") else props.get("rel_type")
     head = head or getattr(val, "relation", "") or ""
+    if not head and not desc and hasattr(val, "labels"):
+        # A whole Chunk node: its passage is the value.
+        text = props.get("text")
+        return text if isinstance(text, str) else ""
     if head and desc:
         return f"{head}: {desc}"
     return str(head or desc or "")
@@ -573,17 +583,26 @@ async def _resolve_entities(
 ) -> dict[str, dict]:
     """Entity id -> {name, description} for the names that match an entity."""
     # First seen first: the cap must not favour names early in the alphabet.
-    wanted = list(dict.fromkeys(n.lower() for n in names if n))[:50]
+    # Lower-cased by FalkorDB on both sides: its toLower and Python's
+    # str.lower differ on some letters (İ).
+    first_spelling: dict[str, str] = {}
+    for n in names:
+        if n:
+            first_spelling.setdefault(n.lower(), n)
+    wanted = list(first_spelling.values())[:50]
     if not wanted:
         return {}
     try:
         if ctx is not None:
             ctx.ensure_budget("Cypher entity resolution")
         result = await graph_store.query_raw(
+            "WITH [n IN $names | toLower(n)] AS names "
             "MATCH (e:__Entity__) "
-            "WHERE toLower(e.name) IN $names "
-            "   OR any(a IN coalesce(e.aliases, []) WHERE toLower(a) IN $names) "
-            "RETURN e.id, e.name, e.description ORDER BY e.id LIMIT 50",
+            "WHERE toLower(e.name) IN names "
+            "   OR any(a IN coalesce(e.aliases, []) WHERE toLower(a) IN names) "
+            "RETURN e.id, e.name, e.description "
+            # Direct-name matches first, so alias matches cannot fill the cap.
+            "ORDER BY CASE WHEN toLower(e.name) IN names THEN 0 ELSE 1 END, e.id LIMIT 50",
             {"names": wanted},
         )
     except LatencyBudgetExceededError:

@@ -403,21 +403,17 @@ class MultiPathRetrieval(RetrievalStrategy):
             if eid in attributes:
                 einfo["attributes"] = attributes[eid]
         if "expansion" in plan:
-            # Facts and expansion often reach the same edge; a line already in
-            # the facts section would only spend a relationship slot, so ask
-            # for enough to fill the cap after dropping those.
-            fact_lines = set(fact_strings)
-            relationship_strings = [
-                line
-                for line in await expand_relationships(
-                    self._graph,
-                    entity_list,
-                    max_relationships + len(fact_lines),
-                    ctx=ctx,
-                    query_vector=query_vector,
-                )
-                if line not in fact_lines
-            ][:max_relationships]
+            # Facts and expansion often reach the same edge; a line the facts
+            # section shows would only spend a relationship slot, so the walk
+            # leaves those out before it splits the cap between links.
+            relationship_strings = await expand_relationships(
+                self._graph,
+                entity_list,
+                max_relationships,
+                ctx=ctx,
+                query_vector=query_vector,
+                exclude=set(fact_strings[:max_facts_out]),
+            )
         else:
             relationship_strings = []
         ctx.log(f"MultiPath [5/9]: {len(relationship_strings)} relationships")

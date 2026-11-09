@@ -74,6 +74,11 @@ _RELATES_HIT_COLUMNS = (
     "r.description AS description, a.id AS src_id, b.id AS tgt_id, "
     "a.description AS src_description, b.description AS tgt_description"
 )
+# The edge's own values (a relationship table's signed columns), after the score.
+_RELATES_HIT_VALUES = (
+    "[k IN keys(r) WHERE k CONTAINS '__' AND NOT k ENDS WITH '__dropped' | [k, r[k]]] "
+    "AS edge_values"
+)
 
 
 def _relates_hit(row: list[Any]) -> dict[str, Any]:
@@ -93,6 +98,7 @@ def _relates_hit(row: list[Any]) -> dict[str, Any]:
         "src_description": col(7),
         "tgt_description": col(8),
         "score": row[9] if len(row) > 9 else 0.0,
+        "edge_values": list(row[10]) if len(row) > 10 and row[10] else [],
     }
 
 
@@ -557,8 +563,8 @@ class VectorStore:
             "'RELATES', 'embedding', $top_k, vecf32($vector)) "
             "YIELD relationship AS r, score "
             "WITH r, score, startNode(r) AS a, endNode(r) AS b "
-            f"RETURN {_RELATES_HIT_COLUMNS}, (1-score) AS score "
-            "ORDER BY score DESC, src_id, tgt_id, type"
+            f"RETURN {_RELATES_HIT_COLUMNS}, (1-score) AS score, {_RELATES_HIT_VALUES} "
+            "ORDER BY score DESC, src_id, tgt_id, type, description, fact"
         )
         if top_k <= 0:
             return []
@@ -626,8 +632,8 @@ class VectorStore:
             "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
             "WHERE r.embedding IS NOT NULL "
             "WITH a, r, b, vec.cosineDistance(r.embedding, vecf32($vector)) AS dist "
-            f"RETURN {_RELATES_HIT_COLUMNS}, (1-dist) AS score "
-            "ORDER BY dist ASC, src_id, tgt_id, type LIMIT $top_k"
+            f"RETURN {_RELATES_HIT_COLUMNS}, (1-dist) AS score, {_RELATES_HIT_VALUES} "
+            "ORDER BY dist ASC, src_id, tgt_id, type, description, fact LIMIT $top_k"
         )
         try:
             result = await self._conn.query(

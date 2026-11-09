@@ -10,7 +10,8 @@ from typing import Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import RawSearchResult
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
-from graphrag_sdk.retrieval.strategies.result_assembly import shown_attributes
+from graphrag_sdk.retrieval.strategies.chunk_retrieval import inactive_chunk_ids
+from graphrag_sdk.retrieval.strategies.result_assembly import attributes_text, shown_attributes
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +39,9 @@ def _entity_text(entity: dict[str, Any]) -> str:
         if len(desc) > _MAX_ENTITY_DESCRIPTION_CHARS:
             desc = desc[:_MAX_ENTITY_DESCRIPTION_CHARS].rsplit(" ", 1)[0] + " …"
         text += f": {desc}"
-    attrs = [f"{key}: {value}" for key, value in shown_attributes(props)]
+    attrs = shown_attributes(props)
     if attrs:
-        text += f" [{', '.join(attrs)}]"
+        text += f" [{attributes_text(attrs)}]"
     return text
 
 
@@ -94,6 +95,13 @@ class LocalRetrieval(RetrievalStrategy):
             query_vector=query_vector,
             top_k=top_k,
         )
+
+        # Chunks of a document mid-update or being deleted are not live.
+        if chunk_results and self._graph:
+            inactive = await inactive_chunk_ids(
+                self._graph, [c["id"] for c in chunk_results if c.get("id")], ctx=ctx
+            )
+            chunk_results = [c for c in chunk_results if c.get("id") not in inactive]
 
         if not chunk_results:
             return RawSearchResult()

@@ -58,6 +58,7 @@ async def expand_relationships(
     max_relationships: int = 20,
     ctx: Context | None = None,
     query_vector: list[float] | None = None,
+    exclude: frozenset[str] | set[str] = frozenset(),
 ) -> list[str]:
     """Relationship expansion from the top entities, up to three links deep.
 
@@ -79,13 +80,19 @@ async def expand_relationships(
     lines cannot crowd them all out; room they do not use goes back to
     first-link lines.
 
+    ``exclude`` holds lines already shown elsewhere (the facts section); they
+    are left out before the cap is split between links. An edge returned by
+    one round is not matched again by a later one, so a back-edge does not
+    take a slot of its far end.
+
     Returns:
         List of formatted relationship strings, closest first.
     """
     has_vector = query_vector is not None
     params_base: dict[str, Any] = {"qv": query_vector} if has_vector else {}
     scored: list[tuple[float, int, str, int]] = []  # (distance, order reached, line, round)
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[str] = set()
+    seen_edges: set[int] = set()
     expanded: set[str] = set()
     frontier = [eid for eid, _ in entity_list]
 
@@ -107,12 +114,14 @@ async def expand_relationships(
                 "CALL { "
                 "  WITH eid "
                 "  MATCH (a:__Entity__ {id: eid})-[r:RELATES]-(b:__Entity__) "
+                "  WHERE NOT ID(r) IN $seen_edges "
                 f"  WITH r, b, {_distance_expr('r', has_vector)} AS dist "
                 "  RETURN r, b.id AS other, dist ORDER BY dist ASC, other ASC, r.rel_type ASC "
                 f"  LIMIT {per_entity} "
                 "} "
-                f"RETURN {_RELATION_COLUMNS}, dist, other, {_EDGE_VALUES} AS edge_values",
-                {"eids": eids, **params_base},
+                f"RETURN {_RELATION_COLUMNS}, dist, other, {_EDGE_VALUES} AS edge_values, "
+                "ID(r) AS rid",
+                {"eids": eids, "seen_edges": sorted(seen_edges), **params_base},
             )
         except LatencyBudgetExceededError:
             raise
@@ -130,14 +139,20 @@ async def expand_relationships(
             dist = float(row[5]) if len(row) > 5 and row[5] is not None else _UNEMBEDDED_DISTANCE
             other = row[6] if len(row) > 6 and row[6] else ""
             edge_values = {str(k): v for k, v in (row[7] if len(row) > 7 and row[7] else [])}
+            if len(row) > 8 and isinstance(row[8], int):
+                seen_edges.add(row[8])
             if other:
                 reached.append((dist, other))
-            key = (src.lower(), rel_type, tgt.lower())
-            if src and rel_type and tgt and key not in seen:
-                seen.add(key)
-                line = format_relation_line(
-                    src, rel_type, tgt, description, fact, shown_attributes(edge_values)
-                )
+            if not (src and rel_type and tgt):
+                continue
+            line = format_relation_line(
+                src, rel_type, tgt, description, fact, shown_attributes(edge_values)
+            )
+            # By what the line says: the same edge reached again collapses,
+            # while two edges between same-name entities with different
+            # evidence or values both stay.
+            if line not in seen and line not in exclude:
+                seen.add(line)
                 scored.append((dist, len(scored), line, round_no))
         # Next round: the far ends of this round's closest edges.
         reached.sort()  # by distance, then id: ties break the same way every run

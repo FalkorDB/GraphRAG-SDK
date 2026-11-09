@@ -401,8 +401,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `LocalRetrieval`'s related entities read `name (Type): description [key:
   value]` instead of a raw dict. Entity lines carry their table values, cut
   near 200 characters even when one value alone is longer, and two entities
-  that share a name but hold different values stay two lines. Prompts or
-  token budgets tuned to the old output may need a look.
+  that share a name but hold different values stay two lines. Relation lines
+  from vector search carry a relationship table's values too, the walk does
+  not return an edge twice, and two edges between same-name entities with
+  different evidence both stay. `LocalRetrieval` leaves out chunks of a
+  document mid-update, and text-to-Cypher rows that return lists, maps or
+  whole chunks read as text. Prompts or token budgets tuned to the old output
+  may need a look.
 - **`SentenceTokenCapChunking` records the overlap each chunk has.** A chunk's
   `overlap_sentences` metadata is now the number of its sentences the next
   chunk repeats (0 on the last chunk), not the configured `overlap_sentences`,
