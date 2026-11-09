@@ -24,10 +24,15 @@ async def expand_relationships(
     stores the original relationship type, and ``fact`` stores the
     evidence.
 
+    When there are more lines than ``max_relationships``, 2-hop lines keep
+    up to a third of the room so the 1-hop lines cannot crowd them all
+    out; room they do not use goes back to 1-hop lines.
+
     Returns:
         List of formatted relationship strings.
     """
-    relationship_strings: list[str] = []
+    one_hop: list[str] = []
+    two_hop: list[str] = []
     seen: set[tuple] = set()
 
     # 1-hop relationships (batched UNWIND)
@@ -55,7 +60,7 @@ async def expand_relationships(
                     line = f"{src} —[{rel_type}]→ {tgt}"
                     if fact:
                         line += f": {fact}"
-                    relationship_strings.append(line)
+                    one_hop.append(line)
         except LatencyBudgetExceededError:
             raise
         except Exception as exc:
@@ -86,10 +91,14 @@ async def expand_relationships(
                     if key not in seen:
                         seen.add(key)
                         line = f"{a_name} —[{r1_type}]→ {b_name} —[{r2_type}]→ {c_name}"
-                        relationship_strings.append(line)
+                        two_hop.append(line)
         except LatencyBudgetExceededError:
             raise
         except Exception as exc:
             logger.debug("Relationship expansion failed: %s", exc)
 
-    return relationship_strings[:max_relationships]
+    cap = max(0, max_relationships)
+    if len(one_hop) + len(two_hop) <= cap:
+        return one_hop + two_hop
+    keep_two = min(len(two_hop), max(cap // 3, cap - len(one_hop)))
+    return one_hop[: cap - keep_two] + two_hop[:keep_two]

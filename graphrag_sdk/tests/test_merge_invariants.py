@@ -165,6 +165,37 @@ class TestExactMatchAtIngest:
             for r in res.relationships
         )
 
+    async def test_duplicate_value_replaces_survivor_none(self):
+        nodes = [
+            _n("a", "Person", "Alice", "engineer", age=None),
+            _n("b", "Person", "alice", "born 1970", age=42),
+        ]
+        res = await ExactMatchResolution(llm=None, cross_label_merge=False).resolve(
+            GraphData(nodes=nodes, relationships=[]), Context()
+        )
+        assert len(res.nodes) == 1
+        assert res.nodes[0].properties["age"] == 42
+
+    async def test_cross_label_merge_fills_survivor_none_attribute(self):
+        survivor = _n("a", "Technology", "FalkorDB", "graph database")
+        duplicate = _n(
+            "b",
+            "Organization",
+            "FalkorDB",
+            "company",
+            descriptions=["company", "founded in 2016"],
+            age=42,
+        )
+        survivor.properties["age"] = None
+        res = await ExactMatchResolution(
+            llm=MockLLM(responses=["YES Technology\n"]),
+            cross_label_merge=True,
+            cross_label_min_descriptions=0,
+        ).resolve(GraphData(nodes=[survivor, duplicate], relationships=[]), Context())
+
+        assert len(res.nodes) == 1
+        assert res.nodes[0].properties["age"] == 42
+
     async def test_different_labels_are_not_merged_without_llm(self):
         nodes = [_n("a", "Person", "Paris", "prince"), _n("b", "Location", "Paris", "city")]
         res = await ExactMatchResolution(llm=None, cross_label_merge=False).resolve(
@@ -211,6 +242,14 @@ class TestLLMVerifiedMergeSites:
         assert len(res.nodes) == 1
         assert set(res.nodes[0].properties["source_chunk_ids"]) == {"c1", "c2"}
 
+    async def test_unified_stage_copies_values_over_survivor_none(self, ctx):
+        gd, embedder = _identical_pair(a_props={"age": None}, b_props={"age": 42})
+        res = await LLMVerifiedResolution(
+            llm=_AlwaysYes(), embedder=embedder, unified_stage=True
+        ).resolve(gd, Context())
+        assert len(res.nodes) == 1
+        assert res.nodes[0].properties["age"] == 42
+
     async def test_survivor_label_is_never_listed_as_absorbed(self, ctx):
         """A dup that earlier absorbed a Person hands `merged_labels="Person"`
         to a Person survivor; the survivor must not claim to have absorbed
@@ -248,6 +287,25 @@ class TestLLMVerifiedMergeSites:
         ).resolve(gd, Context())
         assert len(res.nodes) == 1
         assert set(res.nodes[0].properties["descriptions"]) == {"D1", "D2", "D3"}
+
+    async def test_cross_label_pass_copies_values_over_survivor_none(self, ctx):
+        gd, embedder = _identical_pair(
+            a_label="Person",
+            b_label="Engineer",
+            a_props={"age": None},
+            b_props={"age": 42},
+        )
+        res = await LLMVerifiedResolution(
+            llm=_AlwaysYes(),
+            embedder=embedder,
+            unified_stage=False,
+            cross_label_merge=True,
+            cross_label_min_descriptions=0,
+            label_family_gate=False,
+            cross_label_vote=False,
+        ).resolve(gd, Context())
+        assert len(res.nodes) == 1
+        assert res.nodes[0].properties["age"] == 42
 
 
 class TestFinalizeMergeFold:

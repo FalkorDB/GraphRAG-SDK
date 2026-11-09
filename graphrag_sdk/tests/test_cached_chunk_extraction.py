@@ -3,12 +3,16 @@
 Unit tests use a fake graph store + recording inner extractor and cover the
 full split/remap/merge/fallback matrix. Integration tests (RUN_INTEGRATION=1,
 real FalkorDB) prove end-to-end that unchanged chunks skip LLM extraction —
-the scripted LLM is strict, so any unexpected extraction raises loudly.
+the scripted LLM records any unexpected extraction and the tests assert
+there was none.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
+import threading
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -26,6 +30,7 @@ from graphrag_sdk.core.models import (
     GraphData,
     GraphNode,
     GraphRelationship,
+    LLMResponse,
     Ontology,
     TextChunk,
     TextChunks,
@@ -35,6 +40,8 @@ from graphrag_sdk.ingestion.extraction_strategies.cached_chunk_extraction import
     CachedChunkExtraction,
 )
 from graphrag_sdk.storage.graph_store import GraphStore
+
+from .conftest import MockLLM
 
 
 def _sha(text: str) -> str:
@@ -352,6 +359,103 @@ class TestRelationshipRebuild:
             "new-2",
         }
 
+    async def test_distinct_facts_between_same_pair_kept(self, ontology, ctx):
+        """Two facts between one pair are two edges, not one.
+
+        Every edge is RELATES, so keying on the pair alone dropped the second
+        fact from the rebuilt GraphData — and update()'s stale-edge sweep then
+        deleted it from the graph. Each must keep its own properties and its
+        remapped provenance, so the sweep sees both as supported.
+        """
+        rows = [
+            ChunkEntityRow(
+                chunk_id=cid,
+                entity_id=eid,
+                label="Person",
+                name=eid,
+                source_chunk_ids=[cid],
+            )
+            for cid in ("old-1", "old-2")
+            for eid in ("alice", "acme")
+        ]
+        store = FakeGraphStore(
+            chunk_texts=[("old-1", "alpha"), ("old-2", "beta")],
+            entity_rows=rows,
+            rel_rows=[
+                ChunkRelationshipRow(
+                    chunk_id="old-1",
+                    start_entity_id="alice",
+                    end_entity_id="acme",
+                    rel_type="WORKS_AT",
+                    fact="(Alice, WORKS_AT, Acme)",
+                ),
+                ChunkRelationshipRow(
+                    chunk_id="old-1",
+                    start_entity_id="alice",
+                    end_entity_id="acme",
+                    rel_type="FOUNDED",
+                    fact="(Alice, FOUNDED, Acme)",
+                ),
+                ChunkRelationshipRow(
+                    chunk_id="old-2",
+                    start_entity_id="alice",
+                    end_entity_id="acme",
+                    rel_type="FOUNDED",
+                    fact="(Alice, FOUNDED, Acme)",
+                ),
+            ],
+        )
+        strategy = CachedChunkExtraction(RecordingExtractor(), store, "doc-1")
+
+        result = await strategy.extract(
+            TextChunks(chunks=[_chunk("alpha", 0, "new-1"), _chunk("beta", 1, "new-2")]),
+            ontology,
+            ctx,
+        )
+
+        by_type = {r.properties["rel_type"]: r.properties for r in result.relationships}
+        assert set(by_type) == {"WORKS_AT", "FOUNDED"}
+        assert by_type["WORKS_AT"]["fact"] == "(Alice, WORKS_AT, Acme)"
+        assert by_type["WORKS_AT"]["source_chunk_ids"] == ["new-1"]
+        assert by_type["FOUNDED"]["fact"] == "(Alice, FOUNDED, Acme)"
+        assert by_type["FOUNDED"]["source_chunk_ids"] == ["new-1", "new-2"]
+
+    async def test_missing_rel_type_rows_fold_together(self, ontology, ctx):
+        """None and "" are one key, as in the store's coalesce(rel_type, '')."""
+        rows = [
+            ChunkEntityRow(
+                chunk_id=cid,
+                entity_id=eid,
+                label="Person",
+                name=eid,
+                source_chunk_ids=[cid],
+            )
+            for cid in ("old-1", "old-2")
+            for eid in ("a", "b")
+        ]
+        store = FakeGraphStore(
+            chunk_texts=[("old-1", "alpha"), ("old-2", "beta")],
+            entity_rows=rows,
+            rel_rows=[
+                ChunkRelationshipRow(
+                    chunk_id="old-1", start_entity_id="a", end_entity_id="b", rel_type=None
+                ),
+                ChunkRelationshipRow(
+                    chunk_id="old-2", start_entity_id="a", end_entity_id="b", rel_type=""
+                ),
+            ],
+        )
+        strategy = CachedChunkExtraction(RecordingExtractor(), store, "doc-1")
+
+        result = await strategy.extract(
+            TextChunks(chunks=[_chunk("alpha", 0, "new-1"), _chunk("beta", 1, "new-2")]),
+            ontology,
+            ctx,
+        )
+
+        assert len(result.relationships) == 1
+        assert result.relationships[0].properties["source_chunk_ids"] == ["new-1", "new-2"]
+
 
 class TestLabelLessEntity:
     async def test_label_less_entity_falls_back_to_extraction(self, ontology, ctx):
@@ -499,7 +603,8 @@ class TestFailOpen:
 class TestMerge:
     async def test_entity_in_cached_and_extracted_chunk_unions_provenance(self, ontology, ctx):
         """Same entity in an unchanged chunk (cached) and a changed chunk
-        (extracted): fresh properties win, provenance is the union."""
+        (extracted): fresh properties win, provenance is the union, and so
+        are the descriptions — both chunks are in the new version."""
         store = FakeGraphStore(
             chunk_texts=[("old-1", "unchanged")],
             entity_rows=[
@@ -537,9 +642,40 @@ class TestMerge:
 
         assert len(result.nodes) == 1
         node = result.nodes[0]
-        assert node.properties["description"] == "New description"  # fresh wins
+        assert node.properties["name"] == "Alice"
+        assert node.properties["descriptions"] == ["Old description", "New description"]
+        assert node.properties["description"] == "Old description | New description"
         assert set(node.properties["source_chunk_ids"]) == {"new-1", "new-2"}  # union
         assert {m.chunk_id for m in result.mentions} == {"new-1", "new-2"}
+
+    def test_a_chunk_an_earlier_version_mentioned_is_extracted_again(self):
+        """Its edge never recorded what the chunk said; copied, the new edge
+        would claim to while holding nothing."""
+        rows = [
+            ChunkEntityRow(chunk_id="old", entity_id="alice", label="Person", recorded=False),
+            ChunkEntityRow(chunk_id="kept", entity_id="bob", label="Person"),
+        ]
+        assert CachedChunkExtraction._usable_chunks(["old", "kept"], rows, []) == {"kept"}
+
+    def test_a_fresh_description_is_added_to_a_cached_list(self):
+        """A cached part hands a ``descriptions`` list, which the store reads
+        before ``description``: overlaid, the fresh description never reached
+        the node."""
+        cached = GraphData(
+            nodes=[
+                GraphNode(
+                    id="e1",
+                    label="Person",
+                    properties={"description": "CEO | Founder", "descriptions": ["CEO", "Founder"]},
+                )
+            ]
+        )
+        fresh = GraphData(
+            nodes=[GraphNode(id="e1", label="Person", properties={"description": "Investor"})]
+        )
+        (node,) = CachedChunkExtraction._merge([cached, fresh]).nodes
+        assert node.properties["descriptions"] == ["CEO", "Founder", "Investor"]
+        assert node.properties["description"] == "CEO | Founder | Investor"
 
     async def test_extracted_entities_and_relations_pass_through(self, ontology, ctx):
         from graphrag_sdk.core.models import ExtractedEntity
@@ -589,10 +725,13 @@ class TestGraphStoreCacheAccessors:
                         ["Person", "__Entity__"],
                         "Alice",
                         "Person",
-                        "Engineer",
+                        "Engineer | Founder | Acme",
                         ["c1", "x"],
+                        [3, 8],
+                        ["Engineer", "Founder | Acme"],
+                        False,
                     ],
-                    ["c1", None, ["Person"], "NoId", "Person", None, []],  # skipped
+                    ["c1", None, ["Person"], "NoId", "Person", None, [], [], None, True],  # skipped
                 ]
             )
         )
@@ -602,6 +741,15 @@ class TestGraphStoreCacheAccessors:
         assert row.entity_id == "alice__person"
         assert row.label == "Person"  # __Entity__ filtered out
         assert row.source_chunk_ids == ["c1", "x"]
+        # What this chunk's own edge holds — not the entity's description —
+        # each description whole, never split on the " | " inside one.
+        assert row.description == "Engineer | Founder | Acme" and row.spans == [3, 8]
+        assert row.descriptions == ["Engineer", "Founder | Acme"]
+        # An earlier version wrote this edge: it never recorded what the chunk said.
+        assert row.recorded is False
+        assert "said_version" in mock_connection.query.call_args[0][0]
+        cypher = mock_connection.query.call_args[0][0]
+        assert "m.description" in cypher and "e.description" not in cypher
 
     async def test_get_entities_label_none_when_no_concrete_label(
         self, graph_store, mock_connection
@@ -613,7 +761,9 @@ class TestGraphStoreCacheAccessors:
 
         mock_connection.query = AsyncMock(
             return_value=MagicMock(
-                result_set=[["c1", "e1", ["__Entity__"], "X", "Widget", None, None]]
+                result_set=[
+                    ["c1", "e1", ["__Entity__"], "X", "Widget", None, None, None, None, True]
+                ]
             )
         )
         rows = await graph_store.get_entities_mentioned_in_chunks(["c1"])
@@ -665,13 +815,14 @@ class TestGraphStoreCacheAccessors:
 
         mock_connection.query = AsyncMock(
             return_value=MagicMock(
-                result_set=[["c1", "e1", "Person", "Alice", "Person", None, "abc"]]
+                result_set=[["c1", "e1", "Person", "Alice", "Person", None, "abc", "xy", "z", True]]
             )
         )
         rows = await graph_store.get_entities_mentioned_in_chunks(["c1"])
         assert len(rows) == 1
         assert rows[0].label is None  # scalar labels → no concrete label
         assert rows[0].source_chunk_ids == []  # "abc" must not become ['a','b','c']
+        assert rows[0].spans == []
 
     async def test_relationship_scalar_provenance_skipped(self, graph_store, mock_connection):
         from unittest.mock import MagicMock
@@ -704,12 +855,67 @@ def _first_n_chars_stable(part1: str, size: int) -> str:
     return part1
 
 
+class _ChunkScriptedLLM(MockLLM):
+    """Step-2 LLM that answers by the chunk a prompt carries, not by call order.
+
+    ``GraphExtraction`` sends every chunk's step-2 prompt through
+    ``abatch_invoke``, which runs each call on a worker thread, so which
+    chunk reaches ``invoke`` first changes from run to run. The ``scripted_llm``
+    fixture answers in call order, so with two chunks per document it handed
+    chunk 1's entities to chunk 2 on some runs, and the update then
+    orphan-cleaned them along with chunk 2.
+
+    ``script`` maps a phrase found in exactly one chunk to that chunk's
+    answers, one per extraction, in order. A call for a chunk with no answer
+    left (an update extracting the unchanged chunk again) or for no single
+    known chunk is recorded in ``unexpected_calls`` and raises. The raise alone
+    does not fail a test: ``ainvoke`` retries it, ``abatch_invoke`` turns it
+    into a failed chunk and extraction keeps the step-1 entities. So each test
+    asserts ``unexpected_calls`` is empty.
+    """
+
+    def __init__(self, script: dict[str, list[list[tuple[str, str, str]]]]) -> None:
+        super().__init__(strict=True)
+        self._answers = {
+            phrase: [
+                json.dumps(
+                    {
+                        "entities": [
+                            {"name": n, "type": t, "description": d} for (n, t, d) in entities
+                        ],
+                        "relationships": [],
+                    }
+                )
+                for entities in answers
+            ]
+            for phrase, answers in script.items()
+        }
+        # invoke() runs on abatch_invoke's worker threads.
+        self._lock = threading.Lock()
+        self.unexpected_calls: list[str] = []
+
+    @property
+    def unused_answers(self) -> dict[str, int]:
+        with self._lock:
+            return {phrase: len(left) for phrase, left in self._answers.items() if left}
+
+    def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+        with self._lock:
+            phrases = [phrase for phrase in self._answers if phrase in prompt]
+            if len(phrases) == 1 and self._answers[phrases[0]]:
+                return LLMResponse(content=self._answers[phrases[0]].pop(0))
+            call = f"{phrases[0]!r} again" if len(phrases) == 1 else f"chunk matching {phrases}"
+            self.unexpected_calls.append(call)
+        raise AssertionError(f"unscripted LLM call: {call}")
+
+
 @pytest.mark.asyncio
 @pytest.mark.integration
 class TestCachedUpdateIntegration:
-    """End-to-end proof against real FalkorDB. The scripted LLM is strict:
-    an LLM call for an unchanged chunk raises, so passing tests ARE the
-    proof that caching skips extraction."""
+    """End-to-end proof against real FalkorDB. The scripted LLM answers each
+    chunk only as many times as the test expects it to be extracted and
+    records any other call, which the tests assert never happened: passing
+    tests ARE the proof that caching skips extraction."""
 
     CHUNK = 64
 
@@ -732,23 +938,26 @@ class TestCachedUpdateIntegration:
 
         return FixedSizeChunking(chunk_size=self.CHUNK, chunk_overlap=0)
 
-    async def test_cached_update_skips_llm_for_unchanged_chunk(
-        self, real_falkordb_rag_factory, scripted_llm
-    ):
+    async def test_cached_update_skips_llm_for_unchanged_chunk(self, real_falkordb_rag_factory):
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
             ExactMatchResolution,
         )
 
         v1, v2 = self._texts()
-        # Scripted responses: 2 for ingest (2 chunks), 1 for update (only
-        # the changed chunk). strict=True → a 4th call raises.
-        llm = scripted_llm(
-            [
-                ("Alice", "Person", "Engineer at Acme"),
-                ("Acme Corporation", "Organization", "Tech company"),
-            ],
-            [("Carol", "Person", "Manager in Berlin")],
-            [("Dave", "Person", "Manager in Munich")],
+        # One answer per chunk: the ingest extracts chunk 1 and chunk 2, the
+        # update only the changed chunk 2. Extracting chunk 1 again is
+        # recorded as unexpected.
+        llm = _ChunkScriptedLLM(
+            {
+                "Alice works": [
+                    [
+                        ("Alice", "Person", "Engineer at Acme"),
+                        ("Acme Corporation", "Organization", "Tech company"),
+                    ]
+                ],
+                "Carol manages": [[("Carol", "Person", "Manager in Berlin")]],
+                "Dave now manages": [[("Dave", "Person", "Manager in Munich")]],
+            }
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution())
 
@@ -761,6 +970,7 @@ class TestCachedUpdateIntegration:
             cache_unchanged_chunks=True,
         )
 
+        assert llm.unexpected_calls == [], "the LLM was called for an already-extracted chunk"
         assert result.no_op is False
         assert result.metadata["cache_stats"] == {
             "cached_chunks": 1,
@@ -779,9 +989,9 @@ class TestCachedUpdateIntegration:
         assert await count("Carol") == 0, "replaced-chunk entity must be orphan-cleaned"
         assert await count("Dave") == 1, "new-chunk entity must be extracted"
 
-        # Provenance: Alice's source_chunk_ids must point only at LIVE chunks.
+        # Provenance: Alice's mention edges must point only at LIVE chunks.
         r = await rag._graph_store.query_raw(
-            "MATCH (e:__Entity__) WHERE e.name = 'Alice' RETURN e.source_chunk_ids"
+            "MATCH (e:__Entity__ {name: 'Alice'})-[:MENTIONED_IN]->(c:Chunk) RETURN collect(c.id)"
         )
         alice_srcs = r.result_set[0][0] or []
         r = await rag._graph_store.query_raw(
@@ -799,18 +1009,18 @@ class TestCachedUpdateIntegration:
         )
         assert set(r.result_set[0][0] or []) <= live_chunk_ids
 
-    async def test_manually_deleted_entity_not_resurrected(
-        self, real_falkordb_rag_factory, scripted_llm
-    ):
+    async def test_manually_deleted_entity_not_resurrected(self, real_falkordb_rag_factory):
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
             ExactMatchResolution,
         )
 
         v1, v2 = self._texts()
-        llm = scripted_llm(
-            [("Alice", "Person", "Engineer"), ("Bob", "Person", "Colleague")],
-            [("Carol", "Person", "Manager")],
-            [("Dave", "Person", "Manager")],
+        llm = _ChunkScriptedLLM(
+            {
+                "Alice works": [[("Alice", "Person", "Engineer"), ("Bob", "Person", "Colleague")]],
+                "Carol manages": [[("Carol", "Person", "Manager")]],
+                "Dave now manages": [[("Dave", "Person", "Manager")]],
+            }
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution())
         await rag.ingest(text=v1, document_id="doc-del", chunker=self._chunker())
@@ -827,6 +1037,7 @@ class TestCachedUpdateIntegration:
             cache_unchanged_chunks=True,
         )
 
+        assert llm.unexpected_calls == [], "the LLM was called for an already-extracted chunk"
         r = await rag._graph_store.query_raw(
             "MATCH (e:__Entity__) WHERE e.name = 'Bob' RETURN count(e)"
         )
@@ -839,7 +1050,7 @@ class TestCachedUpdateIntegration:
         )
         assert r.result_set[0][0] == 1
 
-    async def test_default_off_extracts_all_chunks(self, real_falkordb_rag_factory, scripted_llm):
+    async def test_default_off_extracts_all_chunks(self, real_falkordb_rag_factory):
         """cache_unchanged_chunks defaults to False → both chunks hit the
         LLM on update (4 scripted responses, all consumed)."""
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
@@ -847,24 +1058,30 @@ class TestCachedUpdateIntegration:
         )
 
         v1, v2 = self._texts()
-        llm = scripted_llm(
-            [("Alice", "Person", "Engineer")],
-            [("Carol", "Person", "Manager")],
-            [("Alice", "Person", "Engineer")],
-            [("Dave", "Person", "Manager")],
+        llm = _ChunkScriptedLLM(
+            {
+                "Alice works": [
+                    [("Alice", "Person", "Engineer")],
+                    [("Alice", "Person", "Engineer")],
+                ],
+                "Carol manages": [[("Carol", "Person", "Manager")]],
+                "Dave now manages": [[("Dave", "Person", "Manager")]],
+            }
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution())
         await rag.ingest(text=v1, document_id="doc-off", chunker=self._chunker())
 
         result = await rag.update(text=v2, document_id="doc-off", chunker=self._chunker())
 
+        assert llm.unexpected_calls == []
+        assert llm.unused_answers == {}
         assert "cache_stats" not in result.metadata
         r = await rag._graph_store.query_raw(
             "MATCH (e:__Entity__) WHERE e.name = 'Dave' RETURN count(e)"
         )
         assert r.result_set[0][0] == 1
 
-    async def test_no_op_short_circuit_unaffected(self, real_falkordb_rag_factory, scripted_llm):
+    async def test_no_op_short_circuit_unaffected(self, real_falkordb_rag_factory):
         """An unchanged re-``update()`` short-circuits on the stored hash.
 
         The hash is only stamped when every write completed, and a chunk
@@ -889,9 +1106,11 @@ class TestCachedUpdateIntegration:
                 return []
 
         v1, _ = self._texts()
-        llm = scripted_llm(
-            [("Alice", "Person", "Engineer")],
-            [("Carol", "Person", "Manager")],
+        llm = _ChunkScriptedLLM(
+            {
+                "Alice works": [[("Alice", "Person", "Engineer")]],
+                "Carol manages": [[("Carol", "Person", "Manager")]],
+            }
         )
         extractor = GraphExtraction(llm, entity_extractor=_NoLocalNER())
         rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution())
@@ -907,6 +1126,84 @@ class TestCachedUpdateIntegration:
             extractor=extractor,
         )
         assert result.no_op is True
+
+    async def test_cached_update_keeps_every_fact_between_one_pair(self, real_falkordb_rag_factory):
+        """Two facts between Alice and Acme in the unchanged chunk both
+        survive a cached update instead of one being swept as stale (#361)."""
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            EntityExtractor,
+        )
+        from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+            GraphExtraction,
+        )
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+            ExactMatchResolution,
+        )
+
+        from .conftest import MockLLM
+
+        class _NoLocalNER(EntityExtractor):
+            async def extract_entities(self, text, entity_types, source_chunk_id):
+                return []
+
+        def step2(entities, relationships):
+            return json.dumps(
+                {
+                    "entities": [{"name": n, "type": t, "description": d} for n, t, d in entities],
+                    "relationships": [
+                        {"source": s, "target": o, "type": r, "description": f"{s} {r} {o}"}
+                        for s, r, o in relationships
+                    ],
+                }
+            )
+
+        alice_acme = [
+            ("Alice", "Person", "Engineer"),
+            ("Acme Corporation", "Organization", "Tech company"),
+        ]
+        llm = MockLLM(
+            responses=[
+                step2(
+                    alice_acme,
+                    [
+                        ("Alice", "WORKS_AT", "Acme Corporation"),
+                        ("Alice", "FOUNDED", "Acme Corporation"),
+                    ],
+                ),
+                step2(
+                    alice_acme + [("Carol", "Person", "Manager")],
+                    [("Alice", "ADVISES", "Acme Corporation")],
+                ),
+                step2([("Dave", "Person", "Manager")], []),
+            ],
+            strict=True,
+        )
+        extractor = GraphExtraction(llm, entity_extractor=_NoLocalNER())
+        rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution())
+        v1, v2 = self._texts()
+
+        async def facts():
+            r = await rag._graph_store.query_raw(
+                "MATCH (:__Entity__ {name: 'Alice'})-[r:RELATES]->"
+                "(:__Entity__ {name: 'Acme Corporation'}) RETURN r.rel_type ORDER BY r.rel_type"
+            )
+            return [row[0] for row in r.result_set]
+
+        await rag.ingest(
+            text=v1, document_id="doc-facts", chunker=self._chunker(), extractor=extractor
+        )
+        assert await facts() == ["ADVISES", "FOUNDED", "WORKS_AT"]
+
+        result = await rag.update(
+            text=v2,
+            document_id="doc-facts",
+            chunker=self._chunker(),
+            cache_unchanged_chunks=True,
+            extractor=extractor,
+        )
+
+        assert result.metadata["cache_stats"]["cached_chunks"] == 1
+        assert await facts() == ["FOUNDED", "WORKS_AT"]
 
 
 class TestSelfMappingGuard:
@@ -1167,6 +1464,89 @@ class TestRelationshipMergeUnion:
         )
         merged = CachedChunkExtraction._merge([a, b])
         assert len(merged.relationships) == 2
+
+    def _typed(self, rel_type, fact, srcs):
+        props = {"fact": fact, "source_chunk_ids": list(srcs)}
+        if rel_type is not None:
+            props["rel_type"] = rel_type
+        return GraphRelationship(
+            start_node_id="alice", end_node_id="acme", type="RELATES", properties=props
+        )
+
+    def test_distinct_rel_types_between_same_pair_stay_separate(self):
+        cached = GraphData(nodes=[], relationships=[self._typed("WORKS_AT", "works at", ["newA"])])
+        fresh = GraphData(nodes=[], relationships=[self._typed("FOUNDED", "founded", ["newB"])])
+
+        merged = CachedChunkExtraction._merge([cached, fresh])
+
+        by_type = {r.properties["rel_type"]: r.properties for r in merged.relationships}
+        assert by_type["WORKS_AT"] == {
+            "rel_type": "WORKS_AT",
+            "fact": "works at",
+            "source_chunk_ids": ["newA"],
+        }
+        assert by_type["FOUNDED"] == {
+            "rel_type": "FOUNDED",
+            "fact": "founded",
+            "source_chunk_ids": ["newB"],
+        }
+
+    def test_same_rel_type_still_unioned(self):
+        cached = GraphData(nodes=[], relationships=[self._typed("FOUNDED", "old", ["newA"])])
+        fresh = GraphData(nodes=[], relationships=[self._typed("FOUNDED", "new", ["newB"])])
+
+        merged = CachedChunkExtraction._merge([cached, fresh])
+
+        assert len(merged.relationships) == 1
+        props = merged.relationships[0].properties
+        assert props["fact"] == "new"
+        assert props["source_chunk_ids"] == ["newA", "newB"]
+
+    @pytest.mark.parametrize("rel_type", [None, ""])
+    def test_none_empty_and_missing_rel_type_are_one_key(self, rel_type):
+        a = GraphData(nodes=[], relationships=[self._typed(None, "x", ["c1"])])
+        b = GraphData(nodes=[], relationships=[self._typed("", "x", ["c2"])])
+        b.relationships[0].properties["rel_type"] = rel_type
+
+        merged = CachedChunkExtraction._merge([a, b])
+
+        assert len(merged.relationships) == 1
+        assert merged.relationships[0].properties["source_chunk_ids"] == ["c1", "c2"]
+
+    def test_rel_type_dict_key_ignores_key_order_and_mixed_types(self):
+        odd = {"label": "WORKS_AT", 1: "alt", "nested": {2: "x", "y": 3}}
+        reordered = {"nested": {"y": 3, 2: "x"}, 1: "alt", "label": "WORKS_AT"}
+        a = GraphData(nodes=[], relationships=[self._typed(odd, "x", ["c1"])])
+        b = GraphData(nodes=[], relationships=[self._typed(reordered, "x", ["c2"])])
+
+        merged = CachedChunkExtraction._merge([a, b])
+
+        assert len(merged.relationships) == 1
+        assert merged.relationships[0].properties["source_chunk_ids"] == ["c1", "c2"]
+
+    async def test_extracted_only_facts_survive_merge(self, ontology, ctx):
+        """extract() routes the inner result through _merge even with zero
+        cache hits, so two fresh facts between one pair must both come out."""
+        inner = RecordingExtractor(
+            GraphData(
+                nodes=[],
+                relationships=[
+                    self._typed("WORKS_AT", "works at", ["new-1"]),
+                    self._typed("FOUNDED", "founded", ["new-1"]),
+                ],
+            )
+        )
+        strategy = CachedChunkExtraction(inner, FakeGraphStore(), "doc-1")
+
+        result = await strategy.extract(
+            TextChunks(chunks=[_chunk("fresh", 0, "new-1")]), ontology, ctx
+        )
+
+        assert strategy.cached_chunk_count == 0
+        assert sorted(r.properties["rel_type"] for r in result.relationships) == [
+            "FOUNDED",
+            "WORKS_AT",
+        ]
 
     def test_direction_is_not_collapsed(self):
         fwd = GraphData(

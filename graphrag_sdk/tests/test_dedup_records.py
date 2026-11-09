@@ -6,6 +6,7 @@ uses its own graph, dropped afterwards.
 
 from __future__ import annotations
 
+import logging
 import os
 
 import pytest
@@ -180,6 +181,50 @@ async def test_pending_records_are_paged_and_claimed(graph):
 
     await store.write_pending([PendingPage(0, [], [], [])])
     assert [p.page for p in await store.pending_pages()] == [1]
+
+
+@pytest.mark.parametrize(
+    "attempts, reasons, read",
+    [
+        # x's count lost: padding [3] gave x the 3 attempts of y, unjudged.
+        ([3], ["", "no usable verdict"], ([0, 0], ["", "no usable verdict"])),
+        ([0, 3], [], ([0, 3], ["", ""])),
+        ([0, 3, 1], ["", "held"], ([0, 0], ["", "held"])),
+    ],
+)
+async def test_a_pending_list_that_lost_or_gained_entries_is_reset_once(
+    graph, caplog, attempts, reasons, read
+):
+    """FalkorDB 4.22.2 was seen to empty a stored list of a pending record.
+    A list whose length no longer matches the ids cannot say which entries
+    changed, so it is reset whole, never padded; the reset is written back,
+    so it is reported once."""
+    store = await held(graph)
+    await store.add_pending(["x", "y"])
+    await graph.query_raw(
+        f"MATCH (p:{PROCESSING_LABEL} {{kind: '{PENDING}'}}) SET p.attempts = $a, p.reasons = $r",
+        {"a": attempts, "r": reasons},
+    )
+    with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.system_store"):
+        (page,) = await store.pending_pages()
+        assert (page.ids, page.attempts, page.reasons) == (["x", "y"], *read)
+        assert await store.pending_pages() == [page], "written back as read"
+    assert sum("Pending record" in r.getMessage() for r in caplog.records) == 1
+
+
+async def test_a_pending_record_that_lost_its_ids_is_deleted_not_read(graph):
+    """Written back without ids, the record is deleted: a hand-off put on it
+    would list nothing."""
+    store = await held(graph)
+    await store.add_pending(["x", "y"])
+    await store.add_pending(["z"])
+    await graph.query_raw(
+        f"MATCH (p:{PROCESSING_LABEL} {{kind: '{PENDING}', page: 1}}) SET p.ids = []"
+    )
+    assert [p.ids for p in await store.pending_pages()] == [["x", "y"]]
+    assert await rows(
+        graph, f"MATCH (p:{PROCESSING_LABEL} {{kind: '{PENDING}'}}) RETURN p.page"
+    ) == [[0]]
 
 
 async def test_a_delete_during_a_run_leaves_a_deleted_record_and_none_without_one(graph):

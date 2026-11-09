@@ -340,10 +340,9 @@ async def exact_match_merge(
         idx = item.index
         if idx < cl_prompt_start:
             sl_entry_idx, descs = summary_prompt_refs[idx]
-            if item.ok:
+            # A failed summary leaves the joined descriptions in place.
+            if item.ok and item.response.content.strip():
                 sl_summaries[sl_entry_idx] = item.response.content.strip()
-            else:
-                sl_summaries[sl_entry_idx] = " | ".join(descs)
         else:
             cl_idx = idx - cl_prompt_start
             if not item.ok:
@@ -420,18 +419,24 @@ async def exact_match_merge(
         survivor = group_nodes[0]
         if entry["descriptions"]:
             set_merged_descriptions(survivor, group_nodes[1:])
-            if i in sl_summaries:
-                # An LLM summary (force_summary_threshold reached) replaces the
-                # joined string only; the member list is kept intact.
-                survivor.properties["description"] = sl_summaries[i]
         if entry["all_source_ids"]:
             survivor.properties["source_chunk_ids"] = entry["all_source_ids"]
         for dup in group_nodes[1:]:
             for k, v in dup.properties.items():
-                if k not in survivor.properties:
+                if survivor.properties.get(k) is None and v is not None:
                     survivor.properties[k] = v
             id_remap[dup.id] = survivor.id
             merged_count += 1
+        if entry["descriptions"] and i in sl_summaries:
+            # An LLM summary (force_summary_threshold reached) is the one
+            # description the survivor keeps: the store joins a
+            # ``descriptions`` list it is handed, so leaving the list — the
+            # survivor's, or one the copy above took from a duplicate — would
+            # throw the summary away. What each chunk said stays on its
+            # MENTIONED_IN edge. Last, so nothing writes these keys after it.
+            survivor.properties["description"] = sl_summaries[i]
+            survivor.properties.pop("descriptions", None)
+            survivor.properties["description_summarised"] = True
         sl_survivor_by_idx[i] = survivor
 
     # ── Stage 6: apply approved cross-label merges ──
@@ -456,6 +461,9 @@ async def exact_match_merge(
         existing_srcs = cl_survivor.properties.get("source_chunk_ids", [])
         if isinstance(existing_srcs, list):
             merged_sources.extend(existing_srcs)
+        set_merged_descriptions(
+            cl_survivor, [n for n in sl_survivors_in_cand if n.id != cl_survivor.id]
+        )
         # The losers' labels are otherwise destroyed here: this loop copies only
         # keys the survivor lacks, and the survivor always has a label. Same
         # defect as the embedding stage (P3.29) and PASS 2 (P3.21). graph_store
@@ -468,7 +476,7 @@ async def exact_match_merge(
             if s.label and s.label != cl_survivor.label and s.label not in absorbed_labels:
                 absorbed_labels.append(s.label)
             for k, v in s.properties.items():
-                if k not in cl_survivor.properties:
+                if cl_survivor.properties.get(k) is None and v is not None:
                     cl_survivor.properties[k] = v
             s_srcs = s.properties.get("source_chunk_ids", [])
             if isinstance(s_srcs, list):
@@ -487,9 +495,6 @@ async def exact_match_merge(
                 if lab not in parts:
                     parts.append(lab)
             cl_survivor.properties["merged_labels"] = " | ".join(p for p in parts if p)
-        set_merged_descriptions(
-            cl_survivor, [n for n in sl_survivors_in_cand if n.id != cl_survivor.id]
-        )
         # Only when the model actually wrote one. ``cl_summary`` is the second
         # line of the verdict, so a reply of "YES Person\n" — verdict line, no
         # body — yields "". Assigning that unconditionally would blank the
@@ -497,6 +502,8 @@ async def exact_match_merge(
         # and it is the field search, the fulltext index and the prompts read.
         if cl_summary:
             cl_survivor.properties["description"] = cl_summary
+            cl_survivor.properties.pop("descriptions", None)
+            cl_survivor.properties["description_summarised"] = True
 
     # ── Stage 7: resolve transitive id_remap chains (sl-loser → sl-survivor →
     # cl-survivor becomes sl-loser → cl-survivor directly) ──

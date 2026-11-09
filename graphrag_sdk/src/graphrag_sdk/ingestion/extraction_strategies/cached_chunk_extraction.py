@@ -68,6 +68,8 @@ from graphrag_sdk.core.models import (
     TextChunks,
 )
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+from graphrag_sdk.ingestion.resolution_strategies.base import description_list
+from graphrag_sdk.utils.cypher import merge_key_value
 
 if TYPE_CHECKING:
     from graphrag_sdk.storage.graph_store import GraphStore
@@ -77,6 +79,17 @@ logger = logging.getLogger(__name__)
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _rel_type_key(value: Any) -> Any:
+    """``rel_type`` as a RELATES dedup key, matching ``upsert_relationships``.
+
+    Every data edge is ``RELATES`` with its semantic type in ``rel_type``, so
+    keying on the pair alone collapses ``Alice WORKS_AT Acme`` and ``Alice
+    FOUNDED Acme`` into one edge. The store drops ``None`` properties and
+    MERGEs on ``coalesce(rel_type, '')``, so ``None`` and missing are ``""``.
+    """
+    return merge_key_value("" if value is None else value)
 
 
 class CachedChunkExtraction(ExtractionStrategy):
@@ -152,6 +165,13 @@ class CachedChunkExtraction(ExtractionStrategy):
         the rebuilt provenance would never land, and the post-cutover sweep
         would then delete facts the unchanged chunk still supports.
 
+        A chunk whose mention edge an earlier version wrote is unusable too:
+        that edge never recorded what the chunk put on the entity's
+        description, and copied, the new edge would claim to (this version
+        marks the edges it creates) while holding nothing — a later rebuild
+        from the edges would then drop that text although the chunk still
+        says it. Extracted again, its new edge records it.
+
         Dropping a chunk removes the entities only it mentioned, which can
         strand edges cited by other chunks, so this iterates to a fixpoint.
         Only the affected chunks are excluded — the rest of the document
@@ -164,7 +184,7 @@ class CachedChunkExtraction(ExtractionStrategy):
             if not label_by_ent.get(row.entity_id):
                 label_by_ent[row.entity_id] = row.label
 
-        good = set(old_ids)
+        good = set(old_ids) - {row.chunk_id for row in ent_rows if not row.recorded}
         while good:
             node_ids = {e for c in good for e in ents_by_chunk.get(c, ())}
             bad: set[str] = set()
@@ -230,8 +250,18 @@ class CachedChunkExtraction(ExtractionStrategy):
             new_uids = id_map.get(row.chunk_id)
             if not new_uids:
                 continue
+            said = row.descriptions or ([row.description] if row.description else [])
             for new_uid in new_uids:
-                mentions.append(EntityMention(chunk_id=new_uid, entity_id=row.entity_id))
+                # The unchanged chunk keeps what its old mention edge held:
+                # the same text, so the same spans and the same descriptions.
+                mentions.append(
+                    EntityMention(
+                        chunk_id=new_uid,
+                        entity_id=row.entity_id,
+                        spans=list(row.spans),
+                        descriptions=list(said),
+                    )
+                )
             srcs = ent_sources.setdefault(row.entity_id, [])
             if row.entity_id not in ent_props:
                 # Only emit non-empty fields — SET n += props would null-out
@@ -241,8 +271,10 @@ class CachedChunkExtraction(ExtractionStrategy):
                     props["name"] = row.name
                 if row.type:
                     props["type"] = row.type
-                if row.description:
-                    props["description"] = row.description
+                if said:
+                    props["description"] = " | ".join(said)
+                if len(said) > 1:
+                    props["descriptions"] = list(said)
                 ent_props[row.entity_id] = props
                 ent_labels[row.entity_id] = row.label
                 # Remap provenance onto post-update chunk ids: this doc's
@@ -275,12 +307,12 @@ class CachedChunkExtraction(ExtractionStrategy):
         relationships: list[GraphRelationship] = []
         if ent_props:
             node_ids = {n.id for n in nodes}
-            rel_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+            rel_by_pair: dict[tuple[str, str, Any], dict[str, Any]] = {}
             for rel in rel_rows:
                 new_uids = id_map.get(rel.chunk_id)
                 if not new_uids:
                     continue
-                key = (rel.start_entity_id, rel.end_entity_id)
+                key = (rel.start_entity_id, rel.end_entity_id, _rel_type_key(rel.rel_type))
                 if key[0] not in node_ids or key[1] not in node_ids:
                     # Same as above: the fixpoint guarantees both endpoints
                     # are present, so this is unreachable for a consistent
@@ -306,7 +338,7 @@ class CachedChunkExtraction(ExtractionStrategy):
                         rel_props["source_chunk_ids"].append(new_uid)
             relationships = [
                 GraphRelationship(start_node_id=s, end_node_id=e, type="RELATES", properties=p)
-                for (s, e), p in rel_by_pair.items()
+                for (s, e, _), p in rel_by_pair.items()
             ]
 
         return GraphData(nodes=nodes, relationships=relationships, mentions=mentions), unusable
@@ -316,11 +348,15 @@ class CachedChunkExtraction(ExtractionStrategy):
         """Merge cached and freshly extracted GraphData.
 
         Later parts win on conflicting properties (fresh extraction follows
-        cached parts, so updated descriptions take precedence) — EXCEPT
-        ``source_chunk_ids``, which is a union: an entity or fact present in
-        both a cached and an extracted chunk must keep both provenances.
+        cached parts) — EXCEPT ``source_chunk_ids``, which is a union: an
+        entity or fact present in both a cached and an extracted chunk must
+        keep both provenances; and an entity's descriptions, also a union:
+        a cached part can hand a ``descriptions`` list, which the store reads
+        before ``description``, so a fresh part's description overlaid on it
+        would never reach the node.
 
-        Relationships are keyed on ``(start, type, end)`` for the same reason
+        Relationships are keyed on ``(start, type, end)`` — plus ``rel_type``
+        for ``RELATES``, as ``upsert_relationships`` does — for the same reason
         nodes are keyed on id. Concatenating them instead would leave two
         rows for one fact, and ``ExactMatchResolution`` keeps only the first
         and rebuilds from it — discarding the fresh part's corrected
@@ -330,7 +366,7 @@ class CachedChunkExtraction(ExtractionStrategy):
         merging here keeps the cached path equivalent.
         """
         nodes_by_id: dict[str, GraphNode] = {}
-        rels_by_key: dict[tuple[str, str, str], GraphRelationship] = {}
+        rels_by_key: dict[tuple[str, str, str, Any], GraphRelationship] = {}
         mentions: list[EntityMention] = []
         extracted_entities = []
         extracted_relations = []
@@ -360,10 +396,22 @@ class CachedChunkExtraction(ExtractionStrategy):
                     nodes_by_id[node.id] = node
                 else:
                     merged = _union_sources(existing.properties or {}, node.properties or {})
+                    said = description_list(existing.properties or {})
+                    said += [d for d in description_list(node.properties or {}) if d not in said]
+                    merged.pop("descriptions", None)
+                    if said:
+                        merged["description"] = " | ".join(said)
+                    if len(said) > 1:
+                        merged["descriptions"] = said
                     label = node.label or existing.label
                     nodes_by_id[node.id] = GraphNode(id=node.id, label=label, properties=merged)
             for rel in part.relationships:
-                key = (rel.start_node_id, rel.type, rel.end_node_id)
+                rel_key = (
+                    _rel_type_key((rel.properties or {}).get("rel_type"))
+                    if rel.type == "RELATES"
+                    else None
+                )
+                key = (rel.start_node_id, rel.type, rel.end_node_id, rel_key)
                 current = rels_by_key.get(key)
                 if current is None:
                     rels_by_key[key] = rel

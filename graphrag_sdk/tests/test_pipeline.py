@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import IngestionError
@@ -20,12 +21,11 @@ from graphrag_sdk.core.models import (
     TextChunk,
     TextChunks,
 )
-from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
-
 
 # ── Stub strategies ─────────────────────────────────────────────
 
@@ -844,6 +844,78 @@ class TestPruneMethod:
         assert len(result.relationships) == 1
         assert result.relationships[0].start_node_id == "p"
 
+    def test_prune_reports_one_example_per_mismatched_pair(self):
+        pipeline = IngestionPipeline(
+            loader=StubLoader(),
+            chunker=StubChunker(),
+            extractor=StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=MagicMock(),
+            vector_store=MagicMock(),
+        )
+        ontology = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Company")],
+            relations=[Relation(label="WORKS_AT", patterns=[("Person", "Company")])],
+        )
+        rels = [
+            GraphRelationship(
+                start_node_id="c",
+                end_node_id=end,
+                type="RELATES",
+                properties={"rel_type": "WORKS_AT", "description": desc},
+            )
+            for end, desc in [("p", "Acme employs Ann. " * 20), ("p2", "second")]
+        ]
+        data = GraphData(
+            nodes=[
+                GraphNode(id="p", label="Person", properties={"name": "Ann"}),
+                GraphNode(id="p2", label="Person"),
+                GraphNode(id="c", label="Company", properties={"name": "Acme"}),
+            ],
+            relationships=rels,
+        )
+        _, report = pipeline._prune_with_report(data, ontology)
+        assert report["pattern_mismatches"] == {"WORKS_AT": {"Company->Person": 2}}
+        example = report["pattern_examples"]["WORKS_AT"]["Company->Person"]
+        assert example.startswith("Acme -> Ann: Acme employs Ann.")
+        assert len(example) == 160 and example.endswith("…")
+
+    def test_prune_reports_unknown_endpoints_apart_from_pattern_mismatches(self):
+        pipeline = IngestionPipeline(
+            loader=StubLoader(),
+            chunker=StubChunker(),
+            extractor=StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=MagicMock(),
+            vector_store=MagicMock(),
+        )
+        ontology = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Company")],
+            relations=[Relation(label="WORKS_AT", patterns=[("Person", "Company")])],
+        )
+        data = GraphData(
+            nodes=[
+                GraphNode(id="p", label="Person"),
+                GraphNode(id="c", label="Company"),
+                GraphNode(id="u", label="Unknown"),
+            ],
+            relationships=[
+                GraphRelationship(
+                    start_node_id=start,
+                    end_node_id=end,
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT"},
+                )
+                for start, end in [("p", "u"), ("u", "c"), ("c", "p")]
+            ],
+        )
+        pruned, report = pipeline._prune_with_report(data, ontology)
+        assert pruned.relationships == []
+        assert report["unknown_endpoints"] == {"WORKS_AT": 2}
+        assert report["pattern_mismatches"] == {"WORKS_AT": {"Company->Person": 1}}
+        assert set(report["pattern_examples"]["WORKS_AT"]) == {"Company->Person"}
+        assert report["unknown"] == 1
+
     def test_prune_open_relation_patterns(self):
         """Relation with empty patterns allows any direction."""
         pipeline = IngestionPipeline(
@@ -1243,6 +1315,66 @@ class TestContentHashRequiresCompleteWrites:
 
         assert not self._hash_written(mock_graph_store)
         assert result.metadata["incomplete_writes"] == ["mentions 2/3"]
+
+    @pytest.mark.parametrize(
+        "dropped",
+        [
+            GraphNode(id="", label="Person"),  # removed by the quality filter
+            GraphNode(id="   ", label="Person"),  # whitespace-only IDs are invalid too
+            GraphNode(id="no-label", label="   "),  # whitespace-only labels are invalid too
+            GraphNode(id="acme", label="Company"),  # pruned: not in the ontology
+        ],
+    )
+    async def test_mentions_of_dropped_nodes_are_not_written(
+        self, ctx, mock_graph_store, mock_vector_store, dropped
+    ):
+        from graphrag_sdk.core.models import EntityMention
+
+        class MentionExtractor(StubExtractor):
+            async def extract(self, chunks, ontology, ctx):
+                nodes = [GraphNode(id="alice", label="Person"), dropped]
+                return GraphData(
+                    nodes=nodes,
+                    relationships=[],
+                    mentions=[
+                        EntityMention(entity_id=n.id, chunk_id=chunks.chunks[0].uid) for n in nodes
+                    ],
+                )
+
+        # Like the real store: an edge to a node that was never written does not MATCH.
+        written_ids: set[str] = set()
+
+        def _upsert_nodes(nodes):
+            written_ids.update(n.id for n in nodes)
+            return len(nodes)
+
+        def _upsert_relationships(rels):
+            return sum(
+                1
+                for r in rels
+                if r.type != "MENTIONED_IN" or {r.start_node_id, r.end_node_id} <= written_ids
+            )
+
+        mock_graph_store.upsert_nodes = AsyncMock(side_effect=_upsert_nodes)
+        mock_graph_store.upsert_relationships = AsyncMock(side_effect=_upsert_relationships)
+        pipeline = self._pipeline(mock_graph_store, mock_vector_store, extractor=MentionExtractor())
+        pipeline.ontology = (
+            Ontology()
+            if not dropped.label.strip()
+            else Ontology(entities=[Entity(label="Person")])
+        )
+        result = await pipeline.run("r.txt", ctx)
+
+        mentioned = [
+            r.start_node_id
+            for call in mock_graph_store.upsert_relationships.call_args_list
+            for r in call[0][0]
+            if r.type == "MENTIONED_IN"
+        ]
+        assert mentioned == ["alice"]
+        assert result.metadata["mention_edges_created"] == 1
+        assert "incomplete_writes" not in result.metadata
+        assert self._hash_written(mock_graph_store)
 
     async def test_unembedded_chunks_withhold_the_hash(
         self, ctx, mock_graph_store, mock_vector_store

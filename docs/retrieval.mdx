@@ -304,6 +304,32 @@ result = await rag.completion("Your question", strategy=strategy)
 | `max_relationships` | 20 | Maximum relationships to include |
 | `rel_top_k` | 15 | RELATES edge vector search results |
 | `enable_cypher` | False | Toggle text-to-cypher path (opt-in) |
+| `router` | None | Path router that picks which paths to run per question (see below) |
+
+### Choosing Paths per Question (Path Router)
+
+By default `MultiPathRetrieval` runs every gateable path for every question. Pass a `router` to select only the gateable paths a question needs; the separately configured `enable_cypher` path still runs whenever enabled:
+
+```python
+from graphrag_sdk import HeuristicPathRouter, LLMPathRouter, MultiPathRetrieval
+
+strategy = MultiPathRetrieval(
+    graph_store=rag.graph_store,
+    vector_store=rag.vector_store,
+    embedder=embedder,
+    llm=llm,
+    router=HeuristicPathRouter(),  # or LLMPathRouter(llm) for one small planning call
+)
+```
+
+| Router | How it picks |
+|---|---|
+| `HeuristicPathRouter()` | No model call. Always runs `relates` and `chunks`; adds `expansion` and `entity_cypher` for relationship questions ("how are X and Y connected"), and the entity paths when the question quotes a phrase or names something. |
+| `LLMPathRouter(llm)` | One short LLM call that returns the path ids to run. |
+
+A router's plan is a set of ids from `RETRIEVAL_PATHS`: `relates` (RELATES vector search), `entity_cypher` (exact / `CONTAINS` name match), `entity_fulltext` (full-text name match), `expansion` (relationship expansion) and `chunks` (passage retrieval). Unknown ids are ignored, and an empty plan or a failing router falls back to every path, so routing never silently loses recall, except when the latency budget is exhausted: then the router's `LatencyBudgetExceededError` propagates and retrieval stops. A plan with `expansion` but no path that finds seed entities (`relates` or an entity path) gets both entity paths added. Any object with `async plan(query, ctx) -> set[str]` works as a router.
+
+`RETRIEVAL_PATHS` names `MultiPathRetrieval`'s internal paths. The agent toolkit's `retrieve` tool has its own, agent-facing names in `graphrag_sdk.tools.specs.RETRIEVE_PATHS` (`facts`, `exact_names`, `fuzzy_names`, `links`, `passages`; see [Agentic Retrieval](/agentic-retrieval)); `facts`, `exact_names`, `fuzzy_names` and `passages` map to `relates`, `entity_cypher`, `entity_fulltext` and `chunks`, while `links` is the toolkit's own relation walk.
 
 ### Using the External Reranker
 
