@@ -250,7 +250,7 @@ After all documents are ingested, call `finalize()` to prepare the graph for que
 | 2. Deduplicate | The pending entities: exact-name match, then one judge pass over nearest names; also writes each entity's name embedding | "Alice" from doc 1 and "Alice Smith" from doc 5 become one node; the name vectors power entity vector search |
 | 3. Relationship embeddings | Embeds fact text on RELATES edges | Powers RELATES edge vector search during retrieval |
 | 4. Ensure indexes | Creates all 5 standard indexes | Vector + fulltext indexes for search |
-| 5. Name chunks | Gives each unnamed chunk the name `<document id> · chunk <index>`; pass `name_chunks=False` to skip it | A chunk reads as `note.txt · chunk 0` in a graph browser instead of a UUID |
+| 5. Name chunks | Gives each unnamed chunk the name `<document id> · chunk <index>`, except a table row and a chunk of a document being replaced by `update()` (its id carries `__pending__`); pass `name_chunks=False` to skip it | A chunk reads as `note.txt · chunk 0` in a graph browser instead of a UUID |
 | 6. Consistency report | Checks the whole graph and reports what it finds | Shows what is left to fix before querying |
 
 ```python
