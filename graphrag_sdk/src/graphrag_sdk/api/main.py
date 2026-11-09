@@ -818,8 +818,7 @@ class GraphRAG:
 
         Internal helper shared by every evolution method so the refresh
         path lives in one place. Updates ``self.ontology`` in lockstep so
-        a follow-up ``ingest()`` (which reads ``self.ontology.entities``
-        in ``_default_extractor``) sees the post-mutation label set.
+        callers reading it see the post-mutation label set.
         """
         self._global_ontology = await self._ontology_store.load()
         self.ontology = self._global_ontology
@@ -3765,7 +3764,8 @@ class GraphRAG:
 
     def _ontology_entity_types(self) -> list[str] | None:
         """Entity labels the extractors are given (``None``: no ontology)."""
-        return [e.label for e in self.ontology.entities] if self.ontology.entities else None
+        ontology = self._global_ontology if self._global_ontology.entities else self.ontology
+        return [e.label for e in ontology.entities] or None
 
     def _default_extractor(self) -> ExtractionStrategy:
         """Return default GraphExtraction with ontology entity types if available."""
