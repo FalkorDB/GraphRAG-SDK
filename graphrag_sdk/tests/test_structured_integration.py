@@ -1868,3 +1868,188 @@ class TestOneIdentitySchemeForBothHalves:
             ["alice_smith-jones__person", "Alice Smith-Jones", 35, "led the platform team", True]
         ], "the node followed the name; the embedding of the old name did not"
         await rag.close()
+
+
+class TestTheFinalizeReminderCountsTables:
+    """A table's rows are entities, and like a document's they are resolved
+    against the rest of the graph — and embedded — only by ``finalize()``. So the
+    read-path reminder that it was skipped has to count tables too (#364): a
+    session that only ingested CSVs used to query an unfinalized graph in silence.
+
+    Every public way of writing a table is driven here, because each reaches the
+    graph down a different path: a first write, a re-sync through ``update()``'s
+    cutover, the ``if_missing="ingest"`` fallback, and ``apply_changes``.
+    """
+
+    REMINDER = "without a deduplication pass"
+
+    @staticmethod
+    def _write(path, rows: list[str]) -> str:
+        path.write_text(
+            "org_id,org_name,hq_country,employee_count\n" + "".join(rows),
+            encoding="utf-8",
+        )
+        return str(path)
+
+    ACME = "ORG-42,Acme Corp,US,1200\n"
+    GLOBEX = "ORG-7,Globex,GB,340\n"
+
+    @staticmethod
+    def _stub_search(rag):
+        from unittest.mock import AsyncMock
+
+        from graphrag_sdk.core.models import RetrieverResult
+
+        rag._retrieval_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[], metadata={})
+        )
+
+    async def test_a_table_only_session_is_reminded_to_finalize(
+        self, real_falkordb_rag_factory, llm, resolver, orgs_csv, employees_csv, caplog
+    ):
+        import logging
+
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=_ontology(ORGS, EMPLOYEES)
+        )
+        await rag.ingest(orgs_csv)
+        await rag.ingest(employees_csv)
+        assert rag._docs_since_dedup == 2
+
+        self._stub_search(rag)
+        with caplog.at_level(logging.WARNING):
+            await rag.retrieve("who works at Acme?")
+        assert f"2 document(s) ingested {self.REMINDER}" in caplog.text
+
+    async def test_finalize_silences_it(
+        self, real_falkordb_rag_factory, llm, resolver, orgs_csv, caplog
+    ):
+        import logging
+
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(ORGS))
+        await rag.ingest(orgs_csv)
+        await rag.finalize()
+        assert rag._docs_since_dedup == 0
+
+        self._stub_search(rag)
+        with caplog.at_level(logging.WARNING):
+            await rag.retrieve("which organizations are there?")
+        assert self.REMINDER not in caplog.text
+
+    async def test_re_ingesting_a_changed_export_rearms_it(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        source = tmp_path / "orgs.csv"
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(ORGS))
+        await rag.ingest(self._write(source, [self.ACME]))
+        await rag.finalize()
+
+        result = await rag.ingest(self._write(source, [self.ACME, self.GLOBEX]))
+
+        assert result.replaced_existing is True and result.no_op is False
+        assert rag._docs_since_dedup == 1
+
+    async def test_updating_a_changed_export_rearms_it(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        source = tmp_path / "orgs.csv"
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(ORGS))
+        await rag.ingest(self._write(source, [self.ACME]))
+        await rag.finalize()
+
+        result = await rag.update(self._write(source, [self.ACME, self.GLOBEX]))
+
+        assert result.no_op is False
+        assert rag._docs_since_dedup == 1
+
+    async def test_a_forced_update_rearms_it(
+        self, real_falkordb_rag_factory, llm, resolver, orgs_csv
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(ORGS))
+        await rag.ingest(orgs_csv)
+        await rag.finalize()
+
+        result = await rag.update(orgs_csv, force=True)
+
+        assert result.no_op is False
+        assert rag._docs_since_dedup == 1
+
+    async def test_an_unchanged_export_does_not_rearm_it(
+        self, real_falkordb_rag_factory, llm, resolver, orgs_csv
+    ):
+        """Nothing was written, so there is nothing new for finalize() to do."""
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(ORGS))
+        await rag.ingest(orgs_csv)
+        await rag.finalize()
+
+        assert (await rag.ingest(orgs_csv)).no_op is True
+        assert (await rag.update(orgs_csv)).no_op is True
+        assert rag._docs_since_dedup == 0
+
+    async def test_update_falling_through_to_ingest_counts_once(
+        self, real_falkordb_rag_factory, llm, resolver, orgs_csv
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(ORGS))
+
+        result = await rag.update(orgs_csv, if_missing="ingest")
+
+        assert result.replaced_existing is False
+        assert rag._docs_since_dedup == 1
+
+    async def test_apply_changes_counts_added_and_modified_tables(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        source = tmp_path / "orgs.csv"
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(ORGS))
+
+        added = await rag.apply_changes(added=[self._write(source, [self.ACME])])
+        assert added.added[0].is_success
+        assert rag._docs_since_dedup == 1
+
+        await rag.finalize()
+        modified = await rag.apply_changes(modified=[self._write(source, [self.ACME, self.GLOBEX])])
+        assert modified.modified[0].is_success
+        assert rag._docs_since_dedup == 1
+
+    async def test_a_relationship_table_does_not_arm_it(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """A relationship-only table creates no entity — both endpoints must
+        already exist — and finalize() deliberately leaves the edges only it
+        owns unembedded. There is nothing pending for finalize(), so a reminder
+        would be noise."""
+        from graphrag_sdk import EndpointMapping, RelationshipMapping
+
+        consumed = RelationshipMapping(
+            source="consumed_batch.csv",
+            start=EndpointMapping("Unit", "unit__unit_id", "source"),
+            end=EndpointMapping("Batch", "batch__batch_id", "target"),
+            type="CONSUMED_BATCH",
+        )
+        rag = real_falkordb_rag_factory(
+            llm=llm,
+            resolver=resolver,
+            ontology=Ontology(
+                entities=[Entity(label="Unit"), Entity(label="Batch")],
+                tables=[
+                    TableMapping(source="unit.csv", label="Unit", key="unit_id", name="unit_id"),
+                    TableMapping(
+                        source="batch.csv", label="Batch", key="batch_id", name="batch_id"
+                    ),
+                ],
+                relationship_tables=[consumed],
+            ),
+        )
+        for filename, content in (
+            ("unit.csv", "unit_id\nU-1\n"),
+            ("batch.csv", "batch_id\nB-1\n"),
+            ("consumed_batch.csv", "source,target\nU-1,B-1\n"),
+        ):
+            path = tmp_path / filename
+            path.write_text(content, encoding="utf-8")
+            if filename == "consumed_batch.csv":
+                await rag.finalize()
+            result = await rag.ingest(str(path))
+
+        assert result.relationships_written == 1
+        assert rag._docs_since_dedup == 0
