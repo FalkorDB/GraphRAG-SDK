@@ -172,7 +172,7 @@ The constraint has two sources:
 
 For multi-process deployments where this matters, gate evolution behind an application-level lock (Redis, etc.) that also blocks `ingest()`.
 
-Every evolution call republishes the working ontology to the retrieval strategy (through `RetrievalStrategy.set_ontology()`), so text-to-Cypher retrieval sees a renamed label or a new attribute on the next question.
+Every evolution call reloads the stored ontology and hands it to the retrieval strategy (it sets the strategy's `_ontology` attribute; an overridden `set_ontology()` is not called), so text-to-Cypher retrieval sees a renamed label or a new attribute on the next question.
 
 ---
 

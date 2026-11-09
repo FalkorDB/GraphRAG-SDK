@@ -123,7 +123,7 @@ A Document records how it was written. Updating a table's Document from a prose 
 
 The new content is written under a transient pending Document (`<id>__pending__<8 hex>`) beside the live one, so the live document stays readable while the update runs. The cutover is a state machine with one load-bearing commit point (`mark_pending_committed`, which sets `ready_to_commit` on the pending Document):
 
-- Before the commit, a crash rolls back: the pending data is discarded and the live document is untouched.
+- Before the commit, a crash rolls back: the pending Document and its chunks are discarded and the live document is untouched. Entities and `RELATES` edges the pending pipeline already wrote are not rolled back.
 - After the commit, a crash rolls forward: the old chunks are deleted, the pending Document is renamed to the canonical id, and orphan cleanup runs. The cleanup state is written onto the pending Document before the commit, so it survives the crash.
 
 Every `update()` and `delete_document()` against an id first finishes or rolls back whatever a crashed call left on it. Chunks written by `update()` are keyed on the transient pending id, so the pending and live documents never share chunk nodes during the cutover.
@@ -328,7 +328,6 @@ Run **once** after a batch of ingests/updates/deletes. Skipping it leaves cross-
 
 ```python
 result = await rag.finalize(
-    *,
     judge=None,          # a DedupJudge; None = LLMJudge(rag.llm)
     dedup_all=False,     # check every entity, and retry the unresolved ones
 )
@@ -346,7 +345,7 @@ result = await rag.finalize(
 ### What it does (in order)
 
 1. Removes NULL-name stub entities (legacy cleanup). Entities a table wrote are never removed here, since a table may have no name column.
-2. `deduplicate_entities()` — incremental: the pending entities (added since the last `finalize()`, or left pending by it) are checked against the whole graph through the `__Entity__` vector index — the exact phase by canonical name, then one judge pass over each pending entity and its nearest names. Every merge is written as a sealed plan and applied one atomic query at a time, so an interrupted `finalize()` is finished by the next one. Dedup also writes every new entity's name embedding (there is no separate entity backfill step). See [Storage](/storage) for the full algorithm.
+2. `deduplicate_entities()` — incremental: the pending entities (added since the last `finalize()`, or left pending by it) are checked against the whole graph through the `__Entity__` vector index — the exact phase by canonical name and label, then one judge pass over each pending entity and its nearest names. Every merge is written as a sealed plan and applied one atomic query at a time, so an interrupted `finalize()` is finished by the next one. Dedup also writes every new entity's name embedding (there is no separate entity backfill step). See [Storage](/storage) for the full algorithm.
    Then every entity holding more than five descriptions gets one LLM summary of them (`descriptions_summarised`); one whose summary fails keeps them and is listed in `description_summary_failures`, to be tried again by the next run.
 3. `embed_relationships()` — embeds fact text on `RELATES` edges.
 4. `ensure_indices()` — rebuilds/verifies all indexes and waits for any build in progress.

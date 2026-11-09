@@ -98,7 +98,7 @@ The simple filter keeps words longer than two characters, up to 12. Of the LLM k
 Alice —[WORKS_AT]→ Acme Corp: (Alice, WORKS_AT, Acme Corp): Alice is a senior engineer at Acme Corp
 ```
 
-The edge endpoints' names are also merged into the entity list in step 4. A hit becomes a fact line only when the edge stores `src_name`, `rel_type` and `tgt_name`; edges written from a [table mapping](/structured-ingestion) store no `src_name` or `tgt_name`, so they can take `rel_top_k` slots without producing a fact line or an entry point.
+The edge endpoints' names are also merged into the entity list in step 4. A hit becomes a fact line only when the edge stores `src_name`, `rel_type` and `tgt_name`; edges written from a [table mapping](/structured-ingestion) store no `src_name` or `tgt_name`, so they can take `rel_top_k` slots without producing a fact line. Their endpoints are still added by their stored ids, with an empty name, so they seed relationship expansion.
 
 **Important:** Facts are **scored** by their vector similarity to the question. Low-scoring facts are filtered out (see Step 8b) to reduce noise.
 
@@ -133,7 +133,7 @@ Rows a graph query returned for the question: 'What is the average age at Acme?'
 - average_age: 39.5
 ```
 
-**Always the current ontology.** `GraphRAG` passes every ontology change to its retrieval strategy through `RetrievalStrategy.set_ontology()`: the first load, `set_ontology()`, each [evolution](/ontology-evolution) method, and a table declaring typed columns during `ingest()`. Generated Cypher sees a new column the moment a table declares it, with no restart. A strategy you pass only per call (`completion(..., strategy=s)`) is not updated; construct it with `ontology=await rag.get_ontology()`.
+**Always the current ontology.** `GraphRAG` passes every ontology change to its retrieval strategy through `RetrievalStrategy.set_ontology()`: the first load, `set_ontology()`, each [evolution](/ontology-evolution) method, and a table declaring typed columns during `ingest()`. Generated Cypher sees a new column the moment a table declares it, with no restart. A strategy you pass only per call (`completion(..., strategy=s)`) is lent the current ontology for that call when it has none of its own; one constructed with `ontology=` keeps that ontology and does not see later changes, so leave it unset unless you want a fixed override.
 
 **Runs in parallel** with step 3a to avoid adding latency.
 
@@ -151,7 +151,7 @@ Rows a graph query returned for the question: 'What is the average age at Acme?'
   2. **Name `CONTAINS`** (e.g., "lighthouse" matches "The Old Lighthouse"), up to 5 per keyword, shortest names first, then alphabetical, then by id. A broad keyword cannot crowd out a rare one.
 - **Path B — Fulltext search:** Uses the `__Entity__` fulltext index on names and descriptions, up to 3 entities for each of the first 6 keywords. **Name matches come first:** results are ordered by exact name match, then a name containing the keyword (both case-insensitive, ignoring surrounding spaces), then fulltext score, then id. Without that order, a common term scores every hit alike, and a search for "Northwind Robotics" could return dates whose descriptions mention the company instead of the company itself.
 
-Entities found in steps 3a and 3b are also merged in here, after the two paths above. They are keyed by their lowercased name (`acme_corp`) rather than the stored entity id, so they appear in the Key Entities section but usually match no node in the id-based graph queries of steps 5 and 6 (extracted entities carry their type in the id, as in `acme_corp__organization`).
+Entities found in steps 3a and 3b are also merged in here, after the two paths above. Step 3a's are keyed by the edge's stored endpoint ids, so they match nodes in steps 5 and 6. Step 3b's are keyed by their lowercased name (`acme_corp`) rather than the stored entity id, so they appear in the Key Entities section but usually match no node in the id-based graph queries of steps 5 and 6 (extracted entities carry their type in the id, as in `acme_corp__organization`).
 
 **Enumeration questions** (containing phrases such as "list all", "every", "each", "name all" or "all the") also add up to 20 *siblings*: the other neighbours of a hub entity that is connected to two or more of the entities already found, ordered by name.
 
@@ -167,7 +167,7 @@ Entities found in steps 3a and 3b are also merged in here, after the two paths a
 - **1-hop:** Direct relationships (Alice → WORKS_AT → Acme Corp), from the first 15 discovered entities, up to 150 rows
 - **2-hop:** Indirect connections through an intermediate entity (Alice → WORKS_AT → Acme → LOCATED_IN → New York), from the first 5 discovered entities, up to 25 paths
 
-Neither query orders its rows before its `LIMIT`. Duplicate lines are dropped, 1-hop lines come before 2-hop lines, and the list is cut to `max_relationships` (20 by default).
+Neither query orders its rows before its `LIMIT`. Duplicate lines are dropped, 1-hop lines come before 2-hop lines, and the list is cut to `max_relationships` (20 by default). When there are more lines than that, 2-hop lines keep up to a third of the room (6 at the default), so 1-hop lines cannot crowd them all out; room they do not use goes back to 1-hop lines.
 
 **Returns:** Formatted relationship strings. A 1-hop line carries the edge's `fact`; a 2-hop line is the path alone:
 ```

@@ -495,7 +495,7 @@ mapping that also declares links.
 | `INTEGER` | `42`, `-7`, `1,234`, `1,234,567`, `12 345` — see [the comma](#numbers-and-the-comma) | anything with a fractional part, including `1,234.56` and a JSON export's `3.7` (never truncated to `3`) |
 | `FLOAT` | `3.14`, `1,234.56`, `1.234,56`, `880,5` | `nan`, `inf`, and the ambiguous `1,234` |
 | `BOOLEAN` | `1`/`0`, `true`/`false`, `t`/`f`, `yes`/`no`, `y`/`n`, `on`/`off` (any case) | anything else |
-| `DATE` | an ISO date or datetime, including a trailing `Z`; stored as an ISO date string (`2019-04-01`), which sorts and compares correctly | anything else |
+| `DATE` | an ISO date or datetime, including a trailing `Z`; stored as an ISO date string (`2019-04-01`), which sorts and compares correctly; a native `datetime` from a custom loader is stored with its time and any offset, so convert it to a `date` first when you need date-only values | anything else |
 | `LIST` | a cell parsed as one CSV row, so a quoted element may contain a comma: `"a,b",c` is two items | — |
 
 A declared type is enforced when the source is read, so a cell that does not hold
@@ -809,6 +809,8 @@ Every cell is then cast to its declared type, still before anything is written, 
 MappingError: column 'age' declares INTEGER but holds 'N/A'
 ```
 
+A changed mapping is registered before these checks, on the instance's first call: a property it no longer declares is already taken off the nodes when a `MappingError` is raised, and the error does not restore it.
+
 Pass `strict_mapping=True` to `ingest` to also reject a source with a column the mapping never reads. It is off by default because ignoring a column is a legitimate choice; turn it on where a dropped column would be a mistake rather than an omission.
 
 `CsvRecordLoader` checks the file itself in one streaming pass before that, and raises `ValueError` naming the problem: a row with more fields than the header (an unquoted delimiter inside a cell would otherwise shift every later field under the wrong header), a missing header row, an unnamed column, two columns with the same name, or a file that is not in the expected encoding.
@@ -896,7 +898,7 @@ A row the export dropped but another row still points at — a manager who left 
 
 A document remembers how it was written, and nothing may change its mind: re-reading a CSV as prose would replace its record chunks with one text chunk and take every entity with them. So `update()` refuses to change a document's kind — a `.csv` cannot be updated as prose, nor a text document as records — while a table in `apply_changes(modified=[...])` is re-synced through its stored mapping like any other `update()`.
 
-A table is addressed by its **name** — the basename of its mapping's `source`, `employees.csv` — unless you pass `document_id`. A document is addressed by its path because the path is all there is to know about it; a table has a declaration, and exports move. Keyed on the path, `/exports/2026-02/hr.csv` would be a second Document under the same label with January's left behind reading as current; keyed on the name, a new export of a known table is a re-sync of it, from wherever it arrives, and the Document's `path` follows the new file. Use the same handle for `update()`, `delete_document()` and `drop_table()`.
+A table is addressed by its **name** — the basename of its mapping's `source`, `employees.csv` — unless you pass `document_id`. A document is addressed by its path because the path is all there is to know about it; a table has a declaration, and exports move. Keyed on the path, `/exports/2026-02/hr.csv` would be a second Document under the same label with January's left behind reading as current; keyed on the name, a new export of a known table is a re-sync of it, from wherever it arrives, and the Document's `path` follows the new file. Use the same handle for `update()` and `delete_document()`. `drop_table()` always takes the table's name, the basename of its mapping's `source` (`drop_table("employees.csv")`), even when the table was loaded under its own `document_id`.
 
 An export that arrives under a different filename says which table it is with `document_id`:
 

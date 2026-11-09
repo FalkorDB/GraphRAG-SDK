@@ -241,7 +241,7 @@ your documents need alongside the ones your tables add.
 The facade's default is `ExactMatchResolution(llm=None, cross_label_merge=False)`. Given an `llm`, `ExactMatchResolution` replaces the joined `description` with a single LLM-written summary once a group has `force_summary_threshold` (default 3) descriptions or more; the `descriptions` list is kept either way. `cross_label_merge=True` additionally puts same-name groups spanning two labels to the LLM, once they have `cross_label_min_descriptions` (default 3) descriptions between them.
 
 **Alternative: LLMVerifiedResolution**
-- Runs the same exact-match pass first, then embeds each surviving entity's `name: description`, finds candidate pairs by similarity (floor `unified_threshold`, default 0.65), merges pairs at or above `hard_threshold` (default 0.95) outright and asks the LLM about the rest
+- Runs the same exact-match pass first, then embeds each surviving entity's `name: description`, finds candidate pairs by similarity (floor `unified_threshold`, default 0.65), merges same-label pairs at or above `hard_threshold` (default 0.95) outright and asks the LLM about the rest (a cross-label pair always goes to the LLM, whatever it scores)
 - Pairs whose names are equal once digits are removed and different with them (`GPT-3` / `GPT-4`, `Q1 2024` / `Q2 2024`) are never merged, without asking
 - Useful when the same entity is named inconsistently within a document (e.g., "Acme Corp" vs "Acme Corporation"). Costs embedding calls plus LLM calls for ambiguous pairs. See [Strategies](/strategies) for its parameters
 
@@ -346,7 +346,7 @@ result.metadata.get("incomplete_writes")   # present only when something came up
 
 After all documents are ingested, call `finalize()` to prepare the graph for querying. This is a separate step because some operations (like deduplication) work best when run globally across all documents, not per-document.
 
-**`finalize()` runs 4 steps in order:**
+**`finalize()` runs 5 steps in order:**
 
 | Step | What it does | Why |
 |------|-------------|-----|
@@ -354,6 +354,7 @@ After all documents are ingested, call `finalize()` to prepare the graph for que
 | 2. Deduplicate | The pending entities: exact-name match, then one judge pass over nearest names; also writes each entity's name embedding | "Alice" from doc 1 and "Alice Smith" from doc 5 become one node; the name vectors power entity vector search |
 | 3. Relationship embeddings | Embeds fact text on RELATES edges | Powers RELATES edge vector search during retrieval |
 | 4. Ensure indexes | Creates the `id` range indexes and the 5 standard vector and fulltext indexes, and waits until they are built | Vector + fulltext indexes for search |
+| 5. Report | Logs what it found (probable duplicates, property conflicts, proposed table mappings and more) at WARNING and returns it on `FinalizeResult` | Nothing is resolved on a guess; what needs a decision is reported |
 
 ```python
 # After ingesting ALL documents:
@@ -486,7 +487,7 @@ result.metadata["plan"]
 |-----------|---------|--------|
 | `entity_extractor` | `GLiNERExtractor()` | Local NER model (fast, no API calls) |
 | `coref_resolver` | `None` | Optional coreference resolution (resolves pronouns) |
-| `entity_types` | 11 defaults | Custom entity types for your domain. An ontology's entities override it, and a `GraphRAG` on a new graph with no declared entities stores the 11 defaults as its ontology, so through `GraphRAG` it takes effect only when the stored ontology has no entity types |
+| `entity_types` | 11 defaults | Custom entity types for your domain. An ontology's entities override it, and a `GraphRAG` on a new graph whose ontology declares no entities, relations or tables stores the 11 defaults as its ontology, so through `GraphRAG` it takes effect only when the stored ontology has no entity types |
 | `relation_types` | `DEFAULT_RELATION_TYPES` (31 labels) | Preferred relation vocabulary; `[]` for open vocabulary (an ontology's relations override it) |
 | `max_concurrency` | `None` (12 for local NER; the LLM's own limit for LLM calls) | Parallel extraction calls |
 
@@ -503,7 +504,7 @@ result.metadata["plan"]
 
 - **Slowest step:** Extraction (Step 4) — involves LLM calls for every chunk. Expect ~2-5 seconds per chunk.
 - **Fastest step:** Quality filter, prune, and resolve — all in-memory, sub-second.
-- **Unchanged documents:** a re-ingest of byte-identical content costs one graph lookup and no provider calls.
+- **Unchanged documents:** a re-ingest of byte-identical content makes no extraction or embedding calls for it; it still costs a few graph queries (the facade and the pipeline each look the document up, and the graph's config node is rewritten).
 - **Parallelism:** Steps 8-9 run in parallel. Step 1 NER uses a semaphore (default 12 concurrent chunks). One GLiNER model is loaded per model name and shared by every extractor in the process, and inference takes no lock, so concurrent ingests run NER in parallel without loading extra copies.
 
 ---

@@ -250,7 +250,8 @@ A JSON object with two arrays:
 ```json
 {
   "entities": [
-    {"name": "Alice", "type": "Person", "description": "Senior engineer at Acme Corp"}
+    {"name": "Alice", "type": "Person", "description": "Senior engineer at Acme Corp"},
+    {"name": "Acme Corp", "type": "Organization", "description": "Company where Alice is a senior engineer"}
   ],
   "relationships": [
     {
@@ -273,7 +274,7 @@ After step 2, GLiNER spans from step 1 are **carried forward** into the verified
 
 ### Fallback Behavior
 
-If step 2 fails for a chunk (bad JSON, API error), the pipeline falls back to using step 1 entities without relationships — you still get entities, just no relationships for that chunk. A failed call is not silent: `result.metadata["extraction"]` lists `failed_chunks` (step 1 failed, no entities) and `relation_failed_chunks` (entities kept, relationships lost), both are logged at WARNING, and the document's content hash is withheld so the next `ingest()` retries it. A reply that arrives but is not valid JSON is only logged at WARNING: it is not listed in `relation_failed_chunks` and does not withhold the hash.
+If step 2 fails for a chunk (an API error), the pipeline falls back to using step 1 entities without relationships — you still get entities, just no relationships for that chunk. An API error is not silent: `result.metadata["extraction"]` lists `failed_chunks` (step 1 failed, no entities) and `relation_failed_chunks` (entities kept, relationships lost), both are logged at WARNING, and the document's content hash is withheld so the next `ingest()` retries it. A reply that arrives but is not valid JSON also falls back to the step 1 entities, but is only logged at WARNING: it is not listed in `relation_failed_chunks` and does not withhold the hash.
 
 ---
 
@@ -314,7 +315,7 @@ extractor = GraphExtraction(
 )
 ```
 
-Used only when the ontology has no entity types. A `GraphRAG` on a new graph with no declared entities stores the 11 defaults as its ontology, so an extractor passed to `rag.ingest(extractor=...)` there still extracts the defaults; declare the types in the ontology instead.
+Used only when the ontology has no entity types. A `GraphRAG` on a new graph whose ontology declares no entities, relations or tables stores the 11 defaults as its ontology, so an extractor passed to `rag.ingest(extractor=...)` there still extracts the defaults; declare the types in the ontology instead.
 
 **3. Defaults (lowest priority):**
 ```python
@@ -399,7 +400,7 @@ After extraction runs on all chunks, entities are **deduplicated across chunks**
 - `source_chunk_ids` are merged (the entity knows every chunk it appeared in)
 - `spans` are merged (character offsets from every chunk)
 - Capitalized names are preferred over lowercase
-- Declared attribute values are merged per attribute, the later chunk winning — including a later chunk that does not state the attribute, whose empty value replaces an earlier one
+- Declared attribute values are merged per attribute, the later chunk winning; a chunk that does not state an attribute, or states a value that does not fit its type, leaves the earlier value in place
 
 **Example:** "Alice" appears in chunks 3, 7, and 12. After aggregation, there's one entity with `source_chunk_ids = ["chunk_3", "chunk_7", "chunk_12"]` and spans from all three chunks. Written to the graph, that is three `MENTIONED_IN` edges, each holding that chunk's spans and descriptions; the node holds neither the chunk list nor the spans.
 

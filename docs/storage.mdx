@@ -67,7 +67,7 @@ Structural nodes (`Document`, `Chunk`) and every other edge type use a plain `ME
 
 **Edge identity includes `rel_type`.** Every extracted fact is a `RELATES` edge with its semantic type in `rel_type`, so `Alice WORKS_AT Acme` and `Alice FOUNDED Acme` are two edges between the same two nodes. Keying the `MERGE` on the endpoints alone would keep one edge per pair and overwrite the other fact.
 
-**Provenance.** An entity carries no `source_chunk_ids`: which chunks mention it is what its `MENTIONED_IN` edges say, one edge per chunk, deleted with the chunk. A `RELATES` edge's `source_chunk_ids` lists every chunk that stated the fact, across documents. Each write appends the chunks the edge does not have yet, instead of replacing the list, and a write that carries no list (a table row, a re-embed) leaves it alone. Graphs written by an earlier version may still have the list on entities; `update()` and `delete_document()` still trim it.
+**Provenance.** An entity carries no `source_chunk_ids`: which chunks mention it is what its `MENTIONED_IN` edges say, one edge per chunk, deleted with the chunk. A `RELATES` edge's `source_chunk_ids` lists every chunk that stated the fact, across documents. Each write appends the chunks the edge does not have yet, instead of replacing the list, and a write that carries no list (a table row, a re-embed) keeps the list the edge has (an edge without one gets an empty list). Graphs written by an earlier version may still have the list on entities; `update()` and `delete_document()` still trim it.
 
 ### Repeated Keys in One Batch
 
@@ -248,7 +248,7 @@ During retrieval, the `rerank_chunks()` function uses **stored embeddings** when
 
 Creates, in one call, the `id` range indexes on `Document`, `Chunk` and `__Entity__`, and the five search indexes: the `Chunk`, `__Entity__` and `RELATES` vector indexes and the `Chunk` and `__Entity__` fulltext indexes. It returns a dict naming each (`range_ids`, `vector_Chunk`, `vector_Entity`, `vector_RELATES`, `fulltext_Chunk`, `fulltext_Entity`) with whether it is in place after this call — `True` whether it was created now or already existed, `False` when creation failed — which `finalize()` reports as `FinalizeResult.indexes`. Tracks state internally (`_indices_ensured`) to avoid redundant creation, and returns `{}` when an earlier call already ensured everything. Called automatically after each prose `ingest()` and each `update()` that writes (a table's first ingest creates only the range indexes it writes through), and re-run during `finalize()` (which resets the flag, so `finalize()` always reports every key).
 
-FalkorDB builds an index over existing data in the background after `CREATE ... INDEX` returns, and a vector search on it finds nothing until the build ends. `ensure_indices()` therefore waits until `db.indexes()` reports every index built before it returns (up to 10 minutes, logging progress every 10 s), so a search right after `ingest()` sees the data.
+FalkorDB builds an index over existing data in the background after `CREATE ... INDEX` returns, and a vector search on it finds nothing until the build ends. `ensure_indices()` therefore waits until `db.indexes()` reports every index built before it returns (up to 10 minutes, logging progress every 10 s). If the status query fails or the 10 minutes pass first, it returns anyway, and a search right after `ingest()` may return nothing or partial results until the build finishes; the next `ensure_indices()` call waits again.
 
 ---
 
@@ -301,7 +301,7 @@ await rag.finalize()
 # Another model for the judge only.
 await rag.finalize(judge=LLMJudge(judge_llm, max_concurrency=None, min_output_tokens=4096))
 
-# A judge of your own: no LLM at all.
+# A judge of your own: no LLM in dedup (finalize() still summarises long descriptions with rag.llm).
 class SpellingJudge(DedupJudge):
     async def judge(self, sets: list[JudgeSet], *, retry: bool = False) -> list[SetVerdict | None]:
         verdicts = []
@@ -347,7 +347,7 @@ Every merge, by rule or by the judge, keeps what the duplicate carried:
 The fuzzy name-embedding phase is removed: finalize-time dedup is the exact phase plus the judge. `deduplicate_entities()` still accepts `fuzzy=False` and `similarity_threshold=` for now, ignored, with a `DeprecationWarning`; `fuzzy=True` raises `ValueError`. Ingest-time resolvers (`ingest(resolver=...)`) are unchanged.
 
 <Note>
-`finalize()` and `deduplicate_entities()` call the LLM through the default `LLMJudge`. To keep dedup LLM-free, pass a `DedupJudge` of your own, such as the `SpellingJudge` above.
+`finalize()` and `deduplicate_entities()` call the LLM through the default `LLMJudge`. To keep dedup LLM-free, pass a `DedupJudge` of your own, such as the `SpellingJudge` above. `finalize()` still sends entities holding more than five descriptions to `rag.llm` for a summary.
 </Note>
 
 ### Running alongside `update()` and deletes

@@ -21,7 +21,7 @@ async def main():
     async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
         llm=LiteLLM(model="openai/gpt-4o"),
-        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
+        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small", dimensions=256),
     ) as rag:
         result = await rag.ingest("my_document.txt")
         print(f"Created {result.nodes_created} nodes, {result.relationships_created} edges")
@@ -59,7 +59,7 @@ async def main():
     async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
         llm=LiteLLM(model="openai/gpt-4o"),
-        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
+        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small", dimensions=256),
     ) as rag:
         await rag.ingest("report.pdf")                              # PDF
         await rag.ingest("source_id", text="Alice works at Acme.")  # Raw text
@@ -96,7 +96,7 @@ Supported roles: `"system"`, `"user"`, `"assistant"`. Invalid roles raise `Value
 ### Ontology Definition
 
 ```python
-from graphrag_sdk import Ontology, Entity, Relation
+from graphrag_sdk import ConnectionConfig, GraphRAG, LiteLLM, LiteLLMEmbedder, Ontology, Entity, Relation
 
 ontology = Ontology(
     entities=[
@@ -112,7 +112,10 @@ ontology = Ontology(
     ],
 )
 
-rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)  # conn, llm, embedder from above
+conn = ConnectionConfig(host="localhost", graph_name="my_graph")
+llm = LiteLLM(model="openai/gpt-4o")
+embedder = LiteLLMEmbedder(model="openai/text-embedding-3-small", dimensions=256)
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)
 ```
 
 ### Strategy Customization

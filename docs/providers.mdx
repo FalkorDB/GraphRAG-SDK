@@ -88,7 +88,7 @@ embedder = LiteLLMEmbedder(
 | `api_key` | `str \| None` | `None` | API key |
 | `api_base` | `str \| None` | `None` | Base URL |
 | `api_version` | `str \| None` | `None` | API version |
-| `batch_size` | `int` | `2048` | Maximum texts per batch call (`500` for Azure) |
+| `batch_size` | `int` | `2048` | Maximum texts per batch call |
 
 Other keyword arguments (such as `dimensions`) are forwarded to LiteLLM. The vectors must match `GraphRAG(embedding_dimension=...)`, which defaults to `256`; a mismatch raises `ConfigError` before any extraction work.
 

@@ -121,7 +121,7 @@ loader = CsvRecordLoader(
 await rag.ingest("exports/employees.psv", record_loader=loader)
 ```
 
-A row with more fields than the header is refused with its row number. For another format (JSON lines, Parquet, a database cursor), implement `RecordLoaderStrategy` and pass it as `ingest(..., record_loader=...)`.
+A row with more fields than the header is refused with its row number. For another format (JSON lines, Parquet, a database cursor), implement `RecordLoaderStrategy` and pass it as `ingest(..., record_loader=...)`. The source name must still end in `.csv`, `.tsv`, `.psv` or `.tab`, because the extension is what routes a call to the structured path (see [Custom Sources](/structured-ingestion#custom-sources)).
 
 ---
 
@@ -794,4 +794,4 @@ class SpellingJudge(DedupJudge):
 await rag.finalize(judge=SpellingJudge())
 ```
 
-A judge can be a rule set, a local model, a cheaper model with a stronger one behind it — anything that turns sets into verdicts. A rule-based judge like this one is how to keep `finalize()` free of LLM calls.
+A judge can be a rule set, a local model, a cheaper model with a stronger one behind it — anything that turns sets into verdicts. A rule-based judge like this one keeps deduplication free of LLM calls; `finalize()` still calls the LLM to summarise any entity holding more than five descriptions.

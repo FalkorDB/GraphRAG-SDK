@@ -425,8 +425,9 @@ Each wrapper has the same keyword arguments as its async counterpart and runs it
 
 ```python
 def ingest_sync(source=None, *, text=None, document_id=None, loader=None, chunker=None,
-                extractor=None, resolver=None, max_concurrency=3, record_loader=None,
-                strict_mapping=False, ctx=None) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult
+                extractor=None, resolver=None, auto=False, planner=None, plan_limits=None,
+                max_concurrency=3, record_loader=None, strict_mapping=False,
+                ctx=None) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult | RelationshipIngestionResult
 def update_sync(source=None, *, text=None, document_id=None, loader=None, chunker=None,
                 extractor=None, resolver=None, cache_unchanged_chunks=False, if_missing="error",
                 force=False, record_loader=None, strict_mapping=False, ctx=None) -> UpdateResult
@@ -944,7 +945,7 @@ class ExtractionStrategy(ABC):
 ```
 
 **Built-in:**
-- `GraphExtraction(llm, *, entity_extractor=None, coref_resolver=None, entity_types=None, relation_types=None, max_concurrency=None)`. `entity_types=None` selects `DEFAULT_ENTITY_TYPES` (11 labels); `relation_types=None` selects `DEFAULT_RELATION_TYPES`, a 31-label UPPER_SNAKE_CASE vocabulary (`LOCATED_IN`, `PART_OF`, `EMPLOYED_AT`, `AUTHORED`, ...) the step-2 prompt asks the LLM to prefer; off-list labels are still kept. Pass `relation_types=[]` for open-vocabulary labels. Both are overridden by a declared `Ontology`, whose relations are enforced (off-pattern edges are pruned). Through `GraphRAG`, the working ontology always has entity types (a new graph is seeded with the 11 defaults), so `entity_types` is overridden there; declare custom entity types on the `Ontology` instead.
+- `GraphExtraction(llm, *, entity_extractor=None, coref_resolver=None, entity_types=None, relation_types=None, max_concurrency=None)`. `entity_types=None` selects `DEFAULT_ENTITY_TYPES` (11 labels); `relation_types=None` selects `DEFAULT_RELATION_TYPES`, a 31-label UPPER_SNAKE_CASE vocabulary (`LOCATED_IN`, `PART_OF`, `EMPLOYED_AT`, `AUTHORED`, ...) the step-2 prompt asks the LLM to prefer; off-list labels are still kept. Pass `relation_types=[]` for open-vocabulary labels. Both are overridden by a declared `Ontology`, whose relations are enforced (off-pattern edges are pruned). Through `GraphRAG`, the working ontology has entity types unless it declares only relations (a new graph is seeded with the 11 defaults), so `entity_types` is overridden there; declare custom entity types on the `Ontology` instead.
 - `CachedChunkExtraction(inner, graph_store, document_id)`: the decorator behind `update(cache_unchanged_chunks=True)`.
 
 `DEFAULT_RELATION_TYPES` is exported at the top level.
@@ -1345,7 +1346,7 @@ VectorStore(connection, embedder=None, embedding_dimension=256)
 | `create_chunk_fulltext_index` / `create_entity_fulltext_index` | `() -> bool` | Fulltext indexes on `Chunk(text)` and `__Entity__(name, description)` |
 | `drop_chunk_vector_index` / `drop_entity_vector_index` / `drop_relates_vector_index` | `() -> None` | `DROP VECTOR INDEX`; a later `ensure_indices()` recreates it |
 | `create_id_range_indices` | `() -> bool` | Range indexes on `id` for `Document`, `Chunk` and `__Entity__`. `GraphStore` indexes `id` and `entity_key` on each entity label the first time it writes to that label |
-| `ensure_indices` | `() -> dict[str, bool]` | All of the above, idempotent; waits until FalkorDB reports every index built (up to 10 minutes). Returns `{}` when an earlier call already ensured them |
+| `ensure_indices` | `() -> dict[str, bool]` | All of the above, idempotent; waits until FalkorDB reports every index built (up to 10 minutes; returns anyway if the wait runs out or the status query fails). Returns `{}` when an earlier call already ensured them |
 | `index_chunks` | `(chunks: TextChunks) -> int \| None` | Embed and store chunk vectors; `None` when no embedder is configured |
 | `embed_relationships` | `(batch_size=500) -> int` | Embed fact text on `RELATES` edges |
 | `backfill_entity_embeddings` | `(batch_size=500) -> int` | Embed entities missing vectors. Not a dedup step: an entity it embeds counts as checked unless a `pending` record lists it; run `finalize(dedup_all=True)` once after it |

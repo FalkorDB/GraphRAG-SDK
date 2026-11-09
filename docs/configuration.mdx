@@ -16,7 +16,7 @@ GraphRAG SDK requires **FalkorDB 4.20 or later**. The 4.x line from 4.20 and the
 docker run -d -p 6379:6379 -p 3000:3000 --name falkordb falkordb/falkordb:v4.22.2
 ```
 
-Each connection asks the server for its version once, before its first query, and refuses an older server with `FalkorDBVersionError` (a `DatabaseError`), so `ingest()`, `query()`, `finalize()` and every other call fail before anything is written. Earlier servers dropped vector-index entries on every write to a node holding a vector, so search and dedup missed entities.
+Each connection asks the server for its version once, before its first query, and refuses an older server with `FalkorDBVersionError` (a `DatabaseError`), so `ingest()`, `query()`, `finalize()` and every other call that runs a query fail before anything is written. `delete_all()` drops the graphs with `GRAPH.DELETE` directly and is not checked. Earlier servers dropped vector-index entries on every write to a node holding a vector, so search and dedup missed entities.
 
 - A server that refuses to report its version (an ACL without `MODULE LIST`, or a managed server that disabled it) is let through with a warning.
 - Any other answer to the version check is handled as a query's would be: a temporary error is retried, and a server that cannot be reached fails the call with `DatabaseUnavailableError` and is asked again by the next one.
@@ -98,7 +98,7 @@ rag = GraphRAG(connection=conn, llm=my_llm, embedder=my_embedder)
 | `ping()` | 5 s (returns `False` instead of raising) |
 | The driver's first probe of the server | 5 s |
 | Waiting for a query reply | `query_timeout_ms` + 5 s (15 s at the defaults); no limit when `query_timeout_ms` is `None` |
-| Server-side read timeout | `query_timeout_ms`, or the `timeout=` passed to `FalkorDBConnection.query()` |
+| Server-side read timeout | `query_timeout_ms`, or the `timeout=` passed to `FalkorDBConnection.query()`; the client still waits only `query_timeout_ms` + 5 s |
 
 A query needing more than 5 s but less than `query_timeout_ms` completes normally.
 
@@ -510,7 +510,7 @@ ontology = Ontology(entities=[
 rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)
 ```
 
-Priority: `ontology.entities` > the `entity_types` parameter of `GraphExtraction` > defaults (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method). Through `GraphRAG`, the working ontology always has entity types, because a graph with no ontology is seeded with the 11 defaults on first use, so `GraphExtraction(entity_types=...)` has no effect there. It applies only when you run `GraphExtraction` with an ontology that declares no entities, such as in your own `IngestionPipeline`.
+Priority: `ontology.entities` > the `entity_types` parameter of `GraphExtraction` > defaults (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method). Through `GraphRAG`, the working ontology has entity types unless it declares only relations, because a graph with no ontology is seeded with the 11 defaults on first use, so `GraphExtraction(entity_types=...)` has no effect there. It applies only when you run `GraphExtraction` with an ontology that declares no entities, such as in your own `IngestionPipeline`.
 
 ### LLM Concurrency
 
@@ -582,7 +582,7 @@ rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, retrieval_strategy=r
 result = await rag.completion("What happened?", strategy=retriever)
 ```
 
-A strategy passed as `GraphRAG(retrieval_strategy=...)` receives every ontology change through `set_ontology()`. A strategy passed only per call (`strategy=`) does not; give it `ontology=await rag.get_ontology()` if it generates Cypher.
+A strategy passed as `GraphRAG(retrieval_strategy=...)` receives every ontology change through `set_ontology()`. A strategy passed only per call (`strategy=`) without its own `ontology=` is lent the current one for that call; one given `ontology=` keeps it.
 
 ### Retrieval Pipeline (9 Steps)
 
@@ -695,7 +695,7 @@ Only the pending entities are checked: those with no name vector yet (ingest wri
 | Fulltext    | `Chunk`          | `text`                 | `fulltext_Chunk`                |
 | Fulltext    | `__Entity__`     | `name`, `description`  | `fulltext_Entity`               |
 
-Separately, every write range-indexes `id` and `entity_key` on each label it writes into, the first time it writes there. `ensure_indices()` is also called after each `ingest()` of a document; ingesting a table creates only the `id` range indexes, and `finalize()` builds the rest. It returns once FalkorDB reports every index built (up to 10 minutes, logging progress every 10 s), since a vector search on an index still being built finds nothing.
+Separately, every write range-indexes `id` and `entity_key` on each label it writes into, the first time it writes there. `ensure_indices()` is also called after each `ingest()` of a document; ingesting a table creates only the `id` range indexes, and `finalize()` builds the rest. It waits until FalkorDB reports every index built (up to 10 minutes, logging progress every 10 s), since a vector search on an index still being built finds nothing; if the status query fails or the wait runs out, it returns anyway.
 
 <Warning>
   Do **not** call `backfill_entity_embeddings()` between ingests. An entity with a vector and no pending record counts as checked, so every entity it embeds skips its dedup check. `finalize()` does not call it. If you did call it, run `finalize(dedup_all=True)` once.

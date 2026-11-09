@@ -95,7 +95,7 @@ Record chunks are not chained with `NEXT_CHUNK` (rows have no reading order) and
 
 ### Entity Nodes (Person, Organization, etc.)
 
-**Purpose:** Knowledge entities, extracted from prose or written from a table's rows. Each entity node has **two labels**: its domain type (e.g., `Person`) and `__Entity__` (a secondary label shared by all entities).
+**Purpose:** Knowledge entities, extracted from prose or written from a table's rows. Each entity node has **at least two labels**: its domain type (e.g., `Person`) and `__Entity__` (a secondary label shared by all entities). A cross-label merge also gives the survivor the labels it absorbed (recorded in `merged_labels`).
 
 | Property | Type | Description |
 |----------|------|-------------|
@@ -232,7 +232,7 @@ CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.description)
 
 FalkorDB keeps one fulltext index per label, so the two `__Entity__` statements build a single index over `name` and `description`. They are separate statements so that an existing index on one field cannot stop the other from being added.
 
-`ensure_indices()` returns only once FalkorDB reports every index built (it waits up to 10 minutes, logging progress every 10 seconds), so a search right after it does not run against a half-built index.
+`ensure_indices()` waits until FalkorDB reports every index built (up to 10 minutes for the whole call, logging progress every 10 seconds). If the status query fails or the deadline passes, it returns anyway, and a search may run against a half-built index until the build finishes.
 
 ### Range Indexes on the Write Path
 

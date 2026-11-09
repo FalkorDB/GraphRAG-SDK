@@ -63,7 +63,7 @@ A table is declared on the ontology with a `TableMapping` and read by a `RecordL
 
 1. **Map** -- find the table's mapping in the ontology by filename (or propose one, with one model call for the whole table, when none is declared).
 2. **Validate** -- check the mapping against the file's header and every cell against its declared type, before anything is written.
-3. **Write** -- one Document named for the table, one record Chunk per row, one entity per row (its id derived from its name, exactly as for a prose mention, or from its key when the row has no name), placeholders for foreign keys, and `RELATES` edges for each `Link`. Every declared property is signed with the table's name (`employees__age`).
+3. **Write** -- one Document named for the table, one record Chunk per row, one entity per row (its id derived from its name, exactly as for a prose mention, or from its key when the row has no name; rows that derive the same id write one node), placeholders for foreign keys, and `RELATES` edges for each `Link`. Every declared property is signed with the table's name (`employees__age`).
 4. **Re-sync** -- a later load of the same table replaces it as a snapshot through the same crash-safe cutover `update()` uses.
 
 Because the id comes from the name, a row and a prose mention of the same thing are one node from the first write, whichever source arrives first. See [Structured Ingestion](/structured-ingestion).
@@ -78,7 +78,7 @@ Ingest resolves duplicates only within one document; it never sees two documents
    - Everything else goes to the **judge**, a pluggable `DedupJudge` (`LLMJudge` by default; every run has one), which partitions small candidate sets of nearest names.
    - Every merge is decided first, written as a sealed plan, and applied one atomic query per merge, so an interrupted run is finished by the next.
 3. Embed `RELATES` facts.
-4. Ensure every index exists and is built.
+4. Ensure every index exists, waiting up to 10 minutes for builds to finish.
 5. Report findings (probable duplicates, property conflicts, proposed table mappings) at WARNING and on `FinalizeResult`.
 
 Dedup bookkeeping lives in SDK system nodes (`__GraphRAGProcessing__`) beside the `__GraphRAGConfig__` node, with no edges; `get_statistics()` does not count them. See [Storage](/storage).
@@ -92,7 +92,7 @@ The knowledge graph contains these node types and edge types:
 | Label | Purpose | Has Embedding |
 |-------|---------|--------------|
 | `Document` | Source document or table metadata (`path`, `content_hash`) | No |
-| `Chunk` | Text chunk, or one table row (`kind: "record"`) | Yes |
+| `Chunk` | Text chunk, or one table row (`kind: "record"`) | Prose only |
 | `__Entity__` | Secondary label on every entity, extracted or from a table | Yes (name embedding written by `finalize()`'s dedup) |
 | `Person`, `Organization`, etc. | Primary entity labels: your ontology's, or the 11 defaults (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method) | Via `__Entity__` |
 | `__GraphRAGConfig__`, `__GraphRAGProcessing__` | SDK system nodes: the embedding model and dimension, and dedup bookkeeping | No |
@@ -136,6 +136,7 @@ Entity Discovery
   2. Name CONTAINS match
   3. Fulltext search on entity index (name matches first)
   + merge entities from RELATES vector search and Text-to-Cypher
+  + sibling entities (enumeration questions only)
   -> Top entities (deduped, max_entities)
   |
   v
@@ -187,7 +188,7 @@ All graph writes go through `GraphStore`, which provides:
 ### VectorStore
 
 Vector operations go through `VectorStore`:
-- **Index creation** -- vector indexes on Chunk, `__Entity__` and RELATES edge embeddings, and fulltext indexes on chunk text and entity name and description; `ensure_indices()` waits until they are built
+- **Index creation** -- vector indexes on Chunk, `__Entity__` and RELATES edge embeddings, and fulltext indexes on chunk text and entity name and description; `ensure_indices()` waits up to 10 minutes for them to be built
 - **Batched embedding** -- embeds texts in bulk, stores via UNWIND
 - **Search** -- similarity scores, higher is closer; chunk and entity searches break ties by id so results do not depend on the engine's row order
 

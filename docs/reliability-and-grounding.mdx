@@ -29,7 +29,7 @@ leaves to you.
 | --- | --- |
 | Grounded retrieval | `GraphRAG.completion()` answers only from the assembled `<context>` block, under a system prompt that forbids outside knowledge |
 | Source provenance | `Document` → `PART_OF` → `Chunk` ← `MENTIONED_IN` ← `__Entity__` chain, plus the `[Source: <path>]` tag on each retrieved passage whose document resolves |
-| Evidence trail | `RagResult.retriever_result.items` → `passages` section → `[Source: <path>]` → `Document.path`; chunk ids only from `LocalRetrieval` |
+| Evidence trail | `RagResult.retriever_result.items` → `passages` section → `[Source: <path>]` → `Document.path`; chunk ids in `retriever_result.metadata["provenance"]["chunks"]` (`id`, `text`, `document_path`) under `MultiPathRetrieval`, or per item from `LocalRetrieval` |
 | Relationship-aware retrieval | `MultiPathRetrieval` — RELATES edge vector search, entity discovery, 1-hop and 2-hop expansion, `MENTIONED_IN` chunk traversal, and opt-in text-to-Cypher (`GraphRAG(enable_cypher=True)`) |
 | Metadata filtering | Loader-supplied metadata persisted as `Document` / `Chunk` properties, filtered with Cypher or by graph scoping (no `filter=` parameter) |
 | Confidence thresholds | `filter_facts_by_relevance(min_score=0.25, ...)`, `chunk_top_k`, `rel_top_k`, `top_k` on vector search, `CosineReranker(top_k=...)` |
@@ -227,7 +227,7 @@ close to the question:
 | Relationship expansion | 1-hop and 2-hop traversal from discovered entities |
 | `MENTIONED_IN` chunks | Entity → the chunks it was extracted from |
 | 2-hop chunks | Entity → related entity → that neighbour's chunks |
-| Text-to-Cypher | Opt-in ontology-guided graph query; rows reach the model labelled with their column names, bypassing reranking |
+| Text-to-Cypher | Opt-in ontology-guided graph query; scalar values reach the model labelled with their column names (node, list and map values pass through unlabelled), bypassing reranking |
 
 Text-to-Cypher is off by default because it costs an extra LLM call per question (up to 3 when a generated query fails validation and is regenerated). Turn it on for the default strategy with a single flag:
 
@@ -256,10 +256,6 @@ strategy = MultiPathRetrieval(
     max_relationships=20,  # cap on expanded RELATES edges
     rel_top_k=15,          # RELATES edge vector search results
     enable_cypher=True,    # opt-in graph query path
-    # Needed only because this strategy is passed per call below. A strategy
-    # given to GraphRAG(retrieval_strategy=...) receives every ontology change
-    # through set_ontology(); one passed as strategy= does not.
-    ontology=await rag.get_ontology(),
 )
 
 result = await rag.completion("How is Acme Corp connected to Initech?", strategy=strategy)
@@ -355,7 +351,7 @@ Every similarity score returned by the storage layer is a **similarity, not a
 distance — higher means closer.** Chunk, entity and relationship vector searches
 all return `1 - distance` from the FalkorDB cosine index and order by that value
 descending. Chunk and entity search also break ties by id, so they return the
-same rows on FalkorDB 4.x and 6.0.x; relationship search orders by score only.
+same rows on FalkorDB 4.x and 6.0.x, as long as a tie at the cutoff fits within the 1,024 rows they fetch at most; relationship search orders by score only.
 
 <Note>
   A threshold is a floor on similarity. If you calibrated one against cosine

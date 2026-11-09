@@ -124,9 +124,9 @@ result = await rag.completion("How many organizations are mentioned?")
 ```
 
 `GraphRAG` keeps its retrieval strategy's ontology current, so generated
-Cypher sees every label and typed column as soon as it exists. If you pass
-your own `MultiPathRetrieval` per call (`completion(..., strategy=...)`),
-give it `ontology=await rag.get_ontology()`; see
+Cypher sees every label and typed column as soon as it exists. A `MultiPathRetrieval` you pass per call (`completion(..., strategy=...)`)
+is lent the current ontology for that call, unless you construct it with
+`ontology=`, which then stays fixed; see
 [Reliability and Grounding](/reliability-and-grounding#relationship-aware-retrieval).
 
 ### Cosine reranking
