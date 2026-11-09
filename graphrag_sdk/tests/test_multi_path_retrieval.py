@@ -1808,3 +1808,48 @@ class TestValuesAndSourceText:
         cypher = store.query_raw.call_args_list[0][0][0]
         assert "coalesce(startNode(r).name, startNode(r).id) AS src" in cypher
         assert "k CONTAINS '__' AND NOT k ENDS WITH '__dropped'" in cypher
+
+
+class TestEntityAttributeLines:
+    """Table values on Key Entities lines: bounded, and never merged away."""
+
+    @staticmethod
+    def _entities(raw) -> str:
+        return {r["section"]: r["content"] for r in raw.records}["entities"]
+
+    def test_a_long_first_attribute_is_capped(self):
+        from graphrag_sdk.retrieval.strategies.result_assembly import (
+            _MAX_ATTRIBUTES_CHARS,
+            attributes_text,
+        )
+
+        text = attributes_text([("bio", "x" * 5000), ("dept", "Sales")])
+        assert len(text) <= _MAX_ATTRIBUTES_CHARS + 3
+        assert text.startswith("bio: xxx")
+
+    def test_same_name_rows_with_different_values_stay_two_lines(self):
+        raw = assemble_raw_result(
+            [
+                ("e1", {"name": "John Smith", "attributes": [("dept", "Sales")]}),
+                ("e2", {"name": "John Smith", "attributes": [("dept", "HR")]}),
+            ],
+            [],
+            [],
+            [],
+        )
+        content = self._entities(raw)
+        assert "- John Smith (dept: Sales)" in content
+        assert "- John Smith (dept: HR)" in content
+
+    def test_identical_rows_and_a_bare_repeat_still_collapse(self):
+        raw = assemble_raw_result(
+            [
+                ("e1", {"name": "John Smith", "attributes": [("dept", "Sales")]}),
+                ("e2", {"name": "John Smith", "attributes": [("dept", "Sales")]}),
+                ("e3", {"name": "John Smith"}),
+            ],
+            [],
+            [],
+            [],
+        )
+        assert self._entities(raw) == "## Key Entities\n- John Smith (dept: Sales)"

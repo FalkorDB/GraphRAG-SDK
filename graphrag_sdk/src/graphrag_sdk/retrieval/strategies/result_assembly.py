@@ -62,11 +62,17 @@ def shown_attributes(props: dict[str, Any], hidden: frozenset[str] | set[str] = 
 
 
 def attributes_text(pairs: list[tuple[str, Any]]) -> str:
-    """``key: value; key: value``, cut at a pair boundary near 200 characters."""
+    """``key: value; key: value``, cut at a pair boundary near 200 characters.
+
+    A single pair longer than the budget (a free-text column) is cut to it, so
+    the first pair is bounded too.
+    """
     out: list[str] = []
     size = 0
     for key, value in pairs:
         part = f"{key}: {value}"
+        if len(part) > _MAX_ATTRIBUTES_CHARS:
+            part = part[: _MAX_ATTRIBUTES_CHARS - 1].rstrip() + "…"
         if out and size + len(part) + 2 > _MAX_ATTRIBUTES_CHARS:
             out.append("…")
             break
@@ -334,16 +340,20 @@ def assemble_raw_result(
         )
 
     # Entity section. Two entities sharing a name (Paris the city, Paris the
-    # person) are two lines when they say different things; a bare name adds
-    # nothing once that name is listed.
-    seen: set[tuple[str, str]] = set()
+    # person, two employees called John Smith) are two lines when they say
+    # different things, in their description or their table values; a bare
+    # name adds nothing once that name is listed.
+    seen: set[tuple[str, str, str]] = set()
     seen_names: set[str] = set()
     entity_lines: list[str] = []
     for _, einfo in entity_list:
         name = einfo.get("name", "")
         desc = (einfo.get("description", "") or "").strip()
-        key = (name.lower(), desc.lower())
-        if not name or key in seen or (not desc and name.lower() in seen_names):
+        attrs = einfo.get("attributes")
+        attrs_line = attributes_text(attrs) if attrs else ""
+        key = (name.lower(), desc.lower(), attrs_line)
+        bare = not desc and not attrs_line
+        if not name or key in seen or (bare and name.lower() in seen_names):
             continue
         seen.add(key)
         seen_names.add(name.lower())
@@ -351,8 +361,8 @@ def assemble_raw_result(
             cut = desc[:_MAX_ENTITY_DESCRIPTION_CHARS].rsplit(" ", 1)[0]
             desc = (cut or desc[:_MAX_ENTITY_DESCRIPTION_CHARS]) + " …"
         line = f"- {name}: {desc}" if desc else f"- {name}"
-        if attrs := einfo.get("attributes"):
-            line += f" ({attributes_text(attrs)})"
+        if attrs_line:
+            line += f" ({attrs_line})"
         entity_lines.append(line)
     capped_entities = entity_lines[:max_entities]
     if capped_entities:
