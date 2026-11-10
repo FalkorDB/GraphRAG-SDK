@@ -181,6 +181,7 @@ async def test_hidden_facts_do_not_remove_expanded_relationships(monkeypatch):
     graph.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
 
     async def expand(*args, **kwargs):
+        assert kwargs["exclude"] == set()  # no fact shown, so nothing excluded
         return ["S0 —[R]→ T0"]
 
     monkeypatch.setattr(multi_path, "expand_relationships", expand)
@@ -331,3 +332,106 @@ async def test_relationship_search_breaks_ties_on_the_edge_text():
     searches = [c.args[0] for c in conn.query.call_args_list if "ORDER BY" in c.args[0]]
     assert len(searches) == 2  # the index query, then the fallback scan
     assert all("type, description, fact" in q for q in searches)
+
+
+# ── Review round: part 1 ────────────────────────────────────────
+
+
+async def test_local_retrieval_refills_slots_of_inactive_chunks():
+    from graphrag_sdk.core.context import Context
+    from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
+
+    hits = [{"id": "pend", "text": "new"}, {"id": "a", "text": "a"}, {"id": "b", "text": "b"}]
+
+    async def search_chunks(query_vector, top_k):
+        return hits[:top_k]
+
+    vs = MagicMock()
+    vs.search_chunks = AsyncMock(side_effect=search_chunks)
+
+    async def query_raw(cypher, params=None):
+        return MagicMock(result_set=[["pend"]] if "pend" in params["ids"] else [])
+
+    graph = MagicMock()
+    graph.query_raw = AsyncMock(side_effect=query_raw)
+    graph.get_connected_entities = AsyncMock(return_value=[])
+    strategy = LocalRetrieval(graph, vs, MockEmbedder(dimension=8), top_k=2)
+    out = await strategy.search("q", Context())
+    assert [i.metadata["chunk_id"] for i in out.items] == ["a", "b"]
+
+
+async def test_vector_slots_of_inactive_chunks_are_refilled():
+    from graphrag_sdk.retrieval.strategies.chunk_retrieval import retrieve_chunks
+
+    hits = [{"id": f"c{i}", "text": f"t{i}"} for i in range(6)]
+
+    async def search_chunks(query_vector, top_k):
+        return hits[:top_k]
+
+    vs = MagicMock()
+    vs.fulltext_search_chunks = AsyncMock(return_value=[])
+    vs.search_chunks = AsyncMock(side_effect=search_chunks)
+
+    async def query_raw(cypher, params=None):
+        if "pending_delete" in cypher and "RETURN DISTINCT c.id" in cypher:
+            return MagicMock(result_set=[[c] for c in ("c0", "c1") if c in params["ids"]])
+        return MagicMock(result_set=[])
+
+    graph = MagicMock()
+    graph.query_raw = AsyncMock(side_effect=query_raw)
+    chunks, _, _ = await retrieve_chunks(vs, graph, "q", [0.1], [], [], [], vector_top_k=3)
+    assert list(chunks) == ["c2", "c3", "c4"]
+
+
+def test_a_contextual_chunk_node_shows_the_documents_own_text():
+    from graphrag_sdk.retrieval.strategies.cypher_generation import _render_value
+
+    node = SimpleNamespace(
+        labels=["Chunk"],
+        properties={
+            "text": "Context: about Acme.\n\nAlice joined.",
+            "original_chunk": "Alice joined.",
+        },
+    )
+    assert _render_value(node) == "Alice joined."
+
+
+async def test_nodes_inside_collected_lists_seed_entities():
+    from graphrag_sdk.core.models import LLMResponse
+    from graphrag_sdk.retrieval.strategies.cypher_generation import execute_cypher_retrieval
+
+    alice = SimpleNamespace(labels=["Person"], properties={"name": "Alice"})
+    rows = MagicMock(header=[[1, "people"]], result_set=[[[alice], {"p": alice}]])
+    graph = MagicMock()
+    graph.query_raw = AsyncMock(
+        side_effect=[rows, MagicMock(result_set=[["alice__person", "Alice", ""]])]
+    )
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(
+        return_value=LLMResponse(
+            content="```cypher\nMATCH (p:Person) RETURN collect(p) AS people LIMIT 5\n```"
+        )
+    )
+    _, entities = await execute_cypher_retrieval(graph, llm, "Who?")
+    assert entities == {"alice__person": {"name": "Alice", "description": ""}}
+    assert graph.query_raw.call_args_list[1][0][1]["names"] == ["Alice"]
+
+
+async def test_walk_breaks_ties_on_the_edge_before_the_limit():
+    store = MagicMock()
+    store.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
+    await expand_relationships(store, [("a", {"name": "A"})], 20, query_vector=[0.1])
+    cypher = store.query_raw.call_args_list[0][0][0]
+    assert "r.rel_type ASC, ID(r) ASC" in cypher
+    assert cypher.index("ID(r) ASC") < cypher.index("LIMIT")
+
+
+async def test_expand_triples_keeps_same_name_edges_with_different_values():
+    rows = [
+        ["John Smith", "WORKS_AT", "Acme", "", "acme", 1, [["works__since", 2019]]],
+        ["John Smith", "WORKS_AT", "Acme", "", "acme", 2, [["works__since", 2023]]],
+        ["John Smith", "WORKS_AT", "Acme", "", "acme", 3, [["works__since", 2023]]],
+    ]
+    store = FakeGraphStore([("r.src_name", lambda c, p: result(rows))])
+    triples = await ops.expand_triples(store, ["js1", "js2"], hops=1, cap=10)
+    assert [t["fact"] for t in triples] == ["works__since: 2019", "works__since: 2023"]

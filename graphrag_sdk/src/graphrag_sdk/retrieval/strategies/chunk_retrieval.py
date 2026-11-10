@@ -176,9 +176,33 @@ async def retrieve_chunks(
                 logger.debug("2-hop chunk retrieval failed: %s", exc)
 
     # The fulltext and vector paths come from indexes and are filtered here.
-    for cid in await inactive_chunk_ids(graph_store, list(chunks), ctx=ctx):
+    inactive = await inactive_chunk_ids(graph_store, list(chunks), ctx=ctx)
+    vector_dropped = sum(1 for cid in inactive if sources.get(cid) == "vector")
+    for cid in inactive:
         chunks.pop(cid, None)
         sources.pop(cid, None)
+    # Refill the vector slots an inactive chunk took. Only during an update
+    # or delete window, so the usual query makes one vector search.
+    if vector_dropped:
+        try:
+            if ctx is not None:
+                ctx.ensure_budget("chunk vector search")
+            results = await vector_store.search_chunks(query_vector, top_k=2 * vector_top_k)
+            extra = [
+                c
+                for c in results
+                if c.get("id")
+                and c.get("text")
+                and c["id"] not in chunks
+                and c["id"] not in inactive
+            ]
+            more_inactive = await inactive_chunk_ids(graph_store, [c["id"] for c in extra], ctx=ctx)
+            for c in [c for c in extra if c["id"] not in more_inactive][:vector_dropped]:
+                _add(c["id"], c["text"], "vector")
+        except LatencyBudgetExceededError:
+            raise
+        except Exception as exc:
+            logger.debug("Chunk vector refill failed: %s", exc)
 
     # Batch-fetch stored embeddings for all collected chunks, and the source
     # text of chunks ContextualChunking wrote: their ``text`` starts with a

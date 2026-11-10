@@ -539,13 +539,18 @@ async def generate_cypher(
 _MAX_VALUE_DESCRIPTION_CHARS = 300
 
 
-def _graph_value_name(val: Any) -> str:
-    """The ``name`` of a node value, or ""."""
+def _graph_value_names(val: Any) -> list[str]:
+    """The ``name`` of each node in a value, lists and maps included."""
+    if isinstance(val, list):
+        return [n for v in val for n in _graph_value_names(v)]
+    if isinstance(val, dict):
+        return [n for v in val.values() for n in _graph_value_names(v)]
     props = getattr(val, "properties", None)
     if isinstance(props, dict) and hasattr(val, "labels"):
         name = props.get("name")
-        return name.strip() if isinstance(name, str) else ""
-    return ""
+        if isinstance(name, str) and name.strip():
+            return [name.strip()]
+    return []
 
 
 def _render_value(val: Any) -> str:
@@ -570,8 +575,12 @@ def _render_value(val: Any) -> str:
     head = props.get("name") if hasattr(val, "labels") else props.get("rel_type")
     head = head or getattr(val, "relation", "") or ""
     if not head and not desc and hasattr(val, "labels"):
-        # A whole Chunk node: its passage is the value.
-        text = props.get("text")
+        # A whole Chunk node: its passage is the value. ContextualChunking's
+        # ``text`` opens with a model-written sentence; the document's own
+        # passage is ``original_chunk``.
+        text = props.get("original_chunk")
+        if not (isinstance(text, str) and text.strip()):
+            text = props.get("text")
         return text if isinstance(text, str) else ""
     if head and desc:
         return f"{head}: {desc}"
@@ -697,9 +706,7 @@ async def execute_cypher_retrieval(
         for index, val in enumerate(row):
             if val is None:
                 continue
-            node_name = _graph_value_name(val)
-            if node_name:
-                names.append(node_name)
+            names.extend(_graph_value_names(val))
             s = _render_value(val).strip()
             if not s or s in ("[]", "{}"):
                 continue

@@ -101,7 +101,19 @@ class LocalRetrieval(RetrievalStrategy):
             inactive = await inactive_chunk_ids(
                 self._graph, [c["id"] for c in chunk_results if c.get("id")], ctx=ctx
             )
-            chunk_results = [c for c in chunk_results if c.get("id") not in inactive]
+            if inactive:
+                # Refill their slots: only during an update or delete window,
+                # so the usual query still makes one vector search.
+                ctx.ensure_budget("LocalRetrieval chunk vector search")
+                chunk_results = await self._vector.search_chunks(
+                    query_vector=query_vector,
+                    top_k=max(2 * top_k, top_k + len(inactive)),
+                )
+                new_ids = [
+                    c["id"] for c in chunk_results if c.get("id") and c["id"] not in inactive
+                ]
+                inactive |= await inactive_chunk_ids(self._graph, new_ids, ctx=ctx)
+            chunk_results = [c for c in chunk_results if c.get("id") not in inactive][:top_k]
 
         if not chunk_results:
             return RawSearchResult()

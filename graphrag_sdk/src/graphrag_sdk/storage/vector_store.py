@@ -82,7 +82,8 @@ _RELATES_HIT_VALUES = (
 
 
 def _relates_hit(row: list[Any]) -> dict[str, Any]:
-    """One row of ``_RELATES_HIT_COLUMNS`` plus a trailing score, as a dict."""
+    """One row of ``_RELATES_HIT_COLUMNS`` plus the trailing score and
+    ``edge_values`` columns, as a dict."""
 
     def col(i: int) -> Any:
         return row[i] if len(row) > i and row[i] is not None else ""
@@ -556,6 +557,8 @@ class VectorStore:
             edge's own ``description``. ``src_name`` / ``tgt_name`` are the
             endpoints' current names: a dedup merge moves an edge onto the
             survivor but leaves the extraction-time names stored on the edge.
+            ``edge_values`` is a list of ``[key, value]`` pairs: the edge's
+            signed values (a relationship table's columns).
         """
         # Try edge vector index query first (FalkorDB >= 4.2)
         query = (

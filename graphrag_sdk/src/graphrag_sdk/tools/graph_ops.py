@@ -320,7 +320,7 @@ async def expand_triples(
     columns) are shown in ``fact``; its stored fact is only a template.
     """
     triples: list[dict[str, str]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     seen_edges: list[int] = []
     visited = set(seed_ids)
     frontier = list(seed_ids)
@@ -371,7 +371,12 @@ async def expand_triples(
                 for k, v in sorted(row[6] if len(row) > 6 and row[6] else [])
                 if isinstance(v, str | int | float | bool) and v != ""
             )
-            key = (str(src).lower(), str(rel_type), str(tgt).lower())
+            shown_fact = "; ".join(
+                p for p in (fact_body(str(fact or ""), str(rel_type)), values) if p
+            )
+            # By what the line says: two same-name entities' edges with
+            # different evidence or values both stay.
+            key = (str(src).lower(), str(rel_type), str(tgt).lower(), shown_fact)
             if src and rel_type and tgt and key not in seen:
                 seen.add(key)
                 triples.append(
@@ -379,9 +384,7 @@ async def expand_triples(
                         "source": str(src),
                         "type": str(rel_type),
                         "target": str(tgt),
-                        "fact": "; ".join(
-                            p for p in (fact_body(str(fact or ""), str(rel_type)), values) if p
-                        ),
+                        "fact": shown_fact,
                     }
                 )
             if other and other not in visited:
