@@ -76,7 +76,8 @@ Ingest resolves duplicates only within one document; it never sees two documents
 
 1. Remove legacy NULL-name stubs.
 2. **Deduplicate**, incrementally: only the pending entities (ingested since the last run, or left pending by it) are checked, against the whole graph through the `__Entity__` vector index.
-   - The exact phase groups them by `(canonical name, label)`, so no rule merges across types (Person "Paris" and Location "Paris" remain separate). A group holding a table row merges by rule.
+   - The exact phase groups them by `(canonical name, label)`, so Person "Paris" and Location "Paris" remain separate. A group holding a table row merges by rule.
+   - One rule does merge across types: when a name exists under one label a table mapping declared and under labels nothing declared, the declared entity absorbs the others (an extracted `Concept` "Carbon Farming" joins the declared `MitigationPractice`), with no judge.
    - Everything else goes to the **judge**, a pluggable `DedupJudge` (`LLMJudge` by default; every run has one), which partitions small candidate sets of nearest names.
    - Every merge is decided first, written as a sealed plan, and applied one atomic query per merge, so an interrupted run is finished by the next.
 3. Embed `RELATES` facts.

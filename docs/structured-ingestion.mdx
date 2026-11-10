@@ -1204,7 +1204,7 @@ stated once rather than two ways of choosing a path that could disagree.
 </Note>
 
 <Warning>
-`open_records` is a **factory**, not an iterable, and that is load bearing. The write path walks the records twice, once to build a chunk per record and once to apply the mapping. A one-shot iterator is silently empty the second time, which ingests zero rows and raises nothing. A loader that genuinely cannot reopen its source should spool once and close over the buffer, so the memory cost sits where it is visible.
+`open_records` is a **factory**, not an iterable, and that is load bearing. The write path walks the records several times (validation, building a chunk per record, applying the mapping), so each call must return a fresh iterator over the same rows. A one-shot iterator is silently empty the second time, which ingests zero rows and raises nothing. A loader that genuinely cannot reopen its source should spool once and close over the buffer, so the memory cost sits where it is visible.
 </Warning>
 
 ---

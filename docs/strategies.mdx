@@ -107,7 +107,7 @@ class RecordLoaderStrategy(ABC):
         ...
 ```
 
-`RecordBatch` carries `open_records` (a callable returning a fresh iterator of row dicts; the source is read twice, once to validate and once to write), `columns`, `document_info`, `record_count` and `metadata`.
+`RecordBatch` carries `open_records` (a callable returning a fresh iterator of row dicts over the same rows on every call; the source is read several times, to validate, build the chunks and apply the mapping), `columns`, `document_info`, `record_count` and `metadata`.
 
 **Built-in: CsvRecordLoader** (the default for tables)
 
