@@ -51,9 +51,7 @@ def _strip_fences(content: str) -> str:
 _TRANSIENT_BACKOFF_S = (1.0, 4.0)
 
 
-async def _call_once(
-    llm: LLMInterface, history: list[ChatMessage], chunk_id: str | None
-) -> LLMResponse:
+async def _call_once(llm: LLMInterface, history: list[ChatMessage]) -> LLMResponse:
     """One logical model call, retried apart from the parse budget when it fails temporarily.
 
     The provider's own retry loop is disabled (``max_retries=1``) so that the
@@ -68,9 +66,10 @@ async def _call_once(
         except Exception as exc:
             if delay is None or not is_transient_llm_error(exc):
                 raise
+            # No chunk id here: it carries the document id (often a file path),
+            # which stays out of a WARNING that may reach shared log streams.
             logger.warning(
-                "discovery model call failed (chunk=%s, retry %d/%d in %.0fs): %s",
-                chunk_id,
+                "discovery model call failed (retry %d/%d in %.0fs): %s",
                 retry + 1,
                 len(_TRANSIENT_BACKOFF_S),
                 delay,
@@ -144,7 +143,7 @@ async def extract_with_retry(
         # logical attempt here, blowing the documented budget and skewing
         # ``OntologyDiscoveryError.attempts``. A temporary provider failure
         # is retried inside ``_call_once`` and is not counted as an attempt.
-        response = await _call_once(llm, history, chunk_id)
+        response = await _call_once(llm, history)
         history.append(ChatMessage(role="assistant", content=response.content))
 
         text = _strip_fences(response.content)
