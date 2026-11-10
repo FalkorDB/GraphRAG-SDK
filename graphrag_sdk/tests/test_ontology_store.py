@@ -801,8 +801,10 @@ class TestModificationOfALabelWithNoData:
                 ]
             )
         )
-        cypher = query.await_args.args[0]
-        assert "rel_type" in cypher
+        typed, relates = [c.args[0] for c in query.await_args_list]
+        assert "[r:`WORKS_AT`]" in typed
+        assert "[r:RELATES]" in relates and "rel_type" in relates
+        assert " OR " not in typed + relates
         assert query.await_args.args[1] == {"label": "WORKS_AT"}
         new_pattern = [
             c

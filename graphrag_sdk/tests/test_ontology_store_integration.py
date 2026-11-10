@@ -119,9 +119,11 @@ async def onto_and_data():
     yield store, connection
     try:
         await store.clear()
-        await connection.delete_graph()
     finally:
-        await connection.close()
+        try:
+            await connection.delete_graph()
+        finally:
+            await connection.close()
 
 
 class TestAddingToALabelWithNoData:
@@ -176,6 +178,19 @@ class TestAddingToALabelWithNoData:
                 Ontology(relations=[Relation(label="R", patterns=[("A", "B"), ("B", "A")])])
             )
 
+    async def test_a_relation_with_a_typed_edge_is_refused(self, onto_and_data):
+        """A relationship table writes the relation type itself, not RELATES."""
+        from graphrag_sdk.storage.ontology_store import OntologyModificationNotAllowedError
+
+        onto, connection = onto_and_data
+        await _register(onto, Relation(label="R", patterns=[("A", "B")]))
+        await connection.query("CREATE (:A {name: 'a'})-[:R]->(:B {name: 'b'})")
+
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await onto.register(
+                Ontology(relations=[Relation(label="R", patterns=[("A", "B"), ("B", "A")])])
+            )
+
     async def test_a_relation_with_no_edges_takes_a_pattern(self, onto_and_data):
         onto, connection = onto_and_data
         await _register(onto, Relation(label="R", patterns=[("A", "B")]))
@@ -219,3 +234,21 @@ class TestAFirstOntologyOverTheDefaultSeed:
             assert {"event_type", "timestamp"} <= {p.name for p in event.properties}
         finally:
             await rag._ontology_store.clear()
+
+
+class TestAnAttributeOnlyDeclarationOfAPatternedRelation:
+    """``Relation(label, properties=[...])`` with no patterns, on a stored
+    patterned relation with no edges: the attribute must reach that pattern,
+    not an open-mode node the load never reads for it."""
+
+    async def test_the_attribute_lands_on_the_stored_pattern(self, onto_and_data):
+        onto, _ = onto_and_data
+        await _register(onto, Relation(label="R", patterns=[("A", "B")]))
+
+        await onto.register(
+            Ontology(relations=[Relation(label="R", properties=[Attribute(name="role", type="STRING")])])
+        )
+
+        (relation,) = (await onto.load()).relations
+        assert relation.patterns == [("A", "B")]
+        assert [p.name for p in relation.properties] == ["role"]

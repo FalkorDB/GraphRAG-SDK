@@ -765,7 +765,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attributes and patterns. Type changes are still refused, and a data graph
   that cannot be read counts as holding data. The message for a label that
   holds data names `add_attribute` / `add_relation_pattern` instead of "not
-  yet supported".
+  yet supported". A declaration that gives a stored patterned relation new
+  attributes without restating its patterns now writes them onto those
+  patterns, rather than onto an open-mode node `load()` never reads for it.
 - **Missing ontology attributes no longer erase extracted values.**
   Values absent from a chunk no longer overwrite values from other chunks or
   system properties such as `description`; resolution merges also fill

@@ -22,9 +22,11 @@ and is the **anchor** for the working ontology:
     - **modifications** to existing labels that hold data — adding
       properties or patterns (:py:class:`OntologyModificationNotAllowedError`).
 
-  The latter goes through the ontology-evolution API (``add_attribute``,
-  ``add_relation_pattern``), which updates the data graph in lockstep with
-  the ontology, keeping the two aligned.
+  The latter goes through the ontology-evolution API instead: for an
+  entity, ``add_attribute`` declares the attribute and fills it in from the
+  existing chunks; for a relation, ``add_relation_pattern`` declares a
+  pattern, populated by ``backfill_relation_pattern``. Relation attributes
+  have no evolution operation yet.
 
 The ontology graph **accumulates new labels** across ingest passes, but it is
 not free-form additive: labels that hold data are frozen by
@@ -104,19 +106,20 @@ class OntologyContradictionError(ValueError):
 
 
 class OntologyModificationNotAllowedError(ValueError):
-    """Raised when an incoming ontology tries to MODIFY an existing label.
+    """Raised when an incoming ontology tries to MODIFY a label that holds data.
 
     The ingest path is intentionally constrained: it can add brand-new labels
-    (with whatever attributes the user wants) and re-declare existing labels
-    *exactly* (or with a strict subset of their persisted properties / patterns).
-    It cannot add attributes / patterns / fields to an already-registered
-    label — that's an ontology-evolution operation that has to also update
-    existing graph data to keep the two in sync, which is handled by a separate
-    API path (not yet implemented).
+    (with whatever attributes the user wants), re-declare existing labels
+    *exactly* (or with a strict subset of their persisted properties / patterns),
+    and add attributes / patterns to a label with no node or edge in the data
+    graph yet. It cannot add them to a label that holds data: the existing
+    nodes or edges would not have them.
 
-    Workaround for v1: ``await rag.delete_all()`` and re-ingest with the new
-    ontology, OR rely solely on the constructor's first ``register`` to lock in
-    your full ontology from the start.
+    For an entity, ``rag.add_attribute`` declares the attribute and fills it in
+    from the existing chunks. For a relation, ``rag.add_relation_pattern``
+    declares a pattern (populate it with ``rag.backfill_relation_pattern``);
+    new attributes on a relation that holds data need ``await rag.delete_all()``
+    and a re-ingest with the updated ontology.
     """
 
 
@@ -456,7 +459,13 @@ class OntologyStore:
 
         for et in ontology.entities:
             await self._upsert_entity_type(et)
+        stored_patterns = {r.label: r.patterns for r in existing.relations if r.patterns}
         for rt in ontology.relations:
+            if not rt.patterns and rt.label in stored_patterns:
+                # A declaration without patterns of a relation stored with
+                # them means "the stored relation": its attributes belong on
+                # those patterns, not on an open-mode node load() never reads.
+                rt = rt.model_copy(update={"patterns": list(stored_patterns[rt.label])})
             await self._upsert_relation_type(rt)
         for mapping in ontology.tables:
             await self._upsert_table_mapping(mapping)
@@ -618,27 +627,34 @@ class OntologyStore:
         key". Any other failure to read counts as holding data, so the strict
         rule applies when nothing is known.
         """
+        safe = sanitize_cypher_label(label)
         if kind == "entity":
-            cypher = f"MATCH (n:`{sanitize_cypher_label(label)}`) RETURN 1 LIMIT 1"
-            params = None
+            queries = [(f"MATCH (n:`{safe}`) RETURN 1 LIMIT 1", None)]
         else:
-            # Extracted relations are RELATES edges named by ``rel_type``;
-            # a relationship table may write the type itself.
-            cypher = (
-                "MATCH ()-[r]->() WHERE type(r) = $label "
-                "OR (type(r) = 'RELATES' AND r.rel_type = $label) RETURN 1 LIMIT 1"
-            )
-            params = {"label": label}
-        try:
-            result = await self._conn.query(
-                cypher, params, read_only=True, expected_errors=("empty key",)
-            )
-        except Exception as exc:  # noqa: BLE001 - unknown means "holds data"
-            if "empty key" in str(exc).lower():
-                return False
-            logger.debug("Could not tell whether %s %r holds data: %s", kind, label, exc)
-            return True
-        return bool(getattr(result, "result_set", None))
+            # A relationship table may write the type itself, which a typed
+            # pattern finds without touching other edges; extracted relations
+            # are RELATES edges named by ``rel_type``. Two queries rather than
+            # one ``OR``, so neither has to look at every edge in the graph.
+            queries = [
+                (f"MATCH ()-[r:`{safe}`]->() RETURN 1 LIMIT 1", None),
+                (
+                    "MATCH ()-[r:RELATES]->() WHERE r.rel_type = $label RETURN 1 LIMIT 1",
+                    {"label": label},
+                ),
+            ]
+        for cypher, params in queries:
+            try:
+                result = await self._conn.query(
+                    cypher, params, read_only=True, expected_errors=("empty key",)
+                )
+            except Exception as exc:  # noqa: BLE001 - unknown means "holds data"
+                if "empty key" in str(exc).lower():
+                    return False
+                logger.debug("Could not tell whether %s %r holds data: %s", kind, label, exc)
+                return True
+            if getattr(result, "result_set", None):
+                return True
+        return False
 
     @staticmethod
     def _check_no_modifications_to_existing(
