@@ -25,6 +25,9 @@ _CHUNK_DISTANCE = (
 # take a slot and then be dropped, leaving the slot empty. A chunk with no
 # Document is kept.
 # Projected, then tested: FalkorDB rejects a pattern comprehension inside WHERE.
+# Most vector hits one refill search asks for, past chunks of inactive documents.
+MAX_REFILL_FETCH = 1024
+
 _INACTIVE_DOCS = (
     "[(d:Document)-[:PART_OF]->(c) "
     "WHERE d.id CONTAINS '__pending__' OR d.pending_delete = true | d.id] AS inactive"
@@ -80,12 +83,16 @@ async def retrieve_chunks(
         except Exception as exc:
             logger.debug("Chunk fulltext search failed for query: %s", exc)
 
-    # Path B: Vector search
+    # Path B: Vector search. Its hits are kept apart from where a chunk was
+    # first found, so an inactive one is counted even if fulltext found it too.
+    vector_ids: list[str] = []
     try:
         if ctx is not None:
             ctx.ensure_budget("chunk vector search")
         results = await vector_store.search_chunks(query_vector, top_k=vector_top_k)
         for c in results:
+            if c.get("id") and c.get("text"):
+                vector_ids.append(c["id"])
             _add(c.get("id", ""), c.get("text", ""), "vector")
     except LatencyBudgetExceededError:
         raise
@@ -176,18 +183,23 @@ async def retrieve_chunks(
                 logger.debug("2-hop chunk retrieval failed: %s", exc)
 
     # The fulltext and vector paths come from indexes and are filtered here.
-    inactive = await inactive_chunk_ids(graph_store, list(chunks), ctx=ctx)
-    vector_dropped = sum(1 for cid in inactive if sources.get(cid) == "vector")
+    inactive = set(await inactive_chunk_ids(graph_store, list(chunks), ctx=ctx))
+    vector_dropped = sum(1 for cid in vector_ids if cid in inactive)
     for cid in inactive:
         chunks.pop(cid, None)
         sources.pop(cid, None)
-    # Refill the vector slots an inactive chunk took. Only during an update
-    # or delete window, so the usual query makes one vector search.
-    if vector_dropped:
-        try:
+    # Refill the vector slots an inactive chunk took, searching wider until
+    # they are filled, the index runs out, or MAX_REFILL_FETCH is reached.
+    # Only during an update or delete window, so the usual query makes one
+    # vector search.
+    added = 0
+    fetch_k = vector_top_k
+    try:
+        while added < vector_dropped and fetch_k < MAX_REFILL_FETCH:
+            fetch_k = min(2 * fetch_k, MAX_REFILL_FETCH)
             if ctx is not None:
                 ctx.ensure_budget("chunk vector search")
-            results = await vector_store.search_chunks(query_vector, top_k=2 * vector_top_k)
+            results = await vector_store.search_chunks(query_vector, top_k=fetch_k)
             extra = [
                 c
                 for c in results
@@ -196,13 +208,19 @@ async def retrieve_chunks(
                 and c["id"] not in chunks
                 and c["id"] not in inactive
             ]
-            more_inactive = await inactive_chunk_ids(graph_store, [c["id"] for c in extra], ctx=ctx)
-            for c in [c for c in extra if c["id"] not in more_inactive][:vector_dropped]:
-                _add(c["id"], c["text"], "vector")
-        except LatencyBudgetExceededError:
-            raise
-        except Exception as exc:
-            logger.debug("Chunk vector refill failed: %s", exc)
+            inactive |= await inactive_chunk_ids(graph_store, [c["id"] for c in extra], ctx=ctx)
+            for c in extra:
+                if added >= vector_dropped:
+                    break
+                if c["id"] not in inactive:
+                    _add(c["id"], c["text"], "vector")
+                    added += 1
+            if len(results) < fetch_k:
+                break  # the index has no more hits
+    except LatencyBudgetExceededError:
+        raise
+    except Exception as exc:
+        logger.debug("Chunk vector refill failed: %s", exc)
 
     # Batch-fetch stored embeddings for all collected chunks, and the source
     # text of chunks ContextualChunking wrote: their ``text`` starts with a

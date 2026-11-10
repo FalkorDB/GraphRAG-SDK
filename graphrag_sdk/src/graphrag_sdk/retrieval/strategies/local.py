@@ -10,7 +10,10 @@ from typing import Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import RawSearchResult
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
-from graphrag_sdk.retrieval.strategies.chunk_retrieval import inactive_chunk_ids
+from graphrag_sdk.retrieval.strategies.chunk_retrieval import (
+    MAX_REFILL_FETCH,
+    inactive_chunk_ids,
+)
 from graphrag_sdk.retrieval.strategies.result_assembly import attributes_text, shown_attributes
 
 logger = logging.getLogger(__name__)
@@ -101,17 +104,30 @@ class LocalRetrieval(RetrievalStrategy):
             inactive = await inactive_chunk_ids(
                 self._graph, [c["id"] for c in chunk_results if c.get("id")], ctx=ctx
             )
-            if inactive:
-                # Refill their slots: only during an update or delete window,
-                # so the usual query still makes one vector search.
+            # Refill their slots, searching wider until top_k live chunks are
+            # found, the index runs out, or MAX_REFILL_FETCH is reached. Only
+            # during an update or delete window, so the usual query still
+            # makes one vector search. A failed search keeps what was found.
+            inactive = set(inactive)
+            checked = {c["id"] for c in chunk_results if c.get("id")}
+            fetch_k = top_k
+            while (
+                inactive
+                and sum(1 for c in chunk_results if c.get("id") not in inactive) < top_k
+                and len(chunk_results) >= fetch_k
+                and fetch_k < MAX_REFILL_FETCH
+            ):
+                fetch_k = min(max(2 * fetch_k, top_k + len(inactive)), MAX_REFILL_FETCH)
                 ctx.ensure_budget("LocalRetrieval chunk vector search")
-                chunk_results = await self._vector.search_chunks(
+                wider = await self._vector.search_chunks(
                     query_vector=query_vector,
-                    top_k=max(2 * top_k, top_k + len(inactive)),
+                    top_k=fetch_k,
                 )
-                new_ids = [
-                    c["id"] for c in chunk_results if c.get("id") and c["id"] not in inactive
-                ]
+                if not wider:
+                    break
+                chunk_results = wider
+                new_ids = [c["id"] for c in wider if c.get("id") and c["id"] not in checked]
+                checked.update(new_ids)
                 inactive |= await inactive_chunk_ids(self._graph, new_ids, ctx=ctx)
             chunk_results = [c for c in chunk_results if c.get("id") not in inactive][:top_k]
 

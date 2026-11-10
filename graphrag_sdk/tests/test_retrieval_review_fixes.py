@@ -435,3 +435,71 @@ async def test_expand_triples_keeps_same_name_edges_with_different_values():
     store = FakeGraphStore([("r.src_name", lambda c, p: result(rows))])
     triples = await ops.expand_triples(store, ["js1", "js2"], hops=1, cap=10)
     assert [t["fact"] for t in triples] == ["works__since: 2019", "works__since: 2023"]
+
+
+def _pending_graph(pending: set[str], local: bool = False):
+    """A graph store whose document-state lookup marks ``pending`` chunks inactive."""
+
+    async def query_raw(cypher, params=None):
+        if local or ("pending_delete" in cypher and "RETURN DISTINCT c.id" in cypher):
+            return MagicMock(result_set=[[c] for c in params["ids"] if c in pending])
+        return MagicMock(result_set=[])
+
+    graph = MagicMock()
+    graph.query_raw = AsyncMock(side_effect=query_raw)
+    graph.get_connected_entities = AsyncMock(return_value=[])
+    return graph
+
+
+async def test_local_refill_widens_until_live_chunks_fill_top_k():
+    from graphrag_sdk.core.context import Context
+    from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
+
+    pending = {f"p{i}" for i in range(6)}
+    hits = [{"id": f"p{i}", "text": "new"} for i in range(6)] + [
+        {"id": "a", "text": "a"},
+        {"id": "b", "text": "b"},
+    ]
+    vs = MagicMock()
+    vs.search_chunks = AsyncMock(side_effect=lambda query_vector, top_k: hits[:top_k])
+    strategy = LocalRetrieval(_pending_graph(pending, local=True), vs, MockEmbedder(8), top_k=2)
+    out = await strategy.search("q", Context())
+    assert [i.metadata["chunk_id"] for i in out.items] == ["a", "b"]
+
+
+async def test_local_failed_refill_keeps_the_live_chunks_already_found():
+    from graphrag_sdk.core.context import Context
+    from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
+
+    first = [{"id": "pend", "text": "new"}, {"id": "a", "text": "a"}]
+    vs = MagicMock()
+    vs.search_chunks = AsyncMock(side_effect=[first, []])  # the refill search fails
+    strategy = LocalRetrieval(_pending_graph({"pend"}, local=True), vs, MockEmbedder(8), top_k=2)
+    out = await strategy.search("q", Context())
+    assert [i.metadata["chunk_id"] for i in out.items] == ["a"]
+
+
+async def test_inactive_vector_hit_found_first_by_fulltext_is_refilled():
+    from graphrag_sdk.retrieval.strategies.chunk_retrieval import retrieve_chunks
+
+    hits = [{"id": f"c{i}", "text": f"t{i}"} for i in range(6)]
+    vs = MagicMock()
+    vs.fulltext_search_chunks = AsyncMock(return_value=[{"id": "c0", "text": "t0"}])
+    vs.search_chunks = AsyncMock(side_effect=lambda query_vector, top_k: hits[:top_k])
+    graph = _pending_graph({"c0"})
+    chunks, _, _ = await retrieve_chunks(vs, graph, "q", [0.1], [], [], [], vector_top_k=3)
+    assert list(chunks) == ["c1", "c2", "c3"]
+
+
+async def test_vector_refill_widens_until_the_dropped_slots_are_filled():
+    from graphrag_sdk.retrieval.strategies.chunk_retrieval import retrieve_chunks
+
+    pending = {f"c{i}" for i in range(8)}
+    hits = [{"id": f"c{i}", "text": f"t{i}"} for i in range(12)]
+    vs = MagicMock()
+    vs.fulltext_search_chunks = AsyncMock(return_value=[])
+    vs.search_chunks = AsyncMock(side_effect=lambda query_vector, top_k: hits[:top_k])
+    chunks, _, _ = await retrieve_chunks(
+        vs, _pending_graph(pending), "q", [0.1], [], [], [], vector_top_k=2
+    )
+    assert list(chunks) == ["c8", "c9"]
