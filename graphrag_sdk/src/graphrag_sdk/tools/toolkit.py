@@ -822,7 +822,7 @@ class GraphRAGToolkit:
 
     async def _search(
         self, question: str, top_k: int, ctx: Context, plan: frozenset[str] | None = None
-    ) -> Any:
+    ) -> tuple[Any, list[float] | None]:
         """Run MultiPath retrieval without writing to the graph.
 
         ``GraphRAG.retrieve`` first initialises the ontology, which on a graph
@@ -831,14 +831,18 @@ class GraphRAGToolkit:
         the strategy directly instead. MultiPath reads the ontology only for
         text-to-Cypher, which retrieve never enables, so the persisted one is
         not loaded for it.
+
+        Also returns the question's vector, for ranking the relation walk.
         """
+        strategy = self._make_strategy(top_k, plan=plan)
         if getattr(self._rag, "_ontology_initialized", True):
-            return await self._rag.retrieve(
-                question, strategy=self._make_strategy(top_k, plan=plan), ctx=ctx
-            )
-        await self._rag._validate_graph_config(ctx=ctx)
-        ctx.ensure_budget("retrieval strategy search")
-        return await self._make_strategy(top_k, plan=plan).search(question, ctx)
+            rr = await self._rag.retrieve(question, strategy=strategy, ctx=ctx)
+        else:
+            await self._rag._validate_graph_config(ctx=ctx)
+            ctx.ensure_budget("retrieval strategy search")
+            rr = await strategy.search(question, ctx)
+        vector = getattr(strategy, "last_query_vector", None)
+        return rr, vector if isinstance(vector, list) else None
 
     async def retrieve(
         self,
@@ -879,7 +883,7 @@ class GraphRAGToolkit:
         ctx = ctx or self._new_ctx()
         await self._require_graph()
         store = self._store
-        rr = await self._search(inp.question, inp.top_k, ctx, plan)
+        rr, question_vector = await self._search(inp.question, inp.top_k, ctx, plan)
         prov: dict[str, Any] = rr.metadata.get("provenance") or {}
         found = list(dict.fromkeys(e["id"] for e in (prov.get("entities") or []) if e.get("id")))
         cards = await ops.enrich_entities(store, found)
@@ -889,9 +893,11 @@ class GraphRAGToolkit:
         seed_ids = [eid for eid in found if eid in cards][: inp.top_k]
         # Every query runs before any evidence is numbered, so a failing
         # query leaves nothing citable that the agent was never shown.
+        # Ranked by closeness to the question when MultiPath embedded it.
+        walk_args: dict[str, Any] = {"query_vector": question_vector} if question_vector else {}
         triples = (
             await ops.expand_triples(
-                store, seed_ids, hops=inp.expand_hops, cap=min(4 * inp.top_k, 40)
+                store, seed_ids, hops=inp.expand_hops, cap=min(4 * inp.top_k, 40), **walk_args
             )
             if "links" in wanted
             else []

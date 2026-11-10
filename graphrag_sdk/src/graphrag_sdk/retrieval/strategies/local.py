@@ -10,8 +10,42 @@ from typing import Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import RawSearchResult
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
+from graphrag_sdk.retrieval.strategies.chunk_retrieval import (
+    MAX_REFILL_FETCH,
+    inactive_chunk_ids,
+)
+from graphrag_sdk.retrieval.strategies.result_assembly import attributes_text, shown_attributes
 
 logger = logging.getLogger(__name__)
+
+# Longest entity description shown next to a chunk.
+_MAX_ENTITY_DESCRIPTION_CHARS = 300
+
+
+def _entity_text(entity: dict[str, Any]) -> str:
+    """``name (Type): description [attr: value, ...]`` for one connected entity.
+
+    Only what reads as context: the raw property map also holds the name
+    embedding, provenance (``source_chunk_ids``) and dedup bookkeeping
+    (``descriptions``, ``merged_labels``, ``*__dropped``), none of which
+    belongs in an LLM prompt. The application's own scalar attributes are
+    kept: they can carry facts the matched passage does not.
+    """
+    props = entity.get("properties") or {}
+    name = props.get("name") or entity.get("id") or ""
+    if not name:
+        return ""
+    types = [lbl for lbl in entity.get("labels") or [] if not lbl.startswith("__")]
+    text = f"{name} ({', '.join(types)})" if types else str(name)
+    desc = props.get("description") or ""
+    if isinstance(desc, str) and desc:
+        if len(desc) > _MAX_ENTITY_DESCRIPTION_CHARS:
+            desc = desc[:_MAX_ENTITY_DESCRIPTION_CHARS].rsplit(" ", 1)[0] + " …"
+        text += f": {desc}"
+    attrs = shown_attributes(props)
+    if attrs:
+        text += f" [{attributes_text(attrs)}]"
+    return text
 
 
 class LocalRetrieval(RetrievalStrategy):
@@ -65,6 +99,38 @@ class LocalRetrieval(RetrievalStrategy):
             top_k=top_k,
         )
 
+        # Chunks of a document mid-update or being deleted are not live.
+        if chunk_results and self._graph:
+            inactive = await inactive_chunk_ids(
+                self._graph, [c["id"] for c in chunk_results if c.get("id")], ctx=ctx
+            )
+            # Refill their slots, searching wider until top_k live chunks are
+            # found, the index runs out, or MAX_REFILL_FETCH is reached. Only
+            # during an update or delete window, so the usual query still
+            # makes one vector search. A failed search keeps what was found.
+            inactive = set(inactive)
+            checked = {c["id"] for c in chunk_results if c.get("id")}
+            fetch_k = top_k
+            while (
+                inactive
+                and sum(1 for c in chunk_results if c.get("id") not in inactive) < top_k
+                and len(chunk_results) >= fetch_k
+                and fetch_k < MAX_REFILL_FETCH
+            ):
+                fetch_k = min(max(2 * fetch_k, top_k + len(inactive)), MAX_REFILL_FETCH)
+                ctx.ensure_budget("LocalRetrieval chunk vector search")
+                wider = await self._vector.search_chunks(
+                    query_vector=query_vector,
+                    top_k=fetch_k,
+                )
+                if not wider:
+                    break
+                chunk_results = wider
+                new_ids = [c["id"] for c in wider if c.get("id") and c["id"] not in checked]
+                checked.update(new_ids)
+                inactive |= await inactive_chunk_ids(self._graph, new_ids, ctx=ctx)
+            chunk_results = [c for c in chunk_results if c.get("id") not in inactive][:top_k]
+
         if not chunk_results:
             return RawSearchResult()
 
@@ -102,8 +168,9 @@ class LocalRetrieval(RetrievalStrategy):
 
             entities = record.get("entities", [])
             if entities:
-                entity_strs = [str(e) for e in entities]
-                parts.append("Related entities: " + ", ".join(entity_strs))
+                entity_strs = [s for s in (_entity_text(e) for e in entities) if s]
+                if entity_strs:
+                    parts.append("Related entities: " + "; ".join(entity_strs))
 
             items.append(
                 RetrieverResultItem(

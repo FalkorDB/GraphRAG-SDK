@@ -30,6 +30,7 @@ from graphrag_sdk.retrieval.strategies.cypher_generation import (
 from graphrag_sdk.retrieval.strategies.entity_discovery import (
     discover_entities,
     expand_sibling_entities,
+    fetch_entity_attributes,
     is_enumeration_query,
     search_relates_edges,
 )
@@ -81,7 +82,8 @@ class MultiPathRetrieval(RetrievalStrategy):
         vector_store: Vector data access object.
         embedder: Embedding provider.
         llm: LLM provider for keyword extraction.
-        chunk_top_k: Final chunks after reranking (default: 15).
+        chunk_top_k: Final chunks after reranking (default: 20, sized for
+            the default 384-token chunks).
         max_entities: Max entities to keep (default: 30).
         max_relationships: Max relationships to keep (default: 20).
         rel_top_k: RELATES edge vector search results (default: 15).
@@ -174,10 +176,13 @@ class MultiPathRetrieval(RetrievalStrategy):
         embedder: Embedder,
         llm: LLMInterface,
         *,
-        chunk_top_k: int = 15,  # Passage diversity without overwhelming LLM context
+        # 20 chunks of the default 384-token chunker carry the same text as the
+        # 15 chunks of 512 tokens this was tuned on; at 15 the move to 384
+        # silently cut a quarter of the passage text the answer sees.
+        chunk_top_k: int = 20,
         max_entities: int = 30,  # Upper bound before reranking; balances recall vs noise
         max_relationships: int = 20,  # Cap on RELATES edges per query
-        rel_top_k: int = 15,  # Matched to chunk_top_k for balanced fact/passage coverage
+        rel_top_k: int = 15,
         keyword_limit: int = 10,  # Fulltext search keyword budget from query decomposition
         enable_cypher: bool = False,  # Text-to-Cypher path (experimental, off by default)
         router: Any | None = None,  # Optional path router (per-query path selection)
@@ -212,6 +217,9 @@ class MultiPathRetrieval(RetrievalStrategy):
         self._keyword_limit = keyword_limit
         self._enable_cypher = enable_cypher
         self._router = router
+        # The last question vector, for a caller that walks the graph after
+        # the search (the tools' relation walk ranks edges by it).
+        self.last_query_vector: list[float] | None = None
         self._ontology = ontology
 
     def set_ontology(self, ontology: Ontology | None) -> None:
@@ -263,7 +271,9 @@ class MultiPathRetrieval(RetrievalStrategy):
         max_entities_out = _nonneg_int("max_entities_out", 25)
         max_relationships_out = _nonneg_int("max_relationships_out", 20)
         max_facts_out = _nonneg_int("max_facts_out", 15)
-        max_passages_out = _nonneg_int("max_passages_out", 15)
+        # The reranker already keeps chunk_top_k passages; showing fewer by
+        # default would silently override that setting.
+        max_passages_out = _nonneg_int("max_passages_out", chunk_top_k)
 
         # 1. Extract keywords
         ctx.ensure_budget("MultiPath keyword extraction")
@@ -277,6 +287,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             query,
             timeout=ctx.provider_timeout_seconds("MultiPath question embedding"),
         )
+        self.last_query_vector = query_vector
 
         # 2b. Plan which retrieval paths to run. Without a router this is
         # "all paths" (unchanged behavior). With a router, an LLM/heuristic
@@ -383,9 +394,25 @@ class MultiPathRetrieval(RetrievalStrategy):
                 )
         # 5. Relationship expansion
         entity_list = list(found_entities.items())[:max_entities]
+        # The entities' own values (a table's typed columns, declared
+        # attributes) go with them into the entity section.
+        attributes = await fetch_entity_attributes(
+            self._graph, [eid for eid, _ in entity_list], ctx=ctx
+        )
+        for eid, einfo in entity_list:
+            if eid in attributes:
+                einfo["attributes"] = attributes[eid]
         if "expansion" in plan:
+            # Facts and expansion often reach the same edge; a line the facts
+            # section shows would only spend a relationship slot, so the walk
+            # leaves those out before it splits the cap between links.
             relationship_strings = await expand_relationships(
-                self._graph, entity_list, max_relationships, ctx=ctx
+                self._graph,
+                entity_list,
+                max_relationships,
+                ctx=ctx,
+                query_vector=query_vector,
+                exclude=set(fact_strings[:max_facts_out]),
             )
         else:
             relationship_strings = []
@@ -401,6 +428,7 @@ class MultiPathRetrieval(RetrievalStrategy):
                 simple_kw,
                 entity_list,
                 ctx=ctx,
+                vector_top_k=max(15, chunk_top_k),
             )
         else:
             candidate_chunks, _chunk_sources, chunk_embeddings = {}, {}, {}

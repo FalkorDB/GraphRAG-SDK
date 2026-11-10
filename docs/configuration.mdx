@@ -478,7 +478,7 @@ extractor = GraphExtraction(llm=my_llm, max_concurrency=6)
 
 | Parameter            | Type  | Default | Description                                           |
 |----------------------|-------|---------|-------------------------------------------------------|
-| `chunk_top_k`        | `int` | `15`    | Final chunks kept after cosine reranking.             |
+| `chunk_top_k`        | `int` | `20`    | Final chunks kept after cosine reranking.             |
 | `max_entities`       | `int` | `30`    | Maximum entities to include in context.               |
 | `max_relationships`  | `int` | `20`    | Maximum relationships in context (after 1-hop + 2-hop expansion). |
 | `rel_top_k`          | `int` | `15`    | RELATES edge vector search results to retrieve.       |
@@ -492,7 +492,7 @@ retriever = MultiPathRetrieval(
     vector_store=rag.vector_store,
     embedder=rag.embedder,
     llm=rag.llm,
-    chunk_top_k=20,           # more passages for complex questions
+    chunk_top_k=30,           # more passages for complex questions
     max_entities=40,          # wider entity coverage
     max_relationships=30,     # more graph context
     rel_top_k=20,             # more RELATES edge hits

@@ -14,6 +14,24 @@ logger = logging.getLogger(__name__)
 
 #: Properties never returned to a caller: vectors and bulky bookkeeping.
 _BULKY_PROPS = frozenset({"source_chunk_ids", "spans"})
+#: An entity card's properties also leave out what the card already shows or
+#: what only the SDK reads: the description members (the card shows the
+#: joined ``description``), dedup and table bookkeeping, and the extracted
+#: ``type`` (the card's label). ``aliases`` stay: a question may use them.
+_CARD_HIDDEN_PROPS = frozenset(
+    {
+        "descriptions",
+        "description_summarised",
+        "merged_labels",
+        "is_stub",
+        "entity_key",
+        "type",
+        "mention_edge_count",
+    }
+)
+_DROPPED_SUFFIX = "__dropped"
+#: Longest entity description on a card; retrieval's entity section uses the same.
+_MAX_CARD_DESCRIPTION_CHARS = 400
 #: Keys of the SDK's ``__GraphRAGConfig__`` node (never shown).
 _CONFIG_KEYS = frozenset({"sdk_version", "embedding_dimension"})
 #: ``kind`` values of the SDK's ``__GraphRAGProcessing__`` records.
@@ -228,13 +246,22 @@ async def enrich_entities(store: Any, entity_ids: list[str]) -> dict[str, dict[s
         eid, name, desc, labels, props = (list(row) + [None] * 5)[:5]
         clean = to_jsonable(props or {}, max_chars=300)
         if isinstance(clean, dict):
-            for key in ("id", "name", "description"):
-                clean.pop(key, None)
+            clean = {
+                k: v
+                for k, v in clean.items()
+                if k not in ("id", "name", "description")
+                and k not in _CARD_HIDDEN_PROPS
+                and not k.endswith(_DROPPED_SUFFIX)
+            }
+        desc = str(desc).strip() if desc else ""
+        if len(desc) > _MAX_CARD_DESCRIPTION_CHARS:
+            cut = desc[:_MAX_CARD_DESCRIPTION_CHARS].rsplit(" ", 1)[0]
+            desc = (cut or desc[:_MAX_CARD_DESCRIPTION_CHARS]) + " …"
         cards[str(eid)] = {
             "id": str(eid),
             "name": str(name or ""),
-            "label": next(iter(_public_labels(labels)), ""),
-            "description": str(desc) if desc else None,
+            "label": ", ".join(_public_labels(labels)),
+            "description": desc or None,
             "properties": clean if isinstance(clean, dict) else {},
         }
     return cards
@@ -267,14 +294,17 @@ async def expand_triples(
     hops: int,
     cap: int = 60,
     per_hop_limit: int | None = None,
+    query_vector: list[float] | None = None,
 ) -> list[dict[str, str]]:
     """``{source, type, target, fact}`` RELATES edges around ``seed_ids``, hop by hop.
 
-    Never builds a variable-length pattern from caller input. Direction comes
-    from the edge's own ``src_name`` / ``tgt_name`` (or, for edges written
-    without them, the stored endpoints), so one undirected query per hop is
-    enough. Edges an earlier hop returned are excluded before the ``LIMIT``,
-    so walking back along them cannot use up a hop's budget, and an edge
+    Never builds a variable-length pattern from caller input. Direction and
+    names come from the edge's endpoints as they are now: a dedup merge moves
+    an edge onto the surviving entity but leaves the extraction-time
+    ``src_name`` / ``tgt_name`` on it, so those are only the fallback for an
+    endpoint with no name. One undirected query per hop is enough. Edges an
+    earlier hop returned are excluded before the ``LIMIT``, so walking back
+    along them cannot use up a hop's budget, and an edge
     between two frontier entities is matched once, not twice.
 
     Each hop gets an even share of what is left of ``cap`` (at least one
@@ -282,9 +312,15 @@ async def expand_triples(
     hop gets to run; whatever a hop does not use rolls forward to the next.
     ``per_hop_limit`` caps a hop further. An endpoint with no ``name`` is
     shown by its stored id.
+
+    With ``query_vector`` each hop keeps the edges closest to the question
+    (by the edge embedding ``finalize()`` writes; an edge without one comes
+    after every embedded edge), so the cap keeps what is relevant rather
+    than what sorts first. A relationship table's own values (its signed
+    columns) are shown in ``fact``; its stored fact is only a template.
     """
     triples: list[dict[str, str]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     seen_edges: list[int] = []
     visited = set(seed_ids)
     frontier = list(seed_ids)
@@ -296,18 +332,32 @@ async def expand_triples(
         limit = max(1, left // (hops - hop))
         if per_hop_limit is not None:
             limit = min(limit, per_hop_limit)
+        params: dict[str, Any] = {"ids": frontier, "seen_edges": list(seen_edges), "limit": limit}
+        if query_vector is not None:
+            distance = (
+                "CASE WHEN r.embedding IS NULL THEN 3.0 "
+                "ELSE vec.cosineDistance(r.embedding, vecf32($qv)) END"
+            )
+            params["qv"] = query_vector
+        else:
+            distance = "0.0"
         result = await _read(
             store,
             "MATCH (a:__Entity__)-[r:RELATES]-(b:__Entity__) "
             "WHERE a.id IN $ids AND NOT ID(r) IN $seen_edges "
             "AND (NOT b.id IN $ids OR a.id <= b.id) "
-            "WITH r, b, coalesce(r.src_name, startNode(r).name, startNode(r).id) AS src, "
-            "coalesce(r.tgt_name, endNode(r).name, endNode(r).id) AS tgt "
+            "WITH r, b, coalesce(startNode(r).name, r.src_name, startNode(r).id) AS src, "
+            "coalesce(endNode(r).name, r.tgt_name, endNode(r).id) AS tgt, "
+            f"{distance} AS dist "
+            # The edge's evidence, else its fact (whose "(src, TYPE, tgt): "
+            # prefix fact_body drops: it repeats extraction-time names).
             "RETURN src, r.rel_type, tgt, "
-            "coalesce(r.fact, r.description, ''), b.id, ID(r) "
-            "ORDER BY src, r.rel_type, tgt "
+            "CASE WHEN trim(coalesce(r.description, '')) <> '' THEN r.description "
+            "ELSE coalesce(r.fact, '') END, b.id, ID(r), "
+            "[k IN keys(r) WHERE k CONTAINS '__' AND NOT k ENDS WITH '__dropped' | [k, r[k]]] "
+            "ORDER BY dist, src, r.rel_type, tgt, b.id "
             "LIMIT $limit",
-            {"ids": frontier, "seen_edges": list(seen_edges), "limit": limit},
+            params,
         )
         next_frontier: list[str] = []
         for row in _rows(result):
@@ -316,7 +366,17 @@ async def expand_triples(
             other = row[4] if len(row) > 4 else ""
             if len(row) > 5 and isinstance(row[5], int):
                 seen_edges.append(row[5])
-            key = (str(src).lower(), str(rel_type), str(tgt).lower())
+            values = "; ".join(
+                f"{k}: {to_jsonable(v, max_chars=300)}"
+                for k, v in sorted(row[6] if len(row) > 6 and row[6] else [])
+                if isinstance(v, str | int | float | bool) and v != ""
+            )
+            shown_fact = "; ".join(
+                p for p in (fact_body(str(fact or ""), str(rel_type)), values) if p
+            )
+            # By what the line says: two same-name entities' edges with
+            # different evidence or values both stay.
+            key = (str(src).lower(), str(rel_type), str(tgt).lower(), shown_fact)
             if src and rel_type and tgt and key not in seen:
                 seen.add(key)
                 triples.append(
@@ -324,7 +384,7 @@ async def expand_triples(
                         "source": str(src),
                         "type": str(rel_type),
                         "target": str(tgt),
-                        "fact": fact_body(str(fact or ""), str(rel_type)),
+                        "fact": shown_fact,
                     }
                 )
             if other and other not in visited:

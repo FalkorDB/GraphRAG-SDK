@@ -241,6 +241,34 @@ async def test_enrich_entities_maps_rows_and_drops_bulky_properties():
     assert store.calls[0]["params"] == {"ids": ["e1", "e2"]}
 
 
+async def test_enrich_entities_hides_bookkeeping_and_caps_the_description():
+    long_desc = " | ".join(f"description number {i}" for i in range(40))
+    row = [
+        "e1",
+        "Alice",
+        long_desc,
+        ["__Entity__", "Person"],
+        {
+            "name": "Alice",
+            "description": long_desc,
+            "descriptions": ["a", "b"],
+            "description_summarised": True,
+            "merged_labels": "Person",
+            "is_stub": False,
+            "entity_key": "E-1",
+            "type": "Person",
+            "born__dropped": ["1961"],
+            "aliases": ["A. Smith"],
+            "born": 1960,
+        },
+    ]
+    store = FakeGraphStore([("UNWIND $ids", lambda c, p: result([row]))])
+    card = (await ops.enrich_entities(store, ["e1"]))["e1"]
+    assert set(card["properties"]) == {"aliases", "born"}
+    assert card["description"].endswith(" …") and len(card["description"]) <= 402
+    assert card["description"].startswith("description number 0 | ")
+
+
 async def test_enrich_entities_short_circuits():
     store = FakeGraphStore()
     assert await ops.enrich_entities(store, []) == {}
@@ -322,14 +350,57 @@ async def test_expand_triples_reads_table_edges_and_matches_seed_pairs_once():
     store = FakeGraphStore([("r.src_name", lambda c, p: result([]))])
     await ops.expand_triples(store, ["e1", "e2"], hops=1)
     cypher = store.calls[0]["cypher"]
-    # Edges written from tables carry no src_name/tgt_name: use the endpoints.
-    # Endpoints with no name (tables without a name column) show their id.
-    assert "coalesce(r.src_name, startNode(r).name, startNode(r).id) AS src" in cypher
-    assert "coalesce(r.tgt_name, endNode(r).name, endNode(r).id) AS tgt" in cypher
-    assert "ORDER BY src, r.rel_type, tgt" in cypher
+    # The endpoints' current names come first: a dedup merge leaves the
+    # extraction-time src_name/tgt_name on a moved edge. Edges written from
+    # tables carry neither; an endpoint with no name shows its id.
+    assert "coalesce(startNode(r).name, r.src_name, startNode(r).id) AS src" in cypher
+    assert "coalesce(endNode(r).name, r.tgt_name, endNode(r).id) AS tgt" in cypher
+    assert "ORDER BY dist, src, r.rel_type, tgt, b.id" in cypher
+    assert "0.0 AS dist" in cypher  # no question vector: name order
     # An edge between two seeds is matched from one side only.
     assert "(NOT b.id IN $ids OR a.id <= b.id)" in cypher
     assert store.calls[0]["read_only"] is True
+
+
+async def test_expand_triples_prefers_the_edge_description_to_its_fact():
+    store = FakeGraphStore([("r.src_name", lambda c, p: result([]))])
+    await ops.expand_triples(store, ["e1"], hops=1)
+    cypher = store.calls[0]["cypher"]
+    assert "WHEN trim(coalesce(r.description, '')) <> '' THEN r.description" in cypher
+    assert "ELSE coalesce(r.fact, '') END" in cypher
+
+
+async def test_expand_triples_ranks_by_the_question_when_given_its_vector():
+    store = FakeGraphStore([("r.src_name", lambda c, p: result([]))])
+    await ops.expand_triples(store, ["e1"], hops=1, query_vector=[0.1, 0.2])
+    call = store.calls[0]
+    assert "vec.cosineDistance(r.embedding, vecf32($qv))" in call["cypher"]
+    assert "CASE WHEN r.embedding IS NULL THEN 3.0" in call["cypher"]
+    assert call["params"]["qv"] == [0.1, 0.2]
+
+
+async def test_expand_triples_shows_a_relationship_tables_values():
+    rows = [
+        [
+            "Unit 7",
+            "CONSUMED",
+            "Batch 3",
+            "(Unit, CONSUMED, Batch)",
+            "b3",
+            1,
+            [["consumed_batch__consumed_on", "2024-01-01"], ["consumed_batch__qty", 5]],
+        ],
+    ]
+    store = FakeGraphStore([("r.src_name", lambda c, p: result(rows))])
+    triples = await ops.expand_triples(store, ["u7"], hops=1)
+    assert triples == [
+        {
+            "source": "Unit 7",
+            "type": "CONSUMED",
+            "target": "Batch 3",
+            "fact": "consumed_batch__consumed_on: 2024-01-01; consumed_batch__qty: 5",
+        }
+    ]
 
 
 async def test_expand_triples_stops_when_the_frontier_is_empty():
