@@ -754,6 +754,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lines cannot crowd them all out.
 
 ### Fixed
+- **A first ontology can give a default label its attributes.** Reading an
+  empty ontology store seeds the eleven default labels with no attributes, and
+  `register()` refused any new attribute or pattern on an existing label. So
+  a new graph, read once, refused its first declared ontology: "Refusing to
+  add new attribute(s) ['event_type', 'timestamp'] to existing label 'Event'".
+  The refusal now applies only to a label that holds data (a node of that
+  label, or an edge of that relation type, in the data graph). A label with
+  none, including on a data graph that does not exist yet, may gain
+  attributes and patterns. Type changes are still refused, and a data graph
+  that cannot be read counts as holding data. The message for a label that
+  holds data names `add_attribute` / `add_relation_pattern` instead of "not
+  yet supported".
 - **Missing ontology attributes no longer erase extracted values.**
   Values absent from a chunk no longer overwrite values from other chunks or
   system properties such as `description`; resolution merges also fill

@@ -632,3 +632,208 @@ class TestStrictModification:
                     ],
                 )
             )
+
+
+class TestModificationOfALabelWithNoData:
+    """A label that holds no data may gain attributes or patterns.
+
+    The strict rule keeps the ontology and the data graph aligned: a new
+    attribute on a label with nodes would describe values those nodes do
+    not have. A label with no nodes has nothing to fall out of line with.
+    The common case is the default seed: reading an empty store writes
+    eleven bare labels (``Event`` among them), and a first declared
+    ontology giving ``Event`` an ``event_type`` was then refused.
+    """
+
+    @staticmethod
+    def _data(store: OntologyStore, *, rows=None, error: Exception | None = None) -> AsyncMock:
+        query = AsyncMock(
+            side_effect=error, return_value=_FakeQueryResult(rows if rows is not None else [])
+        )
+        store._conn.query = query
+        return query
+
+    @staticmethod
+    def _property_merges(fake_graph, owner: str) -> list[str]:
+        return [
+            (c[1] or {}).get("name")
+            for c in fake_graph.calls
+            if "MERGE (e)-[:HAS_PROPERTY]->(p:Property" in c[0]
+            and (c[1] or {}).get("owner") == owner
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_seeded_label_with_no_nodes_takes_new_attributes(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        fake_graph.set_load_response(entities=[["Event", None]])
+        self._data(store, rows=[])
+        await store.register(
+            Ontology(
+                entities=[
+                    Entity(
+                        label="Event",
+                        properties=[
+                            Attribute(name="event_type", type="STRING"),
+                            Attribute(name="timestamp", type="DATE"),
+                        ],
+                    )
+                ]
+            )
+        )
+        assert sorted(self._property_merges(fake_graph, "Event")) == ["event_type", "timestamp"]
+
+    @pytest.mark.asyncio
+    async def test_the_data_check_reads_the_data_graph_for_that_label(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        fake_graph.set_load_response(entities=[["Event", None]])
+        query = self._data(store, rows=[])
+        await store.register(
+            Ontology(entities=[Entity(label="Event", properties=[Attribute(name="when", type="DATE")])])
+        )
+        cypher = query.await_args.args[0]
+        assert "`Event`" in cypher and "LIMIT 1" in cypher
+        assert query.await_args.kwargs.get("read_only") is True
+
+    @pytest.mark.asyncio
+    async def test_a_label_with_nodes_is_still_refused(self, store_factory, fake_graph):
+        store = store_factory()
+        fake_graph.set_load_response(entities=[["Event", None]])
+        self._data(store, rows=[[1]])
+        with pytest.raises(OntologyModificationNotAllowedError) as exc:
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="DATE")])
+                    ]
+                )
+            )
+        assert "Event" in str(exc.value)
+        assert self._property_merges(fake_graph, "Event") == []
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_data_graph_counts_as_holding_data(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        fake_graph.set_load_response(entities=[["Event", None]])
+        self._data(store, error=RuntimeError("connection lost"))
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="DATE")])
+                    ]
+                )
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_data_graph_that_does_not_exist_yet_holds_no_data(
+        self, store_factory, fake_graph
+    ):
+        """A new graph: the seed wrote the ontology graph, nothing wrote the data graph."""
+        from graphrag_sdk.core.exceptions import DatabaseError
+
+        store = store_factory()
+        fake_graph.set_load_response(entities=[["Event", None]])
+        self._data(
+            store,
+            error=DatabaseError("FalkorDB query failed: Invalid graph operation on empty key"),
+        )
+        await store.register(
+            Ontology(entities=[Entity(label="Event", properties=[Attribute(name="when", type="DATE")])])
+        )
+        assert self._property_merges(fake_graph, "Event") == ["when"]
+
+    @pytest.mark.asyncio
+    async def test_a_type_change_on_a_label_with_no_nodes_is_still_a_contradiction(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        fake_graph.set_load_response(
+            entities=[["Event", None]],
+            entity_properties=[["Event", "when", "DATE", None]],
+        )
+        self._data(store, rows=[])
+        with pytest.raises(OntologyContradictionError):
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="STRING")])
+                    ]
+                )
+            )
+
+    @pytest.mark.asyncio
+    async def test_no_data_check_runs_when_nothing_is_added(self, store_factory, fake_graph):
+        store = store_factory()
+        fake_graph.set_load_response(
+            entities=[["Event", None]],
+            entity_properties=[["Event", "when", "DATE", None]],
+        )
+        query = self._data(store, rows=[[1]])
+        await store.register(
+            Ontology(entities=[Entity(label="Event", properties=[Attribute(name="when", type="DATE")])])
+        )
+        query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_relation_with_no_edges_takes_a_new_pattern_and_attribute(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        fake_graph.set_load_response(
+            entities=[["Person", None], ["Company", None], ["Organization", None]],
+            patterned_relations=[["WORKS_AT", None, "Person", "Company"]],
+        )
+        query = self._data(store, rows=[])
+        await store.register(
+            Ontology(
+                relations=[
+                    Relation(
+                        label="WORKS_AT",
+                        patterns=[("Person", "Company"), ("Person", "Organization")],
+                        properties=[Attribute(name="role", type="STRING")],
+                    )
+                ]
+            )
+        )
+        cypher = query.await_args.args[0]
+        assert "rel_type" in cypher
+        assert query.await_args.args[1] == {"label": "WORKS_AT"}
+        new_pattern = [
+            c
+            for c in fake_graph.calls
+            if "MERGE (s)<-[:SOURCE]-(r:Relation {label: $rel_label})" in c[0]
+            and (c[1] or {}).get("tgt") == "Organization"
+        ]
+        role = [
+            c
+            for c in fake_graph.calls
+            if "MERGE (r)-[:HAS_PROPERTY]->(p:Property" in c[0]
+            and (c[1] or {}).get("rel_label") == "WORKS_AT"
+            and (c[1] or {}).get("name") == "role"
+        ]
+        assert new_pattern and role
+
+    @pytest.mark.asyncio
+    async def test_a_relation_with_edges_is_still_refused(self, store_factory, fake_graph):
+        store = store_factory()
+        fake_graph.set_load_response(
+            patterned_relations=[["WORKS_AT", None, "Person", "Company"]],
+        )
+        self._data(store, rows=[[1]])
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await store.register(
+                Ontology(
+                    relations=[
+                        Relation(
+                            label="WORKS_AT",
+                            patterns=[("Person", "Company"), ("Person", "Organization")],
+                        )
+                    ]
+                )
+            )

@@ -10,20 +10,25 @@ and is the **anchor** for the working ontology:
 - **Ingest path is constrained**. :py:meth:`register` admits:
     - new entity / relation labels with their declared properties and patterns,
     - re-declarations of existing labels with the *same* properties / patterns
-      (or a strict subset — treated as "use the persisted definition").
+      (or a strict subset — treated as "use the persisted definition"),
+    - new properties / patterns on an existing label that **holds no data**
+      yet (no node, or no edge, of that label in the data graph) — nothing
+      can fall out of line with them. The default seed's bare labels are
+      the usual case.
 
   It refuses:
     - **type contradictions** on existing properties
       (:py:class:`OntologyContradictionError`), and
-    - **modifications** to existing labels — adding properties or patterns
-      (:py:class:`OntologyModificationNotAllowedError`).
+    - **modifications** to existing labels that hold data — adding
+      properties or patterns (:py:class:`OntologyModificationNotAllowedError`).
 
-  The latter is reserved for a future ontology-evolution API that updates the
-  data graph in lockstep with the ontology, keeping the two aligned.
+  The latter goes through the ontology-evolution API (``add_attribute``,
+  ``add_relation_pattern``), which updates the data graph in lockstep with
+  the ontology, keeping the two aligned.
 
 The ontology graph **accumulates new labels** across ingest passes, but it is
-not free-form additive: existing labels are frozen by :py:meth:`register` to
-keep the ontology and the data graph aligned.
+not free-form additive: labels that hold data are frozen by
+:py:meth:`register` to keep the ontology and the data graph aligned.
 
 Users who want a curated, declarative ontology (descriptions, future flags,
 properties not yet observed in the data) supply an ``ontology`` to
@@ -73,6 +78,7 @@ from graphrag_sdk.core.tables import (
     RelationshipMapping,
     TableMapping,
 )
+from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 OwnerKind = Literal["entity", "relation"]
 DescriptionKind = Literal["entity", "relation", "entity_property", "relation_property"]
@@ -386,8 +392,10 @@ class OntologyStore:
           types, the same (or fewer) relation patterns. Re-declaring a label
           with no properties is fine; it just means "I know this label exists,
           use the persisted definition."
-        - Trying to **add a property** to an existing label →
-          :py:class:`OntologyModificationNotAllowedError`.
+        - Trying to **add a property** (or a relation pattern) to an existing
+          label that holds data →
+          :py:class:`OntologyModificationNotAllowedError`. A label with no
+          node or edge in the data graph yet may gain them.
         - Trying to **change the type** of an existing property →
           :py:class:`OntologyContradictionError`.
 
@@ -437,7 +445,12 @@ class OntologyStore:
 
         existing = await self.load()
         self._check_no_contradictions(existing, ontology)
-        self._check_no_modifications_to_existing(existing, ontology)
+        populated = {
+            owner
+            for owner in self._modified_labels(existing, ontology)
+            if await self._holds_data(*owner)
+        }
+        self._check_no_modifications_to_existing(existing, ontology, populated=populated)
         self._check_no_signature_collision(existing, ontology)
         self._check_one_key_per_label(existing, ontology)
 
@@ -576,36 +589,104 @@ class OntologyStore:
                     )
 
     @staticmethod
-    def _check_no_modifications_to_existing(existing: Ontology, incoming: Ontology) -> None:
+    def _modified_labels(existing: Ontology, incoming: Ontology) -> list[tuple[str, str]]:
+        """``("entity" | "relation", label)`` for each stored label ``incoming`` adds to."""
+        modified: list[tuple[str, str]] = []
+        existing_ent_by_label = {e.label: e for e in existing.entities}
+        for et in incoming.entities:
+            prior_et = existing_ent_by_label.get(et.label)
+            if prior_et is not None and {p.name for p in et.properties} - {
+                p.name for p in prior_et.properties
+            }:
+                modified.append(("entity", et.label))
+        existing_rel_by_label = {r.label: r for r in existing.relations}
+        for rt in incoming.relations:
+            prior_rt = existing_rel_by_label.get(rt.label)
+            if prior_rt is None:
+                continue
+            new_props = {p.name for p in rt.properties} - {p.name for p in prior_rt.properties}
+            if new_props or set(rt.patterns) - set(prior_rt.patterns):
+                modified.append(("relation", rt.label))
+        return modified
+
+    async def _holds_data(self, kind: str, label: str) -> bool:
+        """Whether the data graph has a node (or edge) of this ontology label.
+
+        Read-only and stops at the first match. A data graph that was never
+        written (a new graph, whose ontology the default seed already filled)
+        holds nothing; FalkorDB says so as "Invalid graph operation on empty
+        key". Any other failure to read counts as holding data, so the strict
+        rule applies when nothing is known.
+        """
+        if kind == "entity":
+            cypher = f"MATCH (n:`{sanitize_cypher_label(label)}`) RETURN 1 LIMIT 1"
+            params = None
+        else:
+            # Extracted relations are RELATES edges named by ``rel_type``;
+            # a relationship table may write the type itself.
+            cypher = (
+                "MATCH ()-[r]->() WHERE type(r) = $label "
+                "OR (type(r) = 'RELATES' AND r.rel_type = $label) RETURN 1 LIMIT 1"
+            )
+            params = {"label": label}
+        try:
+            result = await self._conn.query(
+                cypher, params, read_only=True, expected_errors=("empty key",)
+            )
+        except Exception as exc:  # noqa: BLE001 - unknown means "holds data"
+            if "empty key" in str(exc).lower():
+                return False
+            logger.debug("Could not tell whether %s %r holds data: %s", kind, label, exc)
+            return True
+        return bool(getattr(result, "result_set", None))
+
+    @staticmethod
+    def _check_no_modifications_to_existing(
+        existing: Ontology,
+        incoming: Ontology,
+        *,
+        populated: set[tuple[str, str]] | None = None,
+    ) -> None:
         """Raise :py:class:`OntologyModificationNotAllowedError` when incoming
         tries to add new properties / patterns to a label that's already
-        registered. New labels are unaffected.
+        registered and holds data. New labels are unaffected.
 
         Subset re-declarations are allowed: an existing label may appear in
         the incoming ontology with fewer (or zero) properties — that's treated
         as "use the persisted definition" rather than "remove things."
+
+        ``populated`` lists the ``(kind, label)`` pairs that hold data in the
+        data graph. A label outside it has nothing for a new attribute or
+        pattern to fall out of line with, so it may gain them: the default
+        seed's bare ``Event`` can become the ``Event`` a first ontology
+        declares. ``None`` treats every label as holding data.
         """
+
+        def frozen(kind: str, label: str) -> bool:
+            return populated is None or (kind, label) in populated
+
         existing_ent_by_label = {e.label: e for e in existing.entities}
         for et in incoming.entities:
             prior_et = existing_ent_by_label.get(et.label)
-            if prior_et is None:
+            if prior_et is None or not frozen("entity", et.label):
                 continue
             prior_prop_names = {p.name for p in prior_et.properties}
             new_prop_names = {p.name for p in et.properties} - prior_prop_names
             if new_prop_names:
                 raise OntologyModificationNotAllowedError(
                     f"Refusing to add new attribute(s) {sorted(new_prop_names)} "
-                    f"to existing label '{et.label}'. The ingest path only "
-                    f"accepts new labels; modifying an existing label requires "
-                    f"an ontology-evolution operation (not yet supported). "
-                    f"Workaround: `await rag.delete_all()` and re-ingest with "
-                    f"the updated ontology."
+                    f"to existing label '{et.label}', which already holds data: "
+                    f"its nodes would not have them. Use "
+                    f"`await rag.add_attribute('{et.label}', ...)`, which also "
+                    f"fills the attribute in on existing nodes, or "
+                    f"`await rag.delete_all()` and re-ingest with the updated "
+                    f"ontology."
                 )
 
         existing_rel_by_label = {r.label: r for r in existing.relations}
         for rt in incoming.relations:
             prior_rt = existing_rel_by_label.get(rt.label)
-            if prior_rt is None:
+            if prior_rt is None or not frozen("relation", rt.label):
                 continue
             prior_prop_names = {p.name for p in prior_rt.properties}
             new_prop_names = {p.name for p in rt.properties} - prior_prop_names
@@ -619,9 +700,10 @@ class OntologyStore:
                     diffs.append(f"new patterns {sorted(new_patterns)}")
                 raise OntologyModificationNotAllowedError(
                     f"Refusing to add {' and '.join(diffs)} to existing relation "
-                    f"'{rt.label}'. The ingest path only accepts new relation "
-                    f"types; modifying an existing one requires an ontology-evolution "
-                    f"operation (not yet supported)."
+                    f"'{rt.label}', which already holds data. A new pattern goes "
+                    f"through `await rag.add_relation_pattern(...)`; for new "
+                    f"relation attributes, `await rag.delete_all()` and re-ingest "
+                    f"with the updated ontology."
                 )
 
     async def _upsert_entity_type(self, et: Entity) -> None:

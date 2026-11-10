@@ -106,3 +106,116 @@ class TestRelationDescription:
             )
         ).result_set
         assert rows == [["shared", True]]
+
+
+@pytest.fixture
+async def onto_and_data():
+    """A store and its data graph, both dropped afterwards."""
+    if os.getenv("RUN_INTEGRATION") != "1":
+        pytest.skip("Set RUN_INTEGRATION=1 to run real-FalkorDB integration tests")
+    name = f"test_os_{uuid4().hex[:8]}"
+    connection = FalkorDBConnection(ConnectionConfig(**falkordb_test_server(), graph_name=name))
+    store = OntologyStore(connection, name)
+    yield store, connection
+    try:
+        await store.clear()
+        await connection.delete_graph()
+    finally:
+        await connection.close()
+
+
+class TestAddingToALabelWithNoData:
+    """The data check runs against a real data graph, missing graph included."""
+
+    async def test_a_bare_label_takes_attributes_while_no_node_has_it(self, onto_and_data):
+        onto, _ = onto_and_data
+        await onto.register(Ontology(entities=[Entity(label="Event")]))  # as the seed writes it
+
+        await onto.register(
+            Ontology(
+                entities=[
+                    Entity(
+                        label="Event",
+                        properties=[
+                            Attribute(name="event_type", type="STRING"),
+                            Attribute(name="timestamp", type="DATE"),
+                        ],
+                    )
+                ]
+            )
+        )
+
+        (event,) = (await onto.load()).entities
+        assert sorted(p.name for p in event.properties) == ["event_type", "timestamp"]
+
+    async def test_a_label_with_a_node_is_refused(self, onto_and_data):
+        from graphrag_sdk.storage.ontology_store import OntologyModificationNotAllowedError
+
+        onto, connection = onto_and_data
+        await onto.register(Ontology(entities=[Entity(label="Event")]))
+        await connection.query("CREATE (:Event {name: 'Launch'})")
+
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await onto.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="DATE")])
+                    ]
+                )
+            )
+
+    async def test_a_relation_with_a_relates_edge_is_refused(self, onto_and_data):
+        from graphrag_sdk.storage.ontology_store import OntologyModificationNotAllowedError
+
+        onto, connection = onto_and_data
+        await _register(onto, Relation(label="R", patterns=[("A", "B")]))
+        await connection.query("CREATE (:A {name: 'a'})-[:RELATES {rel_type: 'R'}]->(:B {name: 'b'})")
+
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await onto.register(
+                Ontology(relations=[Relation(label="R", patterns=[("A", "B"), ("B", "A")])])
+            )
+
+    async def test_a_relation_with_no_edges_takes_a_pattern(self, onto_and_data):
+        onto, connection = onto_and_data
+        await _register(onto, Relation(label="R", patterns=[("A", "B")]))
+        await connection.query("CREATE (:A {name: 'a'})-[:RELATES {rel_type: 'OTHER'}]->(:B {name: 'b'})")
+
+        await onto.register(Ontology(relations=[Relation(label="R", patterns=[("A", "B"), ("B", "A")])]))
+
+        (relation,) = (await onto.load()).relations
+        assert sorted(relation.patterns) == [("A", "B"), ("B", "A")]
+
+
+class TestAFirstOntologyOverTheDefaultSeed:
+    """GraphRAG-Server, in production: a new graph, read once (which seeds the
+    eleven default labels), then a first ontology whose ``Event`` has
+    attributes. It was refused: "Refusing to add new attribute(s)
+    ['event_type', 'timestamp'] to existing label 'Event'"."""
+
+    async def test_set_ontology_gives_the_seeded_event_its_attributes(
+        self, real_falkordb_rag_factory, llm
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=None)
+        try:
+            seeded = await rag.get_ontology()
+            assert "Event" in {e.label for e in seeded.entities}, "precondition: the seed ran"
+
+            ontology = await rag.set_ontology(
+                Ontology(
+                    entities=[
+                        Entity(
+                            label="Event",
+                            properties=[
+                                Attribute(name="event_type", type="STRING"),
+                                Attribute(name="timestamp", type="DATE"),
+                            ],
+                        )
+                    ]
+                )
+            )
+
+            (event,) = [e for e in ontology.entities if e.label == "Event"]
+            assert {"event_type", "timestamp"} <= {p.name for p in event.properties}
+        finally:
+            await rag._ontology_store.clear()
