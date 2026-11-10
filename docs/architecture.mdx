@@ -62,11 +62,11 @@ str (raw text)
 A table is declared on the ontology with a `TableMapping` and read by a `RecordLoaderStrategy` (`CsvRecordLoader` by default). Its path skips chunking, extraction and resolution:
 
 1. **Map** -- find the table's mapping in the ontology by filename (or propose one, with one model call for the whole table, when none is declared).
-2. **Validate** -- check the mapping against the file's header and every cell against its declared type, before anything is written.
+2. **Validate** -- check the mapping against the file's header and every cell against its declared type, before any row is written. A changed mapping is registered first, so a property it no longer declares is already removed from the nodes when a `MappingError` is raised (see [Structured Ingestion](/structured-ingestion)).
 3. **Write** -- one Document named for the table, one record Chunk per row with a key (a row with a blank key is skipped and counted in `rows_skipped`), one entity per row (its id derived from its name, exactly as for a prose mention, or from its key when the row has no name; rows that derive the same id write one node), placeholders for foreign keys, and `RELATES` edges for each `Link`. Every declared property is signed with the table's name (`employees__age`).
 4. **Re-sync** -- a later load of the same table replaces it as a snapshot through the same crash-safe cutover `update()` uses.
 
-A `RelationshipMapping` table takes a shorter path: each row is a `RELATES` edge between entities that already exist, with no Document, record Chunk or entity; refresh it with `ingest()` and remove it with `drop_table()` (see [Relationship-only tables](/structured-ingestion#relationship-only-tables)).
+A `RelationshipMapping` table takes a shorter path: each accepted row writes a `RELATES` edge between entities that already exist (rows naming the same two entities write one edge; a row whose endpoint is not found raises by default, or is counted and skipped with `missing_endpoint="skip"`), with no Document, record Chunk or entity; refresh it with `ingest()` and remove it with `drop_table()` (see [Relationship-only tables](/structured-ingestion#relationship-only-tables)).
 
 Because the id comes from the name, a row and a prose mention of the same thing are one node from the first write, whichever source arrives first. See [Structured Ingestion](/structured-ingestion).
 

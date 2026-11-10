@@ -25,6 +25,7 @@ async def main():
     ) as rag:
         result = await rag.ingest("my_document.txt")
         print(f"Created {result.nodes_created} nodes, {result.relationships_created} edges")
+        await rag.finalize()  # dedup, embeddings and indexes, before querying
 
         answer = await rag.completion("What is the main theme?")
         print(answer.answer)

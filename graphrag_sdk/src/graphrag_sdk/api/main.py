@@ -5913,6 +5913,7 @@ class GraphRAG:
         *,
         judge: DedupJudge | None = None,
         dedup_all: bool = False,
+        name_chunks: bool = True,
     ) -> FinalizeResult:
         """Run all post-ingestion steps after all documents are ingested.
 
@@ -5933,6 +5934,10 @@ class GraphRAG:
            dedup work.
         3. ``embed_relationships()`` — fact text embeddings on RELATES edges
         4. ``ensure_indices()`` — all indexes
+        5. Name the chunks — a ``Chunk`` without a ``name`` gets
+           ``"<document id> · chunk <index>"``, so it is readable in a graph
+           browser. A chunk that already has a name is left alone, which makes
+           the step idempotent. ``FinalizeResult.chunks_named`` counts them.
 
         Entity name embeddings are written only by dedup: an entity with a
         vector and no pending record counts as checked, so a vector written by
@@ -5946,6 +5951,8 @@ class GraphRAG:
                 only. Every run has a judge.
             dedup_all: check every entity instead of only the pending ones,
                 and retry the unresolved ones.
+            name_chunks: give every unnamed ``Chunk`` a readable name. Pass
+                ``False`` to leave chunks as they were written.
 
         Returns:
             ``FinalizeResult`` — typed counts from each step.
@@ -6017,6 +6024,34 @@ class GraphRAG:
         self._vector_store._indices_ensured = False  # force re-check
         index_results = await self._vector_store.ensure_indices()
         ctx_log(f"finalize: indexes = {index_results}")
+
+        # Step 5: Readable names for chunks. Cosmetic, so a failure is reported and
+        # does not undo the dedup and indexing above. A document being re-synced by
+        # update() is skipped — its id carries the pending marker, which a caller's
+        # own id cannot (see _check_no_pending_marker) — so no chunk is named after
+        # a transient id. Only unnamed chunks are touched, which is also what makes
+        # a second run a no-op. A record chunk (one table row) is left out: it keeps
+        # each cell under its column's name, so a column called "name" is c.name, and
+        # an empty cell would be filled with a value the source never had.
+        chunks_named = 0
+        if name_chunks:
+            try:
+                r = await self._graph_store.query_raw(
+                    "MATCH (d:Document)-[:PART_OF]->(c:Chunk) "
+                    "WHERE c.name IS NULL AND c.record_key IS NULL "
+                    "AND NOT d.id CONTAINS '__pending__' "
+                    "SET c.name = d.id + $separator + toString(c.index) "
+                    "RETURN count(c)",
+                    {"separator": " · chunk "},
+                )
+                chunks_named = r.result_set[0][0] if r.result_set else 0
+                ctx_log(f"finalize: named {chunks_named} chunks")
+            except Exception as exc:
+                logger.debug("Chunk naming failed", exc_info=True)
+                report(
+                    "finalize: could not give chunks readable names; the graph is unaffected "
+                    f"({type(exc).__name__}: {exc})"
+                )
 
         # Signed properties whose owning source no longer mentions the node. Runs
         # after dedup, because a merge moves properties onto the survivor and the
@@ -6173,6 +6208,7 @@ class GraphRAG:
             description_summary_failures=summary_failures,
             entities_embedded=entity_count,
             relationships_embedded=rel_count,
+            chunks_named=chunks_named,
             indexes=index_results,
         )
 
@@ -6320,12 +6356,13 @@ class GraphRAG:
         *,
         judge: DedupJudge | None = None,
         dedup_all: bool = False,
+        name_chunks: bool = True,
     ) -> FinalizeResult:
         """Synchronous finalize convenience method.
 
         Keep in sync with :meth:`finalize`.
         """
-        return asyncio.run(self.finalize(judge=judge, dedup_all=dedup_all))
+        return asyncio.run(self.finalize(judge=judge, dedup_all=dedup_all, name_chunks=name_chunks))
 
     def update_sync(
         self,

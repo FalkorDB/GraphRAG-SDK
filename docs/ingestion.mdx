@@ -346,7 +346,7 @@ result.metadata.get("incomplete_writes")   # present only when something came up
 
 After all documents are ingested, call `finalize()` to prepare the graph for querying. This is a separate step because some operations (like deduplication) work best when run globally across all documents, not per-document.
 
-**`finalize()` runs 5 steps in order:**
+**`finalize()` runs 6 steps in order:**
 
 | Step | What it does | Why |
 |------|-------------|-----|
@@ -354,7 +354,8 @@ After all documents are ingested, call `finalize()` to prepare the graph for que
 | 2. Deduplicate | The pending entities: exact-name match, then one judge pass over nearest names; also writes each entity's name embedding | "Alice" from doc 1 and "Alice Smith" from doc 5 become one node; the name vectors power entity vector search |
 | 3. Relationship embeddings | Embeds fact text on RELATES edges | Powers RELATES edge vector search during retrieval |
 | 4. Ensure indexes | Creates the `id` range indexes and the 5 standard vector and fulltext indexes, and waits until they are built | Vector + fulltext indexes for search |
-| 5. Report | Logs what it found (probable duplicates, property conflicts, proposed table mappings and more) at WARNING and returns it on `FinalizeResult` | Nothing is resolved on a guess; what needs a decision is reported |
+| 5. Name chunks | Gives each unnamed chunk the name `<document id> · chunk <index>`, except a table row and a chunk of a document being replaced by `update()` (its id carries `__pending__`); pass `name_chunks=False` to skip it | A chunk reads as `note.txt · chunk 0` in a graph browser instead of a UUID |
+| 6. Report | Logs what it found (probable duplicates, property conflicts, proposed table mappings and more) at WARNING and returns it on `FinalizeResult` | Nothing is resolved on a guess; what needs a decision is reported |
 
 ```python
 # After ingesting ALL documents:

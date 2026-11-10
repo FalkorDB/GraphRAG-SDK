@@ -91,7 +91,7 @@ The simple filter keeps words longer than two characters, up to 12. Of the LLM k
 
 ### Step 3a — RELATES Vector Search (Knowledge Graph Facts)
 
-**What it does:** Searches the relationship edges in the graph by meaning similarity. `finalize()` embeds the `fact` text of every relationship between entities except those only a relationship-only table owns (like "Alice WORKS_AT Acme Corp"); an edge ingested since the last `finalize()` has no vector yet and cannot be found here. This step finds the relationships most relevant to the question.
+**What it does:** Searches the relationship edges in the graph by meaning similarity. `finalize()` embeds the `fact` text of every relationship between entities except those only a relationship-only table owns (like "Alice WORKS_AT Acme Corp"); an edge ingested since the last `finalize()` has no vector yet and cannot be found here, and an existing edge whose `fact` a later ingest changed keeps its earlier vector (`finalize()` embeds only edges that have none). This step finds the relationships most relevant to the question.
 
 **Returns:** Fact strings like the following, where the text after the arrow is the edge's stored `fact`:
 ```

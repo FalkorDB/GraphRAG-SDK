@@ -399,6 +399,7 @@ async def finalize(
     *,
     judge: DedupJudge | None = None,
     dedup_all: bool = False,
+    name_chunks: bool = True,
 ) -> FinalizeResult
 ```
 
@@ -408,12 +409,14 @@ Run all post-ingestion steps after the documents and tables are ingested. Call i
 2. `deduplicate_entities(judge=..., dedup_all=...)`: exact-name and acronym dedup of the pending entities, then one judge pass over their nearest names. Dedup writes each entity's name embedding, listing the entity as pending first; `entities_embedded` counts them. Then every entity holding more than five descriptions gets one LLM summary of them, written by the instance's `llm`.
 3. `embed_relationships()`: fact-text embeddings on `RELATES` edges.
 4. `ensure_indices()`: all indexes, waiting until FalkorDB reports them built (up to 10 minutes; it returns anyway if the wait runs out or the status query fails).
-5. A consistency report over the whole graph, logged at WARNING and returned on the result.
+5. Name the chunks: a `Chunk` with no `name` gets `"<document id> · chunk <index>"`, so it is readable in a graph browser. A chunk that already has a name, a table-row chunk (its cells are its properties, so a column called `name` is `Chunk.name`) and a chunk of a document `update()` is still replacing are left alone. `chunks_named` counts them.
+6. A consistency report over the whole graph, logged at WARNING and returned on the result.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `judge` | `DedupJudge \| None` | `None` | The dedup judge. `None` is `LLMJudge` with the instance's `llm`; give it a gpt-4.1-class model (`finalize(judge=LLMJudge(gpt41))`): on the benchmark corpus a gpt-4.1-class judge made 9 wrong merges where gpt-4o-mini made 51 |
 | `dedup_all` | `bool` | `False` | Check every entity instead of only the pending ones, and retry the unresolved ones. Run it once after entity vectors were written outside `finalize()` |
+| `name_chunks` | `bool` | `True` | Give every unnamed `Chunk` a readable name. Pass `False` to leave chunks as they were written |
 
 `finalize()` calls the LLM twice over: the default judge, and the description summaries in step 2, which always use the instance's `llm`. A `DedupJudge` of your own keeps *dedup* LLM-free; the summary pass still runs on `llm`. `finalize()` does not call `backfill_entity_embeddings()`.
 
@@ -438,7 +441,7 @@ def apply_changes_sync(*, added=None, modified=None, deleted=None, loader=None, 
 def retrieve_sync(question, *, strategy=None, reranker=None, ctx=None) -> RetrieverResult
 def completion_sync(question, *, history=None, strategy=None, reranker=None, prompt_template=None,
                     rewrite_question_with_history=False, return_context=False, ctx=None) -> RagResult
-def finalize_sync(*, judge=None, dedup_all=False) -> FinalizeResult
+def finalize_sync(*, judge=None, dedup_all=False, name_chunks=True) -> FinalizeResult
 def query_sync(cypher, params=None) -> list[list[Any]]
 def drop_table_sync(source) -> Ontology
 ```
@@ -736,6 +739,7 @@ Returned by `finalize()`. Every non-empty report field is also logged at WARNING
 | `description_summary_failures` | `list[str]` | Entities whose summary failed; they keep their descriptions and are tried again next run |
 | `entities_embedded` | `int` | Entity name embeddings written by dedup |
 | `relationships_embedded` | `int` | `RELATES` fact embeddings written |
+| `chunks_named` | `int` | Chunks that had no `name` and were given `"<document id> · chunk <index>"` (0 with `name_chunks=False`) |
 | `indexes` | `dict[str, bool]` | Whether each index was created or already in place, per `ensure_indices()` (not whether its build finished) (`range_ids`, `vector_Chunk`, `vector_Entity`, `vector_RELATES`, `fulltext_Chunk`, `fulltext_Entity`) |
 | `probable_duplicates` | `list[str]` | Spellings the canonical rule declined to merge and the judge did not, plus mentions two keyed rows could own, with the reason |
 | `unmerged_name_collisions` | `dict[str, list[str]]` | Names that exist under more than one label |

@@ -330,6 +330,7 @@ Run **once** after a batch of ingests/updates/deletes. Skipping it leaves cross-
 result = await rag.finalize(
     judge=None,          # a DedupJudge; None = LLMJudge(rag.llm)
     dedup_all=False,     # check every entity, and retry the unresolved ones
+    name_chunks=True,    # give unnamed chunks a readable name
 )
 ```
 
@@ -349,7 +350,8 @@ result = await rag.finalize(
    Then every entity holding more than five descriptions gets one LLM summary of them (`descriptions_summarised`); one whose summary fails keeps them and is listed in `description_summary_failures`, to be tried again by the next run.
 3. `embed_relationships()` — embeds fact text on `RELATES` edges.
 4. `ensure_indices()` — rebuilds/verifies all indexes and waits, up to 10 minutes, for any build in progress.
-5. Checks the graph for what it should report — signed properties left behind, properties more than one table supplies, mappings nobody declared, placeholders nothing filled, entities without a name, near-duplicates that did not merge — and logs each finding at WARNING. Nothing in this step changes the graph.
+5. Names the chunks: an unnamed `Chunk` gets `"<document id> · chunk <index>"`, except a table row and a chunk of a document `update()` is still replacing. `finalize(name_chunks=False)` skips it.
+6. Checks the graph for what it should report — signed properties left behind, properties more than one table supplies, mappings nobody declared, placeholders nothing filled, entities without a name, near-duplicates that did not merge — and logs each finding at WARNING. Nothing in this step changes the graph.
 
 `finalize()` calls the LLM through the default judge, and for the description summaries in step 2, which always use the instance's `llm`. A `DedupJudge` of your own (see [Storage](/storage#the-judge-component)) keeps dedup LLM-free; the summary pass still runs on `llm`.
 
@@ -367,6 +369,7 @@ result = await rag.finalize(
 | `descriptions_summarised` | `int` | Entities holding more than five descriptions that got one LLM summary in step 2 |
 | `description_summary_failures` | `list[str]` | Entities whose summary failed; they keep their descriptions and are tried again by the next run |
 | `relationships_embedded` | `int` | `RELATES` facts embedded |
+| `chunks_named` | `int` | Chunks given a readable `"<document id> · chunk <index>"` name in step 5 (0 with `name_chunks=False`) |
 | `indexes` | `dict[str, bool]` | Each index `ensure_indices()` checks (`range_ids`, `vector_Chunk`, `vector_Entity`, `vector_RELATES`, `fulltext_Chunk`, `fulltext_Entity`), and whether it is in place: `True` when created now or already there, `False` when creation failed. `finalize()` forces the check, so every key is always present |
 
 **Dedup**
