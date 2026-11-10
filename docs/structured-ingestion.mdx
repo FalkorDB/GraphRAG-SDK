@@ -1102,6 +1102,9 @@ and the two would never join.
 A declared type beats a guessed one. When a name exists under one label a
 mapping declared and one or more labels nothing declared, the declared label
 survives and absorbs the rest, keeping the document's description and mentions.
+This applies only to custom labels: a built-in label such as `Organization` was
+always on the extractor's list, so a different label there was a choice, and a
+mapping declaring `Organization` adopts nothing into it.
 Two *declared* labels sharing a name are left alone and reported, because that is
 a real modelling conflict rather than a guess to correct — as is a name under only
 undeclared labels, which is the Apple case.
