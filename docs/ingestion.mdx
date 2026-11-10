@@ -487,7 +487,7 @@ result.metadata["plan"]
 |-----------|---------|--------|
 | `entity_extractor` | `GLiNERExtractor()` | Local NER model (fast, no API calls) |
 | `coref_resolver` | `None` | Optional coreference resolution (resolves pronouns) |
-| `entity_types` | 11 defaults | Custom entity types for your domain. An ontology's entities override it, and a `GraphRAG` on a new graph whose ontology declares no entities, relations or tables stores the 11 defaults as its ontology, so through `GraphRAG` it takes effect only when the stored ontology has no entity types |
+| `entity_types` | 11 defaults | Custom entity types for your domain. An ontology's entities override it, and a `GraphRAG` on a new graph whose ontology declares no entities, relations, tables or relationship tables stores the 11 defaults as its ontology, so through `GraphRAG` it takes effect only when the stored ontology has no entity types |
 | `relation_types` | `DEFAULT_RELATION_TYPES` (31 labels) | Preferred relation vocabulary; `[]` for open vocabulary (an ontology's relations override it) |
 | `max_concurrency` | `None` (12 for local NER; the LLM's own limit for LLM calls) | Parallel extraction calls |
 

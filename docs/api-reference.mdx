@@ -407,7 +407,7 @@ Run all post-ingestion steps after the documents and tables are ingested. Call i
 1. Remove NULL-name stub entities left by legacy writes (only nodes no mapping wrote).
 2. `deduplicate_entities(judge=..., dedup_all=...)`: exact-name and acronym dedup of the pending entities, then one judge pass over their nearest names. Dedup writes each entity's name embedding, listing the entity as pending first; `entities_embedded` counts them. Then every entity holding more than five descriptions gets one LLM summary of them, written by the instance's `llm`.
 3. `embed_relationships()`: fact-text embeddings on `RELATES` edges.
-4. `ensure_indices()`: all indexes, waiting until FalkorDB reports them built.
+4. `ensure_indices()`: all indexes, waiting until FalkorDB reports them built (up to 10 minutes; it returns anyway if the wait runs out or the status query fails).
 5. A consistency report over the whole graph, logged at WARNING and returned on the result.
 
 | Parameter | Type | Default | Description |
@@ -736,7 +736,7 @@ Returned by `finalize()`. Every non-empty report field is also logged at WARNING
 | `description_summary_failures` | `list[str]` | Entities whose summary failed; they keep their descriptions and are tried again next run |
 | `entities_embedded` | `int` | Entity name embeddings written by dedup |
 | `relationships_embedded` | `int` | `RELATES` fact embeddings written |
-| `indexes` | `dict[str, bool]` | Result per index from `ensure_indices()` (`range_ids`, `vector_Chunk`, `vector_Entity`, `vector_RELATES`, `fulltext_Chunk`, `fulltext_Entity`) |
+| `indexes` | `dict[str, bool]` | Whether each index was created or already in place, per `ensure_indices()` (not whether its build finished) (`range_ids`, `vector_Chunk`, `vector_Entity`, `vector_RELATES`, `fulltext_Chunk`, `fulltext_Entity`) |
 | `probable_duplicates` | `list[str]` | Spellings the canonical rule declined to merge and the judge did not, plus mentions two keyed rows could own, with the reason |
 | `unmerged_name_collisions` | `dict[str, list[str]]` | Names that exist under more than one label |
 | `property_conflicts` | `list[str]` | A property two tables both supply, with how many entities hold differing values. Every value is kept |
@@ -945,7 +945,7 @@ class ExtractionStrategy(ABC):
 ```
 
 **Built-in:**
-- `GraphExtraction(llm, *, entity_extractor=None, coref_resolver=None, entity_types=None, relation_types=None, max_concurrency=None)`. `entity_types=None` selects `DEFAULT_ENTITY_TYPES` (11 labels); `relation_types=None` selects `DEFAULT_RELATION_TYPES`, a 31-label UPPER_SNAKE_CASE vocabulary (`LOCATED_IN`, `PART_OF`, `EMPLOYED_AT`, `AUTHORED`, ...) the step-2 prompt asks the LLM to prefer; off-list labels are still kept. Pass `relation_types=[]` for open-vocabulary labels. Both are overridden by a declared `Ontology`, whose relations are enforced (off-pattern edges are pruned). Through `GraphRAG`, the working ontology has entity types unless it declares only relations (a new graph is seeded with the 11 defaults), so `entity_types` is overridden there; declare custom entity types on the `Ontology` instead.
+- `GraphExtraction(llm, *, entity_extractor=None, coref_resolver=None, entity_types=None, relation_types=None, max_concurrency=None)`. `entity_types=None` selects `DEFAULT_ENTITY_TYPES` (11 labels); `relation_types=None` selects `DEFAULT_RELATION_TYPES`, a 31-label UPPER_SNAKE_CASE vocabulary (`LOCATED_IN`, `PART_OF`, `EMPLOYED_AT`, `AUTHORED`, ...) the step-2 prompt asks the LLM to prefer; off-list labels are still kept. Pass `relation_types=[]` for open-vocabulary labels. `entity_types` is overridden by a declared `Ontology`'s entities and `relation_types` by its relations, which are enforced (off-pattern edges are pruned). Through `GraphRAG`, the working ontology has entity types unless it declares only relations without patterns (a pattern registers its endpoint types; a new graph given no ontology is seeded with the 11 defaults), so `entity_types` is overridden there; declare custom entity types on the `Ontology` instead.
 - `CachedChunkExtraction(inner, graph_store, document_id)`: the decorator behind `update(cache_unchanged_chunks=True)`.
 
 `DEFAULT_RELATION_TYPES` is exported at the top level.
@@ -1255,7 +1255,7 @@ class RetrievalStrategy(ABC):
     def _format(self, raw: RawSearchResult) -> RetrieverResult: ...   # override for custom formatting
 ```
 
-`set_ontology()` is called by the facade on its configured retrieval strategy (the default, or the one passed as `GraphRAG(retrieval_strategy=...)`) whenever the working ontology changes: an evolution call, `set_ontology()`, a table declaring typed columns. A no-op by default; `MultiPathRetrieval` overrides it so generated Cypher sees the current schema. A strategy passed per call (`retrieve(strategy=...)`) is not updated; give it `ontology=` yourself.
+`set_ontology()` is called by the facade on its configured retrieval strategy (the default, or the one passed as `GraphRAG(retrieval_strategy=...)`) whenever the working ontology changes: an evolution call, `set_ontology()`, a table declaring typed columns. A no-op by default; `MultiPathRetrieval` overrides it so generated Cypher sees the current schema. A strategy passed per call (`retrieve(strategy=...)`) is not updated, but one built without `ontology=` is lent the current one for that call; one given `ontology=` keeps it.
 
 ### LocalRetrieval
 

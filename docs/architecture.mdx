@@ -63,8 +63,10 @@ A table is declared on the ontology with a `TableMapping` and read by a `RecordL
 
 1. **Map** -- find the table's mapping in the ontology by filename (or propose one, with one model call for the whole table, when none is declared).
 2. **Validate** -- check the mapping against the file's header and every cell against its declared type, before anything is written.
-3. **Write** -- one Document named for the table, one record Chunk per row, one entity per row (its id derived from its name, exactly as for a prose mention, or from its key when the row has no name; rows that derive the same id write one node), placeholders for foreign keys, and `RELATES` edges for each `Link`. Every declared property is signed with the table's name (`employees__age`).
+3. **Write** -- one Document named for the table, one record Chunk per row with a key (a row with a blank key is skipped and counted in `rows_skipped`), one entity per row (its id derived from its name, exactly as for a prose mention, or from its key when the row has no name; rows that derive the same id write one node), placeholders for foreign keys, and `RELATES` edges for each `Link`. Every declared property is signed with the table's name (`employees__age`).
 4. **Re-sync** -- a later load of the same table replaces it as a snapshot through the same crash-safe cutover `update()` uses.
+
+A `RelationshipMapping` table takes a shorter path: each row is a `RELATES` edge between entities that already exist, with no Document, record Chunk or entity; refresh it with `ingest()` and remove it with `drop_table()` (see [Relationship-only tables](/structured-ingestion#relationship-only-tables)).
 
 Because the id comes from the name, a row and a prose mention of the same thing are one node from the first write, whichever source arrives first. See [Structured Ingestion](/structured-ingestion).
 
@@ -188,7 +190,7 @@ All graph writes go through `GraphStore`, which provides:
 ### VectorStore
 
 Vector operations go through `VectorStore`:
-- **Index creation** -- vector indexes on Chunk, `__Entity__` and RELATES edge embeddings, and fulltext indexes on chunk text and entity name and description; `ensure_indices()` waits up to 10 minutes for them to be built
+- **Index creation** -- vector indexes on Chunk, `__Entity__` and RELATES edge embeddings, and fulltext indexes on chunk text and entity name and description; `ensure_indices()` waits up to 10 minutes for them to be built, then returns anyway
 - **Batched embedding** -- embeds texts in bulk, stores via UNWIND
 - **Search** -- similarity scores, higher is closer; chunk and entity searches break ties by id so results do not depend on the engine's row order
 

@@ -795,7 +795,7 @@ in `modified` is re-synced through its stored mapping.
 
 ## Validation
 
-The mapping is checked against the source's real header **before anything is written**, so a mapping that does not fit raises `MappingError` and leaves the graph untouched:
+The mapping is checked against the source's real header **before anything is written**, so a mapping that does not fit raises `MappingError` and writes none of its rows:
 
 ```text
 MappingError: mapping does not fit employees.csv:
@@ -803,7 +803,7 @@ MappingError: mapping does not fit employees.csv:
   node 'Organization': key column 'org_id' is not in the source
 ```
 
-Every cell is then cast to its declared type, still before anything is written, so a bad cell on row 30,000 also leaves the graph untouched:
+Every cell is then cast to its declared type, still before anything is written, so a bad cell on row 30,000 also writes none of its rows:
 
 ```text
 MappingError: column 'age' declares INTEGER but holds 'N/A'
@@ -898,7 +898,7 @@ A row the export dropped but another row still points at — a manager who left 
 
 A document remembers how it was written, and nothing may change its mind: re-reading a CSV as prose would replace its record chunks with one text chunk and take every entity with them. So `update()` refuses to change a document's kind — a `.csv` cannot be updated as prose, nor a text document as records — while a table in `apply_changes(modified=[...])` is re-synced through its stored mapping like any other `update()`.
 
-A table is addressed by its **name** — the basename of its mapping's `source`, `employees.csv` — unless you pass `document_id`. A document is addressed by its path because the path is all there is to know about it; a table has a declaration, and exports move. Keyed on the path, `/exports/2026-02/hr.csv` would be a second Document under the same label with January's left behind reading as current; keyed on the name, a new export of a known table is a re-sync of it, from wherever it arrives, and the Document's `path` follows the new file. Use the same handle for `update()` and `delete_document()`. `drop_table()` always takes the table's name, the basename of its mapping's `source` (`drop_table("employees.csv")`), even when the table was loaded under its own `document_id`.
+A table is addressed by its **name** — the basename of its mapping's `source`, `employees.csv` — unless you pass `document_id`. A document is addressed by its path because the path is all there is to know about it; a table has a declaration, and exports move. Keyed on the path, `/exports/2026-02/hr.csv` would be a second Document under the same label with January's left behind reading as current; keyed on the name, a new export of a known table is a re-sync of it, from wherever it arrives, and the Document's `path` follows the new file. Use the same handle for `update()` and `delete_document()`. `drop_table()` takes the table's name, the basename of its mapping's `source` (`drop_table("employees.csv")`), or its exact stored `source`, which is matched first, even when the table was loaded under its own `document_id`.
 
 An export that arrives under a different filename says which table it is with `document_id`:
 
@@ -934,8 +934,8 @@ columns, each row producing a `Person`, a reference to an `Organization`, a
 | 50,000 | 38.5s | ~1,300 rows/s | 408 MB | 0.20s |
 
 Memory grows with the row count: the whole file's chunks, nodes and edges are
-held before anything is written, which is what makes a failed load leave the graph
-untouched. The measured cost is roughly 6.5 KB per row. Growth in time is close to
+held before anything is written, which is what makes a failed load write none of its rows.
+The measured cost is roughly 6.5 KB per row. Growth in time is close to
 linear but not quite, so a very large table is slower per row than a small one.
 Re-syncing a source whose rows have not changed is a hash comparison, independent
 of size.

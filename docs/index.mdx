@@ -50,7 +50,7 @@ async def main():
 asyncio.run(main())
 ```
 
-`finalize()` runs once after a batch of ingests. It checks the entities added since the last call, plus any an earlier run left pending, and asks an LLM judge which candidates are the same entity.
+`finalize()` runs once after a batch of ingests. It checks the entities added since the last call, plus any entities an earlier run left pending, and asks an LLM judge which candidates are the same entity.
 
 ## Next Steps
 

@@ -315,7 +315,7 @@ extractor = GraphExtraction(
 )
 ```
 
-Used only when the ontology has no entity types. A `GraphRAG` on a new graph whose ontology declares no entities, relations or tables stores the 11 defaults as its ontology, so an extractor passed to `rag.ingest(extractor=...)` there still extracts the defaults; declare the types in the ontology instead.
+Used only when the ontology has no entity types. A `GraphRAG` on a new graph whose ontology declares no entities, relations, tables or relationship tables stores the 11 defaults as its ontology, so an extractor passed to `rag.ingest(extractor=...)` there still extracts the defaults; declare the types in the ontology instead.
 
 **3. Defaults (lowest priority):**
 ```python

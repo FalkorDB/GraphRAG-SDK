@@ -510,7 +510,7 @@ ontology = Ontology(entities=[
 rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)
 ```
 
-Priority: `ontology.entities` > the `entity_types` parameter of `GraphExtraction` > defaults (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method). Through `GraphRAG`, the working ontology has entity types unless it declares only relations, because a graph with no ontology is seeded with the 11 defaults on first use, so `GraphExtraction(entity_types=...)` has no effect there. It applies only when you run `GraphExtraction` with an ontology that declares no entities, such as in your own `IngestionPipeline`.
+Priority: `ontology.entities` > the `entity_types` parameter of `GraphExtraction` > defaults (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method). Through `GraphRAG`, the working ontology has entity types unless it declares only relations without patterns (a pattern registers its endpoint types), because a graph with no ontology is seeded with the 11 defaults on first use, so `GraphExtraction(entity_types=...)` has no effect there. It applies only when you run `GraphExtraction` with an ontology that declares no entities, such as in your own `IngestionPipeline`.
 
 ### LLM Concurrency
 
@@ -695,7 +695,7 @@ Only the pending entities are checked: those with no name vector yet (ingest wri
 | Fulltext    | `Chunk`          | `text`                 | `fulltext_Chunk`                |
 | Fulltext    | `__Entity__`     | `name`, `description`  | `fulltext_Entity`               |
 
-Separately, every write range-indexes `id` and `entity_key` on each label it writes into, the first time it writes there. `ensure_indices()` is also called after each `ingest()` of a document; ingesting a table creates only the `id` range indexes, and `finalize()` builds the rest. It waits until FalkorDB reports every index built (up to 10 minutes, logging progress every 10 s), since a vector search on an index still being built finds nothing; if the status query fails or the wait runs out, it returns anyway.
+Separately, every write range-indexes `id` and `entity_key` on each label it writes into, the first time it writes there. `ensure_indices()` is also called after each `ingest()` of a document; ingesting a table creates only those per-label range indexes (plus one on a table's signed key column), and `finalize()` builds the rest. It waits until FalkorDB reports every index built (up to 10 minutes, logging progress every 10 s), since a vector search on an index still being built fails on FalkorDB 4.x and returns no or partial rows on 6.0.x; if the status query fails or the wait runs out, it returns anyway.
 
 <Warning>
   Do **not** call `backfill_entity_embeddings()` between ingests. An entity with a vector and no pending record counts as checked, so every entity it embeds skips its dedup check. `finalize()` does not call it. If you did call it, run `finalize(dedup_all=True)` once.
