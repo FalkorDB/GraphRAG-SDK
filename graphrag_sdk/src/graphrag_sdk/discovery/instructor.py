@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import Callable
@@ -21,7 +22,8 @@ from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from graphrag_sdk.core.models import ChatMessage
+from graphrag_sdk.core.models import ChatMessage, LLMResponse
+from graphrag_sdk.core.providers._retry import is_transient_llm_error, summarize_exception
 from graphrag_sdk.core.providers.base import LLMInterface
 from graphrag_sdk.discovery.prompts import (
     format_parse_feedback,
@@ -42,6 +44,40 @@ def _strip_fences(content: str) -> str:
     stripped = content.strip()
     match = _FENCED.match(stripped)
     return match.group(1).strip() if match else stripped
+
+
+#: Waits before each retry of a call that failed for a temporary reason
+#: (a 5xx, 429, 408, a dropped connection). Its length is the retry count.
+_TRANSIENT_BACKOFF_S = (1.0, 4.0)
+
+
+async def _call_once(
+    llm: LLMInterface, history: list[ChatMessage], chunk_id: str | None
+) -> LLMResponse:
+    """One logical model call, retried apart from the parse budget when it fails temporarily.
+
+    The provider's own retry loop is disabled (``max_retries=1``) so that the
+    validation loop's attempt count stays exact. That also stopped any retry
+    of a call that never produced a response, so one 5xx from the provider
+    failed the whole discovery run. Those are retried here; the conversation
+    is resent unchanged, because nothing came back to correct.
+    """
+    for retry, delay in enumerate((*_TRANSIENT_BACKOFF_S, None)):
+        try:
+            return await llm.ainvoke_messages(history, max_retries=1)
+        except Exception as exc:
+            if delay is None or not is_transient_llm_error(exc):
+                raise
+            logger.warning(
+                "discovery model call failed (chunk=%s, retry %d/%d in %.0fs): %s",
+                chunk_id,
+                retry + 1,
+                len(_TRANSIENT_BACKOFF_S),
+                delay,
+                summarize_exception(exc),
+            )
+            await asyncio.sleep(delay)
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 async def extract_with_retry(
@@ -106,8 +142,9 @@ async def extract_with_retry(
         # ``extract_with_retry`` owns the retry policy. Without this the
         # default provider budget (3 attempts) would silently triple every
         # logical attempt here, blowing the documented budget and skewing
-        # ``OntologyDiscoveryError.attempts``.
-        response = await llm.ainvoke_messages(history, max_retries=1)
+        # ``OntologyDiscoveryError.attempts``. A temporary provider failure
+        # is retried inside ``_call_once`` and is not counted as an attempt.
+        response = await _call_once(llm, history, chunk_id)
         history.append(ChatMessage(role="assistant", content=response.content))
 
         text = _strip_fences(response.content)

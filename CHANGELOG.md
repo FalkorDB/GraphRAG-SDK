@@ -754,6 +754,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lines cannot crowd them all out.
 
 ### Fixed
+- **One temporary model error no longer fails ontology discovery.**
+  `extract_with_retry` turns off the provider's retries so its attempt count
+  stays exact, and it retried only responses that failed to parse. A call that
+  failed outright (an HTTP 500 from Azure, a 429, a dropped connection) was
+  never retried, so one such error among the ~20 calls of a discovery run
+  failed the whole run. Those are now retried up to twice with a short
+  backoff, apart from the parse budget; other 4xx errors (400, 401, a content
+  filter) and timeouts still fail at once. `is_transient_llm_error()` in `core/providers/_retry.py` decides which
+  is which, from the exception's HTTP status.
 - **Missing ontology attributes no longer erase extracted values.**
   Values absent from a chunk no longer overwrite values from other chunks or
   system properties such as `description`; resolution merges also fill

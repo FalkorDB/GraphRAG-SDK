@@ -7,7 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from graphrag_sdk.core.exceptions import EmbeddingTimeoutError
+from graphrag_sdk.core.exceptions import EmbeddingTimeoutError, LLMTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,38 @@ def summarize_exception(exc: BaseException) -> str:
     if len(msg) > _MAX_EXC_SUMMARY_LEN:
         msg = msg[:_MAX_EXC_SUMMARY_LEN] + "..."
     return f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
+
+
+#: HTTP statuses a provider returns for a condition that passes on its own:
+#: request timeout, conflict, rate limit. Every 5xx counts as well.
+_TRANSIENT_STATUSES = frozenset({408, 409, 429})
+
+
+def _status_code(exc: BaseException) -> int | None:
+    """The HTTP status a provider exception carries, on itself or its response."""
+    for owner in (exc, getattr(exc, "response", None)):
+        status = getattr(owner, "status_code", None)
+        if isinstance(status, int) and not isinstance(status, bool):
+            return status
+    return None
+
+
+def is_transient_llm_error(exc: BaseException) -> bool:
+    """Return True if an LLM call failed for a reason worth retrying shortly.
+
+    Provider exceptions (LiteLLM, OpenAI, Azure) carry an HTTP status: a
+    5xx, 408, 409 or 429 is temporary, anything else (400, 401, 403, 404,
+    422, a content filter) will fail the same way again. Without a status,
+    only a dropped connection counts. An ``LLMTimeoutError`` is not
+    retried: the timeout is the caller's deadline, and retrying would
+    stretch it.
+    """
+    if isinstance(exc, LLMTimeoutError):
+        return False
+    status = _status_code(exc)
+    if status is not None:
+        return status >= 500 or status in _TRANSIENT_STATUSES
+    return isinstance(exc, ConnectionError)
 
 
 def is_transient_embedding_error(exc: Exception) -> bool:

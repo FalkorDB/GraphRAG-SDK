@@ -260,6 +260,187 @@ class TestExtractWithRetry:
         assert len(llm.all_calls) == 2, "Expected parse-then-retry on extra='junk'"
 
 
+class _ProviderError(Exception):
+    """Stands in for a provider exception that carries an HTTP status
+    (litellm's ``APIError`` / ``InternalServerError``, openai's ``APIStatusError``)."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"status {status_code}")
+        self.status_code = status_code
+
+
+class _FlakyLLM(MockLLM):
+    """Raises the queued exceptions first, then answers from ``responses``."""
+
+    def __init__(self, failures: list[BaseException], responses: list[str]) -> None:
+        super().__init__(responses=responses, strict=True)
+        self._failures = list(failures)
+        self.calls: list[list] = []
+
+    async def ainvoke_messages(self, messages, *, max_retries=3, **kwargs):
+        self.calls.append([m.model_copy() for m in messages])
+        if self._failures:
+            raise self._failures.pop(0)
+        self.last_messages = messages
+        return self.invoke("")
+
+
+class TestExtractWithRetryTransientErrors:
+    """A model call that fails for a temporary reason (5xx, 429, a dropped
+    connection) is retried, apart from the budget for bad JSON. One such
+    failure used to sink a whole discovery run, because the provider's own
+    retries are disabled here and only parse failures were retried."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+        slept: list[float] = []
+
+        async def _sleep(delay: float) -> None:
+            slept.append(delay)
+
+        monkeypatch.setattr("graphrag_sdk.discovery.instructor.asyncio.sleep", _sleep)
+        return slept
+
+    @pytest.mark.asyncio
+    async def test_server_error_is_retried(self) -> None:
+        llm = _FlakyLLM([_ProviderError(500)], [_valid_doc_summary_json()])
+        result = await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+        )
+        assert result.aboutness == "Test doc"
+        assert len(llm.calls) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [408, 429, 502, 503, 504])
+    async def test_other_temporary_statuses_are_retried(self, status: int) -> None:
+        llm = _FlakyLLM([_ProviderError(status)], [_valid_doc_summary_json()])
+        result = await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+        )
+        assert result.aboutness == "Test doc"
+
+    @pytest.mark.asyncio
+    async def test_connection_error_is_retried(self) -> None:
+        llm = _FlakyLLM([ConnectionResetError("reset")], [_valid_doc_summary_json()])
+        result = await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+        )
+        assert result.aboutness == "Test doc"
+
+    @pytest.mark.asyncio
+    async def test_retry_resends_the_same_conversation(self) -> None:
+        llm = _FlakyLLM([_ProviderError(500)], [_valid_doc_summary_json()])
+        await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+        )
+        assert [m.content for m in llm.calls[0]] == [m.content for m in llm.calls[1]]
+
+    @pytest.mark.asyncio
+    async def test_backoff_grows_between_attempts(self, _no_backoff: list[float]) -> None:
+        llm = _FlakyLLM([_ProviderError(503), _ProviderError(503)], [_valid_doc_summary_json()])
+        await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+        )
+        assert len(_no_backoff) == 2
+        assert _no_backoff[0] > 0
+        assert _no_backoff[1] > _no_backoff[0]
+
+    @pytest.mark.asyncio
+    async def test_persistent_server_error_is_raised_after_the_budget(self) -> None:
+        failures = [_ProviderError(500) for _ in range(10)]
+        llm = _FlakyLLM(failures, [_valid_doc_summary_json()])
+        with pytest.raises(_ProviderError):
+            await extract_with_retry(
+                llm,
+                system_prompt="sys",
+                user_prompt="usr",
+                response_model=DocSummary,
+                max_retries=0,
+            )
+        assert len(llm.calls) == 3, "1 call + 2 retries for a temporary failure"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+    async def test_permanent_error_is_raised_at_once(self, status: int) -> None:
+        llm = _FlakyLLM([_ProviderError(status)], [_valid_doc_summary_json()])
+        with pytest.raises(_ProviderError):
+            await extract_with_retry(
+                llm,
+                system_prompt="sys",
+                user_prompt="usr",
+                response_model=DocSummary,
+                max_retries=2,
+            )
+        assert len(llm.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_unclassified_error_is_raised_at_once(self) -> None:
+        llm = _FlakyLLM([ValueError("bad config")], [_valid_doc_summary_json()])
+        with pytest.raises(ValueError):
+            await extract_with_retry(
+                llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary
+            )
+        assert len(llm.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_not_retried(self) -> None:
+        from graphrag_sdk.core.exceptions import LLMTimeoutError
+
+        llm = _FlakyLLM([LLMTimeoutError("slow")], [_valid_doc_summary_json()])
+        with pytest.raises(LLMTimeoutError):
+            await extract_with_retry(
+                llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary
+            )
+        assert len(llm.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_temporary_failures_leave_the_parse_budget_alone(self) -> None:
+        # Each logical attempt may hit a temporary failure; the bad-JSON
+        # budget (max_retries=1 -> 2 parsed responses) is still honoured.
+        llm = _FlakyLLM(
+            [_ProviderError(500)],
+            ["not json", _valid_doc_summary_json()],
+        )
+        result = await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=1
+        )
+        assert result.aboutness == "Test doc"
+        assert len(llm.calls) == 3
+
+
+class TestIsTransientLLMError:
+    def test_classifies_by_status_code(self) -> None:
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        assert is_transient_llm_error(_ProviderError(500))
+        assert is_transient_llm_error(_ProviderError(529))
+        assert is_transient_llm_error(_ProviderError(429))
+        assert not is_transient_llm_error(_ProviderError(401))
+        assert not is_transient_llm_error(_ProviderError(400))
+
+    def test_connection_errors_are_transient(self) -> None:
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        assert is_transient_llm_error(ConnectionError("down"))
+
+    def test_status_on_the_response_is_read(self) -> None:
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        class _WithResponse(Exception):
+            def __init__(self) -> None:
+                super().__init__("x")
+                self.response = type("R", (), {"status_code": 503})()
+
+        assert is_transient_llm_error(_WithResponse())
+
+    def test_unknown_errors_are_not_transient(self) -> None:
+        from graphrag_sdk.core.exceptions import LLMTimeoutError
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        assert not is_transient_llm_error(ValueError("x"))
+        assert not is_transient_llm_error(LLMTimeoutError("slow"))
+
+
 # ── _validate_proposal ─────────────────────────────────────────────
 
 

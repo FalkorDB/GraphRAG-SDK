@@ -194,7 +194,9 @@ Open-vocabulary discovery is brittle by default. The pipeline applies three disc
 
 **3. Normalization as a separate pass.** Per-chunk proposals are merged naively (label-based union) and then a single cross-draft LLM call canonicalizes labels and direction. Without this, drafts accumulate synonyms across calls (`Org` + `Organization` + `Company` as three types) and the schema drifts. The normalization pass is also where the `existing` prior, if supplied, becomes a hard preference: "prefer these labels."
 
-The wrapper is strict — on exhausted retries it raises [`OntologyDiscoveryError`](#ontologydiscoveryerror-reference). The pipeline above it is soft-fail: a single bad chunk is logged and skipped, a failed summary degrades the doc to weaker anchoring, a failed normalization returns the un-normalized draft. Net effect: one noisy chunk or one rate-limited call does not kill the whole draft.
+The wrapper is strict — on exhausted retries it raises [`OntologyDiscoveryError`](#ontologydiscoveryerror-reference). The pipeline above it is soft-fail: a single bad chunk is logged and skipped, a failed summary degrades the doc to weaker anchoring, a failed normalization returns the un-normalized draft. Net effect: one noisy chunk does not kill the whole draft.
+
+A call that fails before any response comes back is a different case. The wrapper turns off the provider's own retries (`max_retries=1`) so its attempt count stays exact, and retries a *temporary* failure itself: an HTTP 5xx, 408, 409 or 429, or a dropped connection, up to two more times with a short backoff (1 s, then 4 s). The same conversation is resent and the retry does not use up `max_retries`. Any other error (401, 400, a content filter, a timeout from the call's own deadline) is raised at once, and so is a temporary failure that persists past those retries.
 
 ---
 
