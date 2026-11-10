@@ -23,7 +23,7 @@ from typing import TypeVar
 from pydantic import BaseModel, ValidationError
 
 from graphrag_sdk.core.models import ChatMessage, LLMResponse
-from graphrag_sdk.core.providers._retry import is_transient_llm_error, summarize_exception
+from graphrag_sdk.core.providers._retry import _status_code, is_transient_llm_error
 from graphrag_sdk.core.providers.base import LLMInterface
 from graphrag_sdk.discovery.prompts import (
     format_parse_feedback,
@@ -66,14 +66,17 @@ async def _call_once(llm: LLMInterface, history: list[ChatMessage]) -> LLMRespon
         except Exception as exc:
             if delay is None or not is_transient_llm_error(exc):
                 raise
-            # No chunk id here: it carries the document id (often a file path),
-            # which stays out of a WARNING that may reach shared log streams.
+            # Only the exception type and HTTP status: the chunk id carries the
+            # document id (often a file path) and the exception text can carry
+            # request content, and a WARNING may reach shared log streams.
+            status = _status_code(exc)
             logger.warning(
-                "discovery model call failed (retry %d/%d in %.0fs): %s",
+                "discovery model call failed (retry %d/%d in %.0fs): %s%s",
                 retry + 1,
                 len(_TRANSIENT_BACKOFF_S),
                 delay,
-                summarize_exception(exc),
+                type(exc).__name__,
+                f" (HTTP {status})" if status is not None else "",
             )
             await asyncio.sleep(delay)
     raise AssertionError("unreachable")  # pragma: no cover

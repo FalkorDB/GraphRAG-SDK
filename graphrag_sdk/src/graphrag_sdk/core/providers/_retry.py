@@ -49,16 +49,27 @@ def is_transient_llm_error(exc: BaseException) -> bool:
     Provider exceptions (LiteLLM, OpenAI, Azure) carry an HTTP status: a
     5xx, 408, 409 or 429 is temporary, anything else (400, 401, 403, 404,
     422, a content filter) will fail the same way again. Without a status,
-    only a dropped connection counts. An ``LLMTimeoutError`` is not
-    retried: the timeout is the caller's deadline, and retrying would
-    stretch it.
+    only a dropped connection counts: the built-in ``ConnectionError``, or
+    the OpenAI client's ``APIConnectionError`` (raised by the OpenRouter
+    provider, with no status and outside the built-in hierarchy). An
+    ``LLMTimeoutError`` is not retried: the timeout is the caller's
+    deadline, and retrying would stretch it.
     """
     if isinstance(exc, LLMTimeoutError):
         return False
     status = _status_code(exc)
     if status is not None:
-        return status >= 500 or status in _TRANSIENT_STATUSES
-    return isinstance(exc, ConnectionError)
+        return 500 <= status < 600 or status in _TRANSIENT_STATUSES
+    return isinstance(exc, (ConnectionError, *_provider_connection_errors()))
+
+
+def _provider_connection_errors() -> tuple[type[BaseException], ...]:
+    """Status-less connection errors of optional provider clients that are installed."""
+    try:
+        from openai import APIConnectionError
+    except ImportError:
+        return ()
+    return (APIConnectionError,)
 
 
 def is_transient_embedding_error(exc: Exception) -> bool:

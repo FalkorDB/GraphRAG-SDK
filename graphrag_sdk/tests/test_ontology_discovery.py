@@ -311,7 +311,7 @@ class TestExtractWithRetryTransientErrors:
         assert len(llm.calls) == 2
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("status", [408, 429, 502, 503, 504])
+    @pytest.mark.parametrize("status", [408, 409, 429, 502, 503, 504])
     async def test_other_temporary_statuses_are_retried(self, status: int) -> None:
         llm = _FlakyLLM([_ProviderError(status)], [_valid_doc_summary_json()])
         result = await extract_with_retry(
@@ -341,9 +341,28 @@ class TestExtractWithRetryTransientErrors:
         await extract_with_retry(
             llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
         )
-        assert len(_no_backoff) == 2
-        assert _no_backoff[0] > 0
-        assert _no_backoff[1] > _no_backoff[0]
+        assert _no_backoff == [1.0, 4.0]
+
+    @pytest.mark.asyncio
+    async def test_the_retry_warning_names_the_type_and_status_only(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The exception text can carry request content and the chunk id a file path."""
+        error = _ProviderError(500)
+        error.args = ("Azure said: SECRET-REQUEST-BODY",)
+        llm = _FlakyLLM([error], [_valid_doc_summary_json()])
+        with caplog.at_level("WARNING", logger="graphrag_sdk.discovery.instructor"):
+            await extract_with_retry(
+                llm,
+                system_prompt="sys",
+                user_prompt="usr",
+                response_model=DocSummary,
+                chunk_id="summary:file:private/report.pdf",
+            )
+        (record,) = caplog.records
+        message = record.getMessage()
+        assert "_ProviderError (HTTP 500)" in message
+        assert "SECRET" not in message and "private/report.pdf" not in message
 
     @pytest.mark.asyncio
     async def test_persistent_server_error_is_raised_after_the_budget(self) -> None:
@@ -432,6 +451,39 @@ class TestIsTransientLLMError:
                 self.response = type("R", (), {"status_code": 503})()
 
         assert is_transient_llm_error(_WithResponse())
+
+    def test_a_status_outside_5xx_is_not_transient(self) -> None:
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        assert not is_transient_llm_error(_ProviderError(600))
+        assert not is_transient_llm_error(_ProviderError(999))
+        assert is_transient_llm_error(_ProviderError(599))
+
+    def test_a_status_less_provider_connection_error_is_transient(self, monkeypatch) -> None:
+        """OpenRouter's OpenAI client raises ``APIConnectionError``: no HTTP
+        status, and not a subclass of the built-in ``ConnectionError``."""
+        from graphrag_sdk.core.providers import _retry
+
+        class APIConnectionError(Exception):
+            pass
+
+        monkeypatch.setattr(_retry, "_provider_connection_errors", lambda: (APIConnectionError,))
+        assert _retry.is_transient_llm_error(APIConnectionError("Connection error."))
+
+    def test_openai_api_connection_error_is_transient(self) -> None:
+        openai = pytest.importorskip("openai")
+
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        def bare(cls):
+            # Only the class matters; its constructor wants a request object
+            # whose type differs between openai majors (httpx / httpx2).
+            exc = cls.__new__(cls)
+            Exception.__init__(exc, "Connection error.")
+            return exc
+
+        assert is_transient_llm_error(bare(openai.APIConnectionError))
+        assert is_transient_llm_error(bare(openai.APITimeoutError))
 
     def test_unknown_errors_are_not_transient(self) -> None:
         from graphrag_sdk.core.exceptions import LLMTimeoutError
