@@ -293,12 +293,14 @@ class TestExtractWithRetryTransientErrors:
 
     @pytest.fixture(autouse=True)
     def _no_backoff(self, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+        """Records the waits instead of sleeping, without jitter so they are exact."""
         slept: list[float] = []
 
         async def _sleep(delay: float) -> None:
             slept.append(delay)
 
         monkeypatch.setattr("graphrag_sdk.discovery.instructor.asyncio.sleep", _sleep)
+        monkeypatch.setattr("graphrag_sdk.discovery.instructor._jittered", lambda delay: delay)
         return slept
 
     @pytest.mark.asyncio
@@ -506,6 +508,16 @@ class TestExtractWithRetryTransientErrors:
         )
         assert result.aboutness == "Test doc"
         assert len(llm.calls) == 3
+
+
+def test_the_retry_backoff_is_jittered() -> None:
+    """Discovery runs calls at once; those that failed together must not all
+    resend in the same instant."""
+    from graphrag_sdk.discovery.instructor import _jittered
+
+    waits = [_jittered(4.0) for _ in range(200)]
+    assert all(2.0 <= wait <= 6.0 for wait in waits)
+    assert len(set(waits)) > 1
 
 
 class TestIsTransientLLMError:

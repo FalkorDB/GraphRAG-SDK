@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 from collections.abc import Callable
 from typing import TypeVar
@@ -60,6 +61,15 @@ _TRANSIENT_BACKOFF_S = (1.0, 4.0)
 _MAX_RETRY_AFTER_S = 60.0
 
 
+def _jittered(delay: float) -> float:
+    """``delay`` spread over 0.5x-1.5x, as ``LLMInterface.ainvoke`` does.
+
+    Discovery runs several calls at once; calls that hit the same rate limit
+    or blip would otherwise all resend in the same instant.
+    """
+    return delay * (0.5 + random.random())
+
+
 async def _call_once(llm: LLMInterface, history: list[ChatMessage]) -> LLMResponse:
     """One logical model call, retried apart from the parse budget when it fails temporarily.
 
@@ -82,22 +92,23 @@ async def _call_once(llm: LLMInterface, history: list[ChatMessage]) -> LLMRespon
                 raise
             # A 429 or 503 often says how long to wait; resending sooner is
             # refused again, and a wait past the cap is not worth stalling for.
+            wait = _jittered(delay)
             asked = retry_after_seconds(exc)
             if asked is not None:
                 if asked > _MAX_RETRY_AFTER_S:
                     raise
-                delay = max(delay, asked)
+                wait = max(wait, asked)
             # Only the exception type and HTTP status: the chunk id carries the
             # document id (often a file path) and the exception text can carry
             # request content, and a WARNING may reach shared log streams.
             logger.warning(
-                "discovery model call failed (retry %d/%d in %.0fs): %s",
+                "discovery model call failed (retry %d/%d in %.1fs): %s",
                 retry + 1,
                 len(_TRANSIENT_BACKOFF_S),
-                delay,
+                wait,
                 describe_llm_error(exc),
             )
-            await asyncio.sleep(delay)
+            await asyncio.sleep(wait)
     raise AssertionError("unreachable")  # pragma: no cover
 
 
