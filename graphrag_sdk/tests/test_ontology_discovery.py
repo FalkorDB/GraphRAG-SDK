@@ -882,6 +882,48 @@ class TestPipelineTemporaryFailures:
         assert len(llm.all_calls) == 3
 
     @pytest.mark.asyncio
+    async def test_a_failing_chunk_cancels_the_calls_still_in_flight(
+        self, tmp_path: Path
+    ) -> None:
+        """The run fails as soon as one chunk does; the other calls must not
+        keep running (and retrying) in the background after that."""
+        import asyncio
+
+        from graphrag_sdk.core.models import LLMResponse
+
+        class _OneHangs(RecordingMockLLM):
+            def __init__(self) -> None:
+                super().__init__(responses=[])
+                self.cancelled = False
+
+            async def ainvoke_messages(self, messages, *, max_retries=3, **kwargs):
+                prompt = messages[-1].content
+                if "FAILING-CHUNK" in prompt:
+                    raise _ProviderError(401)
+                if "HANGING-CHUNK" in prompt:
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        self.cancelled = True
+                        raise
+                return LLMResponse(content=_valid_doc_summary_json())
+
+        src = tmp_path / "doc.txt"
+        src.write_text("Alice works at Acme.")
+        llm = _OneHangs()
+        with pytest.raises(_ProviderError):
+            await discover_ontology(
+                str(src),
+                llm,
+                sample_chunks_per_doc=2,
+                max_retries=0,
+                concurrency=2,
+                chunker=FixedChunker(["HANGING-CHUNK", "FAILING-CHUNK"]),
+                seed=42,
+            )
+        assert llm.cancelled
+
+    @pytest.mark.asyncio
     async def test_a_permanent_error_on_normalization_still_fails_the_run(
         self, tmp_path: Path
     ) -> None:

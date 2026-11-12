@@ -28,7 +28,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -81,6 +82,27 @@ if TYPE_CHECKING:
     from graphrag_sdk.core.providers.base import LLMInterface
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+async def _gather_or_cancel(*aws: Awaitable[_T]) -> list[_T]:
+    """``asyncio.gather`` that cancels the other calls when one fails.
+
+    A failing call ends the run, but plain ``gather`` leaves its siblings
+    running, still sleeping and retrying model calls, for results nobody
+    reads. In a long-lived event loop (a server) that traffic would go on
+    after the caller has already been told the run failed.
+    """
+    tasks = [asyncio.ensure_future(aw) for aw in aws]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
 
 # Max characters of a document fed to the summary step. The summary is
 # anchoring context, not exhaustive — feeding the whole doc burns
@@ -474,7 +496,7 @@ async def _process_document(
                 max_retries=max_retries,
             )
 
-    chunk_results = await asyncio.gather(*[_bounded(c) for c in sampled])
+    chunk_results = await _gather_or_cancel(*[_bounded(c) for c in sampled])
 
     # Per-doc merge: turn each proposal into an Ontology fragment and union them.
     doc_ontology = Ontology()
@@ -562,7 +584,7 @@ async def discover_ontology(
             return random.Random()
         return random.Random(f"{seed}:{src}")
 
-    per_doc = await asyncio.gather(
+    per_doc = await _gather_or_cancel(
         *[
             _process_document(
                 llm,
