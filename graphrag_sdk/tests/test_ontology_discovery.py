@@ -743,6 +743,16 @@ class TestIsTransientLLMError:
         assert is_transient_llm_error(group("fan-out", [ConnectionResetError("a"), _ProviderError(503)]))
         assert not is_transient_llm_error(group("fan-out", [ConnectionResetError("a"), ValueError("b")]))
 
+        # A member that is a "500" wrapping a missing dependency (as LiteLLM
+        # reports one) keeps the group permanent too.
+        try:
+            try:
+                raise ModuleNotFoundError("No module named 'google'")
+            except ModuleNotFoundError as missing:
+                raise _ProviderError(500) from missing
+        except _ProviderError as wrapped:
+            assert not is_transient_llm_error(group("fan-out", [ConnectionResetError("a"), wrapped]))
+
     def test_classifying_does_not_import_openai(self, monkeypatch) -> None:
         """An openai exception cannot exist unless openai is loaded, and a cold
         import on the first error would block the event loop."""

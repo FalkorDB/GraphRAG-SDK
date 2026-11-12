@@ -86,9 +86,17 @@ def is_transient_llm_error(exc: BaseException) -> bool:
     return _is_transient(exc, _MAX_CAUSE_DEPTH)
 
 
-def _wraps_missing_dependency(exc: BaseException) -> bool:
-    """Whether ``exc``, or what it wraps, is an ``ImportError``."""
-    return any(isinstance(link, ImportError) for link in _wrapped_chain(exc))
+def _wraps_missing_dependency(exc: BaseException, depth: int = _MAX_CAUSE_DEPTH) -> bool:
+    """Whether ``exc``, what it wraps, or a member of an exception group
+    among them is an ``ImportError``."""
+    for link in _wrapped_chain(exc):
+        if isinstance(link, ImportError):
+            return True
+        members = getattr(link, "exceptions", None)
+        if depth > 0 and isinstance(link, _EXCEPTION_GROUPS) and members:
+            if any(_wraps_missing_dependency(member, depth - 1) for member in members):
+                return True
+    return False
 
 
 def _is_transient(exc: BaseException, depth: int) -> bool:
