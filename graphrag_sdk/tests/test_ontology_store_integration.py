@@ -106,3 +106,277 @@ class TestRelationDescription:
             )
         ).result_set
         assert rows == [["shared", True]]
+
+
+@pytest.fixture
+async def onto_and_data():
+    """A store and its data graph, both dropped afterwards."""
+    if os.getenv("RUN_INTEGRATION") != "1":
+        pytest.skip("Set RUN_INTEGRATION=1 to run real-FalkorDB integration tests")
+    name = f"test_os_{uuid4().hex[:8]}"
+    connection = FalkorDBConnection(ConnectionConfig(**falkordb_test_server(), graph_name=name))
+    store = OntologyStore(connection, name)
+    yield store, connection
+    try:
+        await store.clear()
+    finally:
+        try:
+            await connection.delete_graph()
+        finally:
+            await connection.close()
+
+
+class TestAddingToALabelWithNoData:
+    """The data check runs against a real data graph, missing graph included."""
+
+    async def test_a_bare_label_takes_attributes_while_no_node_has_it(self, onto_and_data):
+        onto, _ = onto_and_data
+        await onto.register(Ontology(entities=[Entity(label="Event")]))  # as the seed writes it
+
+        await onto.register(
+            Ontology(
+                entities=[
+                    Entity(
+                        label="Event",
+                        properties=[
+                            Attribute(name="event_type", type="STRING"),
+                            Attribute(name="timestamp", type="DATE"),
+                        ],
+                    )
+                ]
+            )
+        )
+
+        (event,) = (await onto.load()).entities
+        assert sorted(p.name for p in event.properties) == ["event_type", "timestamp"]
+
+    async def test_a_label_with_a_node_is_refused(self, onto_and_data):
+        from graphrag_sdk.storage.ontology_store import OntologyModificationNotAllowedError
+
+        onto, connection = onto_and_data
+        await onto.register(Ontology(entities=[Entity(label="Event")]))
+        await connection.query("CREATE (:Event {name: 'Launch'})")
+
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await onto.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="DATE")])
+                    ]
+                )
+            )
+
+    async def test_a_relation_with_a_relates_edge_is_refused(self, onto_and_data):
+        from graphrag_sdk.storage.ontology_store import OntologyModificationNotAllowedError
+
+        onto, connection = onto_and_data
+        await _register(onto, Relation(label="R", patterns=[("A", "B")]))
+        await connection.query(
+            "CREATE (:__Entity__:A {name: 'a'})-[:RELATES {rel_type: 'R'}]->(:__Entity__:B {name: 'b'})"
+        )
+
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await onto.register(
+                Ontology(relations=[Relation(label="R", patterns=[("A", "B"), ("B", "A")])])
+            )
+
+    async def test_a_relation_with_a_typed_edge_is_refused(self, onto_and_data):
+        """backfill_relation_pattern writes the relation type itself, not RELATES."""
+        from graphrag_sdk.storage.ontology_store import OntologyModificationNotAllowedError
+
+        onto, connection = onto_and_data
+        await _register(onto, Relation(label="R", patterns=[("A", "B")]))
+        await connection.query("CREATE (:__Entity__:A {name: 'a'})-[:R]->(:__Entity__:B {name: 'b'})")
+
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await onto.register(
+                Ontology(relations=[Relation(label="R", patterns=[("A", "B"), ("B", "A")])])
+            )
+
+    async def test_a_relation_with_no_edges_takes_a_pattern(self, onto_and_data):
+        onto, connection = onto_and_data
+        await _register(onto, Relation(label="R", patterns=[("A", "B")]))
+        await connection.query(
+            "CREATE (:__Entity__:A {name: 'a'})-[:RELATES {rel_type: 'OTHER'}]->(:__Entity__:B {name: 'b'})"
+        )
+
+        await onto.register(Ontology(relations=[Relation(label="R", patterns=[("A", "B"), ("B", "A")])]))
+
+        (relation,) = (await onto.load()).relations
+        assert sorted(relation.patterns) == [("A", "B"), ("B", "A")]
+
+
+class TestStructureEdgesAreNotRelationData:
+    """Every ingested document writes Document-[:PART_OF]->Chunk; a declared
+    PART_OF relation with no edges of its own still holds no data."""
+
+    async def test_a_part_of_relation_with_only_structure_edges_takes_a_pattern(
+        self, onto_and_data
+    ):
+        onto, connection = onto_and_data
+        await _register(onto, Relation(label="PART_OF", patterns=[("Organ", "BodySystem")]))
+        await connection.query(
+            "CREATE (:Document {id: 'd'})-[:PART_OF]->(:Chunk {id: 'c'}), "
+            "(:Chunk {id: 'c2'})-[:NEXT_CHUNK]->(:Chunk {id: 'c3'})"
+        )
+
+        await onto.register(
+            Ontology(
+                relations=[
+                    Relation(
+                        label="PART_OF",
+                        patterns=[("Organ", "BodySystem"), ("Cell", "Organ")],
+                    )
+                ]
+            )
+        )
+
+        (relation,) = (await onto.load()).relations
+        assert sorted(relation.patterns) == [("Cell", "Organ"), ("Organ", "BodySystem")]
+
+
+class TestARelationNamedRelates:
+    async def test_other_relations_edges_are_not_its_data(self, onto_and_data):
+        onto, connection = onto_and_data
+        await _register(onto, Relation(label="RELATES", patterns=[("A", "B")]))
+        await connection.query(
+            "CREATE (:__Entity__:A {name: 'a'})-[:RELATES {rel_type: 'WORKS_AT'}]->(:__Entity__:B {name: 'b'})"
+        )
+
+        await onto.register(
+            Ontology(relations=[Relation(label="RELATES", patterns=[("A", "B"), ("B", "A")])])
+        )
+
+        (relation,) = (await onto.load()).relations
+        assert sorted(relation.patterns) == [("A", "B"), ("B", "A")]
+
+
+class TestAFirstOntologyOverTheDefaultSeed:
+    """GraphRAG-Server, in production: a new graph, read once (which seeds the
+    eleven default labels), then a first ontology whose ``Event`` has
+    attributes. It was refused: "Refusing to add new attribute(s)
+    ['event_type', 'timestamp'] to existing label 'Event'"."""
+
+    async def test_set_ontology_gives_the_seeded_event_its_attributes(
+        self, real_falkordb_rag_factory, llm
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=None)
+        try:
+            seeded = await rag.get_ontology()
+            assert "Event" in {e.label for e in seeded.entities}, "precondition: the seed ran"
+
+            ontology = await rag.set_ontology(
+                Ontology(
+                    entities=[
+                        Entity(
+                            label="Event",
+                            properties=[
+                                Attribute(name="event_type", type="STRING"),
+                                Attribute(name="timestamp", type="DATE"),
+                            ],
+                        )
+                    ]
+                )
+            )
+
+            (event,) = [e for e in ontology.entities if e.label == "Event"]
+            assert {"event_type", "timestamp"} <= {p.name for p in event.properties}
+        finally:
+            await rag._ontology_store.clear()
+
+
+class TestAnAttributeOnlyDeclarationOfAPatternedRelation:
+    """``Relation(label, properties=[...])`` with no patterns, on a stored
+    patterned relation with no edges: the attribute must reach that pattern,
+    not an open-mode node the load never reads for it."""
+
+    async def test_the_attribute_lands_on_the_stored_pattern(self, onto_and_data):
+        onto, _ = onto_and_data
+        await _register(onto, Relation(label="R", patterns=[("A", "B")]))
+
+        await onto.register(
+            Ontology(relations=[Relation(label="R", properties=[Attribute(name="role", type="STRING")])])
+        )
+
+        (relation,) = (await onto.load()).relations
+        assert relation.patterns == [("A", "B")]
+        assert [p.name for p in relation.properties] == ["role"]
+
+
+class TestExtendingARelationKeepsItsPatternsAligned:
+    """What a declaration adds to a stored relation with no edges must sit on
+    every pattern of the relation: a property kept on some patterns only is
+    lost from the relation once one of those patterns is dropped."""
+
+    @staticmethod
+    async def _properties_by_pattern(onto) -> dict[tuple[str, str], list[str]]:
+        result = await onto._query(
+            "MATCH (s:Entity)<-[:SOURCE]-(r:Relation {label: 'R'})-[:TARGET]->(t:Entity) "
+            "OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(p:Property) "
+            "RETURN s.label, t.label, collect(p.label)",
+            read_only=True,
+        )
+        return {(row[0], row[1]): sorted(row[2]) for row in result.result_set}
+
+    async def test_a_new_pattern_takes_the_stored_properties(self, onto_and_data):
+        onto, _ = onto_and_data
+        await _register(
+            onto,
+            Relation(
+                label="R", patterns=[("A", "B")], properties=[Attribute(name="since", type="DATE")]
+            ),
+        )
+
+        await onto.register(Ontology(relations=[Relation(label="R", patterns=[("A", "B"), ("B", "A")])]))
+
+        assert await self._properties_by_pattern(onto) == {
+            ("A", "B"): ["since"],
+            ("B", "A"): ["since"],
+        }
+        await onto.drop_relation_pattern_node("R", "A", "B")
+        (relation,) = (await onto.load()).relations
+        assert [p.name for p in relation.properties] == ["since"]
+
+    async def test_an_attribute_declared_with_some_patterns_reaches_all(self, onto_and_data):
+        onto, _ = onto_and_data
+        await _register(onto, Relation(label="R", patterns=[("A", "B"), ("B", "A")]))
+
+        await onto.register(
+            Ontology(
+                relations=[
+                    Relation(
+                        label="R",
+                        patterns=[("A", "B")],
+                        properties=[Attribute(name="role", type="STRING")],
+                    )
+                ]
+            )
+        )
+
+        assert await self._properties_by_pattern(onto) == {
+            ("A", "B"): ["role"],
+            ("B", "A"): ["role"],
+        }
+        await onto.drop_relation_pattern_node("R", "A", "B")
+        (relation,) = (await onto.load()).relations
+        assert [p.name for p in relation.properties] == ["role"]
+
+    async def test_a_half_done_registration_is_repaired_by_the_next(self, onto_and_data):
+        """A registration that stopped after writing a new pattern, before its
+        properties: on the retry that pattern is no longer new, and must still
+        end up with the relation's properties."""
+        onto, _ = onto_and_data
+        await _register(
+            onto,
+            Relation(
+                label="R", patterns=[("A", "B")], properties=[Attribute(name="since", type="DATE")]
+            ),
+        )
+        await onto._upsert_relation_type(Relation(label="R", patterns=[("B", "A")]))  # half-done
+
+        await onto.register(Ontology(relations=[Relation(label="R", patterns=[("A", "B"), ("B", "A")])]))
+
+        assert await self._properties_by_pattern(onto) == {
+            ("A", "B"): ["since"],
+            ("B", "A"): ["since"],
+        }
