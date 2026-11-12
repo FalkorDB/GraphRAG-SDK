@@ -61,6 +61,23 @@ _TRANSIENT_BACKOFF_S = (1.0, 4.0)
 _MAX_RETRY_AFTER_S = 60.0
 
 
+#: What a ``chunk_id`` prefix says about the call, for the retry warning. The
+#: rest of the id is left out of the log: it can carry a document id, often a
+#: file path.
+_STAGES = {
+    "summary": "discovery summary",
+    "normalize": "discovery normalization",
+    "trim": "grounded trim",
+    "table": "table mapping proposal",
+}
+
+
+def _stage(chunk_id: str | None) -> str:
+    if not chunk_id:
+        return "model"
+    return _STAGES.get(chunk_id.split(":", 1)[0], "discovery chunk proposal")
+
+
 def _jittered(delay: float) -> float:
     """``delay`` spread over 0.5x-1.5x, as ``LLMInterface.ainvoke`` does.
 
@@ -70,7 +87,9 @@ def _jittered(delay: float) -> float:
     return delay * (0.5 + random.random())
 
 
-async def _call_once(llm: LLMInterface, history: list[ChatMessage]) -> LLMResponse:
+async def _call_once(
+    llm: LLMInterface, history: list[ChatMessage], *, stage: str = "model"
+) -> LLMResponse:
     """One logical model call, retried apart from the parse budget when it fails temporarily.
 
     The provider's own retry loop is disabled (``max_retries=1``) so that the
@@ -102,7 +121,8 @@ async def _call_once(llm: LLMInterface, history: list[ChatMessage]) -> LLMRespon
             # document id (often a file path) and the exception text can carry
             # request content, and a WARNING may reach shared log streams.
             logger.warning(
-                "discovery model call failed (retry %d/%d in %.1fs): %s",
+                "%s call failed (retry %d/%d in %.1fs): %s",
+                stage,
                 retry + 1,
                 len(_TRANSIENT_BACKOFF_S),
                 wait,
@@ -178,7 +198,7 @@ async def extract_with_retry(
         # A temporary provider failure is retried inside ``_call_once`` and
         # is not counted as an attempt; see its docstring for why the
         # provider's own retry loop is off.
-        response = await _call_once(llm, history)
+        response = await _call_once(llm, history, stage=_stage(chunk_id))
         history.append(ChatMessage(role="assistant", content=response.content))
 
         text = _strip_fences(response.content)

@@ -414,6 +414,31 @@ class TestExtractWithRetryTransientErrors:
         assert "SECRET" not in message and "private/report.pdf" not in message
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("chunk_id", "stage"),
+        [
+            ("summary:file:private/report.pdf", "discovery summary"),
+            ("normalize", "discovery normalization"),
+            ("table:employees", "table mapping proposal"),
+            ("chunk-3", "discovery chunk proposal"),
+        ],
+    )
+    async def test_the_retry_warning_names_the_step(
+        self, caplog: pytest.LogCaptureFixture, chunk_id: str, stage: str
+    ) -> None:
+        """A CSV ingest retrying its mapping proposal must not read as a
+        discovery failure; the id itself (a file path, a table) stays out."""
+        llm = _FlakyLLM([_ProviderError(503)], [_valid_doc_summary_json()])
+        with caplog.at_level("WARNING", logger="graphrag_sdk.discovery.instructor"):
+            await extract_with_retry(
+                llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, chunk_id=chunk_id
+            )
+        (record,) = caplog.records
+        message = record.getMessage()
+        assert message.startswith(f"{stage} call failed")
+        assert chunk_id.split(":", 1)[-1] not in message or chunk_id == "normalize"
+
+    @pytest.mark.asyncio
     async def test_a_recovered_call_logs_nothing_above_warning_through_a_real_provider(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
