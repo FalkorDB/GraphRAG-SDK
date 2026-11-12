@@ -88,19 +88,7 @@ def is_transient_llm_error(exc: BaseException) -> bool:
 
 def _wraps_missing_dependency(exc: BaseException) -> bool:
     """Whether ``exc``, or what it wraps, is an ``ImportError``."""
-    current: BaseException | None = exc
-    for _ in range(_MAX_CAUSE_DEPTH + 1):
-        if current is None:
-            return False
-        if isinstance(current, ImportError):
-            return True
-        following = current.__cause__
-        if following is None and not current.__suppress_context__:
-            following = current.__context__
-        if following is current:
-            return False
-        current = following
-    return False
+    return any(isinstance(link, ImportError) for link in _wrapped_chain(exc))
 
 
 def _is_transient(exc: BaseException, depth: int) -> bool:
@@ -162,27 +150,48 @@ def final_failure_log_level(exc: BaseException | None) -> int:
     return logging.ERROR
 
 
+def _wrapped_chain(exc: BaseException) -> Iterator[BaseException]:
+    """``exc``, then what it wraps: ``raise ... from err``, or an error raised
+    while handling one (unless ``from None`` hid it), up to the classifier's
+    depth."""
+    current: BaseException | None = exc
+    for _ in range(_MAX_CAUSE_DEPTH + 1):
+        if current is None:
+            return
+        yield current
+        following = current.__cause__
+        if following is None and not current.__suppress_context__:
+            following = current.__context__
+        if following is current:
+            return
+        current = following
+
+
 def _reply_header(exc: BaseException, name: str) -> str | None:
     """A header of the HTTP reply a provider exception carries, if any.
 
-    openai and LiteLLM exceptions keep the reply on ``exc.response``
-    (an ``httpx.Response``); LiteLLM also copies its headers to
-    ``exc.litellm_response_headers``. Lookups are case-insensitive on
+    Looked for wherever the classifier can find the status: on the exception
+    and on what it wraps. openai, LiteLLM and httpx keep the reply on
+    ``exc.response`` (an ``httpx.Response``); LiteLLM also copies its headers
+    to ``exc.litellm_response_headers``; aiohttp's ``ClientResponseError``
+    has them on ``exc.headers``. Lookups are case-insensitive on
     ``httpx.Headers``; plain dicts are expected to use lowercase names.
     """
-    for headers in (
-        getattr(getattr(exc, "response", None), "headers", None),
-        getattr(exc, "litellm_response_headers", None),
-    ):
-        getter = getattr(headers, "get", None)
-        if getter is None:
-            continue
-        try:
-            value = getter(name)
-        except Exception:  # noqa: BLE001 - reading a header must never mask the error
-            continue
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    for link in _wrapped_chain(exc):
+        for headers in (
+            getattr(getattr(link, "response", None), "headers", None),
+            getattr(link, "litellm_response_headers", None),
+            getattr(link, "headers", None),
+        ):
+            getter = getattr(headers, "get", None)
+            if getter is None:
+                continue
+            try:
+                value = getter(name)
+            except Exception:  # noqa: BLE001 - reading a header must never mask the error
+                continue
+            if isinstance(value, str) and value.strip():
+                return value.strip()
     return None
 
 

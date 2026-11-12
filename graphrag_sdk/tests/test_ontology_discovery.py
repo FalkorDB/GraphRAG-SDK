@@ -380,6 +380,38 @@ class TestExtractWithRetryTransientErrors:
             )
         assert len(llm.calls) == 1
 
+    @pytest.mark.asyncio
+    async def test_a_wrapped_reply_still_governs_the_retry(self) -> None:
+        """The classifier finds a 429 a custom provider wrapped; the reply's
+        'do not retry' on that 429 must be read from the same place."""
+        try:
+            try:
+                raise self._rate_limited({"x-should-retry": "false"})
+            except _ProviderError as reply:
+                raise RuntimeError("provider failed") from reply
+        except RuntimeError as wrapped:
+            error = wrapped
+        llm = _FlakyLLM([error], [_valid_doc_summary_json()])
+        with pytest.raises(RuntimeError):
+            await extract_with_retry(
+                llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+            )
+        assert len(llm.calls) == 1
+
+    def test_retry_headers_are_read_where_aiohttp_keeps_them(self) -> None:
+        """aiohttp's ClientResponseError has its status on ``status`` and its
+        headers on ``headers``, not on a response object."""
+        from graphrag_sdk.core.providers._retry import provider_refuses_retry, retry_after_seconds
+
+        class ClientResponseError(Exception):
+            def __init__(self, status: int, headers: dict[str, str]) -> None:
+                super().__init__(str(status))
+                self.status = status
+                self.headers = headers
+
+        assert retry_after_seconds(ClientResponseError(429, {"retry-after": "5"})) == 5.0
+        assert provider_refuses_retry(ClientResponseError(429, {"x-should-retry": "false"}))
+
     def test_retry_after_reads_an_http_date(self) -> None:
         from email.utils import format_datetime
         from datetime import datetime, timedelta, timezone
