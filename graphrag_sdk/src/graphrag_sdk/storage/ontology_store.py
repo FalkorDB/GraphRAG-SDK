@@ -1179,6 +1179,11 @@ class OntologyStore:
         A declaration without patterns means "the stored relation".
         """
         if rt.patterns:
+            if rt.description is None and prior.description is not None:
+                # load() reads a relation's description from its patterns
+                # first, so a first pattern written without one would hide
+                # the description an open-mode relation already has.
+                rt = rt.model_copy(update={"description": prior.description})
             # MERGEs the declared patterns, their endpoint entities and the
             # declared properties on them, as for a new relation.
             await self._upsert_relation_type(rt)

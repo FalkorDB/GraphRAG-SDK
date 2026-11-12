@@ -904,6 +904,26 @@ class TestModificationOfALabelWithNoData:
         assert not [c for c in fake_graph.calls if "MERGE" in c[0] or "SET p.type" in c[0]]
 
     @pytest.mark.asyncio
+    async def test_an_open_relation_keeps_its_description_when_it_gains_a_pattern(
+        self, store_factory, fake_graph
+    ):
+        """load() reads the description from the patterns first: the first
+        pattern must carry the stored one when the declaration names none."""
+        store = store_factory()
+        fake_graph.set_load_response(
+            entities=[["A", None], ["B", None]], open_relations=[["R", "how A relates to B"]]
+        )
+        self._data(store, rows=[])
+        await store.register(Ontology(relations=[Relation(label="R", patterns=[("A", "B")])]))
+        pattern_writes = [
+            c for c in fake_graph.calls if "MERGE (s)<-[:SOURCE]-(r:Relation {label: $rel_label})" in c[0]
+        ]
+        # The first write creates the pattern with the stored description; any
+        # later MERGE of it passes None, which coalesce() leaves alone.
+        assert pattern_writes[0][1]["description"] == "how A relates to B"
+        assert all((c[1] or {}).get("description") in (None, "how A relates to B") for c in pattern_writes)
+
+    @pytest.mark.asyncio
     async def test_no_data_check_runs_when_nothing_is_added(self, store_factory, fake_graph):
         store = store_factory()
         fake_graph.set_load_response(
