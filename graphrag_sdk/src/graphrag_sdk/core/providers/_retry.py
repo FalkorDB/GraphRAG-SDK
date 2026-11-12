@@ -63,6 +63,17 @@ def is_transient_llm_error(exc: BaseException) -> bool:
     return isinstance(exc, (ConnectionError, *_provider_connection_errors()))
 
 
+def describe_llm_error(exc: BaseException) -> str:
+    """``TypeName (HTTP 503)``: an LLM error for a shared log, without its text.
+
+    The exception text can carry request content, so a WARNING that may
+    reach shared log streams names only the type and the HTTP status.
+    """
+    status = _status_code(exc)
+    name = type(exc).__name__
+    return f"{name} (HTTP {status})" if status is not None else name
+
+
 def _provider_connection_errors() -> tuple[type[BaseException], ...]:
     """Status-less connection errors of optional provider clients that are installed."""
     try:

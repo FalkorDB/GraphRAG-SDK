@@ -794,6 +794,104 @@ class TestPipeline:
         assert {"Person", "Company"} <= {e.label for e in result.entities}
 
 
+class _ScriptedLLM(RecordingMockLLM):
+    """Each call takes the next step: a reply, or an exception to raise."""
+
+    def __init__(self, steps: list[str | BaseException]) -> None:
+        super().__init__(responses=[])
+        self._steps = list(steps)
+
+    async def ainvoke_messages(self, messages, *, max_retries=3, **kwargs):
+        self.all_calls.append([m.model_copy() for m in messages])
+        step = self._steps.pop(0)
+        if isinstance(step, BaseException):
+            raise step
+        from graphrag_sdk.core.models import LLMResponse
+
+        return LLMResponse(content=step)
+
+
+class TestPipelineTemporaryFailures:
+    """A temporary model failure that outlasts the wrapper's retries (three
+    tries per call) takes the same fallback as a call that never returned
+    valid JSON, except for a chunk proposal: skipping every chunk during an
+    outage would return an empty draft as if the documents held nothing."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def _sleep(delay: float) -> None:
+            return None
+
+        monkeypatch.setattr("graphrag_sdk.discovery.instructor.asyncio.sleep", _sleep)
+
+    @staticmethod
+    async def _run(tmp_path: Path, llm: _ScriptedLLM) -> Ontology:
+        src = tmp_path / "doc.txt"
+        src.write_text("Alice works at Acme.")
+        return await discover_ontology(
+            str(src),
+            llm,
+            sample_chunks_per_doc=1,
+            max_retries=0,
+            concurrency=1,
+            chunker=FixedChunker(["text"]),
+            seed=42,
+        )
+
+    @pytest.mark.asyncio
+    async def test_normalization_falls_back_to_the_merged_draft(self, tmp_path: Path) -> None:
+        down = [_ProviderError(503) for _ in range(3)]
+        llm = _ScriptedLLM([_valid_doc_summary_json(), _valid_chunk_proposal_json(), *down])
+        result = await self._run(tmp_path, llm)
+        assert {"Person", "Company"} <= {e.label for e in result.entities}
+        assert len(llm.all_calls) == 5
+
+    @pytest.mark.asyncio
+    async def test_the_summary_is_skipped_and_the_chunks_still_run(self, tmp_path: Path) -> None:
+        down = [_ProviderError(503) for _ in range(3)]
+        llm = _ScriptedLLM(
+            [*down, _valid_chunk_proposal_json(), _valid_normalized_json()],
+        )
+        result = await self._run(tmp_path, llm)
+        assert {"Person", "Company"} <= {e.label for e in result.entities}
+
+    @pytest.mark.asyncio
+    async def test_a_chunk_proposal_still_fails_the_run(self, tmp_path: Path) -> None:
+        down = [_ProviderError(503) for _ in range(3)]
+        llm = _ScriptedLLM([_valid_doc_summary_json(), *down])
+        with pytest.raises(_ProviderError):
+            await self._run(tmp_path, llm)
+
+    @pytest.mark.asyncio
+    async def test_the_grounded_trim_keeps_every_property(self) -> None:
+        from graphrag_sdk.discovery.pipeline import _trim_type_properties
+
+        properties = [
+            Attribute(name="name", type="STRING"),
+            Attribute(name="founded", type="DATE"),
+        ]
+        llm = _ScriptedLLM([_ProviderError(503) for _ in range(3)])
+        kept = await _trim_type_properties(
+            llm,
+            "Company",
+            properties,
+            [TextChunk(text="Acme was founded in 1999.", index=0, uid="c0")],
+            max_retries=0,
+        )
+        assert kept == properties
+        assert len(llm.all_calls) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_permanent_error_on_normalization_still_fails_the_run(
+        self, tmp_path: Path
+    ) -> None:
+        llm = _ScriptedLLM(
+            [_valid_doc_summary_json(), _valid_chunk_proposal_json(), _ProviderError(401)]
+        )
+        with pytest.raises(_ProviderError):
+            await self._run(tmp_path, llm)
+
+
 # ── _ensure_sdk_managed_attributes ────────────────────────────────
 
 

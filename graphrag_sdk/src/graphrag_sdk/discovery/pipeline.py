@@ -46,6 +46,7 @@ from graphrag_sdk.core.models import (
     TextChunk,
     TextChunks,
 )
+from graphrag_sdk.core.providers._retry import describe_llm_error, is_transient_llm_error
 from graphrag_sdk.discovery.catalog import Catalog
 from graphrag_sdk.discovery.instructor import extract_with_retry
 from graphrag_sdk.discovery.prompts import (
@@ -302,6 +303,19 @@ async def _run_doc_summary(
             exc.last_error,
         )
         return DocSummary()
+    except Exception as exc:
+        # A temporary model failure that outlasted the wrapper's retries:
+        # the anchor is optional, so carry on without it. If the provider is
+        # really down, the chunk calls that follow fail and end the run.
+        if not is_transient_llm_error(exc):
+            raise
+        logger.warning(
+            "Doc summary for %s kept failing with a temporary model error; "
+            "continuing without anchor: %s",
+            doc_id,
+            describe_llm_error(exc),
+        )
+        return DocSummary()
 
 
 async def _run_chunk_proposal(
@@ -317,7 +331,10 @@ async def _run_chunk_proposal(
 
     Returns ``None`` on exhausted retries so the doc-level merge can
     simply skip this chunk — soft-fail at the pipeline level, strict at
-    the wrapper level.
+    the wrapper level. A temporary model failure that outlasts the
+    wrapper's retries is raised, not skipped: when the provider is down,
+    every chunk would be skipped and the run would return an empty draft
+    as if the documents held nothing.
     """
     schema = ChunkProposal.model_json_schema()
     try:
@@ -378,6 +395,17 @@ async def _run_normalization(
             "draft un-normalized. Last error: %s",
             exc.attempts,
             exc.last_error,
+        )
+        return merged
+    except Exception as exc:
+        # Every summary and chunk call has already been paid for: a temporary
+        # failure on this last call must not throw their results away.
+        if not is_transient_llm_error(exc):
+            raise
+        logger.warning(
+            "Normalization kept failing with a temporary model error; returning "
+            "the merged draft un-normalized: %s",
+            describe_llm_error(exc),
         )
         return merged
     return _proposal_to_ontology(normalized.entities, normalized.relations)
@@ -706,6 +734,17 @@ async def _trim_type_properties(
             exc.attempts,
             len(properties),
             exc.last_error,
+        )
+        return properties
+    except Exception as exc:
+        if not is_transient_llm_error(exc):
+            raise
+        logger.warning(
+            "grounded trim: %s kept failing with a temporary model error; keeping "
+            "all %d catalog properties: %s",
+            type_name,
+            len(properties),
+            describe_llm_error(exc),
         )
         return properties
 
