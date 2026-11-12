@@ -1046,13 +1046,18 @@ class TestPipelineTemporaryFailures:
         assert len(llm.all_calls) == 5
 
     @pytest.mark.asyncio
-    async def test_the_summary_is_skipped_and_the_chunks_still_run(self, tmp_path: Path) -> None:
+    async def test_the_summary_is_skipped_and_the_chunks_still_run(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         down = [_ProviderError(503) for _ in range(3)]
         llm = _ScriptedLLM(
             [*down, _valid_chunk_proposal_json(), _valid_normalized_json()],
         )
-        result = await self._run(tmp_path, llm)
+        with caplog.at_level("WARNING"):
+            result = await self._run(tmp_path, llm)
         assert {"Person", "Company"} <= {e.label for e in result.entities}
+        # The source path (the document id) stays out of WARNING logs.
+        assert not [r for r in caplog.records if str(tmp_path) in r.getMessage()]
 
     @pytest.mark.asyncio
     async def test_a_chunk_proposal_still_fails_the_run(self, tmp_path: Path) -> None:

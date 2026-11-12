@@ -331,12 +331,13 @@ async def _run_doc_summary(
         # really down, the chunk calls that follow fail and end the run.
         if not is_transient_llm_error(exc):
             raise
+        # The document id is usually a file path, and a WARNING may reach
+        # shared log streams: it goes to DEBUG only, as in the retry warning.
         logger.warning(
-            "Doc summary for %s kept failing with a temporary model error; "
-            "continuing without anchor: %s",
-            doc_id,
+            "Doc summary kept failing with a temporary model error; continuing without anchor: %s",
             describe_llm_error(exc),
         )
+        logger.debug("Doc summary without anchor for %s", doc_id)
         return DocSummary()
 
 
