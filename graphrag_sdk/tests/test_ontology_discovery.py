@@ -365,6 +365,40 @@ class TestExtractWithRetryTransientErrors:
         assert "SECRET" not in message and "private/report.pdf" not in message
 
     @pytest.mark.asyncio
+    async def test_a_recovered_call_logs_nothing_above_warning_through_a_real_provider(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Through the SDK's own provider loop (not a stand-in for it): the
+        provider gives up after its single attempt, and must not log that as an
+        ERROR carrying the exception text when discovery then retries and
+        succeeds."""
+        from graphrag_sdk.core.models import LLMResponse
+        from graphrag_sdk.core.providers.base import LLMInterface
+
+        class _OnceFailingProvider(LLMInterface):
+            def __init__(self) -> None:
+                super().__init__(model_name="flaky")
+                self.calls = 0
+
+            def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+                self.calls += 1
+                if self.calls == 1:
+                    error = _ProviderError(500)
+                    error.args = ("Azure said: SECRET-REQUEST-BODY",)
+                    raise error
+                return LLMResponse(content=_valid_doc_summary_json())
+
+        llm = _OnceFailingProvider()
+        with caplog.at_level("WARNING"):
+            result = await extract_with_retry(
+                llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary
+            )
+        assert result.aboutness == "Test doc"
+        assert llm.calls == 2
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+        assert not [r for r in caplog.records if "SECRET" in r.getMessage()]
+
+    @pytest.mark.asyncio
     async def test_persistent_server_error_is_raised_after_the_budget(self) -> None:
         failures = [_ProviderError(500) for _ in range(10)]
         llm = _FlakyLLM(failures, [_valid_doc_summary_json()])
