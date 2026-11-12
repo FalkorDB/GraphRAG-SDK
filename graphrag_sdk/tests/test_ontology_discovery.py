@@ -590,6 +590,67 @@ class TestIsTransientLLMError:
         assert is_transient_llm_error(APIConnectionError("Connection error."))
         assert not is_transient_llm_error(ValueError("x"))
 
+    def test_custom_provider_connection_errors_are_transient(self, monkeypatch) -> None:
+        """A custom provider on httpx, aiohttp or requests drops a connection
+        the same way OpenRouter does; its status, if any, may sit on ``status``."""
+        import sys
+        import types
+
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        class ClientConnectionError(Exception):
+            pass
+
+        class ServerDisconnectedError(ClientConnectionError):
+            pass
+
+        fake_aiohttp = types.ModuleType("aiohttp")
+        fake_aiohttp.ClientConnectionError = ClientConnectionError  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+        assert is_transient_llm_error(ServerDisconnectedError("Server disconnected"))
+
+        class ClientResponseError(Exception):
+            def __init__(self, status: int) -> None:
+                super().__init__(f"{status}")
+                self.status = status
+
+        assert is_transient_llm_error(ClientResponseError(503))
+        assert not is_transient_llm_error(ClientResponseError(401))
+
+        httpx = pytest.importorskip("httpx")
+        assert is_transient_llm_error(httpx.ConnectError("refused"))
+        assert is_transient_llm_error(httpx.RemoteProtocolError("Server disconnected"))
+        assert not is_transient_llm_error(httpx.UnsupportedProtocol("ftp://"))
+
+    def test_a_wrapped_connection_error_is_transient(self) -> None:
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        def wrapped(cause: BaseException, *, hide: bool = False) -> RuntimeError:
+            try:
+                try:
+                    raise cause
+                except BaseException as inner:
+                    if hide:
+                        raise RuntimeError("provider failed") from None
+                    raise RuntimeError("provider failed") from inner
+            except RuntimeError as outer:
+                return outer
+
+        assert is_transient_llm_error(wrapped(ConnectionResetError("reset")))
+        assert not is_transient_llm_error(wrapped(ConnectionResetError("reset"), hide=True))
+        assert not is_transient_llm_error(wrapped(ValueError("bad config")))
+
+    def test_an_exception_group_is_transient_only_if_every_member_is(self) -> None:
+        import builtins
+
+        group = getattr(builtins, "ExceptionGroup", None)
+        if group is None:
+            pytest.skip("ExceptionGroup needs Python 3.11+")
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        assert is_transient_llm_error(group("fan-out", [ConnectionResetError("a"), _ProviderError(503)]))
+        assert not is_transient_llm_error(group("fan-out", [ConnectionResetError("a"), ValueError("b")]))
+
     def test_classifying_does_not_import_openai(self, monkeypatch) -> None:
         """An openai exception cannot exist unless openai is loaded, and a cold
         import on the first error would block the event loop."""

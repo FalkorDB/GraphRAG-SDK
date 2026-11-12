@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import builtins
 import email.utils
 import logging
 import math
@@ -39,12 +40,24 @@ _TRANSIENT_STATUSES = frozenset({408, 409, 429})
 
 
 def _status_code(exc: BaseException) -> int | None:
-    """The HTTP status a provider exception carries, on itself or its response."""
+    """The HTTP status a provider exception carries, on itself or its response.
+
+    ``status_code`` is the openai/LiteLLM/httpx spelling; aiohttp's
+    ``ClientResponseError`` keeps it on ``status``, which is only trusted as
+    an HTTP status (100-599).
+    """
     for owner in (exc, getattr(exc, "response", None)):
         status = getattr(owner, "status_code", None)
         if isinstance(status, int) and not isinstance(status, bool):
             return status
+        status = getattr(owner, "status", None)
+        if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+            return status
     return None
+
+
+#: How far down a chain of wrapped exceptions the classifier looks.
+_MAX_CAUSE_DEPTH = 5
 
 
 def is_transient_llm_error(exc: BaseException) -> bool:
@@ -54,17 +67,40 @@ def is_transient_llm_error(exc: BaseException) -> bool:
     5xx, 408, 409 or 429 is temporary, anything else (400, 401, 403, 404,
     422, a content filter) will fail the same way again. Without a status,
     only a dropped connection counts: the built-in ``ConnectionError``, or
-    the OpenAI client's ``APIConnectionError`` (raised by the OpenRouter
-    provider, with no status and outside the built-in hierarchy). An
-    ``LLMTimeoutError`` is not retried: the timeout is the caller's
-    deadline, and retrying would stretch it.
+    the connection error of an HTTP client that is loaded (openai's
+    ``APIConnectionError``, httpx, aiohttp, requests), also when it is the
+    cause of the exception a custom provider raises, or every member of an
+    exception group. An ``LLMTimeoutError`` is not retried: the timeout is
+    the caller's deadline, and retrying would stretch it.
     """
+    return _is_transient(exc, _MAX_CAUSE_DEPTH)
+
+
+def _is_transient(exc: BaseException, depth: int) -> bool:
     if isinstance(exc, LLMTimeoutError):
         return False
     status = _status_code(exc)
     if status is not None:
         return 500 <= status < 600 or status in _TRANSIENT_STATUSES
-    return isinstance(exc, (ConnectionError, *_provider_connection_errors()))
+    if isinstance(exc, (ConnectionError, *_provider_connection_errors())):
+        return True
+    if depth <= 0:
+        return False
+    members = getattr(exc, "exceptions", None)
+    if isinstance(exc, _EXCEPTION_GROUPS) and members:
+        return all(_is_transient(member, depth - 1) for member in members)
+    # What a provider wrapped: ``raise ProviderError(...) from err``, or an
+    # error raised while handling one (unless ``from None`` hid it).
+    cause = exc.__cause__
+    if cause is None and not exc.__suppress_context__:
+        cause = exc.__context__
+    return cause is not None and cause is not exc and _is_transient(cause, depth - 1)
+
+
+#: ``BaseExceptionGroup`` exists from Python 3.11.
+_EXCEPTION_GROUPS: tuple[type[BaseException], ...] = tuple(
+    group for group in (getattr(builtins, "BaseExceptionGroup", None),) if group is not None
+)
 
 
 def _reply_header(exc: BaseException, name: str) -> str | None:
@@ -152,6 +188,12 @@ _CONNECTION_ERRORS = (
     # OpenRouter, and LiteLLM's OpenAI and Azure routes; outside the
     # built-in ConnectionError hierarchy.
     ("openai", "APIConnectionError"),
+    # Custom providers (Ollama, vLLM, ...) built on a plain HTTP client.
+    ("httpx", "NetworkError"),
+    ("httpx", "RemoteProtocolError"),
+    ("httpx", "TimeoutException"),
+    ("aiohttp", "ClientConnectionError"),
+    ("requests.exceptions", "ConnectionError"),
 )
 
 

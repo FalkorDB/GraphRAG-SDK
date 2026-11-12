@@ -34,7 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `is_transient_llm_error()` in `core/providers/_retry.py` decides which is
   which: the HTTP status for provider responses (5xx, 408, 409, 429), or a
   connection error when there is no status (the built-in `ConnectionError`,
-  or the OpenAI client's `APIConnectionError` that OpenRouter raises). The
+  the OpenAI client's `APIConnectionError` that OpenRouter raises, or an
+  httpx, aiohttp or requests connection error from a custom provider, also
+  when it is the cause of the error the provider raises). The
   retry warning logs the exception type and HTTP status only.
 - **Missing ontology attributes no longer erase extracted values.**
   Values absent from a chunk no longer overwrite values from other chunks or
