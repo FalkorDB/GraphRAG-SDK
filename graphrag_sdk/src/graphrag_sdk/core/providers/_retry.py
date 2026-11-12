@@ -8,7 +8,7 @@ import email.utils
 import logging
 import math
 import sys
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -174,8 +174,8 @@ def _reply_header(exc: BaseException, name: str) -> str | None:
     and on what it wraps. openai, LiteLLM and httpx keep the reply on
     ``exc.response`` (an ``httpx.Response``); LiteLLM also copies its headers
     to ``exc.litellm_response_headers``; aiohttp's ``ClientResponseError``
-    has them on ``exc.headers``. Lookups are case-insensitive on
-    ``httpx.Headers``; plain dicts are expected to use lowercase names.
+    has them on ``exc.headers``. Header names are matched without regard to
+    case, in a plain dict as in ``httpx.Headers``.
     """
     for link in _wrapped_chain(exc):
         for headers in (
@@ -188,6 +188,11 @@ def _reply_header(exc: BaseException, name: str) -> str | None:
                 continue
             try:
                 value = getter(name)
+                if value is None and isinstance(headers, Mapping):
+                    value = next(
+                        (v for k, v in headers.items() if isinstance(k, str) and k.lower() == name),
+                        None,
+                    )
             except Exception:  # noqa: BLE001 - reading a header must never mask the error
                 continue
             if isinstance(value, str) and value.strip():

@@ -412,6 +412,15 @@ class TestExtractWithRetryTransientErrors:
         assert retry_after_seconds(ClientResponseError(429, {"retry-after": "5"})) == 5.0
         assert provider_refuses_retry(ClientResponseError(429, {"x-should-retry": "false"}))
 
+    def test_header_names_match_in_any_case(self) -> None:
+        """A plain dict of headers (a custom provider's, or a stand-in) keeps the
+        server's spelling; HTTP header names are case-insensitive."""
+        from graphrag_sdk.core.providers._retry import provider_refuses_retry, retry_after_seconds
+
+        assert retry_after_seconds(self._rate_limited({"Retry-After": "7"})) == 7.0
+        assert retry_after_seconds(self._rate_limited({"Retry-After-Ms": "2500"})) == 2.5
+        assert provider_refuses_retry(self._rate_limited({"X-Should-Retry": "False"}))
+
     def test_retry_after_reads_an_http_date(self) -> None:
         from email.utils import format_datetime
         from datetime import datetime, timedelta, timezone
