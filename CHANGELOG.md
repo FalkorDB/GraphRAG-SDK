@@ -61,21 +61,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relationship-only tables do not (#364, #384).
 - **A first ontology can give a default label its attributes.** Reading an
   empty ontology store seeds the eleven default labels with no attributes, and
-  `register()` refused any new attribute or pattern on an existing label. So
-  a new graph, read once, refused its first declared ontology: "Refusing to
-  add new attribute(s) ['event_type', 'timestamp'] to existing label 'Event'".
-  The refusal now applies only to a label that holds data (a node of that
-  label, or an edge of that relation type, in the data graph). A label with
-  none, including on a data graph that does not exist yet, may gain
-  attributes and patterns. Type changes are still refused, and when the data
-  graph cannot be read (a timeout, an unreachable server) `register()` fails
-  with that error and writes nothing. A pattern or attribute added to a
-  stored relation is written the way `add_relation_pattern` and relation
-  attributes are, so every pattern of the relation keeps the same
-  properties. The data check ignores the SDK's own structure edges
-  (`PART_OF`, `NEXT_CHUNK`, `MENTIONED_IN`) and reads the data graph the
-  store belongs to. The message for a label that holds data says to declare
-  it without the additions and add them with `add_attribute` /
+  `register()` refused any new attribute or pattern on an existing label. So a
+  new graph, read once, refused its first declared ontology: "Refusing to add
+  new attribute(s) ['event_type', 'timestamp'] to existing label 'Event'". The
+  refusal now applies only to a label that holds data (a node of that label,
+  or an edge of that relation type, in the data graph). A label with none,
+  including on a data graph that does not exist yet, may gain attributes and
+  patterns. Type changes are still refused, and when a declaration adds to a
+  stored label but the data graph cannot be read (a timeout, an unreachable
+  server), `register()` fails with that error and writes nothing. A pattern or
+  attribute added to a stored relation is written the way
+  `add_relation_pattern` and relation attributes are, so every pattern of the
+  relation keeps the same properties. The data check ignores the SDK's own
+  structure edges (`PART_OF`, `NEXT_CHUNK`, `MENTIONED_IN`) and reads the data
+  graph the store belongs to. The message for a label that holds data says to
+  declare it without the additions and add them with `add_attribute` /
   `add_relation_pattern`, instead of "not yet supported" (#395).
 
 ## [1.6.0] - 2026-11-02
