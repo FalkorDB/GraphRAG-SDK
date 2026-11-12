@@ -768,6 +768,26 @@ class TestModificationOfALabelWithNoData:
             )
 
     @pytest.mark.asyncio
+    async def test_the_first_label_that_holds_data_ends_the_check(
+        self, store_factory, fake_graph
+    ):
+        """Once one label refuses, the rest of the declaration is refused too,
+        so the data graph is not asked about the others."""
+        store = store_factory()
+        fake_graph.set_load_response(entities=[["Event", None], ["Venue", None]])
+        query = self._data(store, rows=[[1]])
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="DATE")]),
+                        Entity(label="Venue", properties=[Attribute(name="city", type="STRING")]),
+                    ]
+                )
+            )
+        assert query.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_no_data_check_runs_when_nothing_is_added(self, store_factory, fake_graph):
         store = store_factory()
         fake_graph.set_load_response(

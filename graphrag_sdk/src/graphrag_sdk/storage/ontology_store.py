@@ -448,12 +448,7 @@ class OntologyStore:
 
         existing = await self.load()
         self._check_no_contradictions(existing, ontology)
-        populated = {
-            owner
-            for owner in self._modified_labels(existing, ontology)
-            if await self._holds_data(*owner)
-        }
-        self._check_no_modifications_to_existing(existing, ontology, populated=populated)
+        await self._check_no_modifications_to_existing(existing, ontology)
         self._check_no_signature_collision(existing, ontology)
         self._check_one_key_per_label(existing, ontology)
 
@@ -597,27 +592,6 @@ class OntologyStore:
                         f"registered as {prior}; refusing to redefine as {p.type}."
                     )
 
-    @staticmethod
-    def _modified_labels(existing: Ontology, incoming: Ontology) -> list[tuple[str, str]]:
-        """``("entity" | "relation", label)`` for each stored label ``incoming`` adds to."""
-        modified: list[tuple[str, str]] = []
-        existing_ent_by_label = {e.label: e for e in existing.entities}
-        for et in incoming.entities:
-            prior_et = existing_ent_by_label.get(et.label)
-            if prior_et is not None and {p.name for p in et.properties} - {
-                p.name for p in prior_et.properties
-            }:
-                modified.append(("entity", et.label))
-        existing_rel_by_label = {r.label: r for r in existing.relations}
-        for rt in incoming.relations:
-            prior_rt = existing_rel_by_label.get(rt.label)
-            if prior_rt is None:
-                continue
-            new_props = {p.name for p in rt.properties} - {p.name for p in prior_rt.properties}
-            if new_props or set(rt.patterns) - set(prior_rt.patterns):
-                modified.append(("relation", rt.label))
-        return modified
-
     async def _holds_data(self, kind: str, label: str) -> bool:
         """Whether the data graph has a node (or edge) of this ontology label.
 
@@ -656,12 +630,8 @@ class OntologyStore:
                 return True
         return False
 
-    @staticmethod
-    def _check_no_modifications_to_existing(
-        existing: Ontology,
-        incoming: Ontology,
-        *,
-        populated: set[tuple[str, str]] | None = None,
+    async def _check_no_modifications_to_existing(
+        self, existing: Ontology, incoming: Ontology
     ) -> None:
         """Raise :py:class:`OntologyModificationNotAllowedError` when incoming
         tries to add new properties / patterns to a label that's already
@@ -671,24 +641,21 @@ class OntologyStore:
         the incoming ontology with fewer (or zero) properties — that's treated
         as "use the persisted definition" rather than "remove things."
 
-        ``populated`` lists the ``(kind, label)`` pairs that hold data in the
-        data graph. A label outside it has nothing for a new attribute or
-        pattern to fall out of line with, so it may gain them: the default
-        seed's bare ``Event`` can become the ``Event`` a first ontology
-        declares. ``None`` treats every label as holding data.
+        A stored label with no node (or edge) in the data graph has nothing
+        for a new attribute or pattern to fall out of line with, so it may
+        gain them: the default seed's bare ``Event`` can become the ``Event``
+        a first ontology declares. The data graph is asked only about a label
+        the declaration adds to, and the first label that holds data ends
+        the check.
         """
-
-        def frozen(kind: str, label: str) -> bool:
-            return populated is None or (kind, label) in populated
-
         existing_ent_by_label = {e.label: e for e in existing.entities}
         for et in incoming.entities:
             prior_et = existing_ent_by_label.get(et.label)
-            if prior_et is None or not frozen("entity", et.label):
+            if prior_et is None:
                 continue
             prior_prop_names = {p.name for p in prior_et.properties}
             new_prop_names = {p.name for p in et.properties} - prior_prop_names
-            if new_prop_names:
+            if new_prop_names and await self._holds_data("entity", et.label):
                 raise OntologyModificationNotAllowedError(
                     f"Refusing to add new attribute(s) {sorted(new_prop_names)} "
                     f"to existing label '{et.label}', which already holds data: "
@@ -702,13 +669,13 @@ class OntologyStore:
         existing_rel_by_label = {r.label: r for r in existing.relations}
         for rt in incoming.relations:
             prior_rt = existing_rel_by_label.get(rt.label)
-            if prior_rt is None or not frozen("relation", rt.label):
+            if prior_rt is None:
                 continue
             prior_prop_names = {p.name for p in prior_rt.properties}
             new_prop_names = {p.name for p in rt.properties} - prior_prop_names
             prior_patterns = set(prior_rt.patterns)
             new_patterns = set(rt.patterns) - prior_patterns
-            if new_prop_names or new_patterns:
+            if (new_prop_names or new_patterns) and await self._holds_data("relation", rt.label):
                 diffs: list[str] = []
                 if new_prop_names:
                     diffs.append(f"new properties {sorted(new_prop_names)}")
