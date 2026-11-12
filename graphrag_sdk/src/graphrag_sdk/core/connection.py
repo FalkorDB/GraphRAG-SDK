@@ -28,7 +28,9 @@ def is_missing_graph_error(exc: BaseException) -> bool:
     "Invalid graph operation on empty key", raw from the driver or wrapped
     in a ``DatabaseError``. For a read that means "no rows", not a failure.
     Every caller that tells the two apart goes through here, so a change in
-    the server's wording is fixed in one place.
+    the server's wording is fixed here. (Queries that pass
+    ``expected_errors=("empty key",)`` to the connection only quiet that
+    reply in its log; they do not tell it apart from other failures.)
     """
     return "empty key" in str(exc).lower()
 
