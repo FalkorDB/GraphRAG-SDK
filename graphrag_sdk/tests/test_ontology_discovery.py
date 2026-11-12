@@ -369,7 +369,15 @@ class TestExtractWithRetryTransientErrors:
         assert _no_backoff == [waited]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("headers", [{"retry-after": "300"}, {"x-should-retry": "false"}])
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            {"retry-after": "300"},
+            {"retry-after": "1e400"},  # too large for a float: an endless wait
+            {"retry-after-ms": "1e400"},
+            {"x-should-retry": "false"},
+        ],
+    )
     async def test_the_provider_can_end_the_retries(self, headers: dict[str, str]) -> None:
         """A wait past the cap, or an explicit 'do not retry' (an exhausted
         quota is a 429 too), is raised at once instead of resent."""

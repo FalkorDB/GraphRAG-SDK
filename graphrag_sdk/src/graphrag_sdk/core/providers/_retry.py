@@ -213,7 +213,8 @@ def retry_after_seconds(exc: BaseException) -> float | None:
 
     Reads ``retry-after-ms`` (milliseconds, sent by OpenAI and Azure), then
     ``retry-after`` (seconds or an HTTP date) from the reply the exception
-    carries. A value that does not parse is ignored.
+    carries. A value that does not parse is ignored; one too large for a
+    float is an endless wait (``math.inf``), past any cap, not "no hint".
     """
     raw_ms = _reply_header(exc, "retry-after-ms")
     if raw_ms is not None:
@@ -221,6 +222,8 @@ def retry_after_seconds(exc: BaseException) -> float | None:
             millis = float(raw_ms)
         except ValueError:
             millis = math.nan
+        if millis == math.inf:
+            return math.inf
         if math.isfinite(millis) and millis >= 0:
             return millis / 1000
     raw = _reply_header(exc, "retry-after")
@@ -236,7 +239,7 @@ def retry_after_seconds(exc: BaseException) -> float | None:
         if when.tzinfo is None:
             when = when.replace(tzinfo=timezone.utc)
         seconds = (when - datetime.now(timezone.utc)).total_seconds()
-    if not math.isfinite(seconds):
+    if math.isnan(seconds):
         return None
     return max(seconds, 0.0)
 
