@@ -1169,13 +1169,14 @@ class OntologyStore:
     async def _extend_relation_type(self, rt: Relation, prior: Relation) -> None:
         """Write a declaration of a relation the store already holds.
 
-        Through the steps the evolution API uses, so every ``:Relation`` node
-        of the label keeps the same properties: a new pattern takes its
-        siblings' properties (``add_relation_pattern_node``), and a declared
-        property lands on every pattern of the label (``add_relation_property``),
-        not only on the patterns this declaration happens to name. Written per
-        declared pattern instead, a property sat on some patterns only, and
-        dropping one of those patterns later dropped it from the relation.
+        Every ``:Relation`` node of the label ends up with every property the
+        relation has, stored or declared now (``add_relation_property``, the
+        step the evolution API uses), not only the patterns this declaration
+        happens to name. Written per declared pattern instead, a property sat
+        on some patterns only, and dropping one of those patterns later
+        dropped it from the relation. Putting the stored properties back on
+        every pattern also repairs a registration that failed half-way: its
+        new pattern is already stored, so it no longer counts as new.
         A declaration without patterns means "the stored relation".
         """
         if rt.patterns:
@@ -1187,11 +1188,11 @@ class OntologyStore:
             # MERGEs the declared patterns, their endpoint entities and the
             # declared properties on them, as for a new relation.
             await self._upsert_relation_type(rt)
-            for src, tgt in sorted(set(rt.patterns) - set(prior.patterns)):
-                await self.add_relation_pattern_node(rt.label, src, tgt)
         elif rt.description is not None:
             await self.set_description("relation", rt.label, rt.description)
-        for prop in rt.properties:
+        properties = {p.name: p for p in prior.properties}
+        properties.update({p.name: p for p in rt.properties})
+        for prop in properties.values():
             await self.add_relation_property(rt.label, prop)
 
     async def _upsert_relation_property(

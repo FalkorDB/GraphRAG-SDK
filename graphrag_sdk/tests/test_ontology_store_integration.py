@@ -344,3 +344,23 @@ class TestExtendingARelationKeepsItsPatternsAligned:
         await onto.drop_relation_pattern_node("R", "A", "B")
         (relation,) = (await onto.load()).relations
         assert [p.name for p in relation.properties] == ["role"]
+
+    async def test_a_half_done_registration_is_repaired_by_the_next(self, onto_and_data):
+        """A registration that stopped after writing a new pattern, before its
+        properties: on the retry that pattern is no longer new, and must still
+        end up with the relation's properties."""
+        onto, _ = onto_and_data
+        await _register(
+            onto,
+            Relation(
+                label="R", patterns=[("A", "B")], properties=[Attribute(name="since", type="DATE")]
+            ),
+        )
+        await onto._upsert_relation_type(Relation(label="R", patterns=[("B", "A")]))  # half-done
+
+        await onto.register(Ontology(relations=[Relation(label="R", patterns=[("A", "B"), ("B", "A")])]))
+
+        assert await self._properties_by_pattern(onto) == {
+            ("A", "B"): ["since"],
+            ("B", "A"): ["since"],
+        }
