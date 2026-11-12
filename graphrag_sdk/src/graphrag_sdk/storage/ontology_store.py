@@ -492,14 +492,13 @@ class OntologyStore:
 
         for et in ontology.entities:
             await self._upsert_entity_type(et)
-        stored_patterns = {r.label: r.patterns for r in existing.relations if r.patterns}
+        stored_relations = {r.label: r for r in existing.relations}
         for rt in ontology.relations:
-            if not rt.patterns and rt.label in stored_patterns:
-                # A declaration without patterns of a relation stored with
-                # them means "the stored relation": its attributes belong on
-                # those patterns, not on an open-mode node load() never reads.
-                rt = rt.model_copy(update={"patterns": list(stored_patterns[rt.label])})
-            await self._upsert_relation_type(rt)
+            prior = stored_relations.get(rt.label)
+            if prior is None:
+                await self._upsert_relation_type(rt)
+            else:
+                await self._extend_relation_type(rt, prior)
         for mapping in ontology.tables:
             await self._upsert_table_mapping(mapping)
         for relationship_mapping in ontology.relationship_tables:
@@ -1161,6 +1160,29 @@ class OntologyStore:
             )
             for prop in rt.properties:
                 await self._upsert_open_relation_property(rt.label, prop)
+
+    async def _extend_relation_type(self, rt: Relation, prior: Relation) -> None:
+        """Write a declaration of a relation the store already holds.
+
+        Through the steps the evolution API uses, so every ``:Relation`` node
+        of the label keeps the same properties: a new pattern takes its
+        siblings' properties (``add_relation_pattern_node``), and a declared
+        property lands on every pattern of the label (``add_relation_property``),
+        not only on the patterns this declaration happens to name. Written per
+        declared pattern instead, a property sat on some patterns only, and
+        dropping one of those patterns later dropped it from the relation.
+        A declaration without patterns means "the stored relation".
+        """
+        if rt.patterns:
+            # MERGEs the declared patterns, their endpoint entities and the
+            # declared properties on them, as for a new relation.
+            await self._upsert_relation_type(rt)
+            for src, tgt in sorted(set(rt.patterns) - set(prior.patterns)):
+                await self.add_relation_pattern_node(rt.label, src, tgt)
+        elif rt.description is not None:
+            await self.set_description("relation", rt.label, rt.description)
+        for prop in rt.properties:
+            await self.add_relation_property(rt.label, prop)
 
     async def _upsert_relation_property(
         self, rel_label: str, src: str, tgt: str, prop: Attribute

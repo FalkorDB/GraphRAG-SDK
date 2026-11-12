@@ -285,3 +285,62 @@ class TestAnAttributeOnlyDeclarationOfAPatternedRelation:
         (relation,) = (await onto.load()).relations
         assert relation.patterns == [("A", "B")]
         assert [p.name for p in relation.properties] == ["role"]
+
+
+class TestExtendingARelationKeepsItsPatternsAligned:
+    """What a declaration adds to a stored relation with no edges must sit on
+    every pattern of the relation: a property kept on some patterns only is
+    lost from the relation once one of those patterns is dropped."""
+
+    @staticmethod
+    async def _properties_by_pattern(onto) -> dict[tuple[str, str], list[str]]:
+        result = await onto._query(
+            "MATCH (s:Entity)<-[:SOURCE]-(r:Relation {label: 'R'})-[:TARGET]->(t:Entity) "
+            "OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(p:Property) "
+            "RETURN s.label, t.label, collect(p.label)",
+            read_only=True,
+        )
+        return {(row[0], row[1]): sorted(row[2]) for row in result.result_set}
+
+    async def test_a_new_pattern_takes_the_stored_properties(self, onto_and_data):
+        onto, _ = onto_and_data
+        await _register(
+            onto,
+            Relation(
+                label="R", patterns=[("A", "B")], properties=[Attribute(name="since", type="DATE")]
+            ),
+        )
+
+        await onto.register(Ontology(relations=[Relation(label="R", patterns=[("A", "B"), ("B", "A")])]))
+
+        assert await self._properties_by_pattern(onto) == {
+            ("A", "B"): ["since"],
+            ("B", "A"): ["since"],
+        }
+        await onto.drop_relation_pattern_node("R", "A", "B")
+        (relation,) = (await onto.load()).relations
+        assert [p.name for p in relation.properties] == ["since"]
+
+    async def test_an_attribute_declared_with_some_patterns_reaches_all(self, onto_and_data):
+        onto, _ = onto_and_data
+        await _register(onto, Relation(label="R", patterns=[("A", "B"), ("B", "A")]))
+
+        await onto.register(
+            Ontology(
+                relations=[
+                    Relation(
+                        label="R",
+                        patterns=[("A", "B")],
+                        properties=[Attribute(name="role", type="STRING")],
+                    )
+                ]
+            )
+        )
+
+        assert await self._properties_by_pattern(onto) == {
+            ("A", "B"): ["role"],
+            ("B", "A"): ["role"],
+        }
+        await onto.drop_relation_pattern_node("R", "A", "B")
+        (relation,) = (await onto.load()).relations
+        assert [p.name for p in relation.properties] == ["role"]
