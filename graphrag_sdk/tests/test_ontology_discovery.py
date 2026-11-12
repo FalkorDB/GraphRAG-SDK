@@ -712,11 +712,11 @@ class TestIsTransientLLMError:
     def test_a_wrapped_connection_error_is_transient(self) -> None:
         from graphrag_sdk.core.providers._retry import is_transient_llm_error
 
-        def wrapped(cause: BaseException, *, hide: bool = False) -> RuntimeError:
+        def wrapped(cause: Exception, *, hide: bool = False) -> RuntimeError:
             try:
                 try:
                     raise cause
-                except BaseException as inner:
+                except Exception as inner:
                     if hide:
                         raise RuntimeError("provider failed") from None
                     raise RuntimeError("provider failed") from inner
