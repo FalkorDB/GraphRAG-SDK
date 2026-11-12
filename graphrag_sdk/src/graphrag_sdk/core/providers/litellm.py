@@ -14,6 +14,7 @@ from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import (
     binary_split_retry_async,
     binary_split_retry_sync,
+    final_failure_log_level,
     summarize_exception,
 )
 from graphrag_sdk.core.providers._timeout import validate_timeout, wait_for_provider_call
@@ -158,12 +159,10 @@ class LiteLLM(LLMInterface):
                     )
                     logger.debug("LiteLLM call failure details", exc_info=True)
                     await asyncio.sleep(delay)
-        # With one attempt the caller owns the retry policy (ontology discovery
-        # retries temporary failures itself), so this failure may not be final:
-        # leave the report to the caller instead of logging an ERROR, with the
-        # exception text, for a call that can still succeed.
-        log = logger.error if max_retries > 1 else logger.debug
-        log(
+        # ERROR, unless the caller retries this temporary failure itself
+        # (ontology discovery): see final_failure_log_level.
+        logger.log(
+            final_failure_log_level(last_exc),
             "LiteLLM call failed after %d attempts: %s",
             max_retries,
             summarize_exception(last_exc) if last_exc is not None else "UnknownError",
@@ -252,12 +251,10 @@ class LiteLLM(LLMInterface):
                     )
                     logger.debug("LiteLLM call failure details", exc_info=True)
                     await asyncio.sleep(delay)
-        # With one attempt the caller owns the retry policy (ontology discovery
-        # retries temporary failures itself), so this failure may not be final:
-        # leave the report to the caller instead of logging an ERROR, with the
-        # exception text, for a call that can still succeed.
-        log = logger.error if max_retries > 1 else logger.debug
-        log(
+        # ERROR, unless the caller retries this temporary failure itself
+        # (ontology discovery): see final_failure_log_level.
+        logger.log(
+            final_failure_log_level(last_exc),
             "LiteLLM messages call failed after %d attempts: %s",
             max_retries,
             summarize_exception(last_exc) if last_exc is not None else "UnknownError",

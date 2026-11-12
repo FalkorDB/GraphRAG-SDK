@@ -25,6 +25,7 @@ from pydantic import BaseModel, ValidationError
 
 from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import (
+    caller_retries_transient_errors,
     describe_llm_error,
     is_transient_llm_error,
     provider_refuses_retry,
@@ -105,7 +106,10 @@ async def _call_once(
     """
     for retry, delay in enumerate((*_TRANSIENT_BACKOFF_S, None)):
         try:
-            return await llm.ainvoke_messages(history, max_retries=1)
+            if delay is None:  # the last try: its failure is final
+                return await llm.ainvoke_messages(history, max_retries=1)
+            with caller_retries_transient_errors():
+                return await llm.ainvoke_messages(history, max_retries=1)
         except Exception as exc:
             if delay is None or not is_transient_llm_error(exc) or provider_refuses_retry(exc):
                 raise

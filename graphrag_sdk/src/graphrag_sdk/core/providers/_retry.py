@@ -8,7 +8,9 @@ import email.utils
 import logging
 import math
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
 
@@ -126,6 +128,38 @@ def _is_transient(exc: BaseException, depth: int) -> bool:
 _EXCEPTION_GROUPS: tuple[type[BaseException], ...] = tuple(
     group for group in (getattr(builtins, "BaseExceptionGroup", None),) if group is not None
 )
+
+
+#: Set while a caller makes a model call whose temporary failure it retries
+#: itself (ontology discovery passes ``max_retries=1`` and retries in
+#: ``_call_once``), so the provider does not report that failure as final.
+_CALLER_RETRIES_TRANSIENT: ContextVar[bool] = ContextVar(
+    "graphrag_caller_retries_transient", default=False
+)
+
+
+@contextmanager
+def caller_retries_transient_errors() -> Iterator[None]:
+    """Mark the model calls made inside as ones whose temporary failure the
+    caller retries itself."""
+    token = _CALLER_RETRIES_TRANSIENT.set(True)
+    try:
+        yield
+    finally:
+        _CALLER_RETRIES_TRANSIENT.reset(token)
+
+
+def final_failure_log_level(exc: BaseException | None) -> int:
+    """The level a provider logs its last failed attempt at.
+
+    ERROR, unless the caller said it retries this temporary failure itself:
+    then the call can still succeed, and an ERROR carrying the exception
+    text would be both wrong and a leak, so it is DEBUG. A permanent error,
+    or any failure of a caller that does not retry, stays an ERROR.
+    """
+    if exc is not None and _CALLER_RETRIES_TRANSIENT.get() and is_transient_llm_error(exc):
+        return logging.DEBUG
+    return logging.ERROR
 
 
 def _reply_header(exc: BaseException, name: str) -> str | None:
