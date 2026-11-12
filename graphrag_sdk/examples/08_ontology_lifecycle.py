@@ -11,9 +11,10 @@ End-to-end walkthrough of the ontology API renamed in v1.2:
 5. Round-trip the ontology through a JSON file (schema-as-config).
 6. Show schema evolution rules:
    - Adding a new entity type on a subsequent ingest is OK.
-   - Adding a new attribute to an existing type that already has nodes →
-     ``OntologyModificationNotAllowedError`` (a type with no nodes yet may
-     gain attributes).
+   - Adding a new attribute to an existing type that already has data (nodes,
+     or relationships for a relation type) →
+     ``OntologyModificationNotAllowedError`` (a type with no data yet may gain
+     attributes).
    - Re-declaring an existing attribute with a different type →
      ``OntologyContradictionError``.
 7. Show that legacy names (``GraphSchema``, ``EntityType``, ``schema=``,
