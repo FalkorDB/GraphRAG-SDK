@@ -9,6 +9,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`finalize()` gives chunks a readable name.** A `Chunk` written without a
+  `name` is shown by its UUID in a graph browser; `finalize()` now sets it to
+  `"<document id> · chunk <index>"`. A chunk that already has a name is left
+  alone, so a repeat call names only chunks that are still unnamed, a chunk that
+  is a table row is left alone (its cells are its properties, and a column called
+  `name` is `Chunk.name`), and a document that `update()` is still
+  replacing is skipped. `finalize(name_chunks=False)` leaves chunks as written,
+  and `FinalizeResult.chunks_named` counts what was named (#226).
+
+### Fixed
+
+- **Missing ontology attributes no longer erase extracted values.**
+  Values absent from a chunk no longer overwrite values from other chunks or
+  system properties such as `description`; resolution merges also fill
+  `None` properties from duplicates and preserve every description during
+  cross-label merges (#362).
+- **`update()` with `cache_unchanged_chunks` kept one fact per entity pair.**
+  `CachedChunkExtraction` keyed `RELATES` edges on the pair (rebuilding from
+  the cache) or on `(start, "RELATES", end)` (merging), never on `rel_type`, so
+  `Alice WORKS_AT Acme` and `Alice FOUNDED Acme` collapsed into one edge. The
+  cached path dropped the second fact and the stale-edge sweep then deleted it
+  from the graph; the merge path, which every extracted part goes through even
+  with no cache hits, overwrote the first fact's `rel_type`, `fact` and
+  `description`. Both now key on `rel_type` the way `upsert_relationships()`
+  does (#361).
+- **Mentions of entities the quality filter or ontology pruning dropped are
+  no longer written.** Their `MENTIONED_IN` edges failed, so `ingest()`
+  reported a false `mentions X/Y` in `incomplete_writes` and did not record
+  the document's `content_hash`, and every later ingest processed the
+  document again; when a dropped id matched another document's entity, the
+  edge went to that unrelated entity. The quality filter also drops a node
+  whose id or label is empty or only whitespace (#365).
+- **The default extractor uses the stored ontology's entity types.** A
+  `GraphRAG` created without an ontology, on a graph that already stores one,
+  built its default extractor with `DEFAULT_ENTITY_TYPES`. The extraction
+  prompt already listed the stored labels, so only the extractor's own
+  `entity_types` was wrong (#363).
+- **`finalize()` no longer fails on a pending dedup record whose lists lost
+  entries.** A record read back with fewer `attempts` or `reasons` than `ids`
+  (seen on FalkorDB 4.22.2) raised `IndexError` in every later `finalize()`.
+  Such a list is now reset: counts read 0 and reasons read empty, so those
+  entities are judged again. The reset record is written back while the
+  dedup lock is held, so the warning is logged once (#380).
+- **The missing-`finalize()` reminder counts only what was written.**
+  `retrieve()` and `completion()` warn when documents were ingested and no
+  deduplication ran since. Ingesting or re-syncing a table never armed that
+  warning, so a session that loaded only tables was never told to run
+  `finalize()`; re-ingesting unchanged text armed it although nothing was
+  written. Table writes now count; unchanged text, unchanged tables and
+  relationship-only tables do not (#364, #384).
+- **A first ontology can give a default label its attributes.** Reading an
+  empty ontology store seeds the eleven default labels with no attributes, and
+  `register()` refused any new attribute or pattern on an existing label. So
+  a new graph, read once, refused its first declared ontology: "Refusing to
+  add new attribute(s) ['event_type', 'timestamp'] to existing label 'Event'".
+  The refusal now applies only to a label that holds data (a node of that
+  label, or an edge of that relation type, in the data graph). A label with
+  none, including on a data graph that does not exist yet, may gain
+  attributes and patterns. Type changes are still refused, and a data graph
+  that cannot be read counts as holding data. The message for a label that
+  holds data names `add_attribute` / `add_relation_pattern` instead of "not
+  yet supported". A declaration that gives a stored patterned relation new
+  attributes without restating its patterns now writes them onto those
+  patterns, rather than onto an open-mode node `load()` never reads for it.
+
+## [1.6.0] - 2026-11-02
+
+Agents can work with the graph. `GraphRAGToolkit` gives an agent you already
+run read-only graph tools, `graphrag-mcp` serves them over MCP, and with a
+files root the agent can also design the ontology and ingest a folder.
+`ingest(auto=True)` lets a planner choose how each document is chunked,
+extracted and resolved, within cheap limits by default. Structured ingestion
+reads relationship-only tables: files whose rows are edges between entities
+that already exist. An entity no longer grows with every mention: what each
+chunk says about it moves onto its `MENTIONED_IN` edges, and `finalize()`
+summarises an entity that holds more than 5 descriptions.
+
+### Added
+
 #### Agentic ingestion: an agent builds the graph from a folder (#275)
 
 - **`GraphRAGToolkit(rag, files_root=...)` lets an agent ingest files.**
@@ -176,37 +255,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New example `graphrag_sdk/examples/12_agent_toolkit.py` and docs page
   *Agentic Retrieval*.
 
-#### Structured ingestion — tables declared on the ontology, one node for a row and its mention
-
-- **`Ontology(tables=[TableMapping(...)])`** declares what a table's columns mean,
-  next to the entity types, and `ingest("employees.csv")` reads the file as
-  records instead of prose. No model is involved: identity comes from a declared
-  key and every property type is declared rather than inferred, so the same file
-  always produces the same graph. Run a CSV through the prose path and `age`
-  becomes the string `"34"` if it survives at all; nothing can be averaged,
-  filtered numerically or joined on a key. A `.csv`, `.tsv`, `.psv` or `.tab`
-  takes the record path on its extension and its mapping is found by filename —
-  there is no `mapping=` argument, so the call for a table is the call for a
-  document and the two cannot disagree about how a file is read. A file that
-  really is prose living in columns opts out with
-  `ingest(path, loader=TextLoader())`. A table inside a batch list is refused:
-  each table is written on its own, so one bad row cannot fail the batch.
-  `ingest_sync()` mirrors the call.
-
-- **`TableMapping`, `Column` and `Link` remain the entity-anchored declaration
-  surface.** A
-  table describes one entity per record: `key=` identifies the row, `name=` is
-  its display name, `properties={"age": Column("age", "INTEGER")}` types the
-  columns (`STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`) and
-  `links=[Link("WORKS_AT", to="Organization", by="org_id")]` turns a column that
-  holds another entity's key into an edge, with `properties=` on the link for
-  edge attributes. The mapping is validated against the file's real header and
-  every cell against its declared type before anything is written, so one that
-  does not fit raises `MappingError` and leaves the graph untouched. `INTEGER`
-  and `FLOAT` read both `1,234.56` and `1.234,56`; `FLOAT` refuses `nan` and
-  `inf`; `LIST` is parsed as a CSV row. Also exported: `CsvRecordLoader` (sniffs
-  comma, semicolon, tab and pipe), `RecordLoaderStrategy` and `RecordBatch` for
-  other formats, and `TextLoader`.
+#### Structured ingestion: relationship-only tables (#337)
 
 - **`Ontology(relationship_tables=[RelationshipMapping(...)])` reads a file
   whose every row is an edge between entities that already exist** —
@@ -275,6 +324,172 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keys, keys a table stops signing, signatures -- before any of it is written,
   so a failure changes nothing. A stored mapping whose key is already gone is
   skipped with a warning when the ontology loads, so the graph still opens.
+
+### Changed
+
+- **`SentenceTokenCapChunking` records the overlap each chunk has.** A chunk's
+  `overlap_sentences` metadata is now the number of its sentences the next
+  chunk repeats (0 on the last chunk), not the configured `overlap_sentences`,
+  so new Chunk nodes differ from older ones in that property; chunk text, ids
+  and cache hashes are unchanged. The new `max_overlap_fraction` option caps
+  the share of a chunk's tokens the next chunk may repeat (#275).
+- **An entity stays the same size however often it is mentioned.** Its node
+  held a `source_chunk_ids` list and a `spans` JSON that grew with every
+  mention and were rewritten on every write, and a merge appended every
+  member's description to `descriptions`, without limit. Now which chunks
+  mention an entity, where (`spans`) and what each says it is (`description`,
+  and `descriptions` when there is more than one, each kept whole) are on its
+  `MENTIONED_IN` edges, one per chunk, written once and deleted with the
+  chunk; the node holds no chunk list. Ingest-time remaps and dedup merges
+  carry both onto the surviving entity's edge, combining them when two land on
+  one chunk, and a second write of an edge (`backfill_entity()` finding an
+  entity extraction already found there) adds to it instead of replacing it. A second document that mentions an entity adds its description
+  instead of replacing the first's (`SET n += props` kept only the last). A
+  write adds descriptions up to 20 per node (it never cuts what a node already
+  holds), and `finalize()`, after dedup, replaces those of every entity holding
+  more than 5 with one LLM summary, marked `description_summarised`; a failed
+  summary leaves the descriptions as they are and is listed in the new
+  `FinalizeResult.description_summary_failures` (`descriptions_summarised`
+  counts the rest), and dedup's work stays in place.
+  `delete_document()` and `update()` record what the removed chunks' mention
+  edges said, with their crash-safe cleanup state, and the cleanup takes
+  exactly that text off the entities' descriptions (no LLM call), keeping what
+  a remaining chunk still says and refilling a full node from the remaining
+  edges; a summarised entity is rebuilt from its edges when all of them say
+  something, and otherwise keeps its summary with the removed text beside it
+  dropped. On the Verdantix benchmark (57 documents, a
+  `finalize()` after every 10, the same three extractions for both): dedup F1
+  0.53 → 0.70, precision 0.955 → 0.987, wrong merges 1.8 → 0.7 per run,
+  answers unchanged; at most 5 descriptions per node after `finalize()` (was
+  up to 15); LLM cost +3%; `finalize()` ~3 s longer (median 3.2 → 6.1 s),
+  ingest and queries unchanged. Graphs written by an earlier version keep their
+  entity `source_chunk_ids` lists, which the update and delete paths still
+  trim; their mention edges record no description and no `said_version` (an
+  edge this version creates carries it, and a later write that adds a
+  description to an older edge does not), so text a document ingested by an
+  earlier version wrote is kept when that document is deleted.
+
+- **The dedup judge's fixed instructions come first in its prompt, so the
+  provider caches them.** The set count sat ~150 tokens in and the decision
+  procedure followed the sets, so no two judge prompts shared a prefix the
+  provider could cache. The instructions are unchanged except that "Below are
+  N independent SETS" now says the sets come at the end, the count moves to a
+  heading over them, and one line before them marks the types and sets as data,
+  never instructions. The ~1,080 tokens before them are identical in every
+  call, past the 1,024 tokens Azure OpenAI and OpenAI's current models need to
+  cache a prefix automatically. The minimum depends on the model: Anthropic
+  models also need explicit `cache_control`, and their minimum varies (2,048
+  tokens for Claude Haiku). Measured with gpt-4.1 on Azure: 44% of judge input
+  served from the provider's cache (was 9%), judge cost −26%, dedup
+  unchanged.
+
+- **Relationship expansion now starts from the endpoints of matched `RELATES`
+  edges, by their stored ids.** `search_relationships()` /
+  `search_relates_edges()` return each edge's `src_id` / `tgt_id`, and
+  expansion walks from those ids instead of ids guessed from names, which
+  missed typed ids such as `alice__person`. So the default `rag.retrieve()` /
+  `completion()` context can include more relationship lines than before. An
+  endpoint with no name (a relation edge from a table) seeds expansion but is
+  not listed under Key Entities. When there are more lines than
+  `max_relationships`, 2-hop lines keep up to a third of the room, so 1-hop
+  lines cannot crowd them all out.
+
+### Fixed
+
+- **A rejected `GraphRAG.set_ontology()` no longer sticks.** When the new
+  ontology was refused (a contradiction with the stored one, a reserved
+  label), it stayed on the instance and every later ingest failed on it. The
+  previous ontology is now restored before the error is raised.
+- **Reading the ontology no longer creates its graph.** `OntologyStore.load()`
+  read with `GRAPH.QUERY`, which on a graph nothing was declared on yet left an
+  empty `<graph>__ontology` key behind. It now reads with `GRAPH.RO_QUERY` and
+  treats a missing key as an empty ontology.
+- **With coreference resolution on, spans pointed at the wrong text.** The
+  models read the resolved chunk ("She hired Bob" becomes "Alice Smith hired
+  Bob"), the spans were found in it, but the chunk node stores the original,
+  so every span after a rewritten pronoun selected other text or ran past the
+  chunk's end. A `MENTIONED_IN` edge's spans are now found in the stored text;
+  the NER offsets are used only when coreference left the chunk unchanged, and
+  a rewritten chunk's `RELATES` evidence offsets are left out. The sentence
+  that stands in for a missing description is still cut from the resolved
+  text. Coreference resolution is off by default.
+- **FalkorDB 6.0.2: a label's new key index could come up empty.** The range
+  indexes a write adds to a label — `id`, `entity_key` and a table's signed
+  key — were created one statement each, and sent back to back for one label
+  6.0.2 sometimes left the last one empty while reporting it `OPERATIONAL`, so
+  every lookup on that key, and any `MATCH` filtering on it, found nothing (8
+  of 450 fresh 10,000-node graphs). A label's missing fields now go in one
+  `CREATE INDEX`. The write that creates the index also waits for the build,
+  up to 60 s and then warns and continues: FalkorDB plans without an index
+  until it is built, and a 500-key lookup sent right after the `CREATE` on a
+  1M-node label scanned the label once per key and timed out.
+- **The relationship-extraction prompt shows the model valid JSON.** Its
+  example was written with doubled braces (`{{ }}`), which `str.format()`
+  inserts unchanged, so every relationship-extraction call asked for valid
+  JSON while showing an example that does not parse (#376).
+
+## [1.5.0] - 2026-10-22
+
+Structured ingestion: tables are declared on the ontology, and a row and a
+prose mention of the same thing become one node. `finalize()` deduplicates
+incrementally: it checks only new entities against the whole graph, a judge
+(an LLM by default) decides which are the same, and a run that is interrupted
+is finished by the next one. Extraction is more complete: a default relation
+vocabulary, GLiNER reading whole chunks, and a 384-token chunk default.
+Re-ingesting an unchanged document is a no-op. FalkorDB 6.0.x is supported
+and CI tests both engines.
+
+**Upgrading from 1.4.0:**
+
+- Upgrade the FalkorDB server to 4.20 or later first. This release refuses
+  an older server with `FalkorDBVersionError` before anything is written; that
+  includes `v4.18.0`, which 1.4.0's `docker-compose.yml` used.
+- `finalize()` and `deduplicate_entities()` call the LLM (the dedup judge);
+  in 1.4.0 they made no model call. `judge=False` raises `TypeError`; to keep
+  deduplication LLM-free, pass a `DedupJudge` of your own.
+- Entities in a graph built by 1.4.0 count as already checked. Run
+  `finalize(dedup_all=True)` once to check every entity.
+- `deduplicate_entities(fuzzy=True)` raises `ValueError`: the fuzzy phase is
+  removed. `fuzzy=False` and `similarity_threshold=` are still accepted for
+  this release, ignored, with a `DeprecationWarning`.
+- A `.csv`, `.tsv`, `.psv` or `.tab` file is read as table records, not prose;
+  `ingest(path, loader=TextLoader())` keeps the old behaviour.
+- `SemanticResolution` and `DescriptionMergeResolution` are removed (see
+  **Removed**).
+
+### Added
+
+#### Structured ingestion — tables declared on the ontology, one node for a row and its mention
+
+- **`Ontology(tables=[TableMapping(...)])`** declares what a table's columns mean,
+  next to the entity types, and `ingest("employees.csv")` reads the file as
+  records instead of prose. No model is involved: identity comes from a declared
+  key and every property type is declared rather than inferred, so the same file
+  always produces the same graph. Run a CSV through the prose path and `age`
+  becomes the string `"34"` if it survives at all; nothing can be averaged,
+  filtered numerically or joined on a key. A `.csv`, `.tsv`, `.psv` or `.tab`
+  takes the record path on its extension and its mapping is found by filename —
+  there is no `mapping=` argument, so the call for a table is the call for a
+  document and the two cannot disagree about how a file is read. A file that
+  really is prose living in columns opts out with
+  `ingest(path, loader=TextLoader())`. A table inside a batch list is refused:
+  each table is written on its own, so one bad row cannot fail the batch.
+  `ingest_sync()` mirrors the call.
+
+- **`TableMapping`, `Column` and `Link` are the whole declaration surface.** A
+  table describes one entity per record: `key=` identifies the row, `name=` is
+  its display name, `properties={"age": Column("age", "INTEGER")}` types the
+  columns (`STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`) and
+  `links=[Link("WORKS_AT", to="Organization", by="org_id")]` turns a column that
+  holds another entity's key into an edge, with `properties=` on the link for
+  edge attributes. The mapping is validated against the file's real header and
+  every cell against its declared type before anything is written, so one that
+  does not fit raises `MappingError` and leaves the graph untouched. `FLOAT`
+  reads both `1,234.56` and `1.234,56` and refuses `nan` and `inf`; `INTEGER`
+  reads `1,000` and `1,234,567` as whole numbers and refuses a fraction; `LIST`
+  is parsed as a CSV row. Also exported: `CsvRecordLoader` (sniffs
+  comma, semicolon, tab and pipe), `RecordLoaderStrategy` and `RecordBatch` for
+  other formats, and `TextLoader`.
 
 - **A row and a prose mention of the same thing are one node from the first
   write.** An entity's id is derived from its name for a table row exactly as
@@ -374,6 +589,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [Structured Ingestion](https://docs.falkordb.com/graphrag/structured-ingestion)
   docs page.
 
+#### Other additions
+
 - New documentation page **Reducing LLM Hallucinations**
   (`docs/reducing-llm-hallucinations.mdx`) — the guide to grounded retrieval,
   `MENTIONED_IN` source provenance, inspecting the evidence trail with
@@ -391,72 +608,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behind a grounded answer. Covered by
   `graphrag_sdk/tests/test_grounded_abstention.py`.
 
-- **`finalize()` gives chunks a readable name.** A `Chunk` written without a
-  `name` is shown by its UUID in a graph browser; `finalize()` now sets it to
-  `"<document id> · chunk <index>"`. A chunk that already has a name is left
-  alone, so a repeat call names only chunks that are still unnamed, a chunk that
-  is a table row is left alone (its cells are its properties, and a column called
-  `name` is `Chunk.name`), and a document that `update()` is still
-  replacing is skipped. `finalize(name_chunks=False)` leaves chunks as written,
-  and `FinalizeResult.chunks_named` counts what was named (#226).
+- **`SpacyExtractor` and `CompositeExtractor`**, opt-in NER backends.
+  `SpacyExtractor` uses spaCy's NER (`graphrag-sdk[spacy]` plus a spaCy
+  model). `CompositeExtractor` chains extractors: the first one's entities
+  win where spans overlap and later ones fill the gaps, for example GLiNER
+  first and spaCy after it. One exception: a later span that contains an
+  earlier one and adds a word replaces it, so `Paris Observatory` from the
+  second extractor replaces `Paris` from the first. Both are importable from
+  `graphrag_sdk`; nothing changes unless you construct them.
+- **`ingest()` reports chunks whose extraction failed.** A chunk whose model
+  call failed used to add nothing while `ingest()` still reported success.
+  `IngestionResult.metadata["extraction"]` now carries `chunks_attempted`,
+  `chunks_skipped`, `failed_chunks` and `relation_failed_chunks`, and a
+  document with failed chunks is not marked unchanged, so the next ingest
+  retries it.
 
 ### Changed
-
-- **`SentenceTokenCapChunking` records the overlap each chunk has.** A chunk's
-  `overlap_sentences` metadata is now the number of its sentences the next
-  chunk repeats (0 on the last chunk), not the configured `overlap_sentences`,
-  so new Chunk nodes differ from older ones in that property; chunk text, ids
-  and cache hashes are unchanged. The new `max_overlap_fraction` option caps
-  the share of a chunk's tokens the next chunk may repeat (#275).
-- **An entity stays the same size however often it is mentioned.** Its node
-  held a `source_chunk_ids` list and a `spans` JSON that grew with every
-  mention and were rewritten on every write, and a merge appended every
-  member's description to `descriptions`, without limit. Now which chunks
-  mention an entity, where (`spans`) and what each says it is (`description`,
-  and `descriptions` when there is more than one, each kept whole) are on its
-  `MENTIONED_IN` edges, one per chunk, written once and deleted with the
-  chunk; the node holds no chunk list. Ingest-time remaps and dedup merges
-  carry both onto the surviving entity's edge, combining them when two land on
-  one chunk, and a second write of an edge (`backfill_entity()` finding an
-  entity extraction already found there) adds to it instead of replacing it. A second document that mentions an entity adds its description
-  instead of replacing the first's (`SET n += props` kept only the last). A
-  write adds descriptions up to 20 per node (it never cuts what a node already
-  holds), and `finalize()`, after dedup, replaces those of every entity holding
-  more than 5 with one LLM summary, marked `description_summarised`; a failed
-  summary leaves the descriptions as they are and is listed in the new
-  `FinalizeResult.description_summary_failures` (`descriptions_summarised`
-  counts the rest), and dedup's work stays in place.
-  `delete_document()` and `update()` record what the removed chunks' mention
-  edges said, with their crash-safe cleanup state, and the cleanup takes
-  exactly that text off the entities' descriptions (no LLM call), keeping what
-  a remaining chunk still says and refilling a full node from the remaining
-  edges; a summarised entity is rebuilt from its edges when all of them say
-  something, and otherwise keeps its summary with the removed text beside it
-  dropped. On the Verdantix benchmark (57 documents, a
-  `finalize()` after every 10, the same three extractions for both): dedup F1
-  0.53 → 0.70, precision 0.955 → 0.987, wrong merges 1.8 → 0.7 per run,
-  answers unchanged; at most 5 descriptions per node after `finalize()` (was
-  up to 15); LLM cost +3%; `finalize()` ~3 s longer (median 3.2 → 6.1 s),
-  ingest and queries unchanged. Graphs written by an earlier version keep their
-  entity `source_chunk_ids` lists, which the update and delete paths still
-  trim; their mention edges record no description and no `said_version` (an
-  edge this version creates carries it, and a later write that adds a
-  description to an older edge does not), so text a document ingested by an
-  earlier version wrote is kept when that document is deleted.
-
-- **The dedup judge's fixed instructions come first in its prompt, so the
-  provider caches them.** The set count sat ~150 tokens in and the decision
-  procedure followed the sets, so no two judge prompts shared a prefix the
-  provider could cache. The instructions are unchanged except that "Below are
-  N independent SETS" now says the sets come at the end, the count moves to a
-  heading over them, and one line before them marks the types and sets as data,
-  never instructions. The ~1,080 tokens before them are identical in every
-  call, past the 1,024 tokens Azure OpenAI and OpenAI's current models need to
-  cache a prefix automatically. The minimum depends on the model: Anthropic
-  models also need explicit `cache_control`, and their minimum varies (2,048
-  tokens for Claude Haiku). Measured with gpt-4.1 on Azure: 44% of judge input
-  served from the provider's cache (was 9%), judge cost −26%, dedup
-  unchanged.
 
 - **`finalize()` deduplicates incrementally, with one judge pass, and
   survives a crash.** `finalize()` checks only the entities whose check is
@@ -742,63 +909,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rerank, and parsing those replies in pure Python was most of the client's
   CPU per question: about 48 ms down to 11 ms in our tests, so one process
   serves more concurrent questions.
-- **Relationship expansion now starts from the endpoints of matched `RELATES`
-  edges, by their stored ids.** `search_relationships()` /
-  `search_relates_edges()` return each edge's `src_id` / `tgt_id`, and
-  expansion walks from those ids instead of ids guessed from names, which
-  missed typed ids such as `alice__person`. So the default `rag.retrieve()` /
-  `completion()` context can include more relationship lines than before. An
-  endpoint with no name (a relation edge from a table) seeds expansion but is
-  not listed under Key Entities. When there are more lines than
-  `max_relationships`, 2-hop lines keep up to a third of the room, so 1-hop
-  lines cannot crowd them all out.
+- **GLiNER loads one model per process and no longer serialises inference.**
+  Each document being ingested used to load its own copy of the model (six
+  documents, six copies), and a lock ran the chunks of a document one at a
+  time. The model is now cached by name and shared, and the lock is gone.
+- **GLiNER reads the whole chunk.** Text longer than the model's input
+  window used to be cut off without a warning; it is now read as overlapping
+  windows (`window_tokens`, `window_overlap=48`) and the results merged. The
+  confidence threshold is per model: `threshold=None` looks it up in
+  `GLiNERExtractor.DEFAULT_THRESHOLDS`, and an unknown model falls back to 0.5
+  with a warning. Spans just below the threshold (from `candidate_threshold`,
+  by default 25 % below it) reach the LLM step labelled `Unknown`, which types
+  or drops them; `candidate_threshold=None` turns this off.
+- **Ingest resolves duplicates by exact name only, with no model calls.**
+  The default `ingest()` resolver is
+  `ExactMatchResolution(llm=None, cross_label_merge=False)`: same normalised
+  name and same label within the document. `ExactMatchResolution` now matches
+  on `name` by default (it was `id`) and gains `llm`, `cross_label_merge` and
+  `force_summary_threshold`. Every merge keeps every description, as a
+  `descriptions` list and as `description` joined with `" | "`. `retrieve()`
+  and `completion()` warn once when documents were ingested and no
+  deduplication pass ran since.
+- **`LLMVerifiedResolution` finds more duplicates and makes fewer wrong
+  merges.** It runs only when passed as `resolver=` to `ingest()`, `update()`
+  or `apply_changes()`. Candidates are nominated in one stage by the similarity of `"name: description"`, whatever
+  their labels (`unified_threshold=0.65`). Pairs are checked five per model call
+  (`verification_max_pairs_per_call`). Pairs whose labels belong to different
+  families (a person and a place) are dropped before the model sees them
+  (`label_family_gate`), and a cross-label merge needs a second agreeing vote
+  with the pair swapped (`cross_label_vote`).
+- Higher minimum dependency versions, to versions with security fixes:
+  `python-dotenv>=1.2.2`, `pypdf>=6.15.0` (`pdf` extra) and
+  `litellm>=1.84.0` (`litellm` extra).
 
 ### Fixed
-- **A first ontology can give a default label its attributes.** Reading an
-  empty ontology store seeds the eleven default labels with no attributes, and
-  `register()` refused any new attribute or pattern on an existing label. So
-  a new graph, read once, refused its first declared ontology: "Refusing to
-  add new attribute(s) ['event_type', 'timestamp'] to existing label 'Event'".
-  The refusal now applies only to a label that holds data (a node of that
-  label, or an edge of that relation type, in the data graph). A label with
-  none, including on a data graph that does not exist yet, may gain
-  attributes and patterns. Type changes are still refused, and a data graph
-  that cannot be read counts as holding data. The message for a label that
-  holds data names `add_attribute` / `add_relation_pattern` instead of "not
-  yet supported". A declaration that gives a stored patterned relation new
-  attributes without restating its patterns now writes them onto those
-  patterns, rather than onto an open-mode node `load()` never reads for it.
-- **Missing ontology attributes no longer erase extracted values.**
-  Values absent from a chunk no longer overwrite values from other chunks or
-  system properties such as `description`; resolution merges also fill
-  `None` properties from duplicates and preserve every description during
-  cross-label merges (#362).
-- **`update()` with `cache_unchanged_chunks` kept one fact per entity pair.**
-  `CachedChunkExtraction` keyed `RELATES` edges on the pair (rebuilding from
-  the cache) or on `(start, "RELATES", end)` (merging), never on `rel_type`, so
-  `Alice WORKS_AT Acme` and `Alice FOUNDED Acme` collapsed into one edge. The
-  cached path dropped the second fact and the stale-edge sweep then deleted it
-  from the graph; the merge path, which every extracted part goes through even
-  with no cache hits, overwrote the first fact's `rel_type`, `fact` and
-  `description`. Both now key on `rel_type` the way `upsert_relationships()`
-  does (#361).
-- **A rejected `GraphRAG.set_ontology()` no longer sticks.** When the new
-  ontology was refused (a contradiction with the stored one, a reserved
-  label), it stayed on the instance and every later ingest failed on it. The
-  previous ontology is now restored before the error is raised.
-- **Reading the ontology no longer creates its graph.** `OntologyStore.load()`
-  read with `GRAPH.QUERY`, which on a graph nothing was declared on yet left an
-  empty `<graph>__ontology` key behind. It now reads with `GRAPH.RO_QUERY` and
-  treats a missing key as an empty ontology.
-- **With coreference resolution on, spans pointed at the wrong text.** The
-  models read the resolved chunk ("She hired Bob" becomes "Alice Smith hired
-  Bob"), the spans were found in it, but the chunk node stores the original,
-  so every span after a rewritten pronoun selected other text or ran past the
-  chunk's end. A `MENTIONED_IN` edge's spans are now found in the stored text;
-  the NER offsets are used only when coreference left the chunk unchanged, and
-  a rewritten chunk's `RELATES` evidence offsets are left out. The sentence
-  that stands in for a missing description is still cut from the resolved
-  text. Coreference resolution is off by default.
+
 - **A write batch holding the same entity or relationship twice lost a write.**
   In one `UNWIND ... MERGE` call FalkorDB 4.x kept the first row's values and
   6.0.x the last, and on both only one row's `source_chunk_ids` survived, so an
@@ -857,16 +1002,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also waited on the server for the previous build, past the client's socket
   timeout, and was re-sent. `ensure_indices()` now waits until `db.indexes()`
   reports every index built (up to 10 minutes, logging progress every 10 s).
-- **FalkorDB 6.0.2: a label's new key index could come up empty.** The range
-  indexes a write adds to a label — `id`, `entity_key` and a table's signed
-  key — were created one statement each, and sent back to back for one label
-  6.0.2 sometimes left the last one empty while reporting it `OPERATIONAL`, so
-  every lookup on that key, and any `MATCH` filtering on it, found nothing (8
-  of 450 fresh 10,000-node graphs). A label's missing fields now go in one
-  `CREATE INDEX`. The write that creates the index also waits for the build,
-  up to 60 s and then warns and continues: FalkorDB plans without an index
-  until it is built, and a 500-key lookup sent right after the `CREATE` on a
-  1M-node label scanned the label once per key and timed out.
 - `drop_chunk_vector_index()`, `drop_entity_vector_index()` and
   `drop_relates_vector_index()` called `db.idx.vector.drop`, which exists on no
   FalkorDB version, so nothing was dropped. They now use `DROP VECTOR INDEX`, and
@@ -1195,8 +1330,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to generated Cypher. The working ontology is republished to the strategy on
   every change.
 
-- Fixed vector-search ordering so chunk, entity, and relationship searches use
-  similarity scores, with higher values indicating closer matches.
+- **Entity names are checked in code, not only by the prompt.** Specific
+  dates (`1896`, `14 January 1904`) are not entities when the ontology has no
+  `Date` type, while periods (`1820s`) are kept. `US`, `UN` and `EU` are no
+  longer dropped as the pronoun `us`. Operators and shell tokens (`+=`, `->`,
+  `cd`) are rejected even when the model returns them. `Document` and `Chunk`
+  are refused as entity types, since the store uses those labels for its own
+  nodes; an entity typed `Document` used to be stored as a file.
+- **`update(force=True)` keeps a document's structure.** It passed only the
+  file's plain text into the pipeline, so `StructuralChunking` fell back to
+  sentence chunking on a forced update of a Markdown file. The loaded
+  document, with its structural elements, now reaches the chunker.
 
 ### Removed
 
