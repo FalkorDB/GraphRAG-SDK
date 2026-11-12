@@ -924,6 +924,26 @@ class TestModificationOfALabelWithNoData:
         assert all((c[1] or {}).get("description") in (None, "how A relates to B") for c in pattern_writes)
 
     @pytest.mark.asyncio
+    async def test_a_relation_named_relates_is_not_every_relationship(
+        self, store_factory, fake_graph
+    ):
+        """Every SDK relationship is a RELATES edge; a declared relation named
+        RELATES holds data only where rel_type names it."""
+        store = store_factory()
+        fake_graph.set_load_response(patterned_relations=[["RELATES", None, "A", "B"]])
+
+        async def answer(cypher, params=None):
+            # Other relations' edges exist; none has rel_type 'RELATES'.
+            return _FakeQueryResult([] if "rel_type" in cypher else [[1]])
+
+        probe = self._data(store)
+        probe.side_effect = answer
+        await store.register(
+            Ontology(relations=[Relation(label="RELATES", patterns=[("A", "B"), ("B", "A")])])
+        )
+        assert probe.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_no_data_check_runs_when_nothing_is_added(self, store_factory, fake_graph):
         store = store_factory()
         fake_graph.set_load_response(

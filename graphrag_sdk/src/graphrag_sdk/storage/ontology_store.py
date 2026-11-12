@@ -664,8 +664,14 @@ class OntologyStore:
                     "WHERE r.rel_type = $label RETURN 1 LIMIT 1",
                     {"label": label},
                 ),
-                (f"MATCH (:__Entity__)-[r:`{safe}`]->(:__Entity__) RETURN 1 LIMIT 1", None),
             ]
+            # A relation that is itself named RELATES would match every
+            # relationship the SDK writes; its own edges are the RELATES edges
+            # whose rel_type names it, which the probe above already finds.
+            if safe != "RELATES":
+                queries.append(
+                    (f"MATCH (:__Entity__)-[r:`{safe}`]->(:__Entity__) RETURN 1 LIMIT 1", None)
+                )
         await self._conn._check_server_version()
         data_graph = self._ensure_data_graph()
         for cypher, params in queries:

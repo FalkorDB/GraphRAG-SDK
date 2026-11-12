@@ -235,6 +235,22 @@ class TestStructureEdgesAreNotRelationData:
         assert sorted(relation.patterns) == [("Cell", "Organ"), ("Organ", "BodySystem")]
 
 
+class TestARelationNamedRelates:
+    async def test_other_relations_edges_are_not_its_data(self, onto_and_data):
+        onto, connection = onto_and_data
+        await _register(onto, Relation(label="RELATES", patterns=[("A", "B")]))
+        await connection.query(
+            "CREATE (:__Entity__:A {name: 'a'})-[:RELATES {rel_type: 'WORKS_AT'}]->(:__Entity__:B {name: 'b'})"
+        )
+
+        await onto.register(
+            Ontology(relations=[Relation(label="RELATES", patterns=[("A", "B"), ("B", "A")])])
+        )
+
+        (relation,) = (await onto.load()).relations
+        assert sorted(relation.patterns) == [("A", "B"), ("B", "A")]
+
+
 class TestAFirstOntologyOverTheDefaultSeed:
     """GraphRAG-Server, in production: a new graph, read once (which seeds the
     eleven default labels), then a first ontology whose ``Event`` has
