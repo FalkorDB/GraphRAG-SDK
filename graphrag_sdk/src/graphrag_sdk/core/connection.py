@@ -20,6 +20,19 @@ from graphrag_sdk.core.exceptions import (
 
 logger = logging.getLogger(__name__)
 
+
+def is_missing_graph_error(exc: BaseException) -> bool:
+    """Whether ``exc`` is FalkorDB saying the graph was never written.
+
+    Any query on a graph key nothing has written to yet is answered with
+    "Invalid graph operation on empty key", raw from the driver or wrapped
+    in a ``DatabaseError``. For a read that means "no rows", not a failure.
+    Every caller that tells the two apart goes through here, so a change in
+    the server's wording is fixed in one place.
+    """
+    return "empty key" in str(exc).lower()
+
+
 #: The oldest FalkorDB server the SDK works with. Before 4.20 a write to a node
 #: holding a vector dropped vector-index entries (fixed by FalkorDB PR #2197):
 #: measured on 4.18, ``queryNodes`` returned 2-3 of 6 neighbours after one such

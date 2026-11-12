@@ -64,7 +64,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from graphrag_sdk.core.connection import FalkorDBConnection
+from graphrag_sdk.core.connection import FalkorDBConnection, is_missing_graph_error
 from graphrag_sdk.core.exceptions import FalkorDBVersionError
 from graphrag_sdk.core.models import (
     Attribute,
@@ -217,7 +217,7 @@ class OntologyStore:
         except FalkorDBVersionError:
             raise
         except Exception as exc:
-            if "empty key" in str(exc):  # never written: nothing declared yet
+            if is_missing_graph_error(exc):  # never written: nothing declared yet
                 return Ontology()
             logger.debug("Ontology load failed (returning empty ontology): %s", exc)
             return Ontology()
@@ -618,11 +618,9 @@ class OntologyStore:
             ]
         for cypher, params in queries:
             try:
-                result = await self._conn.query(
-                    cypher, params, read_only=True, expected_errors=("empty key",)
-                )
+                result = await self._conn.query(cypher, params, read_only=True)
             except Exception as exc:  # noqa: BLE001 - unknown means "holds data"
-                if "empty key" in str(exc).lower():
+                if is_missing_graph_error(exc):
                     return False
                 logger.debug("Could not tell whether %s %r holds data: %s", kind, label, exc)
                 return True

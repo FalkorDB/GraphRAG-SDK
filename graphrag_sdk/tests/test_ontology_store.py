@@ -859,3 +859,16 @@ class TestModificationOfALabelWithNoData:
                     ]
                 )
             )
+
+
+def test_a_missing_graph_is_recognised_however_the_error_reaches_us() -> None:
+    """One predicate for FalkorDB's "graph never written" reply, raw from the
+    driver or wrapped by the connection, whatever the case."""
+    from graphrag_sdk.core.connection import is_missing_graph_error
+    from graphrag_sdk.core.exceptions import DatabaseError
+
+    assert is_missing_graph_error(Exception("Invalid graph operation on empty key"))
+    assert is_missing_graph_error(
+        DatabaseError("FalkorDB query failed: Invalid graph operation on Empty Key")
+    )
+    assert not is_missing_graph_error(DatabaseError("FalkorDB query failed: Query timed out"))

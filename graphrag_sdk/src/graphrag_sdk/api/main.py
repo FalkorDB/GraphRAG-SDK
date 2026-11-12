@@ -18,7 +18,11 @@ from typing import Any, Literal, NoReturn, overload
 from uuid import uuid4
 
 from graphrag_sdk import __version__
-from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
+from graphrag_sdk.core.connection import (
+    ConnectionConfig,
+    FalkorDBConnection,
+    is_missing_graph_error,
+)
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import (
     ConfigError,
@@ -5656,7 +5660,7 @@ class GraphRAG:
                     read_only=True,
                 )
             except Exception as exc:
-                if "empty key" not in str(exc).lower():
+                if not is_missing_graph_error(exc):
                     raise
                 result = None  # no graph yet, so no stored config
             if result is not None and result.result_set:
