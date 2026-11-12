@@ -171,7 +171,7 @@ async def extract_with_retry(
             valid. Runs only after a successful Pydantic parse.
         max_retries: Number of *retry* attempts after the first, each one a
             response that came back but failed to parse or validate.
-            ``max_retries=3`` therefore allows up to 4 parsed responses.
+            ``max_retries=3`` therefore allows up to 4 responses.
             Each attempt may also resend after a temporary provider failure
             (up to twice, see ``_call_once``), so up to 12 provider calls.
         chunk_id: Identifier surfaced on ``OntologyDiscoveryError`` for

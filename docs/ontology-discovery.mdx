@@ -308,7 +308,7 @@ Raised by the validation-retry wrapper inside the discovery pipeline when an ind
 | Field | Type | Description |
 |-------|------|-------------|
 | `chunk_id` | `str \| None` | Identifier of the unit being processed (chunk uid, `"summary:<source>"`, or `"normalize"`) |
-| `attempts` | `int` | How many responses were parsed and validated before giving up (calls resent after a temporary provider failure are not counted) |
+| `attempts` | `int` | How many logical attempts were made before giving up: responses received and checked, whether they failed to parse or failed validation (calls resent after a temporary provider failure are not counted) |
 | `last_error` | `Exception \| None` | The last validation/parse error encountered |
 
 Subclasses `RuntimeError`.
@@ -326,7 +326,7 @@ Per call to `Ontology.from_sources(sources)` with `D` documents and `S = sample_
 | Normalization | `1` |
 | **Total** | `D × (S + 1) + 1` |
 
-Each call is bounded by `max_retries + 1` *logical* attempts (responses that are parsed and validated). A temporary provider failure (5xx, 408, 409, 429, dropped connection) is retried up to twice more per attempt without using that budget, so the worst case is `3 * (max_retries + 1)` provider calls per call. With the built-in providers each provider call can itself be up to 3 HTTP requests (the OpenAI SDK's own two retries), so the worst case is `9 * (max_retries + 1)` HTTP requests. Concurrency is capped by the `concurrency` parameter (default 4). For a 10-document corpus with `sample_chunks_per_doc=3` and no retries, that's 41 LLM calls — fast enough to run interactively, cheap on `gpt-4o-mini`-class models.
+Each call is bounded by `max_retries + 1` *logical* attempts (responses received and checked, whether they parse or not). A temporary provider failure (5xx, 408, 409, 429, dropped connection) is retried up to twice more per attempt without using that budget, so the worst case is `3 * (max_retries + 1)` provider calls per call. With the built-in providers each provider call can itself be up to 3 HTTP requests (the OpenAI SDK's own two retries), so the worst case is `9 * (max_retries + 1)` HTTP requests. Concurrency is capped by the `concurrency` parameter (default 4). For a 10-document corpus with `sample_chunks_per_doc=3` and no retries, that's 41 LLM calls — fast enough to run interactively, cheap on `gpt-4o-mini`-class models.
 
 `suggest_schema_extensions` has the same shape: it runs the full discovery pipeline on the new sources plus the diff at the end (zero LLM cost). The diff against the committed ontology is purely structural.
 
