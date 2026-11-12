@@ -432,11 +432,11 @@ class OntologyStore:
 
         - **New labels** — registered with their declared properties and
           (for relations) patterns.
-        - **Existing labels** — incoming declaration must be a *strict subset*
-          of what's already persisted. The same property names, the same
-          types, the same (or fewer) relation patterns. Re-declaring a label
-          with no properties is fine; it just means "I know this label exists,
-          use the persisted definition."
+        - **Existing labels that hold data** — the incoming declaration must
+          be a subset of what's already persisted: the same property names,
+          the same types, the same (or fewer) relation patterns. Re-declaring
+          a label with no properties is fine; it just means "I know this
+          label exists, use the persisted definition."
         - Trying to **add a property** (or a relation pattern) to an existing
           label that holds data →
           :py:class:`OntologyModificationNotAllowedError`. A label with no

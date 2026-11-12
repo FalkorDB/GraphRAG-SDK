@@ -2564,11 +2564,12 @@ class GraphRAG:
         """Merge a mapping's ontology into the persisted one, additively.
 
         ``register()`` deliberately refuses to add properties or patterns to a
-        label that already exists, because for the extraction path that would
-        mean an ingest silently reshaping the schema. A structured source has to
-        do exactly that though: prose typically creates ``Organization`` first
-        with only a name and a description, and a CSV then contributes
-        ``employee_count`` as an INTEGER. That is additive, not a modification.
+        label that already holds data, because for the extraction path that
+        would mean an ingest silently reshaping the schema under existing nodes.
+        A structured source has to do exactly that though: prose typically
+        creates ``Organization`` first with only a name and a description, and
+        a CSV then contributes ``employee_count`` as an INTEGER. That is
+        additive, not a modification.
 
         So new labels and relations go through ``register()`` wholesale, and
         anything that already exists is extended through the ontology-evolution

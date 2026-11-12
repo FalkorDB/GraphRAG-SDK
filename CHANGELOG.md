@@ -69,11 +69,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   none, including on a data graph that does not exist yet, may gain
   attributes and patterns. Type changes are still refused, and when the data
   graph cannot be read (a timeout, an unreachable server) `register()` fails
-  with that error and writes nothing. The message for a label that
-  holds data names `add_attribute` / `add_relation_pattern` instead of "not
-  yet supported". A declaration that gives a stored patterned relation new
-  attributes without restating its patterns now writes them onto those
-  patterns, rather than onto an open-mode node `load()` never reads for it.
+  with that error and writes nothing. A pattern or attribute added to a
+  stored relation is written the way `add_relation_pattern` and relation
+  attributes are, so every pattern of the relation keeps the same
+  properties. The data check ignores the SDK's own structure edges
+  (`PART_OF`, `NEXT_CHUNK`, `MENTIONED_IN`) and reads the data graph the
+  store belongs to. The message for a label that holds data says to declare
+  it without the additions and add them with `add_attribute` /
+  `add_relation_pattern`, instead of "not yet supported" (#395).
 
 ## [1.6.0] - 2026-11-02
 
