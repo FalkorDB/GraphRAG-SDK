@@ -27,8 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Azure, a 429, a dropped connection) was retried only by the HTTP client's
   own loop, about two seconds long, so one such error that outlasted it among
   the ~20 calls of a discovery run failed the whole run. Those are now retried
-  up to twice more with a backoff, apart from the parse budget; other 4xx
-  errors (400, 401, a content filter) and timeouts still fail at once.
+  up to twice more with a backoff, apart from the parse budget. A request
+  that timed out at the provider (HTTP 408, or the OpenAI client's timeout
+  error) counts as temporary too; other 4xx errors (400, 401, a content
+  filter) still fail at once.
   `is_transient_llm_error()` in `core/providers/_retry.py` decides which is
   which: the HTTP status for provider responses (5xx, 408, 409, 429), or a
   connection error when there is no status (the built-in `ConnectionError`,
