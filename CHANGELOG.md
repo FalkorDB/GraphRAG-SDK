@@ -470,9 +470,10 @@ and CI tests both engines.
   holds another entity's key into an edge, with `properties=` on the link for
   edge attributes. The mapping is validated against the file's real header and
   every cell against its declared type before anything is written, so one that
-  does not fit raises `MappingError` and leaves the graph untouched. `INTEGER`
-  and `FLOAT` read both `1,234.56` and `1.234,56`; `FLOAT` refuses `nan` and
-  `inf`; `LIST` is parsed as a CSV row. Also exported: `CsvRecordLoader` (sniffs
+  does not fit raises `MappingError` and leaves the graph untouched. `FLOAT`
+  reads both `1,234.56` and `1.234,56` and refuses `nan` and `inf`; `INTEGER`
+  reads `1,000` and `1,234,567` as whole numbers and refuses a fraction; `LIST`
+  is parsed as a CSV row. Also exported: `CsvRecordLoader` (sniffs
   comma, semicolon, tab and pipe), `RecordLoaderStrategy` and `RecordBatch` for
   other formats, and `TextLoader`.
 
