@@ -129,15 +129,19 @@ class OntologyStore:
     Owns its own graph handle, derived from the data-graph connection's
     driver. Queries go directly to the FalkorDB driver and bypass the
     connection's retry / circuit-breaker — ontology operations are
-    infrequent, idempotent, and tolerant of a single failure.
+    infrequent, idempotent, and tolerant of a single failure. That includes
+    the read-only probes of the data graph named ``data_graph_name``, which
+    ask whether a label already holds data.
     """
 
     ONTOLOGY_GRAPH_SUFFIX = "__ontology"
 
     def __init__(self, connection: FalkorDBConnection, data_graph_name: str) -> None:
         self._conn = connection
+        self._data_graph_name = data_graph_name
         self._graph_name = f"{data_graph_name}{self.ONTOLOGY_GRAPH_SUFFIX}"
         self._graph: Any | None = None
+        self._data_graph: Any | None = None
 
     @property
     def graph_name(self) -> str:
@@ -146,12 +150,23 @@ class OntologyStore:
     def _ensure_graph(self) -> Any:
         if self._graph is not None:
             return self._graph
+        self._graph = self._select_graph(self._graph_name)
+        return self._graph
+
+    def _ensure_data_graph(self) -> Any:
+        # The store's own data graph, by name: the connection may be bound to
+        # another graph, and the probe must ask the graph this ontology governs.
+        if self._data_graph is not None:
+            return self._data_graph
+        self._data_graph = self._select_graph(self._data_graph_name)
+        return self._data_graph
+
+    def _select_graph(self, name: str) -> Any:
         self._conn._ensure_client()
         driver = self._conn._driver
         if driver is None:
             raise RuntimeError("FalkorDB driver not initialised on connection")
-        self._graph = driver.select_graph(self._graph_name)
-        return self._graph
+        return driver.select_graph(name)
 
     async def _query(
         self, cypher: str, params: dict[str, Any] | None = None, *, read_only: bool = False
@@ -616,9 +631,11 @@ class OntologyStore:
                     {"label": label},
                 ),
             ]
+        await self._conn._check_server_version()
+        data_graph = self._ensure_data_graph()
         for cypher, params in queries:
             try:
-                result = await self._conn.query(cypher, params, read_only=True)
+                result = await data_graph.ro_query(cypher, params=params)
             except Exception as exc:  # noqa: BLE001 - unknown means "holds data"
                 if is_missing_graph_error(exc):
                     return False

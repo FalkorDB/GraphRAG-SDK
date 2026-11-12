@@ -101,20 +101,52 @@ class _FakeGraph:
         return await self.query(cypher, params)
 
 
+class _FakeDataGraph:
+    """The data graph the store governs: answers its read-only probes.
+
+    Every label holds data unless a test says otherwise, so a test that adds
+    to a stored label is refused for that reason, not for a failed probe.
+    The store never writes the data graph.
+    """
+
+    def __init__(self, rows: list[list] | None = None) -> None:
+        self.calls: list[tuple[str, dict | None]] = []
+        self.rows = [[1]] if rows is None else rows
+
+    async def ro_query(self, cypher: str, params: dict | None = None):
+        self.calls.append((cypher, params))
+        return _FakeQueryResult(self.rows)
+
+    async def query(self, cypher: str, params: dict | None = None):
+        raise AssertionError(f"the ontology store wrote to the data graph: {cypher}")
+
+
 @pytest.fixture
 def fake_graph():
     return _FakeGraph()
 
 
 @pytest.fixture
-def store_factory(fake_graph):
-    """Returns a callable producing an ``OntologyStore`` wired to ``fake_graph``."""
+def data_graph():
+    return _FakeDataGraph()
+
+
+@pytest.fixture
+def store_factory(fake_graph, data_graph):
+    """Returns a callable producing an ``OntologyStore`` wired to ``fake_graph``
+    (its ontology graph) and ``data_graph`` (the graph it governs)."""
 
     def _make(data_graph_name: str = "kg") -> OntologyStore:
         conn = MagicMock()
         conn._ensure_client = MagicMock()
         conn._check_server_version = AsyncMock()  # a supported server
-        conn._driver = SimpleNamespace(select_graph=MagicMock(return_value=fake_graph))
+
+        def select_graph(name: str):
+            if name.endswith(OntologyStore.ONTOLOGY_GRAPH_SUFFIX):
+                return fake_graph
+            return data_graph
+
+        conn._driver = SimpleNamespace(select_graph=MagicMock(side_effect=select_graph))
         return OntologyStore(conn, data_graph_name)
 
     return _make
@@ -647,11 +679,14 @@ class TestModificationOfALabelWithNoData:
 
     @staticmethod
     def _data(store: OntologyStore, *, rows=None, error: Exception | None = None) -> AsyncMock:
-        query = AsyncMock(
+        """Answer the store's data-graph probes; returns the probe mock."""
+        probe = AsyncMock(
             side_effect=error, return_value=_FakeQueryResult(rows if rows is not None else [])
         )
-        store._conn.query = query
-        return query
+        store._data_graph = SimpleNamespace(
+            ro_query=probe, query=AsyncMock(side_effect=AssertionError("wrote to the data graph"))
+        )
+        return probe
 
     @staticmethod
     def _property_merges(fake_graph, owner: str) -> list[str]:
@@ -696,7 +731,7 @@ class TestModificationOfALabelWithNoData:
         )
         cypher = query.await_args.args[0]
         assert "`Event`" in cypher and "LIMIT 1" in cypher
-        assert query.await_args.kwargs.get("read_only") is True
+        assert store._data_graph.query.await_count == 0  # read-only: ro_query
 
     @pytest.mark.asyncio
     async def test_a_label_with_nodes_is_still_refused(self, store_factory, fake_graph):
@@ -788,6 +823,51 @@ class TestModificationOfALabelWithNoData:
         assert query.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_a_relation_found_only_by_its_rel_type_is_refused(
+        self, store_factory, fake_graph
+    ):
+        """Extraction and relationship tables store a relation as RELATES
+        edges named by rel_type; no typed edge exists until a backfill."""
+        store = store_factory()
+        fake_graph.set_load_response(
+            patterned_relations=[["WORKS_AT", None, "Person", "Company"]],
+        )
+
+        async def answer(cypher, params=None):
+            return _FakeQueryResult([[1]] if "RELATES" in cypher else [])
+
+        probe = self._data(store)
+        probe.side_effect = answer
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await store.register(
+                Ontology(
+                    relations=[
+                        Relation(
+                            label="WORKS_AT",
+                            patterns=[("Person", "Company"), ("Person", "Organization")],
+                        )
+                    ]
+                )
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_probe_reads_the_graph_this_store_governs(
+        self, store_factory, fake_graph, data_graph
+    ):
+        """OntologyStore(connection, data_graph_name) is public; the connection
+        may be bound to another graph, which says nothing about this one."""
+        store = store_factory("tenant_b")
+        store._conn.config = SimpleNamespace(graph_name="tenant_a")
+        fake_graph.set_load_response(entities=[["Event", None]])
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await store.register(
+                Ontology(entities=[Entity(label="Event", properties=[Attribute(name="when", type="DATE")])])
+            )
+        selected = [c.args[0] for c in store._conn._driver.select_graph.call_args_list]
+        assert "tenant_b" in selected and "tenant_a" not in selected
+        assert data_graph.calls
+
+    @pytest.mark.asyncio
     async def test_no_data_check_runs_when_nothing_is_added(self, store_factory, fake_graph):
         store = store_factory()
         fake_graph.set_load_response(
@@ -825,7 +905,7 @@ class TestModificationOfALabelWithNoData:
         assert "[r:`WORKS_AT`]" in typed
         assert "[r:RELATES]" in relates and "rel_type" in relates
         assert " OR " not in typed + relates
-        assert query.await_args.args[1] == {"label": "WORKS_AT"}
+        assert query.await_args.kwargs["params"] == {"label": "WORKS_AT"}
         new_pattern = [
             c
             for c in fake_graph.calls
