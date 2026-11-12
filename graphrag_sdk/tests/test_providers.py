@@ -227,6 +227,44 @@ class TestLLMInterface:
         assert "SECRET_KEY_xyz" not in msg
         assert "proxy=" not in msg
 
+    @staticmethod
+    def _failing_llm(error: Exception) -> LLMInterface:
+        class FailingLLM(LLMInterface):
+            def __init__(self) -> None:
+                super().__init__(model_name="fail")
+
+            def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+                raise error
+
+        return FailingLLM()
+
+    async def test_a_failure_the_caller_retries_is_not_logged_as_final(self, caplog):
+        """Ontology discovery retries temporary failures itself: inside its
+        retry loop a provider's last attempt is not final, so it must not log an
+        ERROR (with the exception text) for a call that can still succeed."""
+        import logging
+
+        from graphrag_sdk.core.providers._retry import caller_retries_transient_errors
+
+        error = RuntimeError("upstream 503: SECRET-REQUEST-BODY")
+        error.status_code = 503  # type: ignore[attr-defined]
+        with caplog.at_level(logging.DEBUG, logger="graphrag_sdk.core.providers.base"):
+            with caller_retries_transient_errors(), pytest.raises(RuntimeError):
+                await self._failing_llm(error).ainvoke("hi", max_retries=1)
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("failed after 1 attempts" in r.getMessage() for r in caplog.records)
+
+    async def test_a_permanent_failure_is_an_error_even_when_the_caller_retries(self, caplog):
+        """The caller retries only temporary failures; a permanent one is final."""
+        import logging
+
+        from graphrag_sdk.core.providers._retry import caller_retries_transient_errors
+
+        with caplog.at_level(logging.ERROR, logger="graphrag_sdk.core.providers.base"):
+            with caller_retries_transient_errors(), pytest.raises(ValueError):
+                await self._failing_llm(ValueError("bad request")).ainvoke("hi", max_retries=1)
+        assert [r for r in caplog.records if r.levelno == logging.ERROR]
+
 
 class TestSummarizeException:
     """S6: WARNING-level exception logs must be single-line and length-bounded."""

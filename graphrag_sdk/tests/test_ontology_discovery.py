@@ -260,6 +260,532 @@ class TestExtractWithRetry:
         assert len(llm.all_calls) == 2, "Expected parse-then-retry on extra='junk'"
 
 
+class _ProviderError(Exception):
+    """Stands in for a provider exception that carries an HTTP status
+    (litellm's ``APIError`` / ``InternalServerError``, openai's ``APIStatusError``)."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"status {status_code}")
+        self.status_code = status_code
+
+
+class _FlakyLLM(MockLLM):
+    """Raises the queued exceptions first, then answers from ``responses``."""
+
+    def __init__(self, failures: list[BaseException], responses: list[str]) -> None:
+        super().__init__(responses=responses, strict=True)
+        self._failures = list(failures)
+        self.calls: list[list] = []
+
+    async def ainvoke_messages(self, messages, *, max_retries=3, **kwargs):
+        self.calls.append([m.model_copy() for m in messages])
+        if self._failures:
+            raise self._failures.pop(0)
+        self.last_messages = messages
+        return self.invoke("")
+
+
+class TestExtractWithRetryTransientErrors:
+    """A model call that fails for a temporary reason (5xx, 429, a dropped
+    connection) is retried, apart from the budget for bad JSON. One such
+    failure used to sink a whole discovery run, because the provider's own
+    retries are disabled here and only parse failures were retried."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+        """Records the waits instead of sleeping, without jitter so they are exact."""
+        slept: list[float] = []
+
+        async def _sleep(delay: float) -> None:
+            slept.append(delay)
+
+        monkeypatch.setattr("graphrag_sdk.discovery.instructor.asyncio.sleep", _sleep)
+        monkeypatch.setattr("graphrag_sdk.discovery.instructor._jittered", lambda delay: delay)
+        return slept
+
+    @pytest.mark.asyncio
+    async def test_server_error_is_retried(self) -> None:
+        llm = _FlakyLLM([_ProviderError(500)], [_valid_doc_summary_json()])
+        result = await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+        )
+        assert result.aboutness == "Test doc"
+        assert len(llm.calls) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [408, 409, 429, 502, 503, 504])
+    async def test_other_temporary_statuses_are_retried(self, status: int) -> None:
+        llm = _FlakyLLM([_ProviderError(status)], [_valid_doc_summary_json()])
+        result = await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+        )
+        assert result.aboutness == "Test doc"
+
+    @pytest.mark.asyncio
+    async def test_connection_error_is_retried(self) -> None:
+        llm = _FlakyLLM([ConnectionResetError("reset")], [_valid_doc_summary_json()])
+        result = await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+        )
+        assert result.aboutness == "Test doc"
+
+    @pytest.mark.asyncio
+    async def test_retry_resends_the_same_conversation(self) -> None:
+        llm = _FlakyLLM([_ProviderError(500)], [_valid_doc_summary_json()])
+        await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+        )
+        assert [m.content for m in llm.calls[0]] == [m.content for m in llm.calls[1]]
+
+    @pytest.mark.asyncio
+    async def test_backoff_grows_between_attempts(self, _no_backoff: list[float]) -> None:
+        llm = _FlakyLLM([_ProviderError(503), _ProviderError(503)], [_valid_doc_summary_json()])
+        await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+        )
+        assert _no_backoff == [1.0, 4.0]
+
+    @staticmethod
+    def _rate_limited(headers: dict[str, str]) -> _ProviderError:
+        """A 429 whose reply carries ``headers`` (``exc.response.headers``)."""
+        from types import SimpleNamespace
+
+        error = _ProviderError(429)
+        error.response = SimpleNamespace(headers=headers)  # type: ignore[attr-defined]
+        return error
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("headers", "waited"),
+        [({"retry-after": "7"}, 7.0), ({"retry-after-ms": "2500"}, 2.5), ({"retry-after": "0"}, 1.0)],
+    )
+    async def test_the_provider_wait_is_honoured(
+        self, _no_backoff: list[float], headers: dict[str, str], waited: float
+    ) -> None:
+        llm = _FlakyLLM([self._rate_limited(headers)], [_valid_doc_summary_json()])
+        await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+        )
+        assert _no_backoff == [waited]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            {"retry-after": "300"},
+            {"retry-after": "1e400"},  # too large for a float: an endless wait
+            {"retry-after-ms": "1e400"},
+            {"x-should-retry": "false"},
+        ],
+    )
+    async def test_the_provider_can_end_the_retries(self, headers: dict[str, str]) -> None:
+        """A wait past the cap, or an explicit 'do not retry' (an exhausted
+        quota is a 429 too), is raised at once instead of resent."""
+        llm = _FlakyLLM([self._rate_limited(headers)], [_valid_doc_summary_json()])
+        with pytest.raises(_ProviderError):
+            await extract_with_retry(
+                llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+            )
+        assert len(llm.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_wrapped_reply_still_governs_the_retry(self) -> None:
+        """The classifier finds a 429 a custom provider wrapped; the reply's
+        'do not retry' on that 429 must be read from the same place."""
+        try:
+            try:
+                raise self._rate_limited({"x-should-retry": "false"})
+            except _ProviderError as reply:
+                raise RuntimeError("provider failed") from reply
+        except RuntimeError as wrapped:
+            error = wrapped
+        llm = _FlakyLLM([error], [_valid_doc_summary_json()])
+        with pytest.raises(RuntimeError):
+            await extract_with_retry(
+                llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+            )
+        assert len(llm.calls) == 1
+
+    def test_retry_headers_are_read_where_aiohttp_keeps_them(self) -> None:
+        """aiohttp's ClientResponseError has its status on ``status`` and its
+        headers on ``headers``, not on a response object."""
+        from graphrag_sdk.core.providers._retry import provider_refuses_retry, retry_after_seconds
+
+        class ClientResponseError(Exception):
+            def __init__(self, status: int, headers: dict[str, str]) -> None:
+                super().__init__(str(status))
+                self.status = status
+                self.headers = headers
+
+        assert retry_after_seconds(ClientResponseError(429, {"retry-after": "5"})) == 5.0
+        assert provider_refuses_retry(ClientResponseError(429, {"x-should-retry": "false"}))
+
+    def test_header_names_match_in_any_case(self) -> None:
+        """A plain dict of headers (a custom provider's, or a stand-in) keeps the
+        server's spelling; HTTP header names are case-insensitive."""
+        from graphrag_sdk.core.providers._retry import provider_refuses_retry, retry_after_seconds
+
+        assert retry_after_seconds(self._rate_limited({"Retry-After": "7"})) == 7.0
+        assert retry_after_seconds(self._rate_limited({"Retry-After-Ms": "2500"})) == 2.5
+        assert provider_refuses_retry(self._rate_limited({"X-Should-Retry": "False"}))
+
+    def test_retry_after_reads_an_http_date(self) -> None:
+        from email.utils import format_datetime
+        from datetime import datetime, timedelta, timezone
+
+        from graphrag_sdk.core.providers._retry import retry_after_seconds
+
+        when = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=30), usegmt=True)
+        seconds = retry_after_seconds(self._rate_limited({"retry-after": when}))
+        assert seconds is not None and 25 <= seconds <= 30
+        assert retry_after_seconds(self._rate_limited({"retry-after": "soon"})) is None
+        assert retry_after_seconds(_ProviderError(429)) is None
+
+    @pytest.mark.asyncio
+    async def test_the_retry_warning_names_the_type_and_status_only(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The exception text can carry request content and the chunk id a file path."""
+        error = _ProviderError(500)
+        error.args = ("Azure said: SECRET-REQUEST-BODY",)
+        llm = _FlakyLLM([error], [_valid_doc_summary_json()])
+        with caplog.at_level("WARNING", logger="graphrag_sdk.discovery.instructor"):
+            await extract_with_retry(
+                llm,
+                system_prompt="sys",
+                user_prompt="usr",
+                response_model=DocSummary,
+                chunk_id="summary:file:private/report.pdf",
+            )
+        (record,) = caplog.records
+        message = record.getMessage()
+        assert "_ProviderError (HTTP 500)" in message
+        assert "SECRET" not in message and "private/report.pdf" not in message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("chunk_id", "stage"),
+        [
+            ("summary:file:private/report.pdf", "discovery summary"),
+            ("normalize", "discovery normalization"),
+            ("table:employees", "table mapping proposal"),
+            ("chunk-3", "discovery chunk proposal"),
+        ],
+    )
+    async def test_the_retry_warning_names_the_step(
+        self, caplog: pytest.LogCaptureFixture, chunk_id: str, stage: str
+    ) -> None:
+        """A CSV ingest retrying its mapping proposal must not read as a
+        discovery failure; the id itself (a file path, a table) stays out."""
+        llm = _FlakyLLM([_ProviderError(503)], [_valid_doc_summary_json()])
+        with caplog.at_level("WARNING", logger="graphrag_sdk.discovery.instructor"):
+            await extract_with_retry(
+                llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, chunk_id=chunk_id
+            )
+        (record,) = caplog.records
+        message = record.getMessage()
+        assert message.startswith(f"{stage} call failed")
+        # The last part of the id (a file path, a table name) is what must stay out.
+        assert chunk_id.rsplit(":", 1)[-1] not in message or chunk_id == "normalize"
+
+    @pytest.mark.asyncio
+    async def test_a_recovered_call_logs_nothing_above_warning_through_a_real_provider(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Through the SDK's own provider loop (not a stand-in for it): the
+        provider gives up after its single attempt, and must not log that as an
+        ERROR carrying the exception text when discovery then retries and
+        succeeds."""
+        from graphrag_sdk.core.models import LLMResponse
+        from graphrag_sdk.core.providers.base import LLMInterface
+
+        class _OnceFailingProvider(LLMInterface):
+            def __init__(self) -> None:
+                super().__init__(model_name="flaky")
+                self.calls = 0
+
+            def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+                self.calls += 1
+                if self.calls == 1:
+                    error = _ProviderError(500)
+                    error.args = ("Azure said: SECRET-REQUEST-BODY",)
+                    raise error
+                return LLMResponse(content=_valid_doc_summary_json())
+
+        llm = _OnceFailingProvider()
+        with caplog.at_level("WARNING"):
+            result = await extract_with_retry(
+                llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary
+            )
+        assert result.aboutness == "Test doc"
+        assert llm.calls == 2
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+        assert not [r for r in caplog.records if "SECRET" in r.getMessage()]
+
+    @pytest.mark.asyncio
+    async def test_persistent_server_error_is_raised_after_the_budget(self) -> None:
+        failures = [_ProviderError(500) for _ in range(10)]
+        llm = _FlakyLLM(failures, [_valid_doc_summary_json()])
+        with pytest.raises(_ProviderError):
+            await extract_with_retry(
+                llm,
+                system_prompt="sys",
+                user_prompt="usr",
+                response_model=DocSummary,
+                max_retries=0,
+            )
+        assert len(llm.calls) == 3, "1 call + 2 retries for a temporary failure"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+    async def test_permanent_error_is_raised_at_once(self, status: int) -> None:
+        llm = _FlakyLLM([_ProviderError(status)], [_valid_doc_summary_json()])
+        with pytest.raises(_ProviderError):
+            await extract_with_retry(
+                llm,
+                system_prompt="sys",
+                user_prompt="usr",
+                response_model=DocSummary,
+                max_retries=2,
+            )
+        assert len(llm.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_unclassified_error_is_raised_at_once(self) -> None:
+        llm = _FlakyLLM([ValueError("bad config")], [_valid_doc_summary_json()])
+        with pytest.raises(ValueError):
+            await extract_with_retry(
+                llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary
+            )
+        assert len(llm.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_not_retried(self) -> None:
+        from graphrag_sdk.core.exceptions import LLMTimeoutError
+
+        llm = _FlakyLLM([LLMTimeoutError("slow")], [_valid_doc_summary_json()])
+        with pytest.raises(LLMTimeoutError):
+            await extract_with_retry(
+                llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary
+            )
+        assert len(llm.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_temporary_failures_leave_the_parse_budget_alone(self) -> None:
+        # Each logical attempt may hit a temporary failure; the bad-JSON
+        # budget (max_retries=1 -> 2 parsed responses) is still honoured.
+        llm = _FlakyLLM(
+            [_ProviderError(500)],
+            ["not json", _valid_doc_summary_json()],
+        )
+        result = await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=1
+        )
+        assert result.aboutness == "Test doc"
+        assert len(llm.calls) == 3
+
+
+def test_the_retry_backoff_is_jittered() -> None:
+    """Discovery runs calls at once; those that failed together must not all
+    resend in the same instant."""
+    from graphrag_sdk.discovery.instructor import _jittered
+
+    waits = [_jittered(4.0) for _ in range(200)]
+    assert all(2.0 <= wait <= 6.0 for wait in waits)
+    assert len(set(waits)) > 1
+
+
+class TestIsTransientLLMError:
+    def test_classifies_by_status_code(self) -> None:
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        assert is_transient_llm_error(_ProviderError(500))
+        assert is_transient_llm_error(_ProviderError(529))
+        assert is_transient_llm_error(_ProviderError(429))
+        assert not is_transient_llm_error(_ProviderError(401))
+        assert not is_transient_llm_error(_ProviderError(400))
+
+    def test_connection_errors_are_transient(self) -> None:
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        assert is_transient_llm_error(ConnectionError("down"))
+
+    def test_status_on_the_response_is_read(self) -> None:
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        class _WithResponse(Exception):
+            def __init__(self) -> None:
+                super().__init__("x")
+                self.response = type("R", (), {"status_code": 503})()
+
+        assert is_transient_llm_error(_WithResponse())
+
+    def test_a_status_outside_5xx_is_not_transient(self) -> None:
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        assert not is_transient_llm_error(_ProviderError(600))
+        assert not is_transient_llm_error(_ProviderError(999))
+        assert is_transient_llm_error(_ProviderError(599))
+
+    def test_a_status_less_provider_connection_error_is_transient(self, monkeypatch) -> None:
+        """OpenRouter's OpenAI client raises ``APIConnectionError``: no HTTP
+        status, and not a subclass of the built-in ``ConnectionError``."""
+        from graphrag_sdk.core.providers import _retry
+
+        class APIConnectionError(Exception):
+            pass
+
+        monkeypatch.setattr(_retry, "_provider_connection_errors", lambda: (APIConnectionError,))
+        assert _retry.is_transient_llm_error(APIConnectionError("Connection error."))
+
+    def test_openai_api_connection_error_is_transient(self) -> None:
+        openai = pytest.importorskip("openai")
+
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        def bare(cls):
+            # Only the class matters; its constructor wants a request object
+            # whose type differs between openai majors (httpx / httpx2).
+            exc = cls.__new__(cls)
+            Exception.__init__(exc, "Connection error.")
+            return exc
+
+        assert is_transient_llm_error(bare(openai.APIConnectionError))
+        assert is_transient_llm_error(bare(openai.APITimeoutError))
+
+    def test_unknown_errors_are_not_transient(self) -> None:
+        from graphrag_sdk.core.exceptions import LLMTimeoutError
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        assert not is_transient_llm_error(ValueError("x"))
+        assert not is_transient_llm_error(LLMTimeoutError("slow"))
+
+    def test_a_loaded_openai_connection_error_is_found(self, monkeypatch) -> None:
+        """Exercises the real lookup even where openai is not installed (CI):
+        the classifier reads whatever ``openai`` module is loaded."""
+        import sys
+        import types
+
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        class APIConnectionError(Exception):
+            pass
+
+        fake_openai = types.ModuleType("openai")
+        fake_openai.APIConnectionError = APIConnectionError  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "openai", fake_openai)
+        assert is_transient_llm_error(APIConnectionError("Connection error."))
+        assert not is_transient_llm_error(ValueError("x"))
+
+    def test_custom_provider_connection_errors_are_transient(self, monkeypatch) -> None:
+        """A custom provider on httpx, aiohttp or requests drops a connection
+        the same way OpenRouter does; its status, if any, may sit on ``status``."""
+        import sys
+        import types
+
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        class ClientConnectionError(Exception):
+            pass
+
+        class ServerDisconnectedError(ClientConnectionError):
+            pass
+
+        fake_aiohttp = types.ModuleType("aiohttp")
+        fake_aiohttp.ClientConnectionError = ClientConnectionError  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+        assert is_transient_llm_error(ServerDisconnectedError("Server disconnected"))
+
+        class ClientResponseError(Exception):
+            def __init__(self, status: int) -> None:
+                super().__init__(f"{status}")
+                self.status = status
+
+        assert is_transient_llm_error(ClientResponseError(503))
+        assert not is_transient_llm_error(ClientResponseError(401))
+
+        httpx = pytest.importorskip("httpx")
+        assert is_transient_llm_error(httpx.ConnectError("refused"))
+        assert is_transient_llm_error(httpx.RemoteProtocolError("Server disconnected"))
+        assert not is_transient_llm_error(httpx.UnsupportedProtocol("ftp://"))
+
+    def test_a_wrapped_connection_error_is_transient(self) -> None:
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        def wrapped(cause: Exception, *, hide: bool = False) -> RuntimeError:
+            try:
+                try:
+                    raise cause
+                except Exception as inner:
+                    if hide:
+                        raise RuntimeError("provider failed") from None
+                    raise RuntimeError("provider failed") from inner
+            except RuntimeError as outer:
+                return outer
+
+        assert is_transient_llm_error(wrapped(ConnectionResetError("reset")))
+        assert not is_transient_llm_error(wrapped(ConnectionResetError("reset"), hide=True))
+        assert not is_transient_llm_error(wrapped(ValueError("bad config")))
+
+    def test_a_missing_dependency_is_not_transient_even_as_a_500(self) -> None:
+        """LiteLLM wraps e.g. a missing google-auth for vertex_ai/ models in an
+        APIConnectionError with status 500; retrying cannot install it."""
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        try:
+            try:
+                raise ModuleNotFoundError("No module named 'google'")
+            except ModuleNotFoundError as missing:
+                raise _ProviderError(500) from missing
+        except _ProviderError as wrapped:
+            assert not is_transient_llm_error(wrapped)
+        assert is_transient_llm_error(_ProviderError(500))
+
+    def test_an_exception_group_is_transient_only_if_every_member_is(self) -> None:
+        import builtins
+
+        group = getattr(builtins, "ExceptionGroup", None)
+        if group is None:
+            pytest.skip("ExceptionGroup needs Python 3.11+")
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        assert is_transient_llm_error(group("fan-out", [ConnectionResetError("a"), _ProviderError(503)]))
+        assert not is_transient_llm_error(group("fan-out", [ConnectionResetError("a"), ValueError("b")]))
+
+        # A member that is a "500" wrapping a missing dependency (as LiteLLM
+        # reports one) keeps the group permanent too.
+        try:
+            try:
+                raise ModuleNotFoundError("No module named 'google'")
+            except ModuleNotFoundError as missing:
+                raise _ProviderError(500) from missing
+        except _ProviderError as wrapped:
+            assert not is_transient_llm_error(group("fan-out", [ConnectionResetError("a"), wrapped]))
+
+    def test_classifying_does_not_import_openai(self, monkeypatch) -> None:
+        """An openai exception cannot exist unless openai is loaded, and a cold
+        import on the first error would block the event loop."""
+        import sys
+
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        monkeypatch.delitem(sys.modules, "openai", raising=False)
+        assert not is_transient_llm_error(ValueError("x"))
+        assert "openai" not in sys.modules
+
+    def test_a_mocked_openai_module_does_not_break_classifying(self, monkeypatch) -> None:
+        """Tests that put a MagicMock in sys.modules['openai'] (as the provider
+        tests do) must not turn every error into a TypeError from isinstance."""
+        import sys
+        from unittest.mock import MagicMock
+
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        monkeypatch.setitem(sys.modules, "openai", MagicMock())
+        assert not is_transient_llm_error(ValueError("x"))
+        assert is_transient_llm_error(ConnectionResetError("reset"))
+
+
 # ── _validate_proposal ─────────────────────────────────────────────
 
 
@@ -525,6 +1051,151 @@ class TestPipeline:
         )
         # Fell back to the un-normalized merged draft, which still has the entities.
         assert {"Person", "Company"} <= {e.label for e in result.entities}
+
+
+class _ScriptedLLM(RecordingMockLLM):
+    """Each call takes the next step: a reply, or an exception to raise."""
+
+    def __init__(self, steps: list[str | BaseException]) -> None:
+        super().__init__(responses=[])
+        self._steps = list(steps)
+
+    async def ainvoke_messages(self, messages, *, max_retries=3, **kwargs):
+        self.all_calls.append([m.model_copy() for m in messages])
+        step = self._steps.pop(0)
+        if isinstance(step, BaseException):
+            raise step
+        from graphrag_sdk.core.models import LLMResponse
+
+        return LLMResponse(content=step)
+
+
+class TestPipelineTemporaryFailures:
+    """A temporary model failure that outlasts the wrapper's retries (three
+    tries per call) takes the same fallback as a call that never returned
+    valid JSON, except for a chunk proposal: skipping every chunk during an
+    outage would return an empty draft as if the documents held nothing."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def _sleep(delay: float) -> None:
+            return None
+
+        monkeypatch.setattr("graphrag_sdk.discovery.instructor.asyncio.sleep", _sleep)
+
+    @staticmethod
+    async def _run(tmp_path: Path, llm: _ScriptedLLM) -> Ontology:
+        src = tmp_path / "doc.txt"
+        src.write_text("Alice works at Acme.")
+        return await discover_ontology(
+            str(src),
+            llm,
+            sample_chunks_per_doc=1,
+            max_retries=0,
+            concurrency=1,
+            chunker=FixedChunker(["text"]),
+            seed=42,
+        )
+
+    @pytest.mark.asyncio
+    async def test_normalization_falls_back_to_the_merged_draft(self, tmp_path: Path) -> None:
+        down = [_ProviderError(503) for _ in range(3)]
+        llm = _ScriptedLLM([_valid_doc_summary_json(), _valid_chunk_proposal_json(), *down])
+        result = await self._run(tmp_path, llm)
+        assert {"Person", "Company"} <= {e.label for e in result.entities}
+        assert len(llm.all_calls) == 5
+
+    @pytest.mark.asyncio
+    async def test_the_summary_is_skipped_and_the_chunks_still_run(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        down = [_ProviderError(503) for _ in range(3)]
+        llm = _ScriptedLLM(
+            [*down, _valid_chunk_proposal_json(), _valid_normalized_json()],
+        )
+        with caplog.at_level("WARNING"):
+            result = await self._run(tmp_path, llm)
+        assert {"Person", "Company"} <= {e.label for e in result.entities}
+        # The source path (the document id) stays out of WARNING logs.
+        assert not [r for r in caplog.records if str(tmp_path) in r.getMessage()]
+
+    @pytest.mark.asyncio
+    async def test_a_chunk_proposal_still_fails_the_run(self, tmp_path: Path) -> None:
+        down = [_ProviderError(503) for _ in range(3)]
+        llm = _ScriptedLLM([_valid_doc_summary_json(), *down])
+        with pytest.raises(_ProviderError):
+            await self._run(tmp_path, llm)
+
+    @pytest.mark.asyncio
+    async def test_the_grounded_trim_keeps_every_property(self) -> None:
+        from graphrag_sdk.discovery.pipeline import _trim_type_properties
+
+        properties = [
+            Attribute(name="name", type="STRING"),
+            Attribute(name="founded", type="DATE"),
+        ]
+        llm = _ScriptedLLM([_ProviderError(503) for _ in range(3)])
+        kept = await _trim_type_properties(
+            llm,
+            "Company",
+            properties,
+            [TextChunk(text="Acme was founded in 1999.", index=0, uid="c0")],
+            max_retries=0,
+        )
+        assert kept == properties
+        assert len(llm.all_calls) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_failing_chunk_cancels_the_calls_still_in_flight(
+        self, tmp_path: Path
+    ) -> None:
+        """The run fails as soon as one chunk does; the other calls must not
+        keep running (and retrying) in the background after that."""
+        import asyncio
+
+        from graphrag_sdk.core.models import LLMResponse
+
+        class _OneHangs(RecordingMockLLM):
+            def __init__(self) -> None:
+                super().__init__(responses=[])
+                self.cancelled = False
+
+            async def ainvoke_messages(self, messages, *, max_retries=3, **kwargs):
+                prompt = messages[-1].content
+                if "FAILING-CHUNK" in prompt:
+                    raise _ProviderError(401)
+                if "HANGING-CHUNK" in prompt:
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        self.cancelled = True
+                        raise
+                return LLMResponse(content=_valid_doc_summary_json())
+
+        src = tmp_path / "doc.txt"
+        src.write_text("Alice works at Acme.")
+        llm = _OneHangs()
+        with pytest.raises(_ProviderError):
+            await discover_ontology(
+                str(src),
+                llm,
+                sample_chunks_per_doc=2,
+                max_retries=0,
+                concurrency=2,
+                chunker=FixedChunker(["HANGING-CHUNK", "FAILING-CHUNK"]),
+                seed=42,
+            )
+        assert llm.cancelled
+
+    @pytest.mark.asyncio
+    async def test_a_permanent_error_on_normalization_still_fails_the_run(
+        self, tmp_path: Path
+    ) -> None:
+        llm = _ScriptedLLM(
+            [_valid_doc_summary_json(), _valid_chunk_proposal_json(), _ProviderError(401)]
+        )
+        with pytest.raises(_ProviderError):
+            await self._run(tmp_path, llm)
 
 
 # ── _ensure_sdk_managed_attributes ────────────────────────────────

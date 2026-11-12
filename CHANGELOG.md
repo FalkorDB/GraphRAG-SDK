@@ -20,6 +20,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One temporary model error no longer fails ontology discovery.**
+  `extract_with_retry` turns off the SDK provider's retry loop so its attempt
+  count stays exact, and it retried only responses that failed to parse or
+  failed semantic validation. A call that failed outright (an HTTP 500 from
+  Azure, a 429, a dropped connection) was retried only by the HTTP client's
+  own two retries, normally a couple of seconds, so one such error that
+  outlasted them among the ~20 calls of a discovery run failed the whole run.
+  Those are now retried up to twice more with a backoff, apart from the parse
+  budget. A request that timed out at the provider (HTTP 408, or the OpenAI
+  client's timeout error) counts as temporary too; other 4xx errors (400, 401,
+  a content filter) still fail at once. `is_transient_llm_error()` in
+  `core/providers/_retry.py` decides which is which: the HTTP status for
+  provider responses (5xx, 408, 409, 429), or a connection error when there is
+  no status (the built-in `ConnectionError`, the OpenAI client's
+  `APIConnectionError` that OpenRouter raises, or an httpx, aiohttp or
+  requests connection error from a custom provider, also when it is the cause
+  of the error the provider raises). The retry warning logs the exception type
+  and HTTP status only.
 - **Missing ontology attributes no longer erase extracted values.**
   Values absent from a chunk no longer overwrite values from other chunks or
   system properties such as `description`; resolution merges also fill
