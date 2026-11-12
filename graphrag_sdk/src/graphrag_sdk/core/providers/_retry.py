@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import email.utils
 import logging
+import math
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from graphrag_sdk.core.exceptions import EmbeddingTimeoutError, LLMTimeoutError
@@ -61,6 +64,72 @@ def is_transient_llm_error(exc: BaseException) -> bool:
     if status is not None:
         return 500 <= status < 600 or status in _TRANSIENT_STATUSES
     return isinstance(exc, (ConnectionError, *_provider_connection_errors()))
+
+
+def _reply_header(exc: BaseException, name: str) -> str | None:
+    """A header of the HTTP reply a provider exception carries, if any.
+
+    openai and LiteLLM exceptions keep the reply on ``exc.response``
+    (an ``httpx.Response``); LiteLLM also copies its headers to
+    ``exc.litellm_response_headers``. Lookups are case-insensitive on
+    ``httpx.Headers``; plain dicts are expected to use lowercase names.
+    """
+    for headers in (
+        getattr(getattr(exc, "response", None), "headers", None),
+        getattr(exc, "litellm_response_headers", None),
+    ):
+        getter = getattr(headers, "get", None)
+        if getter is None:
+            continue
+        try:
+            value = getter(name)
+        except Exception:  # noqa: BLE001 - reading a header must never mask the error
+            continue
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def retry_after_seconds(exc: BaseException) -> float | None:
+    """How long the provider asked to wait before a retry, or ``None``.
+
+    Reads ``retry-after-ms`` (milliseconds, sent by OpenAI and Azure), then
+    ``retry-after`` (seconds or an HTTP date) from the reply the exception
+    carries. A value that does not parse is ignored.
+    """
+    raw_ms = _reply_header(exc, "retry-after-ms")
+    if raw_ms is not None:
+        try:
+            millis = float(raw_ms)
+        except ValueError:
+            millis = math.nan
+        if math.isfinite(millis) and millis >= 0:
+            return millis / 1000
+    raw = _reply_header(exc, "retry-after")
+    if raw is None:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(raw)
+        except (TypeError, ValueError, IndexError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = (when - datetime.now(timezone.utc)).total_seconds()
+    if not math.isfinite(seconds):
+        return None
+    return max(seconds, 0.0)
+
+
+def provider_refuses_retry(exc: BaseException) -> bool:
+    """True when the provider's reply says a retry will not help.
+
+    OpenAI sends ``x-should-retry: false`` with errors such as an exhausted
+    quota, where the status alone (a 429) looks temporary.
+    """
+    return (_reply_header(exc, "x-should-retry") or "").lower() == "false"
 
 
 def describe_llm_error(exc: BaseException) -> str:

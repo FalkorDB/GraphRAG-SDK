@@ -343,6 +343,53 @@ class TestExtractWithRetryTransientErrors:
         )
         assert _no_backoff == [1.0, 4.0]
 
+    @staticmethod
+    def _rate_limited(headers: dict[str, str]) -> _ProviderError:
+        """A 429 whose reply carries ``headers`` (``exc.response.headers``)."""
+        from types import SimpleNamespace
+
+        error = _ProviderError(429)
+        error.response = SimpleNamespace(headers=headers)  # type: ignore[attr-defined]
+        return error
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("headers", "waited"),
+        [({"retry-after": "7"}, 7.0), ({"retry-after-ms": "2500"}, 2.5), ({"retry-after": "0"}, 1.0)],
+    )
+    async def test_the_provider_wait_is_honoured(
+        self, _no_backoff: list[float], headers: dict[str, str], waited: float
+    ) -> None:
+        llm = _FlakyLLM([self._rate_limited(headers)], [_valid_doc_summary_json()])
+        await extract_with_retry(
+            llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+        )
+        assert _no_backoff == [waited]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("headers", [{"retry-after": "300"}, {"x-should-retry": "false"}])
+    async def test_the_provider_can_end_the_retries(self, headers: dict[str, str]) -> None:
+        """A wait past the cap, or an explicit 'do not retry' (an exhausted
+        quota is a 429 too), is raised at once instead of resent."""
+        llm = _FlakyLLM([self._rate_limited(headers)], [_valid_doc_summary_json()])
+        with pytest.raises(_ProviderError):
+            await extract_with_retry(
+                llm, system_prompt="sys", user_prompt="usr", response_model=DocSummary, max_retries=0
+            )
+        assert len(llm.calls) == 1
+
+    def test_retry_after_reads_an_http_date(self) -> None:
+        from email.utils import format_datetime
+        from datetime import datetime, timedelta, timezone
+
+        from graphrag_sdk.core.providers._retry import retry_after_seconds
+
+        when = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=30), usegmt=True)
+        seconds = retry_after_seconds(self._rate_limited({"retry-after": when}))
+        assert seconds is not None and 25 <= seconds <= 30
+        assert retry_after_seconds(self._rate_limited({"retry-after": "soon"})) is None
+        assert retry_after_seconds(_ProviderError(429)) is None
+
     @pytest.mark.asyncio
     async def test_the_retry_warning_names_the_type_and_status_only(
         self, caplog: pytest.LogCaptureFixture

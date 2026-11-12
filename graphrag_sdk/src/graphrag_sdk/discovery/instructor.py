@@ -23,7 +23,12 @@ from typing import TypeVar
 from pydantic import BaseModel, ValidationError
 
 from graphrag_sdk.core.models import ChatMessage, LLMResponse
-from graphrag_sdk.core.providers._retry import describe_llm_error, is_transient_llm_error
+from graphrag_sdk.core.providers._retry import (
+    describe_llm_error,
+    is_transient_llm_error,
+    provider_refuses_retry,
+    retry_after_seconds,
+)
 from graphrag_sdk.core.providers.base import LLMInterface
 from graphrag_sdk.discovery.prompts import (
     format_parse_feedback,
@@ -50,6 +55,10 @@ def _strip_fences(content: str) -> str:
 #: (a 5xx, 429, 408, a dropped connection). Its length is the retry count.
 _TRANSIENT_BACKOFF_S = (1.0, 4.0)
 
+#: Longest wait a provider's Retry-After is honoured for. Asking for longer
+#: (a quota window, a long outage) ends the retries instead of stalling the run.
+_MAX_RETRY_AFTER_S = 60.0
+
 
 async def _call_once(llm: LLMInterface, history: list[ChatMessage]) -> LLMResponse:
     """One logical model call, retried apart from the parse budget when it fails temporarily.
@@ -69,8 +78,15 @@ async def _call_once(llm: LLMInterface, history: list[ChatMessage]) -> LLMRespon
         try:
             return await llm.ainvoke_messages(history, max_retries=1)
         except Exception as exc:
-            if delay is None or not is_transient_llm_error(exc):
+            if delay is None or not is_transient_llm_error(exc) or provider_refuses_retry(exc):
                 raise
+            # A 429 or 503 often says how long to wait; resending sooner is
+            # refused again, and a wait past the cap is not worth stalling for.
+            asked = retry_after_seconds(exc)
+            if asked is not None:
+                if asked > _MAX_RETRY_AFTER_S:
+                    raise
+                delay = max(delay, asked)
             # Only the exception type and HTTP status: the chunk id carries the
             # document id (often a file path) and the exception text can carry
             # request content, and a WARNING may reach shared log streams.
