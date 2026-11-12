@@ -903,11 +903,11 @@ class TestModificationOfALabelWithNoData:
                 ]
             )
         )
-        typed, relates = [c.args[0] for c in query.await_args_list]
-        assert "[r:`WORKS_AT`]" in typed
+        relates, typed = [c.args[0] for c in query.await_args_list]
         assert "[r:RELATES]" in relates and "rel_type" in relates
+        assert "[r:`WORKS_AT`]" in typed
         assert " OR " not in typed + relates
-        assert query.await_args.kwargs["params"] == {"label": "WORKS_AT"}
+        assert query.await_args_list[0].kwargs["params"] == {"label": "WORKS_AT"}
         new_pattern = [
             c
             for c in fake_graph.calls

@@ -179,7 +179,7 @@ class TestAddingToALabelWithNoData:
             )
 
     async def test_a_relation_with_a_typed_edge_is_refused(self, onto_and_data):
-        """A relationship table writes the relation type itself, not RELATES."""
+        """backfill_relation_pattern writes the relation type itself, not RELATES."""
         from graphrag_sdk.storage.ontology_store import OntologyModificationNotAllowedError
 
         onto, connection = onto_and_data

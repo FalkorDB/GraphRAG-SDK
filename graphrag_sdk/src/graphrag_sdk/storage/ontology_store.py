@@ -621,16 +621,19 @@ class OntologyStore:
         if kind == "entity":
             queries = [(f"MATCH (n:`{safe}`) RETURN 1 LIMIT 1", None)]
         else:
-            # A relationship table may write the type itself, which a typed
-            # pattern finds without touching other edges; extracted relations
-            # are RELATES edges named by ``rel_type``. Two queries rather than
-            # one ``OR``, so neither has to look at every edge in the graph.
+            # Extraction and relationship tables both store a relation as
+            # RELATES edges named by ``rel_type``, so that probe goes first; a
+            # typed edge of the relation's own type exists only once
+            # backfill_relation_pattern (or a rename) has written one. Two
+            # queries rather than one ``OR``, so each can stop at its first
+            # row; with no index on ``rel_type``, a relation that has no edge
+            # still costs a read of every RELATES edge.
             queries = [
-                (f"MATCH ()-[r:`{safe}`]->() RETURN 1 LIMIT 1", None),
                 (
                     "MATCH ()-[r:RELATES]->() WHERE r.rel_type = $label RETURN 1 LIMIT 1",
                     {"label": label},
                 ),
+                (f"MATCH ()-[r:`{safe}`]->() RETURN 1 LIMIT 1", None),
             ]
         await self._conn._check_server_version()
         data_graph = self._ensure_data_graph()
