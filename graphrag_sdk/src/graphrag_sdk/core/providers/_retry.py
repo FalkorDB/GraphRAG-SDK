@@ -72,8 +72,33 @@ def is_transient_llm_error(exc: BaseException) -> bool:
     cause of the exception a custom provider raises, or every member of an
     exception group. An ``LLMTimeoutError`` is not retried: the timeout is
     the caller's deadline, and retrying would stretch it.
+
+    A missing optional dependency is never temporary, although LiteLLM
+    reports it as an ``APIConnectionError`` with status 500. Other local
+    failures LiteLLM stamps 500 (a missing ``api_base``, a reply it cannot
+    convert) are still retried: from the outside they look like an empty or
+    cut-off reply, which can pass on a retry.
     """
+    if _wraps_missing_dependency(exc):
+        return False
     return _is_transient(exc, _MAX_CAUSE_DEPTH)
+
+
+def _wraps_missing_dependency(exc: BaseException) -> bool:
+    """Whether ``exc``, or what it wraps, is an ``ImportError``."""
+    current: BaseException | None = exc
+    for _ in range(_MAX_CAUSE_DEPTH + 1):
+        if current is None:
+            return False
+        if isinstance(current, ImportError):
+            return True
+        following = current.__cause__
+        if following is None and not current.__suppress_context__:
+            following = current.__context__
+        if following is current:
+            return False
+        current = following
+    return False
 
 
 def _is_transient(exc: BaseException, depth: int) -> bool:

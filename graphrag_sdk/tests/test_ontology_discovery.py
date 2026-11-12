@@ -640,6 +640,20 @@ class TestIsTransientLLMError:
         assert not is_transient_llm_error(wrapped(ConnectionResetError("reset"), hide=True))
         assert not is_transient_llm_error(wrapped(ValueError("bad config")))
 
+    def test_a_missing_dependency_is_not_transient_even_as_a_500(self) -> None:
+        """LiteLLM wraps e.g. a missing google-auth for vertex_ai/ models in an
+        APIConnectionError with status 500; retrying cannot install it."""
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        try:
+            try:
+                raise ModuleNotFoundError("No module named 'google'")
+            except ModuleNotFoundError as missing:
+                raise _ProviderError(500) from missing
+        except _ProviderError as wrapped:
+            assert not is_transient_llm_error(wrapped)
+        assert is_transient_llm_error(_ProviderError(500))
+
     def test_an_exception_group_is_transient_only_if_every_member_is(self) -> None:
         import builtins
 
