@@ -944,6 +944,38 @@ class TestModificationOfALabelWithNoData:
         assert probe.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_a_read_cut_short_by_a_schema_change_fails_the_registration(
+        self, store_factory, fake_graph
+    ):
+        """The driver raises SchemaVersionMismatchException when another writer
+        changed the graph during the read: no evidence of an empty store."""
+        from falkordb.exceptions import SchemaVersionMismatchException
+
+        store = store_factory()
+        fake_graph.set_load_response(
+            entities=[["Event", None]],
+            entity_properties=[["Event", "when", "DATE", None]],
+        )
+        answer = fake_graph.query
+
+        async def mismatch_once(cypher, params=None):
+            if cypher.startswith("MATCH (e:Entity) RETURN"):
+                fake_graph.query = answer
+                raise SchemaVersionMismatchException(7)
+            return await answer(cypher, params)
+
+        fake_graph.query = mismatch_once
+        with pytest.raises(SchemaVersionMismatchException):
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="STRING")])
+                    ]
+                )
+            )
+        assert not [c for c in fake_graph.calls if "MERGE" in c[0] or "SET p.type" in c[0]]
+
+    @pytest.mark.asyncio
     async def test_no_data_check_runs_when_nothing_is_added(self, store_factory, fake_graph):
         store = store_factory()
         fake_graph.set_load_response(

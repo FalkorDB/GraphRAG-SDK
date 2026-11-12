@@ -97,16 +97,29 @@ _RELATION_AGE = "coalesce(r.created_at, 0), id(r)"
 
 
 def _is_database_failure(exc: BaseException) -> bool:
-    """Whether a read failed at the database: unreachable, timed out, refused.
+    """Whether a read failed at the database: unreachable, timed out, refused,
+    or cut short by a schema change.
 
     What ``load(strict=True)`` raises. Any other exception (from a stand-in
     connection in a test, say) still reads as an empty store, as before.
     """
+    failures: list[type[BaseException]] = [OSError, DatabaseError]
     try:
         from redis.exceptions import RedisError
+
+        failures.append(RedisError)
     except ImportError:  # pragma: no cover - redis ships with falkordb
-        return isinstance(exc, (OSError, DatabaseError))
-    return isinstance(exc, (RedisError, OSError, DatabaseError))
+        pass
+    try:
+        # The driver raises this, after refreshing its view, when another
+        # writer changed the graph's schema during the read; the read did
+        # not complete, so it is no evidence of an empty store.
+        from falkordb.exceptions import SchemaVersionMismatchException
+
+        failures.append(SchemaVersionMismatchException)
+    except ImportError:  # pragma: no cover - the driver ships with the SDK
+        pass
+    return isinstance(exc, tuple(failures))
 
 
 class OntologyContradictionError(ValueError):
