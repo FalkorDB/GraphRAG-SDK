@@ -855,6 +855,11 @@ class TestModificationOfALabelWithNoData:
                     ]
                 )
             )
+        # The probe that found it filters by this relation's own name, so an
+        # unrelated relation's RELATES edges cannot cause the refusal.
+        relates_probe = probe.await_args_list[0]
+        assert "r.rel_type = $label" in relates_probe.args[0]
+        assert relates_probe.kwargs["params"] == {"label": "WORKS_AT"}
 
     @pytest.mark.asyncio
     async def test_the_probe_reads_the_graph_this_store_governs(
