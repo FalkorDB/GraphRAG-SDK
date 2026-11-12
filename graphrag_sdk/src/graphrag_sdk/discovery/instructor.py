@@ -59,6 +59,11 @@ async def _call_once(llm: LLMInterface, history: list[ChatMessage]) -> LLMRespon
     of a call that never produced a response, so one 5xx from the provider
     failed the whole discovery run. Those are retried here; the conversation
     is resent unchanged, because nothing came back to correct.
+
+    This is a stopgap at the discovery layer. The provider loops still retry
+    every exception without classifying it (issue #386); once they retry only
+    temporary failures, honour Retry-After and are the single retry layer,
+    discovery can pass a normal ``max_retries`` and this loop can go.
     """
     for retry, delay in enumerate((*_TRANSIENT_BACKOFF_S, None)):
         try:
