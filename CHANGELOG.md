@@ -21,12 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **One temporary model error no longer fails ontology discovery.**
-  `extract_with_retry` turns off the provider's retries so its attempt count
-  stays exact, and it retried only responses that failed to parse or failed
-  semantic validation. A call that failed outright (an HTTP 500 from Azure, a
-  429, a dropped connection) was never retried, so one such error among the
-  ~20 calls of a discovery run failed the whole run. Those are now retried up
-  to twice with a short backoff, apart from the parse budget; other 4xx
+  `extract_with_retry` turns off the SDK provider's retry loop so its attempt
+  count stays exact, and it retried only responses that failed to parse or
+  failed semantic validation. A call that failed outright (an HTTP 500 from
+  Azure, a 429, a dropped connection) was retried only by the HTTP client's
+  own loop, about two seconds long, so one such error that outlasted it among
+  the ~20 calls of a discovery run failed the whole run. Those are now retried
+  up to twice more with a backoff, apart from the parse budget; other 4xx
   errors (400, 401, a content filter) and timeouts still fail at once.
   `is_transient_llm_error()` in `core/providers/_retry.py` decides which is
   which: the HTTP status for provider responses (5xx, 408, 409, 429), or a

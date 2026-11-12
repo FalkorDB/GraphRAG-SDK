@@ -196,7 +196,7 @@ Open-vocabulary discovery is brittle by default. The pipeline applies three disc
 
 The wrapper is strict — on exhausted retries it raises [`OntologyDiscoveryError`](#ontologydiscoveryerror-reference). The pipeline above it is soft-fail: a single bad chunk is logged and skipped, a failed summary degrades the doc to weaker anchoring, a failed normalization returns the un-normalized draft. Net effect: one noisy chunk does not kill the whole draft.
 
-A call that fails before any response comes back is a different case. The wrapper turns off the provider's own retries (`max_retries=1`) so its attempt count stays exact, and retries a *temporary* failure itself: an HTTP 5xx, 408, 409 or 429, or a dropped connection, up to two more times with a short backoff (1 s, then 4 s). The same conversation is resent and the retry does not use up `max_retries`. Any other error (401, 400, a content filter, a timeout from the call's own deadline) is raised at once, and so is a temporary failure that persists past those retries.
+A call that fails before any response comes back is a different case. The wrapper turns off the SDK provider's retry loop (`max_retries=1`) so its attempt count stays exact. The HTTP client inside the built-in providers still retries on its own: the OpenAI SDK, which LiteLLM's OpenAI and Azure routes and OpenRouter use, resends a 5xx, 408, 409, 429 or dropped connection twice within about two seconds. The wrapper then retries a *temporary* failure that outlasts that: an HTTP 5xx, 408, 409 or 429, or a dropped connection, up to two more times with a short backoff (1 s, then 4 s). The same conversation is resent and the retry does not use up `max_retries`. Any other error (401, 400, a content filter, a timeout from the call's own deadline) is raised at once, and so is a temporary failure that persists past those retries.
 
 ---
 
@@ -326,7 +326,7 @@ Per call to `Ontology.from_sources(sources)` with `D` documents and `S = sample_
 | Normalization | `1` |
 | **Total** | `D × (S + 1) + 1` |
 
-Each call is bounded by `max_retries + 1` *logical* attempts (responses that are parsed and validated). A temporary provider failure (5xx, 408, 409, 429, dropped connection) is retried up to twice more per attempt without using that budget, so the worst case is `3 * (max_retries + 1)` provider requests per call. Concurrency is capped by the `concurrency` parameter (default 4). For a 10-document corpus with `sample_chunks_per_doc=3` and no retries, that's 41 LLM calls — fast enough to run interactively, cheap on `gpt-4o-mini`-class models.
+Each call is bounded by `max_retries + 1` *logical* attempts (responses that are parsed and validated). A temporary provider failure (5xx, 408, 409, 429, dropped connection) is retried up to twice more per attempt without using that budget, so the worst case is `3 * (max_retries + 1)` provider calls per call. With the built-in providers each provider call can itself be up to 3 HTTP requests (the OpenAI SDK's own two retries), so the worst case is `9 * (max_retries + 1)` HTTP requests. Concurrency is capped by the `concurrency` parameter (default 4). For a 10-document corpus with `sample_chunks_per_doc=3` and no retries, that's 41 LLM calls — fast enough to run interactively, cheap on `gpt-4o-mini`-class models.
 
 `suggest_schema_extensions` has the same shape: it runs the full discovery pipeline on the new sources plus the diff at the end (zero LLM cost). The diff against the committed ontology is purely structural.
 
