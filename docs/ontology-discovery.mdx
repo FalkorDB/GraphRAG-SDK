@@ -308,7 +308,7 @@ Raised by the validation-retry wrapper inside the discovery pipeline when an ind
 | Field | Type | Description |
 |-------|------|-------------|
 | `chunk_id` | `str \| None` | Identifier of the unit being processed (chunk uid, `"summary:<source>"`, or `"normalize"`) |
-| `attempts` | `int` | How many LLM calls were made before giving up |
+| `attempts` | `int` | How many responses were parsed and validated before giving up (calls resent after a temporary provider failure are not counted) |
 | `last_error` | `Exception \| None` | The last validation/parse error encountered |
 
 Subclasses `RuntimeError`.

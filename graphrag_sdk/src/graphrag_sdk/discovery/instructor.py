@@ -52,7 +52,7 @@ def _strip_fences(content: str) -> str:
 
 
 #: Waits before each retry of a call that failed for a temporary reason
-#: (a 5xx, 429, 408, a dropped connection). Its length is the retry count.
+#: (see ``is_transient_llm_error``). Its length is the retry count.
 _TRANSIENT_BACKOFF_S = (1.0, 4.0)
 
 #: Longest wait a provider's Retry-After is honoured for. Asking for longer
@@ -134,8 +134,11 @@ async def extract_with_retry(
         response_model: Pydantic class the response must validate against.
         extra_validate: Returns a list of error strings; empty list means
             valid. Runs only after a successful Pydantic parse.
-        max_retries: Number of *retry* attempts after the first call.
-            ``max_retries=3`` therefore allows up to 4 LLM calls.
+        max_retries: Number of *retry* attempts after the first, each one a
+            response that came back but failed to parse or validate.
+            ``max_retries=3`` therefore allows up to 4 parsed responses.
+            Each attempt may also resend after a temporary provider failure
+            (up to twice, see ``_call_once``), so up to 12 provider calls.
         chunk_id: Identifier surfaced on ``OntologyDiscoveryError`` for
             traceability.
 
@@ -145,6 +148,8 @@ async def extract_with_retry(
     Raises:
         OntologyDiscoveryError: All attempts exhausted without producing
             a response that parses and passes ``extra_validate``.
+        Exception: The provider's own error, unchanged, when a call fails
+            permanently (a 4xx) or a temporary failure outlasts the retries.
     """
     if max_retries < 0:
         raise ValueError("max_retries must be >= 0")
@@ -159,12 +164,9 @@ async def extract_with_retry(
 
     for attempt in range(total_attempts):
         attempts += 1
-        # ``max_retries=1`` disables the provider-level retry loop —
-        # ``extract_with_retry`` owns the retry policy. Without this the
-        # default provider budget (3 attempts) would silently triple every
-        # logical attempt here, blowing the documented budget and skewing
-        # ``OntologyDiscoveryError.attempts``. A temporary provider failure
-        # is retried inside ``_call_once`` and is not counted as an attempt.
+        # A temporary provider failure is retried inside ``_call_once`` and
+        # is not counted as an attempt; see its docstring for why the
+        # provider's own retry loop is off.
         response = await _call_once(llm, history)
         history.append(ChatMessage(role="assistant", content=response.content))
 

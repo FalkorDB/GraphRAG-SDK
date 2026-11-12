@@ -169,7 +169,9 @@ class OntologyDiscoveryError(RuntimeError):
         chunk_id: Identifier of the unit being processed (a chunk uid, a
             doc id for the summary step, or ``"normalize"`` for the
             normalization pass). ``None`` when not applicable.
-        attempts: How many LLM calls were made before giving up.
+        attempts: How many responses were parsed and validated before
+            giving up. Calls resent after a temporary provider failure are
+            not counted, so the number of provider calls can be higher.
         last_error: The last validation/parse error encountered.
     """
 
