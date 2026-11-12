@@ -65,7 +65,7 @@ import logging
 from typing import Any, Literal
 
 from graphrag_sdk.core.connection import FalkorDBConnection, is_missing_graph_error
-from graphrag_sdk.core.exceptions import FalkorDBVersionError
+from graphrag_sdk.core.exceptions import DatabaseError, FalkorDBVersionError
 from graphrag_sdk.core.models import (
     Attribute,
     Entity,
@@ -94,6 +94,19 @@ logger = logging.getLogger(__name__)
 # and sort first, which is right: they predate every stamped node.
 _STAMP_NEW_RELATION = "ON CREATE SET r.created_at = timestamp()"
 _RELATION_AGE = "coalesce(r.created_at, 0), id(r)"
+
+
+def _is_database_failure(exc: BaseException) -> bool:
+    """Whether a read failed at the database: unreachable, timed out, refused.
+
+    What ``load(strict=True)`` raises. Any other exception (from a stand-in
+    connection in a test, say) still reads as an empty store, as before.
+    """
+    try:
+        from redis.exceptions import RedisError
+    except ImportError:  # pragma: no cover - redis ships with falkordb
+        return isinstance(exc, (OSError, DatabaseError))
+    return isinstance(exc, (RedisError, OSError, DatabaseError))
 
 
 class OntologyContradictionError(ValueError):
@@ -184,12 +197,18 @@ class OntologyStore:
 
     # ── Load ─────────────────────────────────────────────────────
 
-    async def load(self) -> Ontology:
+    async def load(self, *, strict: bool = False) -> Ontology:
         """Read the ontology graph and reconstruct an :py:class:`Ontology`.
 
         Returns an empty ontology if the graph doesn't exist or introspection
         fails. Failure is logged at DEBUG so an unconfigured ``GraphRAG``
         instance doesn't emit warnings.
+
+        With ``strict=True`` a read the database failed (unreachable, timed
+        out, an error reply) raises instead; a graph that was never written is
+        still an empty ontology. :py:meth:`register` reads that way: an
+        unreadable store taken for an empty one would skip every check and let
+        the writes retype stored properties.
         """
         try:
             ent_result = await self._query(
@@ -234,6 +253,8 @@ class OntologyStore:
         except Exception as exc:
             if is_missing_graph_error(exc):  # never written: nothing declared yet
                 return Ontology()
+            if strict and _is_database_failure(exc):
+                raise
             logger.debug("Ontology load failed (returning empty ontology): %s", exc)
             return Ontology()
 
@@ -305,6 +326,8 @@ class OntologyStore:
                 getattr(relationship_column_result, "result_set", None) or []
             )
         except Exception as exc:
+            if strict and _is_database_failure(exc):
+                raise
             logger.warning(
                 "Table mappings could not be loaded (entities and relations are unaffected): %s",
                 exc,
@@ -461,7 +484,7 @@ class OntologyStore:
         # reserved label would make every later ingest fail mid-pipeline.
         reject_reserved_labels(e.label for e in ontology.entities)
 
-        existing = await self.load()
+        existing = await self.load(strict=True)
         self._check_no_contradictions(existing, ontology)
         await self._check_no_modifications_to_existing(existing, ontology)
         self._check_no_signature_collision(existing, ontology)

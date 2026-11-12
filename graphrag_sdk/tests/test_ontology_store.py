@@ -870,6 +870,36 @@ class TestModificationOfALabelWithNoData:
         assert data_graph.calls
 
     @pytest.mark.asyncio
+    async def test_an_unreadable_ontology_store_fails_the_registration(
+        self, store_factory, fake_graph
+    ):
+        """One failed read of the stored ontology must not look like an empty
+        store: every check would pass and the writes would retype Event.when."""
+        store = store_factory()
+        fake_graph.set_load_response(
+            entities=[["Event", None]],
+            entity_properties=[["Event", "when", "DATE", None]],
+        )
+        answer = fake_graph.query
+
+        async def reset_once(cypher, params=None):
+            if cypher.startswith("MATCH (e:Entity) RETURN"):
+                fake_graph.query = answer
+                raise ConnectionError("Connection reset by peer")
+            return await answer(cypher, params)
+
+        fake_graph.query = reset_once
+        with pytest.raises(ConnectionError):
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="STRING")])
+                    ]
+                )
+            )
+        assert not [c for c in fake_graph.calls if "MERGE" in c[0] or "SET p.type" in c[0]]
+
+    @pytest.mark.asyncio
     async def test_no_data_check_runs_when_nothing_is_added(self, store_factory, fake_graph):
         store = store_factory()
         fake_graph.set_load_response(
