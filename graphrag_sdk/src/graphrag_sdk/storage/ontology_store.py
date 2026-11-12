@@ -128,11 +128,15 @@ class OntologyModificationNotAllowedError(ValueError):
     graph yet. It cannot add them to a label that holds data: the existing
     nodes or edges would not have them.
 
-    For an entity, ``rag.add_attribute`` declares the attribute and fills it in
-    from the existing chunks. For a relation, ``rag.add_relation_pattern``
-    declares a pattern (populate it with ``rag.backfill_relation_pattern``);
-    new attributes on a relation that holds data need ``await rag.delete_all()``
-    and a re-ingest with the updated ontology.
+    Declare the label without the additions, then, for an entity,
+    ``rag.add_attribute`` declares the attribute and fills it in from the
+    existing chunks; for a relation, ``rag.add_relation_pattern`` declares a
+    pattern (populate it with ``rag.backfill_relation_pattern``). New
+    attributes on a relation that holds data need ``await rag.delete_all()``
+    and a re-ingest with the updated ontology. Declaring without the additions
+    comes first: when the refused ontology was passed to ``GraphRAG(...)``,
+    every call on that instance, ``add_attribute`` included, registers it
+    again and is refused the same way.
     """
 
 
@@ -704,11 +708,11 @@ class OntologyStore:
                 raise OntologyModificationNotAllowedError(
                     f"Refusing to add new attribute(s) {sorted(new_prop_names)} "
                     f"to existing label '{et.label}', which already holds data: "
-                    f"its nodes would not have them. Use "
+                    f"its nodes would not have them. Declare '{et.label}' without "
+                    f"them, then add each with "
                     f"`await rag.add_attribute('{et.label}', ...)`, which also "
-                    f"fills the attribute in on existing nodes, or "
-                    f"`await rag.delete_all()` and re-ingest with the updated "
-                    f"ontology."
+                    f"fills it in on existing nodes; or `await rag.delete_all()` "
+                    f"and re-ingest with the updated ontology."
                 )
 
         existing_rel_by_label = {r.label: r for r in existing.relations}
@@ -728,9 +732,10 @@ class OntologyStore:
                     diffs.append(f"new patterns {sorted(new_patterns)}")
                 raise OntologyModificationNotAllowedError(
                     f"Refusing to add {' and '.join(diffs)} to existing relation "
-                    f"'{rt.label}', which already holds data. A new pattern goes "
-                    f"through `await rag.add_relation_pattern(...)`; for new "
-                    f"relation attributes, `await rag.delete_all()` and re-ingest "
+                    f"'{rt.label}', which already holds data. Declare it without "
+                    f"them; a new pattern then goes through "
+                    f"`await rag.add_relation_pattern(...)`, and new relation "
+                    f"attributes need `await rag.delete_all()` and a re-ingest "
                     f"with the updated ontology."
                 )
 

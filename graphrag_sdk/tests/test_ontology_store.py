@@ -747,6 +747,10 @@ class TestModificationOfALabelWithNoData:
                 )
             )
         assert "Event" in str(exc.value)
+        # The advice must work when the refused ontology came from the
+        # GraphRAG constructor too: there every call, add_attribute included,
+        # registers that ontology again, so it has to be declared without them.
+        assert "Declare 'Event' without them" in str(exc.value)
         assert self._property_merges(fake_graph, "Event") == []
 
     @pytest.mark.asyncio
