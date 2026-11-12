@@ -72,10 +72,6 @@ that already exist. An entity no longer grows with every mention: what each
 chunk says about it moves onto its `MENTIONED_IN` edges, and `finalize()`
 summarises an entity that holds more than 5 descriptions.
 
-1.5.0 never reached PyPI, so on PyPI this release follows 1.4.0. If you
-upgrade from 1.4.0, read the 1.5.0 notes below too, starting with
-**Upgrading from 1.4.0**.
-
 ### Added
 
 #### Agentic ingestion: an agent builds the graph from a folder (#275)
@@ -419,10 +415,6 @@ upgrade from 1.4.0, read the 1.5.0 notes below too, starting with
   JSON while showing an example that does not parse (#376).
 
 ## [1.5.0] - 2026-10-22
-
-**Not published to PyPI.** The `v1.5.0` tag was created while the package
-version still said 1.4.0, so the publish job refused it. 1.6.0 includes every
-change below.
 
 Structured ingestion: tables are declared on the ontology, and a row and a
 prose mention of the same thing become one node. `finalize()` deduplicates
