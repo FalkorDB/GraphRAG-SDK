@@ -627,13 +627,18 @@ class OntologyStore:
             # backfill_relation_pattern (or a rename) has written one. Two
             # queries rather than one ``OR``, so each can stop at its first
             # row; with no index on ``rel_type``, a relation that has no edge
-            # still costs a read of every RELATES edge.
+            # still costs a read of every RELATES edge. Both start and end at
+            # entity nodes: the SDK's own structure edges (Document PART_OF
+            # Chunk, NEXT_CHUNK, MENTIONED_IN) carry names a declared relation
+            # can have too (PART_OF is a default relation type), and are not
+            # that relation's data.
             queries = [
                 (
-                    "MATCH ()-[r:RELATES]->() WHERE r.rel_type = $label RETURN 1 LIMIT 1",
+                    "MATCH (:__Entity__)-[r:RELATES]->(:__Entity__) "
+                    "WHERE r.rel_type = $label RETURN 1 LIMIT 1",
                     {"label": label},
                 ),
-                (f"MATCH ()-[r:`{safe}`]->() RETURN 1 LIMIT 1", None),
+                (f"MATCH (:__Entity__)-[r:`{safe}`]->(:__Entity__) RETURN 1 LIMIT 1", None),
             ]
         await self._conn._check_server_version()
         data_graph = self._ensure_data_graph()

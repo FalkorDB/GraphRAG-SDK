@@ -171,7 +171,9 @@ class TestAddingToALabelWithNoData:
 
         onto, connection = onto_and_data
         await _register(onto, Relation(label="R", patterns=[("A", "B")]))
-        await connection.query("CREATE (:A {name: 'a'})-[:RELATES {rel_type: 'R'}]->(:B {name: 'b'})")
+        await connection.query(
+            "CREATE (:__Entity__:A {name: 'a'})-[:RELATES {rel_type: 'R'}]->(:__Entity__:B {name: 'b'})"
+        )
 
         with pytest.raises(OntologyModificationNotAllowedError):
             await onto.register(
@@ -184,7 +186,7 @@ class TestAddingToALabelWithNoData:
 
         onto, connection = onto_and_data
         await _register(onto, Relation(label="R", patterns=[("A", "B")]))
-        await connection.query("CREATE (:A {name: 'a'})-[:R]->(:B {name: 'b'})")
+        await connection.query("CREATE (:__Entity__:A {name: 'a'})-[:R]->(:__Entity__:B {name: 'b'})")
 
         with pytest.raises(OntologyModificationNotAllowedError):
             await onto.register(
@@ -194,12 +196,43 @@ class TestAddingToALabelWithNoData:
     async def test_a_relation_with_no_edges_takes_a_pattern(self, onto_and_data):
         onto, connection = onto_and_data
         await _register(onto, Relation(label="R", patterns=[("A", "B")]))
-        await connection.query("CREATE (:A {name: 'a'})-[:RELATES {rel_type: 'OTHER'}]->(:B {name: 'b'})")
+        await connection.query(
+            "CREATE (:__Entity__:A {name: 'a'})-[:RELATES {rel_type: 'OTHER'}]->(:__Entity__:B {name: 'b'})"
+        )
 
         await onto.register(Ontology(relations=[Relation(label="R", patterns=[("A", "B"), ("B", "A")])]))
 
         (relation,) = (await onto.load()).relations
         assert sorted(relation.patterns) == [("A", "B"), ("B", "A")]
+
+
+class TestStructureEdgesAreNotRelationData:
+    """Every ingested document writes Document-[:PART_OF]->Chunk; a declared
+    PART_OF relation with no edges of its own still holds no data."""
+
+    async def test_a_part_of_relation_with_only_structure_edges_takes_a_pattern(
+        self, onto_and_data
+    ):
+        onto, connection = onto_and_data
+        await _register(onto, Relation(label="PART_OF", patterns=[("Organ", "BodySystem")]))
+        await connection.query(
+            "CREATE (:Document {id: 'd'})-[:PART_OF]->(:Chunk {id: 'c'}), "
+            "(:Chunk {id: 'c2'})-[:NEXT_CHUNK]->(:Chunk {id: 'c3'})"
+        )
+
+        await onto.register(
+            Ontology(
+                relations=[
+                    Relation(
+                        label="PART_OF",
+                        patterns=[("Organ", "BodySystem"), ("Cell", "Organ")],
+                    )
+                ]
+            )
+        )
+
+        (relation,) = (await onto.load()).relations
+        assert sorted(relation.patterns) == [("Cell", "Organ"), ("Organ", "BodySystem")]
 
 
 class TestAFirstOntologyOverTheDefaultSeed:
