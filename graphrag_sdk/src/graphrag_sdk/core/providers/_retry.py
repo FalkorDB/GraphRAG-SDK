@@ -6,6 +6,7 @@ from __future__ import annotations
 import email.utils
 import logging
 import math
+import sys
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
@@ -143,13 +144,30 @@ def describe_llm_error(exc: BaseException) -> str:
     return f"{name} (HTTP {status})" if status is not None else name
 
 
+#: Status-less connection errors of optional HTTP clients, as
+#: ``(module, attribute)``. Only modules already imported are consulted: an
+#: exception of a client that was never imported cannot exist, and importing
+#: one here would block the event loop on the first error.
+_CONNECTION_ERRORS = (
+    # OpenRouter, and LiteLLM's OpenAI and Azure routes; outside the
+    # built-in ConnectionError hierarchy.
+    ("openai", "APIConnectionError"),
+)
+
+
 def _provider_connection_errors() -> tuple[type[BaseException], ...]:
-    """Status-less connection errors of optional provider clients that are installed."""
-    try:
-        from openai import APIConnectionError
-    except ImportError:
-        return ()
-    return (APIConnectionError,)
+    """Status-less connection errors of the HTTP clients that are loaded.
+
+    An attribute that is not an exception class (a test that put a mock in
+    ``sys.modules``, say) is skipped rather than handed to ``isinstance``.
+    """
+    found: list[type[BaseException]] = []
+    for module_name, attribute in _CONNECTION_ERRORS:
+        module = sys.modules.get(module_name)
+        candidate = getattr(module, attribute, None) if module is not None else None
+        if isinstance(candidate, type) and issubclass(candidate, BaseException):
+            found.append(candidate)
+    return tuple(found)
 
 
 def is_transient_embedding_error(exc: Exception) -> bool:

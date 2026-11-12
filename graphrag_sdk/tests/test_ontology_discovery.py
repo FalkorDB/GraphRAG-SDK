@@ -573,6 +573,46 @@ class TestIsTransientLLMError:
         assert not is_transient_llm_error(ValueError("x"))
         assert not is_transient_llm_error(LLMTimeoutError("slow"))
 
+    def test_a_loaded_openai_connection_error_is_found(self, monkeypatch) -> None:
+        """Exercises the real lookup even where openai is not installed (CI):
+        the classifier reads whatever ``openai`` module is loaded."""
+        import sys
+        import types
+
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        class APIConnectionError(Exception):
+            pass
+
+        fake_openai = types.ModuleType("openai")
+        fake_openai.APIConnectionError = APIConnectionError  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "openai", fake_openai)
+        assert is_transient_llm_error(APIConnectionError("Connection error."))
+        assert not is_transient_llm_error(ValueError("x"))
+
+    def test_classifying_does_not_import_openai(self, monkeypatch) -> None:
+        """An openai exception cannot exist unless openai is loaded, and a cold
+        import on the first error would block the event loop."""
+        import sys
+
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        monkeypatch.delitem(sys.modules, "openai", raising=False)
+        assert not is_transient_llm_error(ValueError("x"))
+        assert "openai" not in sys.modules
+
+    def test_a_mocked_openai_module_does_not_break_classifying(self, monkeypatch) -> None:
+        """Tests that put a MagicMock in sys.modules['openai'] (as the provider
+        tests do) must not turn every error into a TypeError from isinstance."""
+        import sys
+        from unittest.mock import MagicMock
+
+        from graphrag_sdk.core.providers._retry import is_transient_llm_error
+
+        monkeypatch.setitem(sys.modules, "openai", MagicMock())
+        assert not is_transient_llm_error(ValueError("x"))
+        assert is_transient_llm_error(ConnectionResetError("reset"))
+
 
 # ── _validate_proposal ─────────────────────────────────────────────
 
