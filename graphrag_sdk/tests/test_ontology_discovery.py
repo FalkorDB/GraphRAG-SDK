@@ -485,7 +485,8 @@ class TestExtractWithRetryTransientErrors:
         (record,) = caplog.records
         message = record.getMessage()
         assert message.startswith(f"{stage} call failed")
-        assert chunk_id.split(":", 1)[-1] not in message or chunk_id == "normalize"
+        # The last part of the id (a file path, a table name) is what must stay out.
+        assert chunk_id.rsplit(":", 1)[-1] not in message or chunk_id == "normalize"
 
     @pytest.mark.asyncio
     async def test_a_recovered_call_logs_nothing_above_warning_through_a_real_provider(
