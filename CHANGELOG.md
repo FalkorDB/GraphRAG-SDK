@@ -67,8 +67,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The refusal now applies only to a label that holds data (a node of that
   label, or an edge of that relation type, in the data graph). A label with
   none, including on a data graph that does not exist yet, may gain
-  attributes and patterns. Type changes are still refused, and a data graph
-  that cannot be read counts as holding data. The message for a label that
+  attributes and patterns. Type changes are still refused, and when the data
+  graph cannot be read (a timeout, an unreachable server) `register()` fails
+  with that error and writes nothing. The message for a label that
   holds data names `add_attribute` / `add_relation_pattern` instead of "not
   yet supported". A declaration that gives a stored patterned relation new
   attributes without restating its patterns now writes them onto those

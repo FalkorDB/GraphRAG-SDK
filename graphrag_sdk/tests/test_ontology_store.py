@@ -750,13 +750,14 @@ class TestModificationOfALabelWithNoData:
         assert self._property_merges(fake_graph, "Event") == []
 
     @pytest.mark.asyncio
-    async def test_an_unreadable_data_graph_counts_as_holding_data(
-        self, store_factory, fake_graph
-    ):
+    async def test_an_unreadable_data_graph_raises_its_own_error(self, store_factory, fake_graph):
+        """A timeout or a lost connection leaves the answer unknown: register()
+        fails with that error, writes nothing, and does not claim the label
+        holds data (which would send the user to delete_all())."""
         store = store_factory()
         fake_graph.set_load_response(entities=[["Event", None]])
         self._data(store, error=RuntimeError("connection lost"))
-        with pytest.raises(OntologyModificationNotAllowedError):
+        with pytest.raises(RuntimeError, match="connection lost"):
             await store.register(
                 Ontology(
                     entities=[
@@ -764,6 +765,7 @@ class TestModificationOfALabelWithNoData:
                     ]
                 )
             )
+        assert self._property_merges(fake_graph, "Event") == []
 
     @pytest.mark.asyncio
     async def test_a_data_graph_that_does_not_exist_yet_holds_no_data(

@@ -613,8 +613,9 @@ class OntologyStore:
         Read-only and stops at the first match. A data graph that was never
         written (a new graph, whose ontology the default seed already filled)
         holds nothing; FalkorDB says so as "Invalid graph operation on empty
-        key". Any other failure to read counts as holding data, so the strict
-        rule applies when nothing is known.
+        key". Any other failure is raised as it is: the answer is unknown,
+        nothing has been written yet, and a timeout or an unreachable server
+        must not be reported as "this label holds data".
         """
         safe = sanitize_cypher_label(label)
         if kind == "entity":
@@ -636,11 +637,10 @@ class OntologyStore:
         for cypher, params in queries:
             try:
                 result = await data_graph.ro_query(cypher, params=params)
-            except Exception as exc:  # noqa: BLE001 - unknown means "holds data"
+            except Exception as exc:
                 if is_missing_graph_error(exc):
                     return False
-                logger.debug("Could not tell whether %s %r holds data: %s", kind, label, exc)
-                return True
+                raise
             if getattr(result, "result_set", None):
                 return True
         return False
