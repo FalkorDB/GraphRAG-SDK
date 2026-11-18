@@ -1092,6 +1092,9 @@ class TestIngestFiles:
         result = await toolkit(rag).ingest("Aspirin treats headache.", document_id="d1")
         assert result.document_id == "d1" and result.pruned.entities == {"Gene": 2}
         assert "set_ontology" in result.hint and "finalize" in result.hint
+        assert "If the user gave the ontology, ask them before calling set_ontology" in (
+            result.hint
+        )
 
     async def test_files_with_plan_rules(self, corpus):
         rag = FakeRAG()
@@ -1466,6 +1469,14 @@ class TestGuide:
         assert INGEST_GUIDE.index("set_ontology") < INGEST_GUIDE.index("preview_files")
         for step in ("next_offset", "ONE ontology", "at most 50", "finalize once", "reextract"):
             assert step in INGEST_GUIDE
+
+    def test_guides_ask_before_extending_the_users_ontology(self):
+        assert "never add to it without asking" in INGEST_GUIDE
+        assert "If the user gave the ontology, do not\n   call set_ontology yourself" in (
+            INGEST_GUIDE
+        )
+        assert "what they decline\n   stays out of the graph" in INGEST_GUIDE
+        assert "ask them first and add only what they approve" in TEXT_INGEST_GUIDE
 
     def test_cli_reads_files_only_from_an_explicit_root(self, monkeypatch, corpus):
         pytest.importorskip("mcp")

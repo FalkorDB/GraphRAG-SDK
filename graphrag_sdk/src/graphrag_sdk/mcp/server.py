@@ -83,7 +83,8 @@ def _files_guide(*, ontology: bool, finalize: bool) -> str:
     if ontology:
         steps = [
             """Ask the user whether they have an ontology (the entity and relation types
-   to extract). If they do, declare it with set_ontology and go to step 3.""",
+   to extract). If they do, declare it with set_ontology and go to step 3.
+   Their ontology is what they want: never add to it without asking.""",
             """If not, design one: call preview_files and follow next_offset until it is
    null, so you have seen one sample from every file. Choose ONE ontology for
    the whole corpus (types that recur across files, each with a short
@@ -120,7 +121,11 @@ def _files_guide(*, ontology: bool, finalize: bool) -> str:
             "\n   Unknown)."
         )
         steps.append(
-            """Read each result's pruned and hint. Relations dropped for an undeclared
+            """Read each result's pruned and hint. If the user gave the ontology, do not
+   call set_ontology yourself: tell them what was dropped (types, pairs, how
+   many, which files), ask which to add, and add only those; what they decline
+   stays out of the graph. If you designed it, decide yourself and tell the
+   user what you added. Relations dropped for an undeclared
    [source, target] pair are often real facts. Add a pair only when the
    relation's meaning fits it (SUPPLIES Company->Product, not
    Company->Event); otherwise declare a better relation type for those
@@ -148,7 +153,8 @@ def _text_guide(*, ontology: bool, finalize: bool) -> str:
     then = ", then finalize once" if finalize else ""
     fix = (
         "after adding them with set_ontology,\n"
-        "ingest the same text and document_id with reextract=true."
+        "ingest the same text and document_id with reextract=true. If the user gave\n"
+        "the ontology, ask them first and add only what they approve."
         if ontology
         else "only the server operator can add them."
     )

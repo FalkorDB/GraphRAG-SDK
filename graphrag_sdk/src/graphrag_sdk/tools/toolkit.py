@@ -1657,6 +1657,10 @@ class GraphRAGToolkit:
                     f"{found}{unresolved}If new types matter, add them with set_ontology, "
                     f"then {redo}."
                 )
+            hints.append(
+                "If the user gave the ontology, ask them before calling set_ontology and "
+                "add only what they approve; the rest stays out of the graph."
+            )
         if out.documents and all(d.status == "unchanged" for d in out.documents):
             hints.append("Every file was unchanged; pass reextract=true to extract them again.")
         if out.status == "unchanged":
