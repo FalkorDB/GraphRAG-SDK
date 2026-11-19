@@ -33,6 +33,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from graphrag_sdk.core.descriptions import DESCRIPTION_SEPARATOR, PIECE_BREAK
 from graphrag_sdk.core.exceptions import GraphRAGError
 from graphrag_sdk.storage.system_store import PLAN, PROCESSING_LABEL, deleted_record_clause
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
@@ -375,14 +376,37 @@ SAID_VERSION_KEY = "said_version"
 SAID_VERSION = 1
 
 
-def description_members(edge: str) -> str:
-    """A mention edge's descriptions as a list: its ``descriptions``, else its
-    ``description`` as one member, trimmed, blank ones left out (as on a
-    node)."""
+def _tidy(text: str) -> str:
+    """Cypher for ``core.descriptions._tidy``: carriage returns, newlines and
+    tabs made spaces, then trimmed (``trim`` alone differs from Python's
+    ``strip()``)."""
+    return "trim(replace(replace(replace(" + text + ", '\\r', ' '), '\\n', ' '), '\\t', ' '))"
+
+
+def description_members(holder: str) -> str:
+    """Cypher: the description pieces ``holder`` (a node, an edge or a map)
+    holds, as a list: its ``description`` split at ``|``, after the items of
+    an earlier version's ``descriptions`` list where it holds text (each
+    split at ``|``); each tidied, blank ones left out, each kept once in
+    order. The Python rule is ``core.descriptions.description_pieces``."""
+    items = (
+        f"((CASE WHEN any(dz IN coalesce({holder}.descriptions, []) WHERE {_tidy('dz')} <> '') "
+        f"THEN {holder}.descriptions ELSE [] END) + "
+        f"(CASE WHEN {holder}.description IS NULL THEN [] ELSE [{holder}.description] END))"
+    )
+    split_items = f"reduce(dsp = [], dy IN {items} | dsp + split(dy, '{PIECE_BREAK}'))"
+    kept = f"[dx IN [dt IN {split_items} | {_tidy('dt')}] WHERE dx <> '']"
+    once = "CASE WHEN du IN dseen THEN dseen ELSE dseen + [du] END"
+    return f"reduce(dseen = [], du IN {kept} | {once})"
+
+
+def joined_description(pieces: str) -> str:
+    """Cypher: list ``pieces`` as one stored description, joined with
+    ``" | "``; null when there are none."""
     return (
-        f"[x IN [y IN coalesce({edge}.descriptions, "
-        f"CASE WHEN {edge}.description IS NULL THEN [] ELSE [{edge}.description] END) "
-        "| trim(y)] WHERE x <> '']"
+        f"CASE WHEN size({pieces}) = 0 THEN null "
+        f"ELSE reduce(acc = head({pieces}), x IN tail({pieces}) "
+        f"| acc + '{DESCRIPTION_SEPARATOR}' + x) END"
     )
 
 
@@ -403,7 +427,8 @@ def combined_descriptions(old: str, new: str, *, cap: bool = True) -> str:
 def mention_update(edge: str, new: str) -> str:
     """The SET items that combine what mention edge ``edge`` holds with what
     ``new`` (an edge or a map) brings: the spans, each pair once, and the
-    descriptions, each once and each whole, stored as on a node. Needs
+    description pieces, each once and each whole, stored as on a node (one
+    string; an earlier version's ``descriptions`` list is dropped). Needs
     ``old_spans`` (``edge``'s spans) and ``all_ds``
     (:func:`combined_descriptions`) in scope."""
     spans = f"coalesce({new}.spans, [])"
@@ -416,9 +441,8 @@ def mention_update(edge: str, new: str) -> str:
         "OR any(k IN range(0, size(acc) - 2, 2) "
         f"WHERE acc[k] = {new}.spans[i] AND acc[k + 1] = {new}.spans[i + 1]) "
         f"THEN acc ELSE acc + [{new}.spans[i], {new}.spans[i + 1]] END) END, "
-        f"{edge}.description = CASE WHEN size(all_ds) = 0 THEN null "
-        "ELSE reduce(acc = head(all_ds), x IN tail(all_ds) | acc + ' | ' + x) END, "
-        f"{edge}.descriptions = CASE WHEN size(all_ds) > 1 THEN all_ds ELSE null END"
+        f"{edge}.description = {joined_description('all_ds')}, "
+        f"{edge}.descriptions = null"
     )
 
 

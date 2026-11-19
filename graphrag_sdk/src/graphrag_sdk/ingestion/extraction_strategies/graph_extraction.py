@@ -11,6 +11,7 @@ from datetime import date, datetime
 from typing import Any
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.descriptions import description_piece, join_description
 from graphrag_sdk.core.models import (
     _SDK_MANAGED_ATTRIBUTE_NAMES,
     Attribute,
@@ -965,7 +966,9 @@ class GraphExtraction(ExtractionStrategy):
             spans = find_spans(chunk_text, ent.name) or (step1 if same_text else [])
             read_spans = spans if same_text else (find_spans(read, ent.name) or step1)
             ent.spans = {chunk_id: [{"start": s, "end": e} for s, e in spans]}  # type: ignore[attr-defined]
-            text = ent.description.strip() or evidence_text(read, read_spans)
+            # One piece: a "|" in it (a table row's evidence) must not split
+            # it once it is joined with what other chunks said.
+            text = description_piece(ent.description.strip() or evidence_text(read, read_spans))
             ent.chunk_descriptions = {chunk_id: [text]} if text else {}  # type: ignore[attr-defined]
             ent.description = text
 
@@ -1265,11 +1268,8 @@ class GraphExtraction(ExtractionStrategy):
             props: dict[str, Any] = {
                 "name": ent.name,
                 "type": ent.type,
-                "description": " | ".join(members),
                 "source_chunk_ids": ent.source_chunk_ids,
             }
-            if len(members) > 1:
-                props["descriptions"] = members
             # Spans live on the MENTIONED_IN edges (one per chunk), not here.
             # Merge ontology-declared attributes, but don't let an absent or
             # invalid value shadow a system property such as description.
@@ -1277,6 +1277,11 @@ class GraphExtraction(ExtractionStrategy):
                 props.update(
                     {key: value for key, value in ent.attributes.items() if value is not None}
                 )
+            # Every piece in the one string, a piece never holding "|"; set
+            # after the attributes, so one named "description" cannot replace
+            # what the chunks said (their edges record it). It stands in only
+            # where the chunks said nothing.
+            props["description"] = join_description(members or [props.get("description")])
             nodes.append(
                 GraphNode(
                     id=node_id,

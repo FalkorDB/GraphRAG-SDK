@@ -10,6 +10,14 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.descriptions import (
+    LEGACY_LIST_KEY,
+    description_piece,
+    description_pieces,
+    join_description,
+    set_description,
+    split_description,
+)
 from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship, ResolutionResult
 
 if TYPE_CHECKING:
@@ -43,45 +51,22 @@ _SUMMARY_WITH_TYPE_PROMPT = (
 
 
 def description_list(props: dict) -> list[str]:
-    """The member descriptions of a node as a list.
+    """The description pieces of a node as a list (:func:`description_pieces`).
 
-    A merged node carries ``descriptions`` (list) and ``description`` (the
-    same texts joined with ``" | "``, which is what search and prompts read).
-    An unmerged node has only ``description``. Either way this returns the
-    list, deduplicated, empty strings dropped.
-
-    A node holding only ``description`` contributes it as **one** member, and
-    is deliberately not split on ``" | "``. Splitting would recover the members
-    of a survivor written before ``descriptions`` existed, but nothing
-    distinguishes that node from a fresh one whose single description happens
-    to contain the separator ("CEO | founder of Acme"), and the two failures
-    are not symmetric. Splitting a fresh node invents members that were never
-    written: the count drives ``force_summary_threshold``, so it buys LLM
-    summary calls nothing asked for, and the invented entries are rendered as
-    separate bullets in the prompts below. Not splitting a legacy survivor
-    costs only granularity — every character is still carried, and the
-    re-joined ``description`` is byte-identical either way.
+    A node stores its pieces in one ``description`` string joined with
+    ``" | "``; a piece never contains ``|``, so splitting at it is exact.
+    A node an earlier version wrote may still carry a ``descriptions`` list,
+    which is read instead. Deduplicated, empty pieces dropped.
     """
-    raw = props.get("descriptions")
-    items: list[str] = []
-    if isinstance(raw, list):
-        items = [str(d).strip() for d in raw]
-    else:
-        single = str(props.get("description") or "").strip()
-        items = [single] if single else []
-    out: list[str] = []
-    for d in items:
-        if d and d not in out:
-            out.append(d)
-    return out
+    return description_pieces(props)
 
 
 def set_merged_descriptions(survivor: GraphNode, members: list[GraphNode]) -> list[str]:
     """Rule for every merge: the survivor keeps **every** member's description.
 
-    Writes ``descriptions`` (a list — ``["desc1", "desc2", ...]``, survivor's
-    first, duplicates dropped) and ``description`` (the same list joined with
-    ``" | "`` for the fulltext index, search and LLM prompts). Returns the list.
+    The survivor's pieces first, then each member's it lacks, stored as the
+    one ``description`` string (``" | "``-joined) the fulltext index, search
+    and LLM prompts read. Returns the pieces.
     """
     merged: list[str] = []
     for node in [survivor, *members]:
@@ -89,8 +74,7 @@ def set_merged_descriptions(survivor: GraphNode, members: list[GraphNode]) -> li
             if d not in merged:
                 merged.append(d)
     if merged:
-        survivor.properties["descriptions"] = merged
-        survivor.properties["description"] = " | ".join(merged)
+        set_description(survivor.properties, merged)
     return merged
 
 
@@ -342,7 +326,8 @@ async def exact_match_merge(
             sl_entry_idx, descs = summary_prompt_refs[idx]
             # A failed summary leaves the joined descriptions in place.
             if item.ok and item.response.content.strip():
-                sl_summaries[sl_entry_idx] = item.response.content.strip()
+                # One piece: a "|" the model wrote must not split it.
+                sl_summaries[sl_entry_idx] = description_piece(item.response.content)
         else:
             cl_idx = idx - cl_prompt_start
             if not item.ok:
@@ -356,10 +341,14 @@ async def exact_match_merge(
             parts = first_line.split(None, 1)
             chosen = parts[1].strip() if len(parts) >= 2 else ""
             lines = content.split("\n", 1)
+            # The model's summary is one piece; without one, the members'
+            # pieces as they are.
             cl_summary = (
-                lines[1].strip()
+                description_piece(lines[1])
                 if len(lines) > 1
-                else " | ".join(cl_candidates[cl_idx]["descriptions"])
+                else join_description(
+                    p for d in cl_candidates[cl_idx]["descriptions"] for p in split_description(d)
+                )
             )
             cl_approvals[cl_idx] = (chosen, cl_summary)
 
@@ -417,23 +406,24 @@ async def exact_match_merge(
             sl_survivor_by_idx[i] = group_nodes[0]
             continue
         survivor = group_nodes[0]
-        if entry["descriptions"]:
-            set_merged_descriptions(survivor, group_nodes[1:])
+        # Ungated: a member may hold its text only in an earlier version's
+        # list, which the copy below never takes; with no text, nothing is set.
+        set_merged_descriptions(survivor, group_nodes[1:])
         if entry["all_source_ids"]:
             survivor.properties["source_chunk_ids"] = entry["all_source_ids"]
         for dup in group_nodes[1:]:
             for k, v in dup.properties.items():
-                if survivor.properties.get(k) is None and v is not None:
+                if k != LEGACY_LIST_KEY and survivor.properties.get(k) is None and v is not None:
                     survivor.properties[k] = v
             id_remap[dup.id] = survivor.id
             merged_count += 1
         if entry["descriptions"] and i in sl_summaries:
             # An LLM summary (force_summary_threshold reached) is the one
-            # description the survivor keeps: the store joins a
-            # ``descriptions`` list it is handed, so leaving the list — the
-            # survivor's, or one the copy above took from a duplicate — would
-            # throw the summary away. What each chunk said stays on its
-            # MENTIONED_IN edge. Last, so nothing writes these keys after it.
+            # description the survivor keeps. The store reads an earlier
+            # version's ``descriptions`` list before ``description``, so one
+            # the copy above took from a duplicate would throw the summary
+            # away. What each chunk said stays on its MENTIONED_IN edge. Last,
+            # so nothing writes these keys after it.
             survivor.properties["description"] = sl_summaries[i]
             survivor.properties.pop("descriptions", None)
             survivor.properties["description_summarised"] = True
@@ -476,7 +466,7 @@ async def exact_match_merge(
             if s.label and s.label != cl_survivor.label and s.label not in absorbed_labels:
                 absorbed_labels.append(s.label)
             for k, v in s.properties.items():
-                if cl_survivor.properties.get(k) is None and v is not None:
+                if k != LEGACY_LIST_KEY and cl_survivor.properties.get(k) is None and v is not None:
                     cl_survivor.properties[k] = v
             s_srcs = s.properties.get("source_chunk_ids", [])
             if isinstance(s_srcs, list):

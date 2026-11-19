@@ -663,7 +663,7 @@ def test_exact_phase_joins_descriptions_and_records_aliases():
     )
     (write,) = sim.writes
     assert write.params["desc"] == "Maker of widgets. | Founded 1990."
-    assert write.params["descs"] == ["Maker of widgets.", "Founded 1990."]
+    assert "descs" not in write.params  # one string, no list beside it
     assert write.params["aliases"] == ["Globex Ltd"]
 
 
@@ -751,17 +751,14 @@ def test_the_exact_phase_never_merges_two_extracted_mentions_on_the_name():
 
 def test_a_judged_merge_folds_descriptions_aliases_and_the_losers_label():
     """The judge decides identity and ``_fold`` writes the merge: the
-    descriptions list, aliases and the loser's label, in the one query that
+    description pieces, aliases and the loser's label, in the one query that
     moves its edges and deletes it."""
     sim = _sim(judge=NameOracleLLM(rounds=[[IBM]]))
     (write,) = sim.writes
     # survivor rank: equal provenance and degree, so the longest description
     # ("American computer firm; IBM.") keeps its node
     assert (write.op.survivor, write.op.dup) == ("e2", "e1")
-    assert write.params["descs"] == [
-        "American computer firm; IBM.",
-        "Computer company founded 1911.",
-    ]
+    assert write.params["desc"] == "American computer firm; IBM. | Computer company founded 1911."
     assert write.params["aliases"] == ["IBM"]
     assert write.labels == ["Organization"]  # Company is already the survivor's own
 

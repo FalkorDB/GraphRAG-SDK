@@ -26,6 +26,12 @@ from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
+from graphrag_sdk.core.descriptions import (
+    LEGACY_LIST_KEY,
+    description_piece,
+    join_description,
+    split_description,
+)
 from graphrag_sdk.core.models import RESERVED_NODE_LABELS
 from graphrag_sdk.core.providers import Embedder
 from graphrag_sdk.core.tables import RESERVED_PROPERTY_NAMES
@@ -213,48 +219,30 @@ def _merge_description_members(current: list[str], absorbed: list[str]) -> list[
     finalize cycles that repetition compounds on hub entities.
     """
     segments: list[str] = []
-    for seg in (str(s or "").strip() for s in (*current, *absorbed)):
+    for seg in (description_piece(s) for s in (*current, *absorbed)):
         if seg and seg not in segments:
             segments.append(seg)
     return segments
 
 
 def _description_members(props: dict[str, Any]) -> list[str]:
-    """A node's member descriptions, by the rule every merge path shares.
-
-    :func:`description_list`: the stored ``descriptions`` list where the node
-    has one; otherwise its ``description`` as **one** member, deliberately not
-    split on ``" | "`` — a fresh node's single description may contain the
-    separator (``"CEO | founder of Acme"``), and splitting it would invent
-    members that were never written and count them toward
-    ``force_summary_threshold``. The one addition: an empty stored list does
-    not hide a description the node does hold — the text is still a member,
-    because a merge that misread it would delete the only other copy.
-    """
-    members = description_list(props)
-    if members:
-        return members
-    single = str(props.get("description") or "").strip()
-    return [single] if single else []
+    """A node's description pieces, by the rule every merge path shares
+    (:func:`description_list`): its ``description`` split at ``|``, which no
+    piece holds, or an earlier version's ``descriptions`` list where the node
+    still has one with text in it — an empty one does not hide the string,
+    because a merge that misread it would delete the only other copy."""
+    return description_list(props)
 
 
 def _merge_description_segments(current: str, absorbed: str) -> list[str]:
-    """:func:`_merge_description_members` over two bare description strings,
-    each split on ``" | "``.
-
-    For the callers that hold only the joined text (:func:`properties_to_carry`
-    reads whatever properties a node has, and a reconcile writes ``description``
-    alone); the merge that also writes the ``descriptions`` list goes through
-    :func:`_description_members` so it never invents a member.
-    """
-    return _merge_description_members(
-        str(current or "").split(" | "), str(absorbed or "").split(" | ")
-    )
+    """:func:`_merge_description_members` over two stored description
+    strings, each split into its pieces."""
+    return _merge_description_members(split_description(current), split_description(absorbed))
 
 
 def _merge_description(current: str, absorbed: str) -> str:
     """:func:`_merge_description_segments`, joined with ``" | "``."""
-    return " | ".join(_merge_description_segments(current, absorbed))
+    return join_description(_merge_description_segments(current, absorbed))
 
 
 def _string_list(value: Any) -> list[str]:
@@ -273,8 +261,11 @@ def properties_to_carry(
     ``never`` names what stays behind whatever the survivor lacks; ``id`` and
     ``embedding`` always do.
 
-    ``description`` is the exception to keep_existing: the two are joined with
-    ``" | "`` (:func:`_merge_description`), each segment kept once. The
+    ``description`` is the exception to keep_existing: the two nodes' pieces
+    (:func:`description_list`) are joined with ``" | "``, each kept once. An
+    earlier version's ``descriptions`` list is never carried: read before the
+    string, it would hide the survivor's own text (the caller drops one the
+    survivor holds). The
     survivor is chosen for the reproducibility of its identity — a table's key,
     then how much of the graph points at it — not for what it knows, and the
     node that lost on those grounds is often the one the PDF described.
@@ -285,12 +276,12 @@ def properties_to_carry(
         key: value
         for key, value in dup.items()
         if key not in never
-        and key != "source_chunk_ids"
+        and key not in ("source_chunk_ids", LEGACY_LIST_KEY)
         and value is not None
         and keep.get(key) in (None, "", [])
     }
-    description = _merge_description(
-        str(keep.get("description") or ""), str(dup.get("description") or "")
+    description = join_description(
+        _merge_description_members(description_list(keep), description_list(dup))
     )
     if description != str(keep.get("description") or ""):
         carry["description"] = description
@@ -1750,17 +1741,15 @@ class EntityDeduplicator:
         params: dict[str, Any] = {}
         # Joined with " | ", matching LLMVerifiedResolution's survivor rule, so
         # both mechanisms leave the same shape behind — and counted by the same
-        # rule (``description_list``). Both forms are written together:
-        # ``description_list`` prefers the list wherever it is present, so a
-        # survivor updated without it would silently report fewer members than
-        # its own ``description`` holds.
+        # rule (``description_list``). One string: an earlier version's
+        # ``descriptions`` list on the survivor goes with this write, since
+        # ``description_list`` would otherwise go on reading it.
         segments = _merge_description_members(_description_members(keep), _description_members(dup))
-        description = " | ".join(segments)
-        if description != str(keep.get("description") or "") or segments != _string_list(
-            keep.get("descriptions")
-        ):
-            sets += ["s.description = $desc", "s.descriptions = $descs"]
-            params.update(desc=description, descs=segments)
+        description = join_description(segments)
+        legacy_list = keep.get("descriptions") is not None
+        if description != str(keep.get("description") or "") or legacy_list:
+            sets += ["s.description = $desc", "s.descriptions = null"]
+            params.update(desc=description or None)
 
         current = _string_list(keep.get("aliases"))
         aliases = self._merged_aliases(

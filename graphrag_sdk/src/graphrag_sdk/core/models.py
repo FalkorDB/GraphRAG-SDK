@@ -252,8 +252,8 @@ class ChunkEntityRow(DataModel):
     ``label`` is the entity's concrete label (the non-``__Entity__`` one);
     ``None`` if the node somehow carries no usable label (tampered graph).
     ``description``, ``descriptions`` and ``spans`` are what this chunk's own
-    ``MENTIONED_IN`` edge holds — its description as written, the same as
-    separate members, and where the chunk names the entity: ``None``, ``[]``
+    ``MENTIONED_IN`` edge holds — its description as stored, the same split
+    into its pieces, and where the chunk names the entity: ``None``, ``[]``
     and ``[]`` for an edge written by an earlier version. ``recorded`` is
     whether that edge records everything its chunk put on the entity's
     description: written by this version (it has ``said_version``), or a
@@ -907,11 +907,11 @@ class EntityMention(DataModel):
     ``spans`` are where the chunk names the entity, flat
     (``[start, end, start, end, ...]``); ``descriptions`` are what that chunk
     says the entity is — one, or more when the chunk describes it twice or two
-    mentions land on it (a merge, a remap), each kept whole. Both are written
-    on the ``MENTIONED_IN`` edge, the descriptions as on a node
-    (``description`` joined with " | ", ``descriptions`` when more than one),
-    so they go when the chunk goes, and what a deleted document said can be
-    taken off the entity's description.
+    mentions land on it (a merge, a remap). Both are written on the
+    ``MENTIONED_IN`` edge, the descriptions as on a node (pieces of one
+    ``description`` string joined with " | "; a "|" inside one separates
+    pieces, as in a node's description), so they go when the chunk goes, and
+    what a deleted document said can be taken off the entity's description.
     """
 
     chunk_id: str

@@ -406,6 +406,29 @@ class TestBackfillEntity:
         assert rel_call[0].start_node_id == node.id
 
     @pytest.mark.asyncio
+    async def test_a_backfilled_description_holding_a_pipe_stays_one_piece(self, rag):
+        """The store splits a description at "|": the model's text is made one
+        piece ("|" becomes "¦") on the node and on its edge, as extraction
+        does."""
+        rag.llm = MockLLM(
+            responses=[
+                json.dumps(
+                    {"entities": [{"name": "Bob", "description": "CEO | Acme", "attributes": {}}]}
+                )
+            ]
+        )
+        rag._graph_store.list_chunks_for_entity_backfill = AsyncMock(
+            return_value=[{"chunk_id": "c1", "chunk_text": "Bob runs Acme"}]
+        )
+        rag._graph_store.upsert_nodes = AsyncMock(return_value=1)
+        rag._graph_store.upsert_relationships = AsyncMock(return_value=1)
+        await rag.backfill_entity("Person", scope="all")
+        _, second = (c.args[0][0] for c in rag._graph_store.upsert_nodes.await_args_list)
+        assert second.properties["description"] == "CEO \u00a6 Acme"
+        (edge,) = rag._graph_store.upsert_relationships.await_args.args[0]
+        assert edge.properties == {"description": "CEO \u00a6 Acme"}
+
+    @pytest.mark.asyncio
     async def test_a_short_mention_edge_write_leaves_the_chunk_unmarked(self, rag):
         """The edge is the record a delete takes the backfilled text off by:
         a chunk whose edge was not written must be retried, not marked done."""

@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.descriptions import join_description, split_description
 from graphrag_sdk.core.models import (
     DocumentInfo,
     EntityMention,
@@ -206,11 +207,16 @@ class LexicalGraphWriter:
             if m.spans:
                 props["spans"] = list(m.spans)
             if m.descriptions:
-                # As on a node: joined for readers, the list kept whole when
-                # there is more than one, so each can be taken off on its own.
-                props["description"] = " | ".join(m.descriptions)
-                if len(m.descriptions) > 1:
-                    props["descriptions"] = list(m.descriptions)
+                # As on a node: the pieces in one string, each taken off on
+                # its own by splitting at "|". Each text is read as a node's
+                # description is, a "|" in it separating pieces (the SDK's
+                # extractors write none; a custom one may), so the edge's
+                # pieces match the ones the node got from the same text.
+                description = join_description(
+                    p for d in m.descriptions for p in split_description(d)
+                )
+                if description:
+                    props["description"] = description
             mention_rels.append(
                 GraphRelationship(
                     start_node_id=m.entity_id,
