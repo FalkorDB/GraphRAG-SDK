@@ -10,20 +10,27 @@ and is the **anchor** for the working ontology:
 - **Ingest path is constrained**. :py:meth:`register` admits:
     - new entity / relation labels with their declared properties and patterns,
     - re-declarations of existing labels with the *same* properties / patterns
-      (or a strict subset — treated as "use the persisted definition").
+      (or a strict subset — treated as "use the persisted definition"),
+    - new properties / patterns on an existing label that **holds no data**
+      yet (no node, or no edge, of that label in the data graph) — nothing
+      can fall out of line with them. The default seed's bare labels are
+      the usual case.
 
   It refuses:
     - **type contradictions** on existing properties
       (:py:class:`OntologyContradictionError`), and
-    - **modifications** to existing labels — adding properties or patterns
-      (:py:class:`OntologyModificationNotAllowedError`).
+    - **modifications** to existing labels that hold data — adding
+      properties or patterns (:py:class:`OntologyModificationNotAllowedError`).
 
-  The latter is reserved for a future ontology-evolution API that updates the
-  data graph in lockstep with the ontology, keeping the two aligned.
+  The latter goes through the ontology-evolution API instead: for an
+  entity, ``add_attribute`` declares the attribute and fills it in from the
+  existing chunks; for a relation, ``add_relation_pattern`` declares a
+  pattern, populated by ``backfill_relation_pattern``. Relation attributes
+  have no evolution operation yet.
 
 The ontology graph **accumulates new labels** across ingest passes, but it is
-not free-form additive: existing labels are frozen by :py:meth:`register` to
-keep the ontology and the data graph aligned.
+not free-form additive: labels that hold data are frozen by
+:py:meth:`register` to keep the ontology and the data graph aligned.
 
 Users who want a curated, declarative ontology (descriptions, future flags,
 properties not yet observed in the data) supply an ``ontology`` to
@@ -57,8 +64,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from graphrag_sdk.core.connection import FalkorDBConnection
-from graphrag_sdk.core.exceptions import FalkorDBVersionError
+from graphrag_sdk.core.connection import FalkorDBConnection, is_missing_graph_error
+from graphrag_sdk.core.exceptions import DatabaseError, FalkorDBVersionError
 from graphrag_sdk.core.models import (
     Attribute,
     Entity,
@@ -73,6 +80,7 @@ from graphrag_sdk.core.tables import (
     RelationshipMapping,
     TableMapping,
 )
+from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 OwnerKind = Literal["entity", "relation"]
 DescriptionKind = Literal["entity", "relation", "entity_property", "relation_property"]
@@ -88,6 +96,32 @@ _STAMP_NEW_RELATION = "ON CREATE SET r.created_at = timestamp()"
 _RELATION_AGE = "coalesce(r.created_at, 0), id(r)"
 
 
+def _is_database_failure(exc: BaseException) -> bool:
+    """Whether a read failed at the database: unreachable, timed out, refused,
+    or cut short by a schema change.
+
+    What ``load(strict=True)`` raises. Any other exception (from a stand-in
+    connection in a test, say) still reads as an empty store, as before.
+    """
+    failures: list[type[BaseException]] = [OSError, DatabaseError]
+    try:
+        from redis.exceptions import RedisError
+
+        failures.append(RedisError)
+    except ImportError:  # pragma: no cover - redis ships with falkordb
+        pass
+    try:
+        # The driver raises this, after refreshing its view, when another
+        # writer changed the graph's schema during the read; the read did
+        # not complete, so it is no evidence of an empty store.
+        from falkordb.exceptions import SchemaVersionMismatchException
+
+        failures.append(SchemaVersionMismatchException)
+    except ImportError:  # pragma: no cover - the driver ships with the SDK
+        pass
+    return isinstance(exc, tuple(failures))
+
+
 class OntologyContradictionError(ValueError):
     """Raised when an incoming ontology re-types an existing property.
 
@@ -98,19 +132,24 @@ class OntologyContradictionError(ValueError):
 
 
 class OntologyModificationNotAllowedError(ValueError):
-    """Raised when an incoming ontology tries to MODIFY an existing label.
+    """Raised when an incoming ontology tries to MODIFY a label that holds data.
 
     The ingest path is intentionally constrained: it can add brand-new labels
-    (with whatever attributes the user wants) and re-declare existing labels
-    *exactly* (or with a strict subset of their persisted properties / patterns).
-    It cannot add attributes / patterns / fields to an already-registered
-    label — that's an ontology-evolution operation that has to also update
-    existing graph data to keep the two in sync, which is handled by a separate
-    API path (not yet implemented).
+    (with whatever attributes the user wants), re-declare existing labels
+    *exactly* (or with a strict subset of their persisted properties / patterns),
+    and add attributes / patterns to a label with no node or edge in the data
+    graph yet. It cannot add them to a label that holds data: the existing
+    nodes or edges would not have them.
 
-    Workaround for v1: ``await rag.delete_all()`` and re-ingest with the new
-    ontology, OR rely solely on the constructor's first ``register`` to lock in
-    your full ontology from the start.
+    Declare the label without the additions, then, for an entity,
+    ``rag.add_attribute`` declares the attribute and fills it in from the
+    existing chunks; for a relation, ``rag.add_relation_pattern`` declares a
+    pattern (populate it with ``rag.backfill_relation_pattern``). New
+    attributes on a relation that holds data need ``await rag.delete_all()``
+    and a re-ingest with the updated ontology. Declaring without the additions
+    comes first: when the refused ontology was passed to ``GraphRAG(...)``,
+    every call on that instance, ``add_attribute`` included, registers it
+    again and is refused the same way.
     """
 
 
@@ -120,15 +159,19 @@ class OntologyStore:
     Owns its own graph handle, derived from the data-graph connection's
     driver. Queries go directly to the FalkorDB driver and bypass the
     connection's retry / circuit-breaker — ontology operations are
-    infrequent, idempotent, and tolerant of a single failure.
+    infrequent, idempotent, and tolerant of a single failure. That includes
+    the read-only probes of the data graph named ``data_graph_name``, which
+    ask whether a label already holds data.
     """
 
     ONTOLOGY_GRAPH_SUFFIX = "__ontology"
 
     def __init__(self, connection: FalkorDBConnection, data_graph_name: str) -> None:
         self._conn = connection
+        self._data_graph_name = data_graph_name
         self._graph_name = f"{data_graph_name}{self.ONTOLOGY_GRAPH_SUFFIX}"
         self._graph: Any | None = None
+        self._data_graph: Any | None = None
 
     @property
     def graph_name(self) -> str:
@@ -137,12 +180,23 @@ class OntologyStore:
     def _ensure_graph(self) -> Any:
         if self._graph is not None:
             return self._graph
+        self._graph = self._select_graph(self._graph_name)
+        return self._graph
+
+    def _ensure_data_graph(self) -> Any:
+        # The store's own data graph, by name: the connection may be bound to
+        # another graph, and the probe must ask the graph this ontology governs.
+        if self._data_graph is not None:
+            return self._data_graph
+        self._data_graph = self._select_graph(self._data_graph_name)
+        return self._data_graph
+
+    def _select_graph(self, name: str) -> Any:
         self._conn._ensure_client()
         driver = self._conn._driver
         if driver is None:
             raise RuntimeError("FalkorDB driver not initialised on connection")
-        self._graph = driver.select_graph(self._graph_name)
-        return self._graph
+        return driver.select_graph(name)
 
     async def _query(
         self, cypher: str, params: dict[str, Any] | None = None, *, read_only: bool = False
@@ -160,12 +214,18 @@ class OntologyStore:
 
     # ── Load ─────────────────────────────────────────────────────
 
-    async def load(self) -> Ontology:
+    async def load(self, *, strict: bool = False) -> Ontology:
         """Read the ontology graph and reconstruct an :py:class:`Ontology`.
 
         Returns an empty ontology if the graph doesn't exist or introspection
         fails. Failure is logged at DEBUG so an unconfigured ``GraphRAG``
         instance doesn't emit warnings.
+
+        With ``strict=True`` a read the database failed (unreachable, timed
+        out, an error reply) raises instead; a graph that was never written is
+        still an empty ontology. :py:meth:`register` reads that way: an
+        unreadable store taken for an empty one would skip every check and let
+        the writes retype stored properties.
         """
         try:
             ent_result = await self._query(
@@ -208,8 +268,10 @@ class OntologyStore:
         except FalkorDBVersionError:
             raise
         except Exception as exc:
-            if "empty key" in str(exc):  # never written: nothing declared yet
+            if is_missing_graph_error(exc):  # never written: nothing declared yet
                 return Ontology()
+            if strict and _is_database_failure(exc):
+                raise
             logger.debug("Ontology load failed (returning empty ontology): %s", exc)
             return Ontology()
 
@@ -281,6 +343,8 @@ class OntologyStore:
                 getattr(relationship_column_result, "result_set", None) or []
             )
         except Exception as exc:
+            if strict and _is_database_failure(exc):
+                raise
             logger.warning(
                 "Table mappings could not be loaded (entities and relations are unaffected): %s",
                 exc,
@@ -381,13 +445,15 @@ class OntologyStore:
 
         - **New labels** — registered with their declared properties and
           (for relations) patterns.
-        - **Existing labels** — incoming declaration must be a *strict subset*
-          of what's already persisted. The same property names, the same
-          types, the same (or fewer) relation patterns. Re-declaring a label
-          with no properties is fine; it just means "I know this label exists,
-          use the persisted definition."
-        - Trying to **add a property** to an existing label →
-          :py:class:`OntologyModificationNotAllowedError`.
+        - **Existing labels that hold data** — the incoming declaration must
+          be a subset of what's already persisted: the same property names,
+          the same types, the same (or fewer) relation patterns. Re-declaring
+          a label with no properties is fine; it just means "I know this
+          label exists, use the persisted definition."
+        - Trying to **add a property** (or a relation pattern) to an existing
+          label that holds data →
+          :py:class:`OntologyModificationNotAllowedError`. A label with no
+          node or edge in the data graph yet may gain them.
         - Trying to **change the type** of an existing property →
           :py:class:`OntologyContradictionError`.
 
@@ -435,16 +501,21 @@ class OntologyStore:
         # reserved label would make every later ingest fail mid-pipeline.
         reject_reserved_labels(e.label for e in ontology.entities)
 
-        existing = await self.load()
+        existing = await self.load(strict=True)
         self._check_no_contradictions(existing, ontology)
-        self._check_no_modifications_to_existing(existing, ontology)
+        await self._check_no_modifications_to_existing(existing, ontology)
         self._check_no_signature_collision(existing, ontology)
         self._check_one_key_per_label(existing, ontology)
 
         for et in ontology.entities:
             await self._upsert_entity_type(et)
+        stored_relations = {r.label: r for r in existing.relations}
         for rt in ontology.relations:
-            await self._upsert_relation_type(rt)
+            prior = stored_relations.get(rt.label)
+            if prior is None:
+                await self._upsert_relation_type(rt)
+            else:
+                await self._extend_relation_type(rt, prior)
         for mapping in ontology.tables:
             await self._upsert_table_mapping(mapping)
         for relationship_mapping in ontology.relationship_tables:
@@ -575,15 +646,75 @@ class OntologyStore:
                         f"registered as {prior}; refusing to redefine as {p.type}."
                     )
 
-    @staticmethod
-    def _check_no_modifications_to_existing(existing: Ontology, incoming: Ontology) -> None:
+    async def _holds_data(self, kind: str, label: str) -> bool:
+        """Whether the data graph has a node (or edge) of this ontology label.
+
+        Read-only and stops at the first match. A data graph that was never
+        written (a new graph, whose ontology the default seed already filled)
+        holds nothing; FalkorDB says so as "Invalid graph operation on empty
+        key". Any other failure is raised as it is: the answer is unknown,
+        nothing has been written yet, and a timeout or an unreachable server
+        must not be reported as "this label holds data".
+        """
+        safe = sanitize_cypher_label(label)
+        if kind == "entity":
+            queries = [(f"MATCH (n:`{safe}`) RETURN 1 LIMIT 1", None)]
+        else:
+            # Extraction and relationship tables both store a relation as
+            # RELATES edges named by ``rel_type``, so that probe goes first; a
+            # typed edge of the relation's own type exists only once
+            # backfill_relation_pattern (or a rename) has written one. Two
+            # queries rather than one ``OR``, so each can stop at its first
+            # row; with no index on ``rel_type``, a relation that has no edge
+            # still costs a read of every RELATES edge. Both start and end at
+            # entity nodes: the SDK's own structure edges (Document PART_OF
+            # Chunk, NEXT_CHUNK, MENTIONED_IN) carry names a declared relation
+            # can have too (PART_OF is a default relation type), and are not
+            # that relation's data.
+            queries = [
+                (
+                    "MATCH (:__Entity__)-[r:RELATES]->(:__Entity__) "
+                    "WHERE r.rel_type = $label RETURN 1 LIMIT 1",
+                    {"label": label},
+                ),
+            ]
+            # A relation that is itself named RELATES would match every
+            # relationship the SDK writes; its own edges are the RELATES edges
+            # whose rel_type names it, which the probe above already finds.
+            if safe != "RELATES":
+                queries.append(
+                    (f"MATCH (:__Entity__)-[r:`{safe}`]->(:__Entity__) RETURN 1 LIMIT 1", None)
+                )
+        await self._conn._check_server_version()
+        data_graph = self._ensure_data_graph()
+        for cypher, params in queries:
+            try:
+                result = await data_graph.ro_query(cypher, params=params)
+            except Exception as exc:
+                if is_missing_graph_error(exc):
+                    return False
+                raise
+            if getattr(result, "result_set", None):
+                return True
+        return False
+
+    async def _check_no_modifications_to_existing(
+        self, existing: Ontology, incoming: Ontology
+    ) -> None:
         """Raise :py:class:`OntologyModificationNotAllowedError` when incoming
         tries to add new properties / patterns to a label that's already
-        registered. New labels are unaffected.
+        registered and holds data. New labels are unaffected.
 
         Subset re-declarations are allowed: an existing label may appear in
         the incoming ontology with fewer (or zero) properties — that's treated
         as "use the persisted definition" rather than "remove things."
+
+        A stored label with no node (or edge) in the data graph has nothing
+        for a new attribute or pattern to fall out of line with, so it may
+        gain them: the default seed's bare ``Event`` can become the ``Event``
+        a first ontology declares. The data graph is asked only about a label
+        the declaration adds to, and the first label that holds data ends
+        the check.
         """
         existing_ent_by_label = {e.label: e for e in existing.entities}
         for et in incoming.entities:
@@ -592,14 +723,15 @@ class OntologyStore:
                 continue
             prior_prop_names = {p.name for p in prior_et.properties}
             new_prop_names = {p.name for p in et.properties} - prior_prop_names
-            if new_prop_names:
+            if new_prop_names and await self._holds_data("entity", et.label):
                 raise OntologyModificationNotAllowedError(
                     f"Refusing to add new attribute(s) {sorted(new_prop_names)} "
-                    f"to existing label '{et.label}'. The ingest path only "
-                    f"accepts new labels; modifying an existing label requires "
-                    f"an ontology-evolution operation (not yet supported). "
-                    f"Workaround: `await rag.delete_all()` and re-ingest with "
-                    f"the updated ontology."
+                    f"to existing label '{et.label}', which already holds data: "
+                    f"its nodes would not have them. Declare '{et.label}' without "
+                    f"them, then add each with "
+                    f"`await rag.add_attribute('{et.label}', ...)`, which also "
+                    f"fills it in on existing nodes; or `await rag.delete_all()` "
+                    f"and re-ingest with the updated ontology."
                 )
 
         existing_rel_by_label = {r.label: r for r in existing.relations}
@@ -611,7 +743,7 @@ class OntologyStore:
             new_prop_names = {p.name for p in rt.properties} - prior_prop_names
             prior_patterns = set(prior_rt.patterns)
             new_patterns = set(rt.patterns) - prior_patterns
-            if new_prop_names or new_patterns:
+            if (new_prop_names or new_patterns) and await self._holds_data("relation", rt.label):
                 diffs: list[str] = []
                 if new_prop_names:
                     diffs.append(f"new properties {sorted(new_prop_names)}")
@@ -619,9 +751,11 @@ class OntologyStore:
                     diffs.append(f"new patterns {sorted(new_patterns)}")
                 raise OntologyModificationNotAllowedError(
                     f"Refusing to add {' and '.join(diffs)} to existing relation "
-                    f"'{rt.label}'. The ingest path only accepts new relation "
-                    f"types; modifying an existing one requires an ontology-evolution "
-                    f"operation (not yet supported)."
+                    f"'{rt.label}', which already holds data. Declare it without "
+                    f"them; a new pattern then goes through "
+                    f"`await rag.add_relation_pattern(...)`, and new relation "
+                    f"attributes need `await rag.delete_all()` and a re-ingest "
+                    f"with the updated ontology."
                 )
 
     async def _upsert_entity_type(self, et: Entity) -> None:
@@ -1050,6 +1184,35 @@ class OntologyStore:
             )
             for prop in rt.properties:
                 await self._upsert_open_relation_property(rt.label, prop)
+
+    async def _extend_relation_type(self, rt: Relation, prior: Relation) -> None:
+        """Write a declaration of a relation the store already holds.
+
+        Every ``:Relation`` node of the label ends up with every property the
+        relation has, stored or declared now (``add_relation_property``, the
+        step the evolution API uses), not only the patterns this declaration
+        happens to name. Written per declared pattern instead, a property sat
+        on some patterns only, and dropping one of those patterns later
+        dropped it from the relation. Putting the stored properties back on
+        every pattern also repairs a registration that failed half-way: its
+        new pattern is already stored, so it no longer counts as new.
+        A declaration without patterns means "the stored relation".
+        """
+        if rt.patterns:
+            if rt.description is None and prior.description is not None:
+                # load() reads a relation's description from its patterns
+                # first, so a first pattern written without one would hide
+                # the description an open-mode relation already has.
+                rt = rt.model_copy(update={"description": prior.description})
+            # MERGEs the declared patterns, their endpoint entities and the
+            # declared properties on them, as for a new relation.
+            await self._upsert_relation_type(rt)
+        elif rt.description is not None:
+            await self.set_description("relation", rt.label, rt.description)
+        properties = {p.name: p for p in prior.properties}
+        properties.update({p.name: p for p in rt.properties})
+        for prop in properties.values():
+            await self.add_relation_property(rt.label, prop)
 
     async def _upsert_relation_property(
         self, rel_label: str, src: str, tgt: str, prop: Attribute

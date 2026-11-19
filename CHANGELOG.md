@@ -41,6 +41,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The agent asks before adding types to the user's ontology.** When
+  ingestion drops types the ontology lacks, the MCP guide and the ingest hint
+  told the agent to add them with `set_ontology` on its own, even when the user
+  had supplied the ontology. Now, unless the agent designed the ontology in the
+  same conversation (a user's, the operator's, or one already in the graph),
+  it shows the user what was dropped and adds only what they approve; the rest
+  stays out of the graph. An ontology the agent designed itself is still
+  extended by the agent, which tells the user what it added. The approval
+  hint now comes before the ready-made `set_ontology` call, and when a toolkit
+  does not serve `set_ontology`, the hint no longer suggests it and says only
+  the server operator can add types.
+
+- **One temporary model error no longer fails ontology discovery.**
+  `extract_with_retry` turns off the SDK provider's retry loop so its attempt
+  count stays exact, and it retried only responses that failed to parse or
+  failed semantic validation. A call that failed outright (an HTTP 500 from
+  Azure, a 429, a dropped connection) was retried only by the HTTP client's
+  own two retries, normally a couple of seconds, so one such error that
+  outlasted them among the ~20 calls of a discovery run failed the whole run.
+  Those are now retried up to twice more with a backoff, apart from the parse
+  budget. A request that timed out at the provider (HTTP 408, or the OpenAI
+  client's timeout error) counts as temporary too; other 4xx errors (400, 401,
+  a content filter) still fail at once. `is_transient_llm_error()` in
+  `core/providers/_retry.py` decides which is which: the HTTP status for
+  provider responses (5xx, 408, 409, 429), or a connection error when there is
+  no status (the built-in `ConnectionError`, the OpenAI client's
+  `APIConnectionError` that OpenRouter raises, or an httpx, aiohttp or
+  requests connection error from a custom provider, also when it is the cause
+  of the error the provider raises). The retry warning logs the exception type
+  and HTTP status only.
 - **Missing ontology attributes no longer erase extracted values.**
   Values absent from a chunk no longer overwrite values from other chunks or
   system properties such as `description`; resolution merges also fill
@@ -80,6 +110,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `finalize()`; re-ingesting unchanged text armed it although nothing was
   written. Table writes now count; unchanged text, unchanged tables and
   relationship-only tables do not (#364, #384).
+- **A first ontology can give a default label its attributes.** Reading an
+  empty ontology store seeds the eleven default labels with no attributes, and
+  `register()` refused any new attribute or pattern on an existing label. So a
+  new graph, read once, refused its first declared ontology: "Refusing to add
+  new attribute(s) ['event_type', 'timestamp'] to existing label 'Event'". The
+  refusal now applies only to a label that holds data (a node of that label,
+  or an edge of that relation type, in the data graph). A label with none,
+  including on a data graph that does not exist yet, may gain attributes and
+  patterns. Type changes are still refused, and when a declaration adds to a
+  stored label but the data graph cannot be read (a timeout, an unreachable
+  server), `register()` fails with that error and writes nothing. A pattern or
+  attribute added to a stored relation is written the way
+  `add_relation_pattern` and relation attributes are, so every pattern of the
+  relation keeps the same properties. The data check ignores the SDK's own
+  structure edges (`PART_OF`, `NEXT_CHUNK`, `MENTIONED_IN`) and reads the data
+  graph the store belongs to. The message for a label that holds data says to
+  declare it without the additions and add them with `add_attribute` /
+  `add_relation_pattern`, instead of "not yet supported" (#395).
 
 ## [1.6.0] - 2026-11-02
 
