@@ -662,9 +662,9 @@ async def test_a_merge_keeps_a_full_edges_and_the_merged_edges_text(graph):
     await graph.query_raw(
         "CREATE (c:Chunk {id: 'c1'}) WITH c "
         "MATCH (t:__Entity__ {id: 'tim'}), (u:__Entity__ {id: 'timothy'}) "
-        "CREATE (t)-[:MENTIONED_IN {description: 'x', descriptions: $full}]->(c), "
+        "CREATE (t)-[:MENTIONED_IN {description: $joined, descriptions: $full}]->(c), "
         "(u)-[:MENTIONED_IN {description: 'Dr. Cook'}]->(c)",
-        {"full": full},
+        {"full": full, "joined": " | ".join(full)},
     )
     await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([TIM, APPLE])))
     ((description, stored_list),) = await rows(

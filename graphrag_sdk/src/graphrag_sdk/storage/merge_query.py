@@ -376,18 +376,26 @@ SAID_VERSION_KEY = "said_version"
 SAID_VERSION = 1
 
 
+def _tidy(text: str) -> str:
+    """Cypher for ``core.descriptions._tidy``: carriage returns, newlines and
+    tabs made spaces, then trimmed (``trim`` alone differs from Python's
+    ``strip()``)."""
+    return "trim(replace(replace(replace(" + text + ", '\\r', ' '), '\\n', ' '), '\\t', ' '))"
+
+
 def description_members(holder: str) -> str:
     """Cypher: the description pieces ``holder`` (a node, an edge or a map)
-    holds, as a list: its ``description`` split at ``|`` — or, where an
-    earlier version's ``descriptions`` list holds text, each of its items
-    split at ``|`` — trimmed, blank ones left out, each kept once in order.
-    The Python rule is ``core.descriptions.description_pieces``."""
+    holds, as a list: its ``description`` split at ``|``, after the items of
+    an earlier version's ``descriptions`` list where it holds text (each
+    split at ``|``); each tidied, blank ones left out, each kept once in
+    order. The Python rule is ``core.descriptions.description_pieces``."""
     items = (
-        f"CASE WHEN any(dz IN coalesce({holder}.descriptions, []) WHERE trim(dz) <> '') "
-        f"THEN {holder}.descriptions ELSE [coalesce({holder}.description, '')] END"
+        f"((CASE WHEN any(dz IN coalesce({holder}.descriptions, []) WHERE {_tidy('dz')} <> '') "
+        f"THEN {holder}.descriptions ELSE [] END) + "
+        f"(CASE WHEN {holder}.description IS NULL THEN [] ELSE [{holder}.description] END))"
     )
     split_items = f"reduce(dsp = [], dy IN {items} | dsp + split(dy, '{PIECE_BREAK}'))"
-    kept = f"[dx IN [dt IN {split_items} | trim(dt)] WHERE dx <> '']"
+    kept = f"[dx IN [dt IN {split_items} | {_tidy('dt')}] WHERE dx <> '']"
     once = "CASE WHEN du IN dseen THEN dseen ELSE dseen + [du] END"
     return f"reduce(dseen = [], du IN {kept} | {once})"
 

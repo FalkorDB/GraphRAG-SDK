@@ -512,6 +512,23 @@ class TestOnRealFalkorDB:
         desc, _, _, _, summarised = await _entity(store)
         assert (desc, summarised) == ("One summary.", True)
 
+    async def test_a_newline_beside_a_pipe_does_not_drop_what_another_chunk_says(self, store):
+        """An earlier version wrote "CEO |\nFounded Acme in 1998." on the node
+        and on two chunks' edges. Deleting one chunk keeps both pieces: the
+        other edge still says them, and the server reads its pieces with the
+        same whitespace rule as Python."""
+        await store.upsert_nodes([_alice("x")])
+        text = "CEO |\nFounded Acme in 1998."
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) SET e.description = $t "
+            "CREATE (e)-[:MENTIONED_IN {description: $t, said_version: 1}]->(:Chunk {id: 'c1'}), "
+            "(e)-[:MENTIONED_IN {description: $t, said_version: 1}]->(:Chunk {id: 'c2'})",
+            {"t": text},
+        )
+        assert await _remove(store, "doc", ["c1"]) == 0
+        desc, _, _, _, _ = await _entity(store)
+        assert split_description(desc) == ["CEO", "Founded Acme in 1998."]
+
     async def test_a_summary_counts_each_piece_once(self, store):
         """Repeats are not pieces: "A | B" written three times holds two."""
         await store.upsert_nodes([_alice("x")])

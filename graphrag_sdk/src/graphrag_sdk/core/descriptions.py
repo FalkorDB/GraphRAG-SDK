@@ -23,7 +23,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 #: Joins two pieces in a stored description.
@@ -42,17 +42,35 @@ PIPE_STAND_IN = "\u00a6"
 _PIPE_RUN = re.compile(r"\s*\|\s*")
 
 
+#: Turned into spaces before a piece is trimmed, here and in Cypher.
+_SPACE_LIKE = ("\r", "\n", "\t")
+
+
+def _tidy(text: str) -> str:
+    """How a piece read from the graph is compared, the same here and in
+    Cypher (``merge_query.description_members``): carriage returns, newlines
+    and tabs become spaces, then spaces are trimmed off both ends. Cypher's
+    ``trim`` is not Python's ``strip()``, so the rule is spelled out alike on
+    both sides; a text an earlier version wrote as ``"CEO |\nFounded ..."``
+    then gives ``"Founded ..."`` on both."""
+    for ch in _SPACE_LIKE:
+        text = text.replace(ch, " ")
+    return text.strip(" ")
+
+
 def description_piece(text: Any) -> str:
-    """``text`` as one piece: trimmed, each ``|`` (with the spaces around it)
-    replaced with ``" ¦ "``."""
+    """``text`` as one piece, as it is written: each ``|`` (with the
+    whitespace around it) replaced with ``" ¦ "``, carriage returns, newlines
+    and tabs made spaces, and no whitespace left at either end — so it reads
+    back unchanged by :func:`_tidy` on any engine."""
     raw = str(text if text is not None else "")
-    return _PIPE_RUN.sub(f" {PIPE_STAND_IN} ", raw).strip()
+    return _tidy(_PIPE_RUN.sub(f" {PIPE_STAND_IN} ", raw)).strip()
 
 
-def _unique(pieces: Iterable[Any]) -> list[str]:
+def _unique(pieces: Iterable[Any], rule: Callable[[str], str] = description_piece) -> list[str]:
     out: list[str] = []
     for piece in pieces:
-        cleaned = description_piece(piece)
+        cleaned = rule(str(piece)) if piece is not None else ""
         if cleaned and cleaned not in out:
             out.append(cleaned)
     return out
@@ -63,7 +81,7 @@ def split_description(text: Any) -> list[str]:
     out. ``None`` or an empty string has none."""
     if text is None:
         return []
-    return _unique(str(text).split(PIECE_BREAK))
+    return _unique(str(text).split(PIECE_BREAK), _tidy)
 
 
 def join_description(pieces: Iterable[Any]) -> str:
@@ -74,14 +92,20 @@ def join_description(pieces: Iterable[Any]) -> str:
 
 def description_pieces(props: Mapping[str, Any]) -> list[str]:
     """The pieces a node's or edge's properties hold: ``description`` split at
-    ``|``, or, where an earlier version's ``descriptions`` list with text is
-    present, each of its items split at ``|``."""
+    ``|``. Where an earlier version's ``descriptions`` list with text is
+    present, its items (each split at ``|``) come first and the string's
+    pieces it lacks after them: a list left out of step with the string must
+    not hide text only the string holds."""
+    items: list[str] = []
     legacy = props.get(LEGACY_LIST_KEY)
     if isinstance(legacy, list):
-        items = [str(d) for d in legacy if d is not None]
-        if any(d.strip() for d in items):
-            return _unique(p for d in items for p in d.split(PIECE_BREAK))
-    return split_description(props.get("description"))
+        listed = [str(d) for d in legacy if d is not None]
+        if any(_tidy(d) for d in listed):
+            items = listed
+    description = props.get("description")
+    if description is not None:
+        items.append(str(description))
+    return _unique((p for d in items for p in d.split(PIECE_BREAK)), _tidy)
 
 
 def set_description(props: dict[str, Any], pieces: Iterable[Any]) -> list[str]:

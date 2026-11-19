@@ -703,6 +703,20 @@ async def test_a_table_rekey_fold_never_leaves_an_earlier_versions_list(graph, l
     ]
 
 
+async def test_a_table_rekey_fold_keeps_text_only_the_survivors_string_holds(graph):
+    """An earlier version's list on the survivor, out of step with its string:
+    the fold keeps the string's extra piece instead of writing the list."""
+    await graph.query_raw(
+        "CREATE (o:__Entity__:Organization {id: 'old', name: 'Globex', description: 'Old A'}), "
+        "(n:__Entity__:Organization {id: 'new', name: 'Initech', "
+        "description: 'Keep one | Only in string', descriptions: ['Keep one']})"
+    )
+    assert await graph._move_entity("old", "new") == (0, 1)
+    assert await rows(
+        graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description, n.descriptions"
+    ) == [["Keep one | Only in string | Old A", None]]
+
+
 async def _globex_and_initech(graph):
     """A re-synced row's old node (Globex) and the node at its new id."""
     await graph.query_raw(

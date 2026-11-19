@@ -122,6 +122,19 @@ class TestHelpers:
     def test_description_list_prefers_the_list(self):
         assert description_list({"descriptions": ["x", "y"], "description": "x | y"}) == ["x", "y"]
 
+    def test_an_earlier_versions_list_does_not_hide_what_only_the_string_holds(self):
+        """A list left out of step with the string: its items first, then the
+        string's pieces it lacks."""
+        props = {"descriptions": ["Keep one"], "description": "Keep one | Only in string"}
+        assert description_list(props) == ["Keep one", "Only in string"]
+
+    def test_newlines_and_tabs_read_as_spaces_at_a_pieces_ends(self):
+        """The same rule as the Cypher reader, whose trim is not strip()."""
+        assert description_list({"description": "CEO |\nFounded Acme\t"}) == [
+            "CEO",
+            "Founded Acme",
+        ]
+
     def test_set_merged_descriptions_writes_one_string(self):
         s = _n("s", "Person", "A", "d1")
         got = set_merged_descriptions(
