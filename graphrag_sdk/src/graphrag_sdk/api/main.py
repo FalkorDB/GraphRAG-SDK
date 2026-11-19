@@ -18,7 +18,11 @@ from typing import Any, Literal, NoReturn, overload
 from uuid import uuid4
 
 from graphrag_sdk import __version__
-from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
+from graphrag_sdk.core.connection import (
+    ConnectionConfig,
+    FalkorDBConnection,
+    is_missing_graph_error,
+)
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import (
     ConfigError,
@@ -2560,11 +2564,12 @@ class GraphRAG:
         """Merge a mapping's ontology into the persisted one, additively.
 
         ``register()`` deliberately refuses to add properties or patterns to a
-        label that already exists, because for the extraction path that would
-        mean an ingest silently reshaping the schema. A structured source has to
-        do exactly that though: prose typically creates ``Organization`` first
-        with only a name and a description, and a CSV then contributes
-        ``employee_count`` as an INTEGER. That is additive, not a modification.
+        label that already holds data, because for the extraction path that
+        would mean an ingest silently reshaping the schema under existing nodes.
+        A structured source has to do exactly that though: prose typically
+        creates ``Organization`` first with only a name and a description, and
+        a CSV then contributes ``employee_count`` as an INTEGER. That is
+        additive, not a modification.
 
         So new labels and relations go through ``register()`` wholesale, and
         anything that already exists is extended through the ontology-evolution
@@ -5656,7 +5661,7 @@ class GraphRAG:
                     read_only=True,
                 )
             except Exception as exc:
-                if "empty key" not in str(exc).lower():
+                if not is_missing_graph_error(exc):
                     raise
                 result = None  # no graph yet, so no stored config
             if result is not None and result.result_set:
