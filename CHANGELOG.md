@@ -20,6 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The agent asks before adding types to the user's ontology.** When
+  ingestion drops types the ontology lacks, the MCP guide and the ingest hint
+  told the agent to add them with `set_ontology` on its own, even when the user
+  had supplied the ontology. Now, unless the agent designed the ontology in the
+  same conversation (a user's, the operator's, or one already in the graph),
+  it shows the user what was dropped and adds only what they approve; the rest
+  stays out of the graph. An ontology the agent designed itself is still
+  extended by the agent, which tells the user what it added. The approval
+  hint now comes before the ready-made `set_ontology` call, and when a toolkit
+  does not serve `set_ontology`, the hint no longer suggests it and says only
+  the server operator can add types.
+
 - **One temporary model error no longer fails ontology discovery.**
   `extract_with_retry` turns off the SDK provider's retry loop so its attempt
   count stays exact, and it retried only responses that failed to parse or
