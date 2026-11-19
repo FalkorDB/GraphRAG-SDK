@@ -121,14 +121,14 @@ def _files_guide(*, ontology: bool, finalize: bool) -> str:
             "\n   Unknown)."
         )
         steps.append(
-            """Read each result's pruned and hint. If the user gave the ontology, do not
-   call set_ontology yourself: tell them what was dropped (types, pairs, how
-   many, which files), ask which to add, and add only those; what they decline
-   stays out of the graph. If you designed it, decide yourself and tell the
-   user what you added. Relations dropped for an undeclared
-   [source, target] pair are often real facts. Add a pair only when the
-   relation's meaning fits it (SUPPLIES Company->Product, not
-   Company->Event); otherwise declare a better relation type for those
+            """Read each result's pruned and hint. Unless you designed the ontology in
+   this conversation, do not call set_ontology until the user approves: tell
+   them what was dropped (types, pairs, how many, which files), ask which to
+   add, and add only those; what they decline stays out of the graph. If you
+   designed it, decide yourself and tell the user what you added. Relations
+   dropped for an undeclared [source, target] pair are often real facts. Add
+   a pair only when the relation's meaning fits it (SUPPLIES Company->Product,
+   not Company->Event); otherwise declare a better relation type for those
    facts. Then call ingest(files=[the affected files], reextract=true)"""
             + tail
         )
@@ -153,8 +153,9 @@ def _text_guide(*, ontology: bool, finalize: bool) -> str:
     then = ", then finalize once" if finalize else ""
     fix = (
         "after adding them with set_ontology,\n"
-        "ingest the same text and document_id with reextract=true. If the user gave\n"
-        "the ontology, ask them first and add only what they approve."
+        "ingest the same text and document_id with reextract=true. Unless you designed\n"
+        "the ontology in this conversation, ask the user first and add only what they\n"
+        "approve; if you designed it, tell the user what you added."
         if ontology
         else "only the server operator can add them."
     )
