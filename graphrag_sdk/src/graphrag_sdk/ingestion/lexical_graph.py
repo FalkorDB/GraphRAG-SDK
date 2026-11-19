@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.descriptions import join_description
+from graphrag_sdk.core.descriptions import join_description, split_description
 from graphrag_sdk.core.models import (
     DocumentInfo,
     EntityMention,
@@ -208,8 +208,13 @@ class LexicalGraphWriter:
                 props["spans"] = list(m.spans)
             if m.descriptions:
                 # As on a node: the pieces in one string, each taken off on
-                # its own by splitting at "|", which no piece holds.
-                description = join_description(m.descriptions)
+                # its own by splitting at "|". Each text is read as a node's
+                # description is, a "|" in it separating pieces (the SDK's
+                # extractors write none; a custom one may), so the edge's
+                # pieces match the ones the node got from the same text.
+                description = join_description(
+                    p for d in m.descriptions for p in split_description(d)
+                )
                 if description:
                     props["description"] = description
             mention_rels.append(

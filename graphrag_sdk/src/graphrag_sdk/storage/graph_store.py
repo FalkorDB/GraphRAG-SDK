@@ -906,9 +906,12 @@ class GraphStore:
         raises only when its scan fails, before anything is written."""
         rows = (
             await self._conn.query(
-                # CONTAINS first: a description of one piece has no "|", and
-                # most do, so only the rest are split and counted.
-                "MATCH (e:__Entity__) WHERE e.description CONTAINS '|' "
+                # A quick check first: a description of one piece has no "|",
+                # and most do, so only the rest are split and counted. An
+                # earlier version's list goes through too: its string may be
+                # stale or missing.
+                "MATCH (e:__Entity__) "
+                f"WHERE (e.description CONTAINS '|' OR e.{LEGACY_LIST_KEY} IS NOT NULL) "
                 f"AND size({description_members('e')}) > $over "
                 "RETURN e.id, e.name, coalesce(e.description, ''), e.descriptions",
                 {"over": over},

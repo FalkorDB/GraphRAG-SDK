@@ -286,17 +286,20 @@ class TestMentionEdges:
                     chunk_id="c1", entity_id="alice", spans=[3, 8], descriptions=["CEO of Acme."]
                 ),
                 EntityMention(
-                    chunk_id="c2", entity_id="alice", descriptions=["CEO", "| Name | Alice |"]
+                    chunk_id="c2", entity_id="alice", descriptions=["CEO", "Founder \u00a6 Acme"]
                 ),
+                # A custom extractor's text with "|" in it: read as a node's
+                # description is, so the edge's pieces match the node's.
+                EntityMention(chunk_id="c3", entity_id="alice", descriptions=["CEO | Acme"]),
             ]
         )
         await writer._write_mentions(data, MagicMock())
         (rels,) = writer.graph_store.upsert_relationships.call_args[0]
         assert rels[0].type == "MENTIONED_IN"
         assert rels[0].properties == {"spans": [3, 8], "description": "CEO of Acme."}
-        # More than one: one string, as on a node; the "|" inside a table
-        # row's evidence becomes "¦", so the string splits back exactly.
-        assert rels[1].properties == {"description": "CEO | \u00a6 Name \u00a6 Alice \u00a6"}
+        # More than one: one string, as on a node.
+        assert rels[1].properties == {"description": "CEO | Founder \u00a6 Acme"}
+        assert rels[2].properties == {"description": "CEO | Acme"}
 
     async def test_two_names_with_one_id_in_a_chunk_make_one_edge_with_both(self):
         """``New York`` and ``New_York`` get one entity id; the second
@@ -456,6 +459,42 @@ class TestOnRealFalkorDB:
         await store.upsert_nodes([_alice(" | ".join(["CEO"] * MAX_DESCRIPTION_MEMBERS + ["Founder"]))])
         desc, _, _, _, _ = await _entity(store)
         assert desc == "CEO | Founder"
+
+    async def test_a_custom_extractors_text_with_a_pipe_comes_off_on_delete(self, store):
+        """A custom extractor gives the node and its mention the same text,
+        "CEO | Acme". The node reads it as two pieces; the mention edge is
+        written the same way, so deleting the chunk takes both off."""
+        await store.upsert_nodes([_alice("CEO | Acme")])
+        await store.upsert_nodes([_alice("Other fact")])
+        await store.query_raw("CREATE (:Chunk {id: 'c1'}), (:Chunk {id: 'c2'})")
+        writer = LexicalGraphWriter()
+        writer.graph_store = store
+        await writer._write_mentions(
+            GraphData(
+                mentions=[
+                    EntityMention(chunk_id="c1", entity_id="alice", descriptions=["CEO | Acme"]),
+                    EntityMention(chunk_id="c2", entity_id="alice", descriptions=["Other fact"]),
+                ]
+            ),
+            MagicMock(),
+        )
+        assert await _remove(store, "doc", ["c1"]) == 1
+        desc, _, _, _, _ = await _entity(store)
+        assert desc == "Other fact"
+
+    async def test_an_earlier_versions_long_list_is_summarised(self, store):
+        """Its string may hold no "|" (stale, or one piece); the list's six
+        pieces still count."""
+        await store.upsert_nodes([_alice("x")])
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) "
+            "SET e.descriptions = ['f0', 'f1', 'f2', 'f3', 'f4', 'f5'], e.description = 'f0'"
+        )
+        llm = SummaryLLM("One summary.")
+        assert await store.summarise_long_descriptions(llm) == 1
+        assert "- f5" in llm.prompts[0]
+        desc, _, _, _, summarised = await _entity(store)
+        assert (desc, summarised) == ("One summary.", True)
 
     async def test_a_summary_counts_each_piece_once(self, store):
         """Repeats are not pieces: "A | B" written three times holds two."""

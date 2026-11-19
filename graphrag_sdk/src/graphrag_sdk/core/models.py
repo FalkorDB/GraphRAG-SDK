@@ -907,11 +907,11 @@ class EntityMention(DataModel):
     ``spans`` are where the chunk names the entity, flat
     (``[start, end, start, end, ...]``); ``descriptions`` are what that chunk
     says the entity is — one, or more when the chunk describes it twice or two
-    mentions land on it (a merge, a remap), each kept whole. Both are written
-    on the ``MENTIONED_IN`` edge, the descriptions as on a node (pieces of one
-    ``description`` string joined with " | "), so they go when the chunk goes,
-    and what a deleted document said can be taken off the entity's
-    description.
+    mentions land on it (a merge, a remap). Both are written on the
+    ``MENTIONED_IN`` edge, the descriptions as on a node (pieces of one
+    ``description`` string joined with " | "; a "|" inside one separates
+    pieces, as in a node's description), so they go when the chunk goes, and
+    what a deleted document said can be taken off the entity's description.
     """
 
     chunk_id: str
