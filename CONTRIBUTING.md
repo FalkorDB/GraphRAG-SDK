@@ -110,13 +110,13 @@ The SDK is designed to be extended via an Abstract Base Class (ABC) pattern. The
 ### Example: Custom Extraction Strategy
 
 ```python
-from graphrag_sdk import ExtractionStrategy, GraphData, GraphSchema, TextChunks, Context
+from graphrag_sdk import ExtractionStrategy, GraphData, Ontology, TextChunks, Context
 
 
 class MyCustomExtraction(ExtractionStrategy):
     """A custom extraction strategy that implements domain-specific entity/relation extraction."""
 
-    async def extract(self, chunks: TextChunks, schema: GraphSchema, ctx: Context) -> GraphData:
+    async def extract(self, chunks: TextChunks, ontology: Ontology, ctx: Context) -> GraphData:
         # Your extraction logic here.
         # Process the input chunks and return a GraphData containing
         # GraphNode and GraphRelationship objects.

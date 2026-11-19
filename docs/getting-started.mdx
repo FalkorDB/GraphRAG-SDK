@@ -11,21 +11,32 @@ This tutorial walks through installing GraphRAG SDK, starting FalkorDB, and buil
 ## 1. Prerequisites
 
 - **Python 3.10+**
-- **FalkorDB** (easiest via Docker -- see below)
-- An **LLM API key** from one of the supported providers:
-  - Azure OpenAI
+- **FalkorDB 4.20 or later** (easiest via Docker -- see below). The 6.0.x line is supported too.
+- An **LLM API key** from one of the supported providers, for example:
   - OpenAI
+  - Azure OpenAI
   - Anthropic
 
 ---
 
 ## 2. Installation
 
-Install the SDK with all optional dependencies:
+Install the SDK with the LiteLLM provider:
 
 ```bash
-pip install "graphrag-sdk[all]"
+pip install graphrag-sdk[litellm]
 ```
+
+Optional extras add the rest:
+
+| Extra | Adds |
+|-------|------|
+| `pdf` | PDF ingestion (`pip install graphrag-sdk[litellm,pdf]`) |
+| `markdown` | `MarkdownLoader` |
+| `openrouter` | `OpenRouterLLM`, `OpenRouterEmbedder` |
+| `fastcoref` | `FastCorefResolver` |
+| `spacy` | `SpacyExtractor` |
+| `all` | The common provider and PDF extras |
 
 For a local editable install from a cloned repo:
 
@@ -40,10 +51,12 @@ pip install -e "./graphrag_sdk[all]"
 Run FalkorDB as a Docker container:
 
 ```bash
-docker run -d --name falkordb -p 6379:6379 falkordb/falkordb:v4.22.2
+docker run -d -p 6379:6379 -p 3000:3000 --name falkordb falkordb/falkordb:v4.22.2
 ```
 
-GraphRAG SDK needs a FalkorDB server **4.20 or later** and refuses an older one at its first query, with `FalkorDBVersionError`. Keep the image tag: a bare `falkordb/falkordb` reuses whatever image Docker has cached, which may be older.
+<Warning>
+  GraphRAG SDK needs a FalkorDB server **4.20 or later** and refuses an older one at its first query, with `FalkorDBVersionError`. Keep the image tag: a bare `falkordb/falkordb` reuses whatever image Docker has cached, which may be older.
+</Warning>
 
 Verify it is running:
 
@@ -55,64 +68,65 @@ docker ps | grep falkordb
 
 ## 4. Configure Environment
 
-Set the environment variables for your LLM provider. The example below uses Azure OpenAI:
+Set the environment variable for your LLM provider. The examples below use OpenAI through LiteLLM:
 
 ```bash
-export AZURE_OPENAI_API_KEY="your-key"
-export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
-export AZURE_OPENAI_API_VERSION="2024-12-01-preview"
+export OPENAI_API_KEY="sk-..."
 ```
 
-If you use a `.env` file, load it yourself before importing the SDK (e.g., via `python-dotenv` or `export` commands). The SDK reads environment variables but does not auto-load `.env` files.
+If you use a `.env` file, load it yourself before importing the SDK (e.g., via `python-dotenv`). The SDK reads environment variables but does not auto-load `.env` files. For Azure OpenAI and other providers, see [Providers](/providers).
 
 ---
 
-## 5. Define a Schema
+## 5. Define an Ontology
 
-A `GraphSchema` tells the extraction pipeline which entity and relationship types to look for in your documents.
+An `Ontology` tells the extraction pipeline which entity and relationship types to look for in your documents. It is optional: without one, the SDK uses 11 general-purpose entity types and a default relation vocabulary.
 
 ```python
-from graphrag_sdk import GraphSchema, EntityType, RelationType
+from graphrag_sdk import Entity, Ontology, Relation
 
-schema = GraphSchema(
+ontology = Ontology(
     entities=[
-        EntityType(label="Person", description="A human being"),
-        EntityType(label="Organization", description="A company or institution"),
-        EntityType(label="Place", description="A geographic location"),
+        Entity(label="Person", description="A human being"),
+        Entity(label="Organization", description="A company or institution"),
+        Entity(label="Place", description="A geographic location"),
     ],
     relations=[
-        RelationType(label="WORKS_AT", description="Employment relationship"),
-        RelationType(label="LOCATED_IN", description="Geographic location"),
-        RelationType(label="KNOWS", description="Personal acquaintance"),
+        Relation(label="WORKS_AT", description="Employment relationship",
+                 patterns=[("Person", "Organization")]),
+        Relation(label="LOCATED_IN", description="Geographic location",
+                 patterns=[("Organization", "Place")]),
+        Relation(label="KNOWS", description="Personal acquaintance",
+                 patterns=[("Person", "Person")]),
     ],
 )
 ```
 
-You can add as many entity and relationship types as your domain requires. Descriptions help the LLM decide when to extract each type.
+Descriptions help the LLM decide when to extract each type. `patterns` are directional `(source, target)` pairs; an edge that does not fit a declared pattern is pruned. To draft an ontology from your corpus instead, see [Ontology Discovery](/ontology-discovery).
 
 ---
 
 ## 6. Initialize GraphRAG
 
-Create a `GraphRAG` instance by providing a connection, LLM, embedder, and schema:
+Create a `GraphRAG` instance by providing a connection, LLM, embedder, and ontology:
 
 ```python
 from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
 
 rag = GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
-    llm=LiteLLM(model="azure/gpt-4.1"),
-    embedder=LiteLLMEmbedder(model="azure/text-embedding-3-large", dimensions=256),
-    schema=schema,
+    llm=LiteLLM(model="openai/gpt-4.1"),
+    embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
+    ontology=ontology,
     embedding_dimension=256,  # must match your embedding model's output dimension
 )
 ```
 
-The default is `256` (matched-Matryoshka dimensions of `text-embedding-3-large`). If your embedding model produces a different dimensionality (e.g., 1024, 1536, or 3072), set `embedding_dimension` accordingly.
+The default `embedding_dimension` is `256` (matched-Matryoshka dimensions of `text-embedding-3-large`). If your embedding model produces a different dimensionality (e.g., 1024, 1536, or 3072), set `embedding_dimension` accordingly; a mismatch raises `ConfigError` before any extraction work.
 
-`ConnectionConfig` accepts additional parameters such as `port`, `username`, `password`, and `query_timeout_ms`. See [Configuration](/configuration) for the full list.
+`ConnectionConfig` accepts additional parameters such as `port`, `username`, `password`, TLS settings and `query_timeout_ms`. See [Configuration](/configuration) for the full list.
 
-> **Alternative providers:** The SDK also exports `OpenRouterLLM` and `OpenRouterEmbedder` for use with OpenRouter. See [Configuration](/configuration) for details.
+`GraphRAG` is also an async context manager: `async with GraphRAG(...) as rag:` closes the connection on exit.
 
 ---
 
@@ -126,19 +140,98 @@ print(f"Created {result.nodes_created} nodes, {result.relationships_created} rel
 print(f"Indexed {result.chunks_indexed} chunks")
 ```
 
+`.pdf` files use `PdfLoader` (needs the `pdf` extra), `.md` files use `MarkdownLoader` (needs the `markdown` extra), and everything else is read as text. A `.csv`, `.tsv`, `.psv` or `.tab` file is read as a table instead; see [Tables](#tables) below.
+
 ### From raw text
 
 ```python
-result = await rag.ingest("acme_doc", text="Acme Corp was founded in 1985 by Jane Doe in Austin, Texas.")
+result = await rag.ingest(
+    text="Acme Corp was founded in 1985 by Jane Doe in Austin, Texas.",
+    document_id="acme_doc",
+)
 print(f"Created {result.nodes_created} nodes, {result.relationships_created} relationships")
-print(f"Indexed {result.chunks_indexed} chunks")
 ```
 
-The ingestion pipeline runs a 9-step process: Load, Chunk, Lexical Graph, Extract (includes quality filtering), Prune, Resolve, Write, then Mentions and Chunk Indexing in parallel.
+`document_id` is the handle you later pass to `update()` or `delete_document()`. Without one, text mode derives the id from a hash of the text.
+
+### Several files at once
+
+```python
+results = await rag.ingest(["a.txt", "b.md", "c.pdf"], max_concurrency=3)
+for r in results:
+    if isinstance(r, Exception):
+        print("failed:", r)
+```
+
+Each entry is a result or the exception for that source; one bad file does not stop the batch.
+
+### Re-ingesting
+
+Ingesting a file whose content has not changed is a no-op: nothing is re-chunked, re-extracted or re-embedded (`result.metadata["skipped_unchanged"]` is `True`). To re-process changed files, or unchanged ones after you change the ontology or chunker, see [Incremental Updates](/incremental-updates).
+
+The prose pipeline runs 9 steps: Load, Chunk, Lexical Graph, Extract, Prune, Resolve, Write, then Mentions and Chunk Indexing in parallel. See [Ingestion](/ingestion).
+
+### Tables
+
+A CSV, TSV or similar file is read as records, not prose. Declare what its columns mean on the ontology and ingest it with the same call:
+
+```python
+from graphrag_sdk import Column, Link, TableMapping
+
+ontology = Ontology(
+    entities=[Entity(label="Person"), Entity(label="Organization")],
+    tables=[
+        TableMapping(
+            source="employees.csv",
+            label="Person",
+            key="employee_id",
+            name="full_name",
+            properties={"age": Column("age", "INTEGER")},
+            links=[Link("WORKS_AT", to="Organization", by="org_id")],
+        ),
+    ],
+)
+rag = GraphRAG(
+    connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
+    llm=LiteLLM(model="openai/gpt-4.1"),
+    embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
+    ontology=ontology,
+    enable_cypher=True,   # lets questions aggregate over the typed columns
+)
+
+table = await rag.ingest("data/employees.csv")   # a StructuredIngestionResult
+print(table.records, "rows written")
+```
+
+No model is involved, every column keeps its declared type, and a row and a prose mention of the same name share one node. A table with no declared mapping gets one proposed. See [Structured Ingestion](/structured-ingestion).
 
 ---
 
-## 8. Query the Knowledge Graph
+## 8. Finalize
+
+After all documents and tables have been ingested, run `finalize()`. It deduplicates entities across documents (and embeds their names), embeds relationships, and creates indexes:
+
+```python
+results = await rag.finalize()
+print(f"Deduplicated: {results.entities_deduplicated}")
+print(f"Embedded: {results.entities_embedded} entities, {results.relationships_embedded} relationships")
+```
+
+Dedup merges duplicates such as a table row and a mention of its name (by rule), and spelling variants such as "Acme Ltd" and "Acme Limited", or "J. Doe" and "Jane Doe", when an LLM judge decides they are one entity. Without `finalize()`, a multi-document graph keeps its duplicates and entity- and relationship-level vector search returns nothing.
+
+`finalize()` is incremental: it checks only the entities added since the last call, so call it once after each batch of ingests, not once per file. It calls the LLM for the judge; a gpt-4.1-class judge model is recommended:
+
+```python
+from graphrag_sdk import LLMJudge
+
+results = await rag.finalize(judge=LLMJudge(LiteLLM(model="openai/gpt-4.1")))
+```
+
+It also reports what it found, such as probable duplicates it did not merge, at WARNING and on the result. See [Configuration](/configuration#7-post-ingestion).
+
+---
+
+## 9. Query the Knowledge Graph
 
 ### Retrieve context only
 
@@ -147,12 +240,14 @@ Use `retrieve()` when you want to inspect the context or use your own LLM:
 ```python
 context = await rag.retrieve("Who works at Acme Corp?")
 for item in context.items:
-    print(f"[{item.score:.2f}] {item.content[:100]}...")
+    print(f"[{item.metadata.get('section', '')}] {item.content[:100]}...")
 ```
+
+The default strategy returns one item per context section (`entities`, `relationships`, `facts`, `passages`, ...).
 
 ### Generate an answer
 
-Use `completion()` for the full RAG pipeline — retrieval + answer generation:
+Use `completion()` for the full RAG pipeline: retrieval plus answer generation.
 
 ```python
 result = await rag.completion("Who works at Acme Corp?")
@@ -161,13 +256,17 @@ print(result.answer)
 
 ### With context inspection
 
-Pass `return_context=True` to see which chunks and entities the retriever used to build the answer:
+Pass `return_context=True` to see which sections the retriever used to build the answer:
 
 ```python
 result = await rag.completion("Who works at Acme Corp?", return_context=True)
 for item in result.retriever_result.items:
     print(f"[{item.metadata.get('section', '')}] {item.content[:100]}...")
 ```
+
+### Counting and aggregating
+
+Questions such as "how many" or "what is the average" are answered by text-to-Cypher, which is off by default because it costs an extra LLM call per question (up to 3 when a generated query fails validation and is regenerated). Turn it on with `GraphRAG(..., enable_cypher=True)`. See [Retrieval](/retrieval).
 
 ### Multi-turn conversations
 
@@ -202,44 +301,40 @@ Supported roles: `"system"`, `"user"`, `"assistant"`. Invalid roles raise `Value
 
 ---
 
-## 9. Inspect Graph Contents
+## 10. Inspect Graph Contents
 
 Use `get_statistics()` to see a summary of what the graph contains:
 
 ```python
-stats = await rag.graph_store.get_statistics()
+stats = await rag.get_statistics()
 print(f"Nodes: {stats['node_count']}, Edges: {stats['edge_count']}")
+print(stats["entity_types"])
 ```
 
-You can also run raw Cypher queries against the graph:
+Run your own Cypher with `query()`. It returns a list of rows, each a list of column values. Every extracted relationship is a `RELATES` edge with its type in `rel_type`:
 
 ```python
-results = await rag.graph_store.query_raw("MATCH (p:Person)-[:WORKS_AT]->(o:Organization) RETURN p.name, o.name LIMIT 10")
-for row in results.result_set:
+rows = await rag.query(
+    "MATCH (p:Person)-[r:RELATES]->(o:Organization) "
+    "WHERE r.rel_type = $rel RETURN p.name, o.name LIMIT 10",
+    {"rel": "WORKS_AT"},
+)
+for row in rows:
     print(row)
 ```
 
----
-
-## 10. Finalize
-
-After all documents have been ingested, run `finalize()` to deduplicate entities (which also embeds their names), embed relationships, and create indexes:
-
-```python
-results = await rag.finalize()
-print(f"Deduplicated: {results.entities_deduplicated}")
-print(f"Embedded: {results.entities_embedded} entities, {results.relationships_embedded} relationships")
-```
-
-This step is important for query accuracy. It merges duplicate entities — a table row and a mention of its name by rule, and spelling variants such as "Acme Ltd" and "Acme Limited", or "J. Doe" and "Jane Doe", when the judge decides they are one — and ensures all entities have vector embeddings for semantic search.
+`query()` runs exactly what you pass, with no read-only enforcement; pass values as parameters.
 
 ---
 
 ## 11. Next Steps
 
-- [Configuration](/configuration) -- Tuning connection settings, chunking parameters, and retrieval options.
-- [Strategies](/strategies) -- Custom extraction and resolution strategies.
-- [Benchmark](/benchmark) -- Reproducing benchmark results on the GraphRAG-Bench Novel corpus (20 novels, 2,010 questions).
+- [Configuration](/configuration) -- Connection settings, timeouts, chunking, retrieval and dedup options.
+- [Structured Ingestion](/structured-ingestion) -- Tables and documents in one graph.
+- [Incremental Updates](/incremental-updates) -- `update()`, `delete_document()`, `apply_changes()`.
+- [Strategies](/strategies) -- Custom chunking, extraction, resolution, retrieval and dedup judges.
+- [Reducing LLM Hallucinations](/reducing-llm-hallucinations) -- Grounded answers and an abstention path.
+- [Benchmark](/benchmark) -- Reproducing benchmark results on GraphRAG-Bench.
 
 ---
 
@@ -249,9 +344,10 @@ If you are not in an async context, use the synchronous convenience methods:
 
 ```python
 result = rag.ingest_sync("path/to/document.txt")
+results = rag.finalize_sync()
 context = rag.retrieve_sync("Who works at Acme Corp?")
 result = rag.completion_sync("Who works at Acme Corp?")
-results = rag.finalize_sync()
+rows = rag.query_sync("MATCH (n:Person) RETURN count(n)")
 ```
 
-These wrap the async methods in `asyncio.run()` and are useful for scripts and notebooks.
+`update_sync()`, `delete_document_sync()`, `apply_changes_sync()` and `drop_table_sync()` exist too. These wrap the async methods in `asyncio.run()` and are useful for scripts; do not call them from inside a running event loop. A Jupyter notebook already runs one, so `await` the async methods there instead.
