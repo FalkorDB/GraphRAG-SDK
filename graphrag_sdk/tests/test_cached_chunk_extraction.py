@@ -643,8 +643,9 @@ class TestMerge:
         assert len(result.nodes) == 1
         node = result.nodes[0]
         assert node.properties["name"] == "Alice"
-        assert node.properties["descriptions"] == ["Old description", "New description"]
+        # One string holds both pieces; no list beside it.
         assert node.properties["description"] == "Old description | New description"
+        assert "descriptions" not in node.properties
         assert set(node.properties["source_chunk_ids"]) == {"new-1", "new-2"}  # union
         assert {m.chunk_id for m in result.mentions} == {"new-1", "new-2"}
 
@@ -658,9 +659,10 @@ class TestMerge:
         assert CachedChunkExtraction._usable_chunks(["old", "kept"], rows, []) == {"kept"}
 
     def test_a_fresh_description_is_added_to_a_cached_list(self):
-        """A cached part hands a ``descriptions`` list, which the store reads
-        before ``description``: overlaid, the fresh description never reached
-        the node."""
+        """A cached part from a graph an earlier version wrote can hand a
+        ``descriptions`` list, which the store reads before ``description``:
+        overlaid, the fresh description never reached the node. The merge
+        keeps every piece in the one string and drops the list."""
         cached = GraphData(
             nodes=[
                 GraphNode(
@@ -674,8 +676,8 @@ class TestMerge:
             nodes=[GraphNode(id="e1", label="Person", properties={"description": "Investor"})]
         )
         (node,) = CachedChunkExtraction._merge([cached, fresh]).nodes
-        assert node.properties["descriptions"] == ["CEO", "Founder", "Investor"]
         assert node.properties["description"] == "CEO | Founder | Investor"
+        assert "descriptions" not in node.properties
 
     async def test_extracted_entities_and_relations_pass_through(self, ontology, ctx):
         from graphrag_sdk.core.models import ExtractedEntity
@@ -741,10 +743,11 @@ class TestGraphStoreCacheAccessors:
         assert row.entity_id == "alice__person"
         assert row.label == "Person"  # __Entity__ filtered out
         assert row.source_chunk_ids == ["c1", "x"]
-        # What this chunk's own edge holds — not the entity's description —
-        # each description whole, never split on the " | " inside one.
+        # What this chunk's own edge holds — not the entity's description.
+        # An earlier version's list is read as the pieces, each whole: a "|"
+        # inside one becomes "¦", so it stays one piece once joined.
         assert row.description == "Engineer | Founder | Acme" and row.spans == [3, 8]
-        assert row.descriptions == ["Engineer", "Founder | Acme"]
+        assert row.descriptions == ["Engineer", "Founder \u00a6 Acme"]
         # An earlier version wrote this edge: it never recorded what the chunk said.
         assert row.recorded is False
         assert "said_version" in mock_connection.query.call_args[0][0]

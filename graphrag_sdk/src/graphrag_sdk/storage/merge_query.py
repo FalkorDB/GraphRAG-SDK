@@ -33,6 +33,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from graphrag_sdk.core.descriptions import DESCRIPTION_SEPARATOR, PIECE_BREAK, PIPE_STAND_IN
 from graphrag_sdk.core.exceptions import GraphRAGError
 from graphrag_sdk.storage.system_store import PLAN, PROCESSING_LABEL, deleted_record_clause
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
@@ -375,14 +376,26 @@ SAID_VERSION_KEY = "said_version"
 SAID_VERSION = 1
 
 
-def description_members(edge: str) -> str:
-    """A mention edge's descriptions as a list: its ``descriptions``, else its
-    ``description`` as one member, trimmed, blank ones left out (as on a
-    node)."""
+def description_members(holder: str) -> str:
+    """Cypher: the description pieces ``holder`` (a node, an edge or a map)
+    holds, as a list: an earlier version's ``descriptions`` list where it has
+    one, else its ``description`` split at ``|``; each trimmed, any ``|``
+    inside replaced with ``¦`` (so a list's piece stays one once joined),
+    blank ones left out. The Python rule is ``core.descriptions``."""
     return (
-        f"[x IN [y IN coalesce({edge}.descriptions, "
-        f"CASE WHEN {edge}.description IS NULL THEN [] ELSE [{edge}.description] END) "
-        "| trim(y)] WHERE x <> '']"
+        f"[x IN [y IN coalesce({holder}.descriptions, "
+        f"split(coalesce({holder}.description, ''), '{PIECE_BREAK}')) "
+        f"| trim(replace(y, '{PIECE_BREAK}', '{PIPE_STAND_IN}'))] WHERE x <> '']"
+    )
+
+
+def joined_description(pieces: str) -> str:
+    """Cypher: list ``pieces`` as one stored description, joined with
+    ``" | "``; null when there are none."""
+    return (
+        f"CASE WHEN size({pieces}) = 0 THEN null "
+        f"ELSE reduce(acc = head({pieces}), x IN tail({pieces}) "
+        f"| acc + '{DESCRIPTION_SEPARATOR}' + x) END"
     )
 
 
@@ -403,7 +416,8 @@ def combined_descriptions(old: str, new: str, *, cap: bool = True) -> str:
 def mention_update(edge: str, new: str) -> str:
     """The SET items that combine what mention edge ``edge`` holds with what
     ``new`` (an edge or a map) brings: the spans, each pair once, and the
-    descriptions, each once and each whole, stored as on a node. Needs
+    description pieces, each once and each whole, stored as on a node (one
+    string; an earlier version's ``descriptions`` list is dropped). Needs
     ``old_spans`` (``edge``'s spans) and ``all_ds``
     (:func:`combined_descriptions`) in scope."""
     spans = f"coalesce({new}.spans, [])"
@@ -416,9 +430,8 @@ def mention_update(edge: str, new: str) -> str:
         "OR any(k IN range(0, size(acc) - 2, 2) "
         f"WHERE acc[k] = {new}.spans[i] AND acc[k + 1] = {new}.spans[i + 1]) "
         f"THEN acc ELSE acc + [{new}.spans[i], {new}.spans[i + 1]] END) END, "
-        f"{edge}.description = CASE WHEN size(all_ds) = 0 THEN null "
-        "ELSE reduce(acc = head(all_ds), x IN tail(all_ds) | acc + ' | ' + x) END, "
-        f"{edge}.descriptions = CASE WHEN size(all_ds) > 1 THEN all_ds ELSE null END"
+        f"{edge}.description = {joined_description('all_ds')}, "
+        f"{edge}.descriptions = null"
     )
 
 

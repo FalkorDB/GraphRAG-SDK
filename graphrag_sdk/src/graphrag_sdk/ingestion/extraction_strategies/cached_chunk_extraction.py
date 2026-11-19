@@ -57,6 +57,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.descriptions import join_description, set_description, split_description
 from graphrag_sdk.core.exceptions import DatabaseUnavailableError, LatencyBudgetExceededError
 from graphrag_sdk.core.models import (
     EntityMention,
@@ -250,7 +251,7 @@ class CachedChunkExtraction(ExtractionStrategy):
             new_uids = id_map.get(row.chunk_id)
             if not new_uids:
                 continue
-            said = row.descriptions or ([row.description] if row.description else [])
+            said = row.descriptions or split_description(row.description)
             for new_uid in new_uids:
                 # The unchanged chunk keeps what its old mention edge held:
                 # the same text, so the same spans and the same descriptions.
@@ -272,9 +273,7 @@ class CachedChunkExtraction(ExtractionStrategy):
                 if row.type:
                     props["type"] = row.type
                 if said:
-                    props["description"] = " | ".join(said)
-                if len(said) > 1:
-                    props["descriptions"] = list(said)
+                    props["description"] = join_description(said)
                 ent_props[row.entity_id] = props
                 ent_labels[row.entity_id] = row.label
                 # Remap provenance onto post-update chunk ids: this doc's
@@ -350,10 +349,10 @@ class CachedChunkExtraction(ExtractionStrategy):
         Later parts win on conflicting properties (fresh extraction follows
         cached parts) — EXCEPT ``source_chunk_ids``, which is a union: an
         entity or fact present in both a cached and an extracted chunk must
-        keep both provenances; and an entity's descriptions, also a union:
-        a cached part can hand a ``descriptions`` list, which the store reads
-        before ``description``, so a fresh part's description overlaid on it
-        would never reach the node.
+        keep both provenances; and an entity's description pieces, also a
+        union, so a fresh part's description overlaid on a cached part's
+        neither drops the cached text nor sits beneath an earlier version's
+        ``descriptions`` list, which the store reads before ``description``.
 
         Relationships are keyed on ``(start, type, end)`` — plus ``rel_type``
         for ``RELATES``, as ``upsert_relationships`` does — for the same reason
@@ -398,11 +397,10 @@ class CachedChunkExtraction(ExtractionStrategy):
                     merged = _union_sources(existing.properties or {}, node.properties or {})
                     said = description_list(existing.properties or {})
                     said += [d for d in description_list(node.properties or {}) if d not in said]
-                    merged.pop("descriptions", None)
                     if said:
-                        merged["description"] = " | ".join(said)
-                    if len(said) > 1:
-                        merged["descriptions"] = said
+                        set_description(merged, said)
+                    else:
+                        merged.pop("descriptions", None)
                     label = node.label or existing.label
                     nodes_by_id[node.id] = GraphNode(id=node.id, label=label, properties=merged)
             for rel in part.relationships:

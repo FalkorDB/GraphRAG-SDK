@@ -601,7 +601,23 @@ class TestSpansMerging:
         (alice,) = GraphExtraction._aggregate_entities([first, second])
         assert alice.chunk_descriptions == {"c0": ["CEO", "CEO and founder"]}
         (node,) = GraphExtraction._entities_to_nodes([alice])
-        assert node.properties["descriptions"] == ["CEO", "CEO and founder"]
+        assert node.properties["description"] == "CEO | CEO and founder"
+        assert "descriptions" not in node.properties
+
+    def test_a_pipe_in_a_description_never_splits_it(self):
+        """A piece never holds "|": one in what the model wrote (or in a table
+        row's evidence) becomes "¦", so the stored string splits back exactly."""
+        text = "Alice is CEO. alice also founded Acme."
+        first = ExtractedEntity(
+            name="Alice", type="Person", description="CEO | Acme", source_chunk_ids=["c0"]
+        )
+        second = ExtractedEntity(
+            name="alice", type="Person", description="founder", source_chunk_ids=["c0"]
+        )
+        GraphExtraction._record_mentions([first, second], text, "c0")
+        (alice,) = GraphExtraction._aggregate_entities([first, second])
+        (node,) = GraphExtraction._entities_to_nodes([alice])
+        assert node.properties["description"] == "CEO \u00a6 Acme | founder"
 
     def test_no_spans_not_in_node_properties(self):
         """Nodes without spans should not have spans key."""

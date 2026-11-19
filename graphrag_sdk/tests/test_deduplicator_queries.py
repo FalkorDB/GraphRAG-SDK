@@ -308,17 +308,32 @@ class TestMergePreservesDescriptions:
             ],
             judge=AllSameJudge(),
         )
-        assert self._description_writes(sim) == ["a physicist"]
+        assert all(" | " not in (w or "") for w in self._description_writes(sim))
+        (survivor,) = sim.nodes.values()
+        assert survivor["props"]["description"] == "a physicist"
 
     async def test_existing_segments_are_not_repeated(self):
         """Dedup compares members, not whole strings.
 
-        Once a survivor holds ``["a lighthouse", "first lit in 1871"]``,
+        Once a survivor holds ``"a lighthouse | first lit in 1871"``,
         absorbing a node described as ``"first lit in 1871"`` used to append
         it again. Across incremental finalize cycles that compounds on hub
-        entities. The members are the survivor's stored ``descriptions``
-        list, the shape every merge writes.
+        entities. The members are the pieces of the survivor's one stored
+        ``description``, split at ``|``, the shape every merge writes.
         """
+        sim = await simulate(
+            [
+                ["e1", "Cape Morrow Light", "a lighthouse | first lit in 1871", "Location"],
+                ["e2", "cape morrow light", "first lit in 1871", "Location"],
+            ],
+            judge=AllSameJudge(),
+        )
+        assert sim.merged == 1
+        assert self._description_writes(sim) == []
+
+    async def test_an_earlier_versions_list_is_dropped_with_the_text_unchanged(self):
+        """A survivor an earlier version wrote keeps a ``descriptions`` list
+        beside the string; the merge rewrites the same text and drops it."""
         sim = await simulate(
             [
                 ["e1", "Cape Morrow Light", "a lighthouse | first lit in 1871", "Location"],
@@ -327,8 +342,8 @@ class TestMergePreservesDescriptions:
             stored={"e1": {"props": {"descriptions": ["a lighthouse", "first lit in 1871"]}}},
             judge=AllSameJudge(),
         )
-        assert sim.merged == 1
-        assert self._description_writes(sim) == []
+        assert self._description_writes(sim) == ["a lighthouse | first lit in 1871"]
+        assert "descriptions" not in sim.nodes["e1"]["props"]
 
     async def test_segments_accumulate_once_across_a_group(self):
         sim = await simulate(

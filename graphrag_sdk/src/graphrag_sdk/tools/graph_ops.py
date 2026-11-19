@@ -12,8 +12,10 @@ from graphrag_sdk.storage.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
 
-#: Properties never returned to a caller: vectors and bulky bookkeeping.
-_BULKY_PROPS = frozenset({"source_chunk_ids", "spans"})
+#: Properties never returned to a caller: vectors and bulky bookkeeping —
+#: among it an earlier version's ``descriptions`` list, the same text as the
+#: ``description`` every card already shows.
+_BULKY_PROPS = frozenset({"source_chunk_ids", "spans", "descriptions"})
 #: Keys of the SDK's ``__GraphRAGConfig__`` node (never shown).
 _CONFIG_KEYS = frozenset({"sdk_version", "embedding_dimension"})
 #: ``kind`` values of the SDK's ``__GraphRAGProcessing__`` records.

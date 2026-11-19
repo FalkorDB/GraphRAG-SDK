@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from typing import Any, NamedTuple
 
 from graphrag_sdk.core.connection import FalkorDBConnection
+from graphrag_sdk.core.descriptions import description_pieces, join_description, set_description
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import (
     RESERVED_NODE_LABELS,
@@ -33,6 +34,7 @@ from graphrag_sdk.storage.merge_query import (
     description_members,
     fold_query,
     handled,
+    joined_description,
     mention_update,
     read_for_merge,
     snapshot_params,
@@ -80,20 +82,14 @@ _FOLD_READS = 3
 _ENTITY_ONLY_ON_EDGES = ("source_chunk_ids", "spans")
 
 
-# An entity's descriptions are JOINED across writes: a second document
+# An entity's description pieces are JOINED across writes: a second document
 # mentioning the entity adds what it says instead of replacing what the first
 # said (``SET n += props`` alone kept only the last write's). ``d_old`` is what
-# the node holds, ``d_new`` what this write brings (its ``descriptions`` list,
-# else its ``description`` as one member); ``description`` is the members
-# joined with " | ", ``descriptions`` the list when there is more than one. The
-# total is bounded by ``MAX_DESCRIPTION_MEMBERS`` per write and by finalize()'s
+# the node holds, ``d_new`` what this write brings, each read by
+# ``description_members`` (the ``description`` string split at "|", which no
+# piece holds); the node keeps them as one string joined with " | ". The total
+# is bounded by ``MAX_DESCRIPTION_MEMBERS`` per write and by finalize()'s
 # ``summarise_long_descriptions``.
-def _description_members(src: str) -> str:
-    return (
-        f"[d IN coalesce({src}.descriptions, CASE WHEN trim(coalesce({src}.description, '')) = '' "
-        f"THEN [] ELSE [trim({src}.description)] END) WHERE trim(d) <> '']"
-    )
-
 
 # What a write leaves on the node: what it held, plus this write's new members,
 # up to ``$cap`` — but never fewer than it held (a merge can leave more).
@@ -102,11 +98,8 @@ _KEEP_DESCRIPTIONS = (
     "ELSE (d_old + [d IN d_new WHERE NOT d IN d_old])[..$cap] END"
 )
 
-_JOIN_DESCRIPTION = (
-    "SET n.description = CASE WHEN size(d_all) = 0 THEN null "
-    "ELSE reduce(acc = head(d_all), d IN tail(d_all) | acc + ' | ' + d) END, "
-    "n.descriptions = CASE WHEN size(d_all) > 1 THEN d_all ELSE null END"
-)
+# One string; an earlier version's ``descriptions`` list goes with the write.
+_JOIN_DESCRIPTION = f"SET n.description = {joined_description('d_all')}, n.descriptions = null"
 
 
 def _mention_union(props: str) -> str:
@@ -396,8 +389,8 @@ class GraphStore:
                     # vector, and that is what the next finalize() looks for.
                     query += (
                         "WITH n, item, "
-                        f"     {_description_members('n')} AS d_old, "
-                        f"     {_description_members('item.properties')} AS d_new "
+                        f"     {description_members('n')} AS d_old, "
+                        f"     {description_members('item.properties')} AS d_new "
                         "WITH n, item, "
                         f"     {_KEEP_DESCRIPTIONS} AS d_all "
                         "SET n += item.properties "
@@ -424,8 +417,8 @@ class GraphStore:
                         if is_entity:
                             q += (
                                 "WITH n, $properties AS props, "
-                                f"     {_description_members('n')} AS d_old, "
-                                f"     {_description_members('$properties')} AS d_new "
+                                f"     {description_members('n')} AS d_old, "
+                                f"     {description_members('$properties')} AS d_new "
                                 "WITH n, props, "
                                 f"     {_KEEP_DESCRIPTIONS} AS d_all "
                                 "SET n += props "
@@ -859,16 +852,10 @@ class GraphStore:
 
     @staticmethod
     def _members(description: Any, descriptions: Any) -> list[str]:
-        """The description members of a node or a mention edge: its
-        ``descriptions`` list, else its ``description`` as one member. Never
-        split on " | ": one description can contain it (a table row)."""
-        items = descriptions if isinstance(descriptions, list) else [description]
-        out: list[str] = []
-        for d in items:
-            d = str(d or "").strip()
-            if d and d not in out:
-                out.append(d)
-        return out
+        """The description pieces of a node or a mention edge: its
+        ``description`` split at "|" (no piece holds one), or an earlier
+        version's ``descriptions`` list where it still has one."""
+        return description_pieces({"description": description, "descriptions": descriptions})
 
     async def _write_description(
         self, eid: str, old: str, members: list[str], *, summarised: bool | None = None
@@ -881,11 +868,9 @@ class GraphStore:
             marker = f", e.{SUMMARISED_KEY} = " + ("true" if summarised else "null")
         r = await self._conn.query(
             "MATCH (e:__Entity__ {id: $id}) WHERE coalesce(e.description, '') = $old "
-            "SET e.description = CASE WHEN size($members) = 0 THEN null ELSE $desc END, "
-            "e.descriptions = CASE WHEN size($members) > 1 THEN $members ELSE null END"
-            + marker
-            + " RETURN count(e)",
-            {"id": eid, "old": old, "desc": " | ".join(members), "members": members},
+            "SET e.description = $desc, e.descriptions = null" + marker + " RETURN count(e)",
+            # A summary is one piece: join_description replaces a "|" in it.
+            {"id": eid, "old": old, "desc": join_description(members) or None},
         )
         return r.result_set[0][0] if r.result_set else 0
 
@@ -910,7 +895,10 @@ class GraphStore:
         raises only when its scan fails, before anything is written."""
         rows = (
             await self._conn.query(
-                "MATCH (e:__Entity__) WHERE size(coalesce(e.descriptions, [])) > $over "
+                # CONTAINS first: a description of one piece has no "|", and
+                # most do, so only the rest are split and counted.
+                "MATCH (e:__Entity__) WHERE e.description CONTAINS '|' "
+                f"AND size({description_members('e')}) > $over "
                 "RETURN e.id, e.name, coalesce(e.description, ''), e.descriptions",
                 {"over": over},
             )
@@ -1117,7 +1105,7 @@ class GraphStore:
             await self._conn.query(
                 "MATCH (e:__Entity__ {id: $id})-[m:MENTIONED_IN]->(c:Chunk) "
                 "WHERE m.description IS NOT NULL "
-                "UNWIND coalesce(m.descriptions, [m.description]) AS d "
+                f"UNWIND {description_members('m')} AS d "
                 "WITH d, min(c.id) AS first "
                 "WHERE ($among IS NULL OR d IN $among) AND NOT d IN $besides "
                 "RETURN d ORDER BY first" + (" LIMIT $limit" if limit is not None else ""),
@@ -3099,19 +3087,12 @@ class GraphStore:
         if union_provenance and isinstance(owners, list) and isinstance(new_owners, list):
             merged["structured_sources"] = owners + [x for x in new_owners if x not in owners]
         if join_descriptions:
-            members: list[str] = []
-            for side in (acc, props):
-                raw = side.get("descriptions")
-                items = raw if isinstance(raw, list) else [side.get("description") or ""]
-                for d in items:
-                    d = str(d or "").strip()
-                    if d and d not in members:
-                        members.append(d)
-            merged.pop("descriptions", None)
+            members = description_pieces(acc)
+            members += [d for d in description_pieces(props) if d not in members]
             if members:
-                merged["description"] = " | ".join(members)
-                if len(members) > 1:
-                    merged["descriptions"] = members
+                set_description(merged, members)
+            else:
+                merged.pop("descriptions", None)
         # A mention edge's flat ``[start, end, ...]`` spans: both writes' pairs,
         # each once, as the edge write itself combines them.
         if union_spans:
