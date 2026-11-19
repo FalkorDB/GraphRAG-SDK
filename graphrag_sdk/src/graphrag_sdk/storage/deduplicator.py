@@ -26,7 +26,12 @@ from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
-from graphrag_sdk.core.descriptions import description_piece, join_description, split_description
+from graphrag_sdk.core.descriptions import (
+    LEGACY_LIST_KEY,
+    description_piece,
+    join_description,
+    split_description,
+)
 from graphrag_sdk.core.models import RESERVED_NODE_LABELS
 from graphrag_sdk.core.providers import Embedder
 from graphrag_sdk.core.tables import RESERVED_PROPERTY_NAMES
@@ -256,8 +261,11 @@ def properties_to_carry(
     ``never`` names what stays behind whatever the survivor lacks; ``id`` and
     ``embedding`` always do.
 
-    ``description`` is the exception to keep_existing: the two are joined with
-    ``" | "`` (:func:`_merge_description`), each segment kept once. The
+    ``description`` is the exception to keep_existing: the two nodes' pieces
+    (:func:`description_list`) are joined with ``" | "``, each kept once. An
+    earlier version's ``descriptions`` list is never carried: read before the
+    string, it would hide the survivor's own text (the caller drops one the
+    survivor holds). The
     survivor is chosen for the reproducibility of its identity — a table's key,
     then how much of the graph points at it — not for what it knows, and the
     node that lost on those grounds is often the one the PDF described.
@@ -268,12 +276,12 @@ def properties_to_carry(
         key: value
         for key, value in dup.items()
         if key not in never
-        and key != "source_chunk_ids"
+        and key not in ("source_chunk_ids", LEGACY_LIST_KEY)
         and value is not None
         and keep.get(key) in (None, "", [])
     }
-    description = _merge_description(
-        str(keep.get("description") or ""), str(dup.get("description") or "")
+    description = join_description(
+        _merge_description_members(description_list(keep), description_list(dup))
     )
     if description != str(keep.get("description") or ""):
         carry["description"] = description

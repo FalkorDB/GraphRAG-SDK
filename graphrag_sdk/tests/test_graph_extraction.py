@@ -604,6 +604,21 @@ class TestSpansMerging:
         assert node.properties["description"] == "CEO | CEO and founder"
         assert "descriptions" not in node.properties
 
+    def test_an_attribute_named_description_does_not_replace_what_chunks_said(self):
+        """The chunks' pieces are the description (their edges record them);
+        an ontology attribute named "description" is applied first."""
+        ent = ExtractedEntity(
+            name="Alice",
+            type="Person",
+            description="CEO",
+            source_chunk_ids=["c0"],
+            attributes={"description": "an attribute value", "age": 52},
+        )
+        ent.chunk_descriptions = {"c0": ["CEO", "founder"]}  # type: ignore[attr-defined]
+        (node,) = GraphExtraction._entities_to_nodes([ent])
+        assert node.properties["description"] == "CEO | founder"
+        assert node.properties["age"] == 52
+
     def test_a_pipe_in_a_description_never_splits_it(self):
         """A piece never holds "|": one in what the model wrote (or in a table
         row's evidence) becomes "¦", so the stored string splits back exactly."""

@@ -20,6 +20,7 @@ from uuid import uuid4
 from graphrag_sdk import __version__
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.descriptions import description_piece
 from graphrag_sdk.core.exceptions import (
     ConfigError,
     DatabaseError,
@@ -1824,8 +1825,10 @@ class GraphRAG:
                 # (name, type) -- the same id the extraction path assigns, so a
                 # backfilled entity merges with its extracted twin.
                 ent_id = compute_entity_id(ent_name, label)
-                said = str(ent.get("description") or "").strip()
-                props: dict[str, Any] = {"name": ent_name, "description": said}
+                # One piece, as extraction writes it: a "|" the model wrote
+                # must not split it on the node or its edge.
+                said = description_piece(ent.get("description"))
+                props: dict[str, Any] = {"name": ent_name}
                 for attr in entity.properties:
                     raw = (ent.get("attributes") or {}).get(attr.name)
                     if raw is None:
@@ -1833,6 +1836,9 @@ class GraphRAG:
                     ok, coerced = _coerce_attribute_value(raw, attr.type)
                     if ok:
                         props[attr.name] = coerced
+                # After the attributes: one named "description" must not
+                # replace what the edge below records the chunk said.
+                props["description"] = said
                 new_nodes.append(GraphNode(id=ent_id, label=label, properties=props))
                 # What this chunk said goes on its mention edge too, as an
                 # extraction's does, so deleting the document takes it off.

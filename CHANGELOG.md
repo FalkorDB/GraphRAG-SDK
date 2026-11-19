@@ -19,8 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   most 20 pieces and `finalize()` summarises an entity holding more than 5.
   Graphs written by earlier versions keep working: a `descriptions` list still
   on a node or edge is read as its pieces, and the next write of that
-  description drops it. A `description` written directly to the graph (not by
-  ingestion) that contains `|` is now read as several pieces.
+  description drops it. In text an earlier version wrote, every `|` separates
+  pieces, in a list item as in a description without a list: a description
+  that held one (for example a table row's evidence) reads as several pieces,
+  every word kept, and a delete still finds it on both the node and the edge.
+  Such a description of more than 5 cells counts as more than 5 pieces, so the
+  next `finalize()` replaces it with an LLM summary. The same applies to a
+  `description` written directly to the graph (not by ingestion) that
+  contains `|`.
 
 ### Added
 

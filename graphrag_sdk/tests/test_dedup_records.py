@@ -11,6 +11,7 @@ import os
 
 import pytest
 
+from graphrag_sdk.core.models import GraphNode
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.merge_query import (
@@ -676,6 +677,30 @@ async def test_a_table_rekey_folds_into_the_taken_id_in_one_query(graph):
         "MATCH (n:__Entity__ {id: 'new'}) RETURN n.role, n.embedding IS NULL, n.source_chunk_ids",
     ) == [["supplier", True, ["c1"]]]
     assert await store.deleted_among(["old", "new"]) == {"old", "new"}
+
+
+@pytest.mark.parametrize("list_on", ["old", "new"])
+async def test_a_table_rekey_fold_never_leaves_an_earlier_versions_list(graph, list_on):
+    """An earlier version's ``descriptions`` list, on either node, is read
+    into the one description and dropped. Carried (or left on the survivor),
+    the next write read it first and lost the survivor's own text."""
+    lists = {"old": "['Old A', 'Old B']", "new": "['Keep one', 'Keep two']"}
+    await graph.query_raw(
+        "CREATE (o:__Entity__:Organization {id: 'old', name: 'Globex', "
+        f"description: 'Old A | Old B'{', descriptions: ' + lists['old'] if list_on == 'old' else ''}}}), "
+        "(n:__Entity__:Organization {id: 'new', name: 'Initech', "
+        f"description: 'Keep one | Keep two'{', descriptions: ' + lists['new'] if list_on == 'new' else ''}}})"
+    )
+    assert await graph._move_entity("old", "new") == (0, 1)
+    assert await rows(
+        graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description, n.descriptions"
+    ) == [["Keep one | Keep two | Old A | Old B", None]]
+    await graph.upsert_nodes(
+        [GraphNode(id="new", label="Organization", properties={"description": "New fact"})]
+    )
+    assert await rows(graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description") == [
+        ["Keep one | Keep two | Old A | Old B | New fact"]
+    ]
 
 
 async def _globex_and_initech(graph):

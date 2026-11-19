@@ -1268,8 +1268,6 @@ class GraphExtraction(ExtractionStrategy):
             props: dict[str, Any] = {
                 "name": ent.name,
                 "type": ent.type,
-                # Every piece in the one string; a piece never holds "|".
-                "description": join_description(members),
                 "source_chunk_ids": ent.source_chunk_ids,
             }
             # Spans live on the MENTIONED_IN edges (one per chunk), not here.
@@ -1279,6 +1277,11 @@ class GraphExtraction(ExtractionStrategy):
                 props.update(
                     {key: value for key, value in ent.attributes.items() if value is not None}
                 )
+            # Every piece in the one string, a piece never holding "|"; set
+            # after the attributes, so one named "description" cannot replace
+            # what the chunks said (their edges record it). It stands in only
+            # where the chunks said nothing.
+            props["description"] = join_description(members or [props.get("description")])
             nodes.append(
                 GraphNode(
                     id=node_id,

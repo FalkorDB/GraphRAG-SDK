@@ -33,7 +33,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from graphrag_sdk.core.descriptions import DESCRIPTION_SEPARATOR, PIECE_BREAK, PIPE_STAND_IN
+from graphrag_sdk.core.descriptions import DESCRIPTION_SEPARATOR, PIECE_BREAK
 from graphrag_sdk.core.exceptions import GraphRAGError
 from graphrag_sdk.storage.system_store import PLAN, PROCESSING_LABEL, deleted_record_clause
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
@@ -378,15 +378,18 @@ SAID_VERSION = 1
 
 def description_members(holder: str) -> str:
     """Cypher: the description pieces ``holder`` (a node, an edge or a map)
-    holds, as a list: an earlier version's ``descriptions`` list where it has
-    one, else its ``description`` split at ``|``; each trimmed, any ``|``
-    inside replaced with ``¦`` (so a list's piece stays one once joined),
-    blank ones left out. The Python rule is ``core.descriptions``."""
-    return (
-        f"[x IN [y IN coalesce({holder}.descriptions, "
-        f"split(coalesce({holder}.description, ''), '{PIECE_BREAK}')) "
-        f"| trim(replace(y, '{PIECE_BREAK}', '{PIPE_STAND_IN}'))] WHERE x <> '']"
+    holds, as a list: its ``description`` split at ``|`` — or, where an
+    earlier version's ``descriptions`` list holds text, each of its items
+    split at ``|`` — trimmed, blank ones left out, each kept once in order.
+    The Python rule is ``core.descriptions.description_pieces``."""
+    items = (
+        f"CASE WHEN any(dz IN coalesce({holder}.descriptions, []) WHERE trim(dz) <> '') "
+        f"THEN {holder}.descriptions ELSE [coalesce({holder}.description, '')] END"
     )
+    split_items = f"reduce(dsp = [], dy IN {items} | dsp + split(dy, '{PIECE_BREAK}'))"
+    kept = f"[dx IN [dt IN {split_items} | trim(dt)] WHERE dx <> '']"
+    once = "CASE WHEN du IN dseen THEN dseen ELSE dseen + [du] END"
+    return f"reduce(dseen = [], du IN {kept} | {once})"
 
 
 def joined_description(pieces: str) -> str:

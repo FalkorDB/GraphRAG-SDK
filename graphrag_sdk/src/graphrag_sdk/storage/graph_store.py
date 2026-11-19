@@ -14,7 +14,13 @@ from collections.abc import Sequence
 from typing import Any, NamedTuple
 
 from graphrag_sdk.core.connection import FalkorDBConnection
-from graphrag_sdk.core.descriptions import description_pieces, join_description, set_description
+from graphrag_sdk.core.descriptions import (
+    LEGACY_LIST_KEY,
+    description_pieces,
+    join_description,
+    set_description,
+    split_description,
+)
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import (
     RESERVED_NODE_LABELS,
@@ -740,6 +746,11 @@ class GraphStore:
             sets = copy_on_server(carry)
             if carry:
                 sets.append("s += $carry")
+            if LEGACY_LIST_KEY in read.keep:
+                # An earlier version's list on the survivor: its pieces are in
+                # the description just carried (or already in its string), and
+                # read first, it would hide what the fold added.
+                sets.append(f"s.{LEGACY_LIST_KEY} = null")
             result = await self.query_raw(
                 fold_query(read.kinds, sets),
                 {
@@ -977,7 +988,9 @@ class GraphStore:
         )
 
     async def get_cleanup_said(self, document_id: str) -> dict[str, set[str]]:
-        """What :meth:`capture_cleanup_said` recorded, by entity."""
+        """What :meth:`capture_cleanup_said` recorded, by entity, as pieces:
+        a cleanup an earlier version started recorded a piece holding "|"
+        whole, and is split at it as that version's descriptions are read."""
         rows = (
             await self._conn.query(
                 "MATCH (d:Document {id: $id}) RETURN d.cleanup_said_ids, d.cleanup_said LIMIT 1",
@@ -989,7 +1002,7 @@ class GraphStore:
             ids, said = rows[0]
             for eid, d in zip(ids or [], said or []):
                 if isinstance(eid, str) and isinstance(d, str):
-                    out.setdefault(eid, set()).add(d)
+                    out.setdefault(eid, set()).update(split_description(d))
         return out
 
     async def rebuild_entity_descriptions(self, ids: list[str], said: dict[str, set[str]]) -> int:

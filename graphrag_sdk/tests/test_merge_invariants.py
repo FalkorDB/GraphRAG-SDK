@@ -28,6 +28,7 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
     set_merged_descriptions,
 )
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+from graphrag_sdk.storage.deduplicator import properties_to_carry
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
@@ -143,6 +144,18 @@ class TestHelpers:
         assert s.properties["description"] == "d1 | d2 | d3"
 
 
+class TestPropertiesToCarry:
+    def test_an_earlier_versions_list_is_never_carried(self):
+        """Read before the string, a carried list hid the survivor's text."""
+        carry = properties_to_carry(
+            {"id": "keep", "description": "Keep one | Keep two"},
+            {"id": "dup", "description": "Old A | Old B", "descriptions": ["Old A", "Old B"]},
+            never=frozenset({"id"}),
+        )
+        assert "descriptions" not in carry
+        assert carry["description"] == "Keep one | Keep two | Old A | Old B"
+
+
 class TestExactMatchAtIngest:
     async def test_three_rules(self):
         nodes = [
@@ -170,6 +183,19 @@ class TestExactMatchAtIngest:
             r.start_node_id in {surv.id, "x"} and r.end_node_id in {surv.id, "x"}
             for r in res.relationships
         )
+
+    async def test_text_held_only_in_an_earlier_versions_list_is_kept(self):
+        """No member has a description string; the duplicate holds its text in
+        an earlier version's list, which the property copy never takes. The
+        merge still reads it into the survivor's description."""
+        survivor = _n("a", "Person", "Alice", "")
+        dup = _n("b", "Person", "alice", "", descriptions=["engineer"])
+        res = await ExactMatchResolution(llm=None, cross_label_merge=False).resolve(
+            GraphData(nodes=[survivor, dup], relationships=[]), Context()
+        )
+        (node,) = res.nodes
+        assert node.properties["description"] == "engineer"
+        assert "descriptions" not in node.properties
 
     async def test_duplicate_value_replaces_survivor_none(self):
         nodes = [

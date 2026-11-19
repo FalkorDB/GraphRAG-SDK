@@ -9,18 +9,20 @@
 # pieces a second time.
 #
 # Graphs written by earlier versions kept a ``descriptions`` list beside the
-# string. Where a node or edge still has one it is read as the pieces (each
-# with its ``|`` replaced, so it stays one piece once joined), and the next
-# write of that description drops the list. An earlier version's description
-# without a list is split at ``|`` like any other: a single description that
-# happened to contain ``|`` (a table row's evidence) reads as several pieces,
-# with every word kept.
+# string. Where a node or edge still has one with text in it, it is read as the
+# pieces, and the next write of that description drops it. Reading what an
+# earlier version wrote, every ``|`` separates pieces: in a list's item as in a
+# description without a list, so a piece that held one (a table row's
+# evidence) reads as several, with every word kept. That one rule makes a
+# node's list, a one-piece edge's string and a cleanup recorded before the
+# upgrade agree, so a delete still finds the text it takes off.
 #
 # The Cypher form of the same rules is in ``storage/merge_query.py``
 # (``description_members``, ``joined_description``).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -33,13 +35,18 @@ PIECE_BREAK = "|"
 #: duplicate onto its survivor (read first, it would hide the survivor's own).
 LEGACY_LIST_KEY = "descriptions"
 #: What a ``|`` inside a piece becomes (U+00A6, broken bar): it reads the same
-#: in a table row's evidence and never splits the piece.
-PIPE_STAND_IN = "¦"
+#: in a table row's evidence and never splits the piece. Written with a space
+#: each side: the fulltext index splits words at "|" and at spaces but not at
+#: "¦", so "|Tim Cook|CEO|" written as "¦Tim Cook¦CEO¦" hid "Tim" and "CEO".
+PIPE_STAND_IN = "\u00a6"
+_PIPE_RUN = re.compile(r"\s*\|\s*")
 
 
 def description_piece(text: Any) -> str:
-    """``text`` as one piece: trimmed, any ``|`` replaced with ``¦``."""
-    return str(text if text is not None else "").replace(PIECE_BREAK, PIPE_STAND_IN).strip()
+    """``text`` as one piece: trimmed, each ``|`` (with the spaces around it)
+    replaced with ``" ¦ "``."""
+    raw = str(text if text is not None else "")
+    return _PIPE_RUN.sub(f" {PIPE_STAND_IN} ", raw).strip()
 
 
 def _unique(pieces: Iterable[Any]) -> list[str]:
@@ -66,14 +73,14 @@ def join_description(pieces: Iterable[Any]) -> str:
 
 
 def description_pieces(props: Mapping[str, Any]) -> list[str]:
-    """The pieces a node's or edge's properties hold: an earlier version's
-    ``descriptions`` list where one with text is present, else ``description``
-    split at ``|``."""
+    """The pieces a node's or edge's properties hold: ``description`` split at
+    ``|``, or, where an earlier version's ``descriptions`` list with text is
+    present, each of its items split at ``|``."""
     legacy = props.get(LEGACY_LIST_KEY)
     if isinstance(legacy, list):
-        pieces = _unique(legacy)
-        if pieces:
-            return pieces
+        items = [str(d) for d in legacy if d is not None]
+        if any(d.strip() for d in items):
+            return _unique(p for d in items for p in d.split(PIECE_BREAK))
     return split_description(props.get("description"))
 
 

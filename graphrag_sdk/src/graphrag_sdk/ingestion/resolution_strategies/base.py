@@ -406,8 +406,9 @@ async def exact_match_merge(
             sl_survivor_by_idx[i] = group_nodes[0]
             continue
         survivor = group_nodes[0]
-        if entry["descriptions"]:
-            set_merged_descriptions(survivor, group_nodes[1:])
+        # Ungated: a member may hold its text only in an earlier version's
+        # list, which the copy below never takes; with no text, nothing is set.
+        set_merged_descriptions(survivor, group_nodes[1:])
         if entry["all_source_ids"]:
             survivor.properties["source_chunk_ids"] = entry["all_source_ids"]
         for dup in group_nodes[1:]:

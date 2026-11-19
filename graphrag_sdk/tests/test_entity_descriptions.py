@@ -428,8 +428,8 @@ class TestOnRealFalkorDB:
     async def test_an_earlier_versions_list_is_read_and_dropped(self, store):
         """A node an earlier version wrote keeps its pieces in a list beside
         the string, one of them holding " | ". The next write reads the list
-        (each piece whole, its "|" made "¦"), adds to it, and leaves one
-        string and no list."""
+        (every "|" separating pieces, as in that version's strings), adds to
+        it, and leaves one string and no list."""
         await store.upsert_nodes([_alice("x")])
         await store.query_raw(
             "MATCH (e:__Entity__ {id: 'alice'}) "
@@ -437,8 +437,86 @@ class TestOnRealFalkorDB:
         )
         await store.upsert_nodes([_alice("Board member")])
         desc, descs, _, _, _ = await _entity(store)
-        assert descs == ["CEO", "Founder \u00a6 Acme", "Board member"]
-        assert desc == "CEO | Founder \u00a6 Acme | Board member"
+        assert descs == ["CEO", "Founder", "Acme", "Board member"]
+        assert desc == "CEO | Founder | Acme | Board member"
+
+    async def test_an_earlier_versions_list_without_text_does_not_hide_the_string(self, store):
+        await store.upsert_nodes([_alice("x")])
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) "
+            "SET e.descriptions = [' '], e.description = 'Legacy fact'"
+        )
+        await store.upsert_nodes([_alice("New fact")])
+        desc, _, _, _, _ = await _entity(store)
+        assert desc == "Legacy fact | New fact"
+
+    async def test_a_repeated_piece_is_kept_once_before_the_cap(self, store):
+        """A description written straight to the store with one piece twenty
+        times: kept once, so the cap does not cut the piece after it."""
+        await store.upsert_nodes([_alice(" | ".join(["CEO"] * MAX_DESCRIPTION_MEMBERS + ["Founder"]))])
+        desc, _, _, _, _ = await _entity(store)
+        assert desc == "CEO | Founder"
+
+    async def test_a_summary_counts_each_piece_once(self, store):
+        """Repeats are not pieces: "A | B" written three times holds two."""
+        await store.upsert_nodes([_alice("x")])
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) SET e.description = 'A | B | A | B | A | B'"
+        )
+        llm = SummaryLLM()
+        assert await store.summarise_long_descriptions(llm) == 0
+        assert llm.prompts == []
+
+    async def test_fulltext_finds_each_word_of_a_piece_that_held_pipes(self, store):
+        """The index splits words at "|" and spaces, not at "¦": the stand-in
+        is written with a space each side, so a compact table row's cells stay
+        words of their own."""
+        await store.query_raw("CREATE FULLTEXT INDEX FOR (n:__Entity__) ON (n.description)")
+        await store.upsert_nodes([_alice(description_piece("|Tim Cook|CEO|Apple|"))])
+        for word in ("Apple", "Tim", "CEO"):
+            found = await store.query_raw(
+                "CALL db.idx.fulltext.queryNodes('__Entity__', $w) YIELD node RETURN node.id",
+                {"w": word},
+            )
+            assert found.result_set == [["alice"]], word
+
+    async def test_a_delete_takes_off_text_an_earlier_version_kept_whole(self, store):
+        """An earlier version kept "Founder | Acme" whole: in the node's list,
+        and as the one description of the chunk's edge (no list). Both read as
+        the pieces "Founder" and "Acme", so deleting the chunk takes them off."""
+        await store.upsert_nodes([_alice("x")])
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) "
+            "SET e.descriptions = ['Legacy fact', 'Founder | Acme'], "
+            "e.description = 'Legacy fact | Founder | Acme'"
+        )
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) "
+            "CREATE (e)-[:MENTIONED_IN {spans: [0, 5]}]->(:Chunk {id: 'c0'}), "
+            "(e)-[:MENTIONED_IN {description: 'Founder | Acme', said_version: 1}]->(:Chunk {id: 'c1'})"
+        )
+        assert await _remove(store, "doc", ["c1"]) == 1
+        desc, _, _, _, _ = await _entity(store)
+        assert desc == "Legacy fact"
+
+    async def test_a_cleanup_an_earlier_version_recorded_still_takes_its_text_off(self, store):
+        """A delete an earlier version started recorded "Founder | Acme" whole
+        on the Document; resumed now, the record is read as the pieces the
+        node's list is read as."""
+        await store.upsert_nodes([_alice("x")])
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) "
+            "SET e.descriptions = ['Legacy fact', 'Founder | Acme'], "
+            "e.description = 'Legacy fact | Founder | Acme' "
+            "CREATE (e)-[:MENTIONED_IN {spans: [0, 5]}]->(:Chunk {id: 'c0'}) "
+            "CREATE (:Document {id: 'doc', cleanup_said_ids: ['alice'], "
+            "cleanup_said: ['Founder | Acme']})"
+        )
+        said = await store.get_cleanup_said("doc")
+        assert said == {"alice": {"Founder", "Acme"}}
+        assert await store.rebuild_entity_descriptions(["alice"], said) == 1
+        desc, _, _, _, _ = await _entity(store)
+        assert desc == "Legacy fact"
 
     async def test_finalizes_summary_replaces_a_long_list(self, store):
         for i in range(SUMMARISE_OVER_MEMBERS + 1):
