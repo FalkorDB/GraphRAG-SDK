@@ -1107,6 +1107,18 @@ class TestIngestFiles:
         assert "set_ontology" not in result.hint
         assert "only the server operator can add them" in result.hint
 
+    async def test_unknown_only_hint_without_set_ontology_does_not_report_a_drop(self):
+        rag = FakeRAG()
+        rag.pruned["text"] = {"unknown": 3}
+        tk = toolkit(rag, include=["ingest", "finalize", "get_ontology"])
+        result = await tk.ingest("Aspirin treats headache.", document_id="d1")
+        assert "set_ontology" not in result.hint
+        assert "dropped" not in result.hint
+        assert "does not declare" not in result.hint
+        assert "3 entities have an unresolved type (stored as Unknown)" in result.hint
+        assert "a declared type the extractor classified with low confidence" in result.hint
+        assert "only the server operator can add them" in result.hint
+
     async def test_files_with_plan_rules(self, corpus):
         rag = FakeRAG()
         rag.pruned["a.md"] = {"entities": {"Gene": 2}, "dangling": 1}

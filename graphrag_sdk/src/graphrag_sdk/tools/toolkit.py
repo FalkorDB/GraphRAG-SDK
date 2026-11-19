@@ -1627,11 +1627,28 @@ class GraphRAGToolkit:
                 else f"ingest(text=..., document_id={out.document_id!r}, reextract=true)"
             )
             pruned = out.pruned
+            unresolved = (
+                f"{pruned.unknown} entities have an unresolved type (stored as Unknown): "
+                "a type the ontology lacks, or a declared type the extractor classified "
+                "with low confidence; status shows the total. "
+                if pruned.unknown
+                else ""
+            )
             if "set_ontology" not in {spec.name for spec in self.tool_specs()}:
+                if pruned.entities or pruned.relations or pruned.pattern_mismatches:
+                    hints.append(
+                        "Extraction found types or patterns the ontology does not declare "
+                        "(see pruned)."
+                    )
+                if pruned.unknown_endpoints:
+                    n = sum(pruned.unknown_endpoints.values())
+                    hints.append(
+                        f"{n} relation(s) ({_names_hint(sorted(pruned.unknown_endpoints))}) were "
+                        "dropped because an endpoint's type was not resolved (stored as Unknown)."
+                    )
                 hints.append(
-                    "Extraction dropped what the ontology does not declare (see pruned). "
-                    "Tell the user which of those matter; only the server operator can "
-                    "add them."
+                    f"{unresolved}If missing types matter, tell the user which; only the "
+                    "server operator can add them."
                 )
             else:
                 hints.append(
@@ -1656,13 +1673,6 @@ class GraphRAGToolkit:
                     found = (
                         "Extraction found types the ontology does not declare (see pruned). "
                         if pruned.entities or pruned.relations
-                        else ""
-                    )
-                    unresolved = (
-                        f"{pruned.unknown} entities have an unresolved type (stored as Unknown): "
-                        "a type the ontology lacks, or a declared type the extractor classified "
-                        "with low confidence; status shows the total. "
-                        if pruned.unknown
                         else ""
                     )
                     hints.append(
