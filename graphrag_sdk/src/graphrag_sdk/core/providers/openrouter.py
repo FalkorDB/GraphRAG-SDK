@@ -15,6 +15,7 @@ from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import (
     binary_split_retry_async,
     binary_split_retry_sync,
+    final_failure_log_level,
     summarize_exception,
 )
 from graphrag_sdk.core.providers._timeout import validate_timeout, wait_for_provider_call
@@ -181,7 +182,10 @@ class OpenRouterLLM(LLMInterface):
                     )
                     logger.debug("OpenRouter call failure details", exc_info=True)
                     await asyncio.sleep(delay)
-        logger.error(
+        # ERROR, unless the caller retries this temporary failure itself
+        # (ontology discovery): see final_failure_log_level.
+        logger.log(
+            final_failure_log_level(last_exc),
             "OpenRouter call failed after %d attempts: %s",
             max_retries,
             summarize_exception(last_exc) if last_exc is not None else "UnknownError",
@@ -236,7 +240,10 @@ class OpenRouterLLM(LLMInterface):
                     )
                     logger.debug("OpenRouter call failure details", exc_info=True)
                     await asyncio.sleep(delay)
-        logger.error(
+        # ERROR, unless the caller retries this temporary failure itself
+        # (ontology discovery): see final_failure_log_level.
+        logger.log(
+            final_failure_log_level(last_exc),
             "OpenRouter messages call failed after %d attempts: %s",
             max_retries,
             summarize_exception(last_exc) if last_exc is not None else "UnknownError",

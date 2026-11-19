@@ -1092,6 +1092,32 @@ class TestIngestFiles:
         result = await toolkit(rag).ingest("Aspirin treats headache.", document_id="d1")
         assert result.document_id == "d1" and result.pruned.entities == {"Gene": 2}
         assert "set_ontology" in result.hint and "finalize" in result.hint
+        approval = result.hint.index("Unless you designed the ontology")
+        assert approval < result.hint.index("add them with set_ontology")
+        assert "tell the user what you added" in result.hint
+
+    async def test_hint_leaves_out_set_ontology_when_it_is_not_served(self):
+        rag = FakeRAG()
+        rag.pruned["text"] = {
+            "entities": {"Gene": 2},
+            "pattern_mismatches": {"SUPPLIES": {"Company->Event": 2}},
+        }
+        tk = toolkit(rag, include=["ingest", "finalize", "get_ontology"])
+        result = await tk.ingest("Aspirin treats headache.", document_id="d1")
+        assert "set_ontology" not in result.hint
+        assert "only the server operator can add them" in result.hint
+
+    async def test_unknown_only_hint_without_set_ontology_does_not_report_a_drop(self):
+        rag = FakeRAG()
+        rag.pruned["text"] = {"unknown": 3}
+        tk = toolkit(rag, include=["ingest", "finalize", "get_ontology"])
+        result = await tk.ingest("Aspirin treats headache.", document_id="d1")
+        assert "set_ontology" not in result.hint
+        assert "dropped" not in result.hint
+        assert "does not declare" not in result.hint
+        assert "3 entities have an unresolved type (stored as Unknown)" in result.hint
+        assert "a declared type the extractor classified with low confidence" in result.hint
+        assert "only the server operator can add them" in result.hint
 
     async def test_files_with_plan_rules(self, corpus):
         rag = FakeRAG()
@@ -1165,7 +1191,8 @@ class TestIngestFiles:
             "MANAGES": {"Person->Company": "Ann -> Acme: Ann runs Acme"}
         }
         hint = result.hint
-        assert hint.startswith("6 extracted relation(s) were dropped only because")
+        assert hint.startswith("Unless you designed the ontology in this conversation")
+        assert "6 extracted relation(s) were dropped only because" in hint
         assert "Dropped, e.g.: MANAGES Person->Company: Ann -> Acme: Ann runs Acme." in hint
         assert (
             'set_ontology(relations=[{"label": "TREATS", "patterns": [["Disease", "Drug"], '
@@ -1466,6 +1493,15 @@ class TestGuide:
         assert INGEST_GUIDE.index("set_ontology") < INGEST_GUIDE.index("preview_files")
         for step in ("next_offset", "ONE ontology", "at most 50", "finalize once", "reextract"):
             assert step in INGEST_GUIDE
+
+    def test_guides_ask_before_extending_the_users_ontology(self):
+        assert "never add to it without asking" in INGEST_GUIDE
+        for guide in (INGEST_GUIDE, TEXT_INGEST_GUIDE):
+            assert "Unless you designed" in guide
+            assert "tell the user what you added" in guide
+        assert "do not call set_ontology until the user approves" in " ".join(INGEST_GUIDE.split())
+        assert "call set_ontology yourself" not in " ".join(INGEST_GUIDE.split())
+        assert "add only what they" in TEXT_INGEST_GUIDE
 
     def test_cli_reads_files_only_from_an_explicit_root(self, monkeypatch, corpus):
         pytest.importorskip("mcp")

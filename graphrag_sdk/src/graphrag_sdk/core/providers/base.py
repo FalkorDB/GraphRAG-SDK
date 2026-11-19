@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from graphrag_sdk.core.exceptions import EmbeddingTimeoutError, LLMTimeoutError
 from graphrag_sdk.core.models import ChatMessage, LLMResponse
-from graphrag_sdk.core.providers._retry import summarize_exception
+from graphrag_sdk.core.providers._retry import final_failure_log_level, summarize_exception
 from graphrag_sdk.core.providers._timeout import validate_timeout, wait_for_provider_call
 
 logger = logging.getLogger(__name__)
@@ -167,7 +167,10 @@ class LLMInterface(ABC):
                     )
                     logger.debug("LLM call failure details", exc_info=True)
                     await asyncio.sleep(delay)
-        logger.error(
+        # ERROR, unless the caller retries this temporary failure itself
+        # (ontology discovery): see final_failure_log_level.
+        logger.log(
+            final_failure_log_level(last_exc),
             "LLM call failed after %d attempts: %s",
             max_retries,
             summarize_exception(last_exc) if last_exc is not None else "UnknownError",
