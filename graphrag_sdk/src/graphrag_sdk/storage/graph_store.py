@@ -16,6 +16,7 @@ from typing import Any, NamedTuple
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.descriptions import (
     LEGACY_LIST_KEY,
+    description_piece,
     description_pieces,
     join_description,
     set_description,
@@ -936,8 +937,10 @@ class GraphStore:
             try:
                 replies = await llm.abatch_invoke(prompts)
                 for (eid, _name, current, _members), item in zip(page, replies):
-                    text = (
-                        (item.response.content or "").strip() if item.ok and item.response else ""
+                    # Made one piece before it is measured: a "|" becomes
+                    # " ¦ ", so the limit holds for what is stored.
+                    text = description_piece(
+                        item.response.content if item.ok and item.response else ""
                     )
                     if not text:
                         failed.append(f"{eid} ({item.error or 'empty reply'})")

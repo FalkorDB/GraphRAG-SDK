@@ -166,6 +166,22 @@ class TestSummaries:
         (write,) = _writes(mock_connection)
         assert len(write[0][1]["desc"]) <= MAX_SUMMARY_CHARS
 
+    async def test_a_summary_full_of_pipes_is_cut_after_they_become_stand_ins(
+        self, mock_connection
+    ):
+        """Each "|" stored as " ¦ " is longer: measured on the raw reply, a
+        999-character summary was stored at 1,499."""
+        members = [f"fact {i}" for i in range(SUMMARISE_OVER_MEMBERS + 1)]
+        mock_connection.query = AsyncMock(
+            side_effect=[_result([["a", "A", "x", members]]), _result([[1]])]
+        )
+        summary = ("a|b " * 250).strip()
+        assert len(summary) < MAX_SUMMARY_CHARS
+        await GraphStore(mock_connection).summarise_long_descriptions(SummaryLLM(summary))
+        (write,) = _writes(mock_connection)
+        stored = write[0][1]["desc"]
+        assert len(stored) <= MAX_SUMMARY_CHARS and "|" not in stored
+
     async def test_nothing_over_the_limit_makes_no_llm_call(self, mock_connection):
         llm = SummaryLLM()
         assert await GraphStore(mock_connection).summarise_long_descriptions(llm) == 0
