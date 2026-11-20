@@ -310,6 +310,38 @@ class TestGLiNERModelSharing:
             not isinstance(v, BaseException) for v in ee.GLiNERExtractor._LOAD_ERRORS.values()
         )
 
+    def test_a_missing_gliner_import_is_a_model_load_error(self, monkeypatch):
+        """gliner, or a package it imports, missing is the same install problem
+        as a model that fails to load: one clear error, not a per-chunk one."""
+        from graphrag_sdk.core.exceptions import ModelLoadError
+        from graphrag_sdk.ingestion.extraction_strategies import entity_extractors as ee
+
+        monkeypatch.setitem(sys.modules, "gliner", None)
+        monkeypatch.setattr(ee.GLiNERExtractor, "_MODEL_CACHE", {}, raising=False)
+        monkeypatch.setattr(ee.GLiNERExtractor, "_LOAD_ERRORS", {}, raising=False)
+        with pytest.raises(ModelLoadError, match="pip install gliner"):
+            ee.GLiNERExtractor()._load_model()
+
+    def test_a_composite_does_not_swallow_a_model_load_error(self):
+        """In a composite, the other extractors succeeding must not hide a
+        member whose model cannot load; nested composites included."""
+        from graphrag_sdk.core.exceptions import ModelLoadError
+
+        class Broken(EntityExtractor):
+            async def extract_entities(self, text, entity_types, source_chunk_id):
+                raise ModelLoadError("GLiNER model could not be loaded")
+
+        class Fine(EntityExtractor):
+            async def extract_entities(self, text, entity_types, source_chunk_id):
+                return []
+
+        for composite in (
+            CompositeExtractor([Broken(), Fine()]),
+            CompositeExtractor([Fine(), CompositeExtractor([Fine(), Broken()])]),
+        ):
+            with pytest.raises(ModelLoadError):
+                asyncio.run(composite.extract_entities("Alice", ["Person"], "c1"))
+
     def test_load_is_tried_again_after_the_failure_expires(self, monkeypatch):
         """A download that failed while the network was down is retried by a
         later ingest instead of failing for the life of the process."""

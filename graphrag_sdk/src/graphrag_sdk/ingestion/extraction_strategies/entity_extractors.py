@@ -468,6 +468,11 @@ def _protobuf_installed() -> bool:
 
 def _load_error(model_name: str, exc: Exception) -> str:
     """A clear message for a GLiNER model that failed to load."""
+    if isinstance(exc, ImportError):
+        return (
+            f"GLiNER is required for GLiNERExtractor but could not be imported ({exc}). "
+            "Install with: pip install gliner"
+        )
     msg = f"GLiNER model {model_name!r} could not be loaded: {exc}"
     if not _protobuf_installed():
         # transformers needs protobuf to read the DeBERTa ``spm.model``
@@ -704,12 +709,10 @@ class GLiNERExtractor(EntityExtractor):
                 del cls._LOAD_ERRORS[model_name]
             if cached is None:
                 try:
+                    # Inside the try: gliner, or a package it imports, missing
+                    # is the same install problem as a model that cannot load.
                     from gliner import GLiNER
-                except ImportError:
-                    raise ImportError(
-                        "GLiNER is required for GLiNERExtractor. Install with: pip install gliner"
-                    )
-                try:
+
                     cached = GLiNER.from_pretrained(model_name)
                 except Exception as exc:
                     message = _load_error(model_name, exc)
@@ -1220,8 +1223,9 @@ class CompositeExtractor(EntityExtractor):
     a failed ingest. If *every* extractor fails the error is re-raised. Two
     kinds of failure are never demoted to a per-chunk warning, because they
     are configuration faults rather than bad input and would otherwise repeat
-    silently on every chunk: ``ImportError`` (a missing optional dependency)
-    and ``OSError`` (a model that is not installed). Cancellation and other
+    silently on every chunk: ``ImportError`` (a missing optional dependency),
+    ``OSError`` (a model that is not installed) and ``ModelLoadError`` (a model
+    that could not load). Cancellation and other
     process-level ``BaseException`` subclasses propagate as well.
 
     ``LLMExtractor`` members are rejected. ``GraphExtraction`` dispatches on
@@ -1372,7 +1376,9 @@ class CompositeExtractor(EntityExtractor):
         failures: list[Exception] = []
         for extractor, result in zip(self._extractors, results, strict=True):
             if isinstance(result, BaseException):
-                if not isinstance(result, Exception) or isinstance(result, (ImportError, OSError)):
+                if not isinstance(result, Exception) or isinstance(
+                    result, (ImportError, OSError, ModelLoadError)
+                ):
                     # Cancellation / interpreter exit, or a configuration
                     # fault that would otherwise repeat on every chunk.
                     raise result
