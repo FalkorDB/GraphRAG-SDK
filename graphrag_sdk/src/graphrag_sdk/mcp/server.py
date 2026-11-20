@@ -309,6 +309,8 @@ def fit_json(data: dict[str, Any], max_chars: int = MAX_RESULT_CHARS) -> str:
 _SECRET_NAME = r"[A-Za-z0-9_]*(?:api[_-]?key|token|secret|password|_key)"
 _SECRET_PATTERNS = (
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}"), "sk-***"),
+    # Hugging Face access token
+    (re.compile(r"\bhf_[A-Za-z0-9]{20,}"), "hf_***"),
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=\-]+"), "Bearer ***"),
     # Credentials in a URL: redis://user:pw@host
     # The scheme is at most 32 characters, so a long run like "a-a-a-..."

@@ -471,16 +471,25 @@ def _load_error(model_name: str, exc: Exception) -> tuple[str, str]:
     without the underlying error's text (safe to show a tool's caller)."""
     if isinstance(exc, ImportError):
         module = getattr(exc, "name", None) or ""
-        if module == "gliner" or module.startswith("gliner."):
-            what = "the gliner package is not installed. Install with: pip install gliner"
-        elif module.startswith("google.protobuf") or (
+        # Only ModuleNotFoundError means the module is absent; a plain
+        # ImportError (``from x import name`` failing) names a module that is
+        # installed but does not have what was asked: a version mismatch.
+        absent = isinstance(exc, ModuleNotFoundError)
+        if module.startswith("google.protobuf") or (
             module in ("", "google") and not _protobuf_installed()
         ):
             # protobuf is ``google.protobuf``; an unnamed or bare ``google``
             # import error is blamed on it only when it really is missing.
             what = "the protobuf package is not installed; install it with: pip install protobuf"
-        elif module:
+        elif absent and (module == "gliner" or module.startswith("gliner.")):
+            what = "the gliner package is not installed. Install with: pip install gliner"
+        elif absent and module:
             what = f"the {module!r} module it needs is not installed"
+        elif module:
+            what = (
+                f"importing from {module!r} failed though it is installed; the installed "
+                "versions of gliner and its dependencies may not work together"
+            )
         else:
             what = "a module it needs could not be imported"
         hint = f"GLiNER model {model_name!r} could not load: {what}"

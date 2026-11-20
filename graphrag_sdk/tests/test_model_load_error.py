@@ -220,3 +220,24 @@ async def test_cancelling_a_composite_is_not_replaced_by_a_members_load_error():
     task.cancel()
     await asyncio.wait([task])
     assert task.cancelled()
+
+
+def test_a_hugging_face_token_in_the_cause_is_not_logged(caplog):
+    token = "hf_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7"
+    exc = ModelLoadError(f"401 for model, token {token}", hint="could not load")
+    with caplog.at_level("WARNING", logger="graphrag_sdk.tools.toolkit"):
+        _file_error(exc)
+    assert token not in caplog.text and "hf_***" in caplog.text
+
+
+def test_an_import_of_a_missing_name_is_a_version_problem_not_a_missing_package(monkeypatch):
+    """``from transformers import X`` failing names transformers though it is
+    installed: the advice is about versions, not installing it."""
+    exc = ImportError("cannot import name 'X' from 'transformers'", name="transformers")
+    _broken_gliner(monkeypatch, exc)
+    monkeypatch.setattr(ee, "_protobuf_installed", lambda: True)
+    with pytest.raises(ModelLoadError) as info:
+        ee.GLiNERExtractor()._load_model()
+    hint = info.value.hint
+    assert "'transformers'" in hint and "version" in hint
+    assert "not installed" not in hint
