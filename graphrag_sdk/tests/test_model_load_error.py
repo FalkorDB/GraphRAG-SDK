@@ -101,3 +101,36 @@ def test_a_missing_protobuf_import_asks_for_protobuf_not_gliner(monkeypatch):
     hint = info.value.hint
     assert "pip install protobuf" in hint and "pip install gliner" not in hint
     assert "urchade/gliner_medium-v2.1" in hint
+
+
+def test_another_missing_import_is_named_not_blamed_on_gliner(monkeypatch):
+    _broken_gliner(monkeypatch, ModuleNotFoundError("No module named 'torch'", name="torch"))
+    with pytest.raises(ModelLoadError) as info:
+        ee.GLiNERExtractor()._load_model()
+    hint = info.value.hint
+    assert "torch" in hint and "urchade/gliner_medium-v2.1" in hint
+    assert "pip install gliner" not in hint
+
+
+async def test_a_composite_stops_on_a_load_error_without_waiting_for_the_others():
+    """A broken member's load error is raised while another member still
+    runs; that member is cancelled, not awaited."""
+    cancelled: list[str] = []
+
+    class Broken(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            raise ModelLoadError("no model", hint="could not load")
+
+    class Hangs(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.append(source_chunk_id)
+                raise
+            return []
+
+    composite = ee.CompositeExtractor([Hangs(), Broken()])
+    with pytest.raises(ModelLoadError):
+        await asyncio.wait_for(composite.extract_entities("Alice", ["Person"], "c1"), timeout=5)
+    assert cancelled == ["c1"]

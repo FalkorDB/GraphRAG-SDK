@@ -477,10 +477,16 @@ def _load_error(model_name: str, exc: Exception) -> tuple[str, str]:
             "installed; install it with: pip install protobuf"
         )
         return f"{hint} ({exc})", hint
+    if isinstance(exc, ImportError) and missing and missing != "gliner":
+        hint = (
+            f"GLiNER model {model_name!r} could not load: the {missing!r} module it "
+            "needs is not installed; install the package that provides it."
+        )
+        return f"{hint} ({exc})", hint
     if isinstance(exc, ImportError):
         hint = (
-            f"GLiNER model {model_name!r} could not load: the gliner package, or one it "
-            "needs, is not installed. Install with: pip install gliner"
+            f"GLiNER model {model_name!r} could not load: the gliner package is not "
+            "installed. Install with: pip install gliner"
         )
         return f"{hint} ({exc})", hint
     msg = f"GLiNER model {model_name!r} could not be loaded: {exc}"
@@ -1378,10 +1384,27 @@ class CompositeExtractor(EntityExtractor):
         entity_types: list[str],
         source_chunk_id: str,
     ) -> list[ExtractedEntity]:
-        results = await asyncio.gather(
-            *(e.extract_entities(text, entity_types, source_chunk_id) for e in self._extractors),
-            return_exceptions=True,
-        )
+        tasks = [
+            asyncio.ensure_future(e.extract_entities(text, entity_types, source_chunk_id))
+            for e in self._extractors
+        ]
+        # A configuration fault in one member is raised as soon as it is
+        # reported, cancelling the members still running, rather than after
+        # every member has finished this chunk.
+        try:
+            for done in asyncio.as_completed(tasks):
+                try:
+                    await done
+                except (ImportError, OSError, ModelLoadError):
+                    raise
+                except Exception:
+                    pass  # an ordinary failure, handled below
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        results = [t.exception() or t.result() for t in tasks]
 
         merged: dict[str, ExtractedEntity] = {}
         # Spans claimed by earlier extractors -> the merged key that owns each.
