@@ -218,5 +218,5 @@ async def test_cancelling_a_composite_is_not_replaced_by_a_members_load_error():
         await asyncio.sleep(0)
     release.set()
     task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    await asyncio.wait([task])
+    assert task.cancelled()
