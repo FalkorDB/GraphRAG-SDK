@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **GLiNER no longer fails silently on a clean install.** The default GLiNER
+  model needs `protobuf` to load its tokenizer, and a clean install did not
+  include it. The load failed with "Error parsing line ... spm.model", every
+  chunk logged "Step 1 NER failed", and extraction quietly continued with the
+  LLM only. `protobuf` is now a dependency. If a GLiNER model still cannot load,
+  ingestion fails once with a clear `ExtractionError` naming the model and,
+  when `protobuf` is missing, the package to install; the failed load is
+  remembered rather than retried for every chunk.
+
 - **The agent asks before adding types to the user's ontology.** When
   ingestion drops types the ontology lacks, the MCP guide and the ingest hint
   told the agent to add them with `set_ontology` on its own, even when the user
