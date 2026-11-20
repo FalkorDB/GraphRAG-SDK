@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import logging
 import re
@@ -15,6 +16,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar
 
+from graphrag_sdk.core.exceptions import ExtractionError
 from graphrag_sdk.core.models import ExtractedEntity
 from graphrag_sdk.core.providers import LLMInterface
 
@@ -456,6 +458,23 @@ class EntityExtractor(ABC):
 # ── GLiNER Extractor (default) ───────────────────────────────────
 
 
+def _protobuf_installed() -> bool:
+    try:
+        return importlib.util.find_spec("google.protobuf") is not None
+    except ModuleNotFoundError:  # no ``google`` namespace package at all
+        return False
+
+
+def _load_error(model_name: str, exc: Exception) -> ExtractionError:
+    """A clear error for a GLiNER model that failed to load."""
+    msg = f"GLiNER model {model_name!r} could not be loaded: {exc}"
+    if not _protobuf_installed():
+        # transformers needs protobuf to read the DeBERTa ``spm.model``
+        # tokenizer; without it the load fails with "Error parsing line ...".
+        msg += ". The protobuf package is not installed; install it with: pip install protobuf"
+    return ExtractionError(msg)
+
+
 class GLiNERExtractor(EntityExtractor):
     """Entity extraction via GLiNER local transformer model.
 
@@ -659,6 +678,10 @@ class GLiNERExtractor(EntityExtractor):
     _MODEL_CACHE: ClassVar[dict[str, Any]] = {}
     _CACHE_LOCK: ClassVar[threading.Lock] = threading.Lock()
 
+    # A load that failed once fails the same way for every later chunk, so the
+    # error is kept and re-raised instead of reloading the model per chunk.
+    _LOAD_ERRORS: ClassVar[dict[str, ExtractionError]] = {}
+
     @classmethod
     def _get_shared_model(cls, model_name: str) -> Any:
         cached = cls._MODEL_CACHE.get(model_name)
@@ -667,6 +690,8 @@ class GLiNERExtractor(EntityExtractor):
         with cls._CACHE_LOCK:
             # Double-checked: another thread may have loaded it while we waited.
             cached = cls._MODEL_CACHE.get(model_name)
+            if cached is None and model_name in cls._LOAD_ERRORS:
+                raise cls._LOAD_ERRORS[model_name]
             if cached is None:
                 try:
                     from gliner import GLiNER
@@ -674,7 +699,11 @@ class GLiNERExtractor(EntityExtractor):
                     raise ImportError(
                         "GLiNER is required for GLiNERExtractor. Install with: pip install gliner"
                     )
-                cached = GLiNER.from_pretrained(model_name)
+                try:
+                    cached = GLiNER.from_pretrained(model_name)
+                except Exception as exc:
+                    cls._LOAD_ERRORS[model_name] = _load_error(model_name, exc)
+                    raise cls._LOAD_ERRORS[model_name] from exc
                 cls._MODEL_CACHE[model_name] = cached
         return cached
 

@@ -266,6 +266,42 @@ class TestGLiNERModelSharing:
         assert loads == ["model-a", "model-b"]
         assert a is not b
 
+    def _failing(self, monkeypatch, loads, exc):
+        from graphrag_sdk.ingestion.extraction_strategies import entity_extractors as ee
+
+        class BrokenGLiNER:
+            @staticmethod
+            def from_pretrained(name):
+                loads.append(name)
+                raise exc
+
+        monkeypatch.setitem(sys.modules, "gliner", type("m", (), {"GLiNER": BrokenGLiNER}))
+        monkeypatch.setattr(ee.GLiNERExtractor, "_MODEL_CACHE", {}, raising=False)
+        monkeypatch.setattr(ee.GLiNERExtractor, "_LOAD_ERRORS", {}, raising=False)
+        return ee
+
+    def test_load_failure_names_missing_protobuf(self, monkeypatch):
+        """Without protobuf, transformers cannot read the DeBERTa spm.model and
+        the load fails with an unhelpful parse error; the SDK names the fix."""
+        from graphrag_sdk.core.exceptions import ExtractionError
+
+        ee = self._failing(monkeypatch, [], ValueError("Error parsing line b'\\x0e' in spm.model"))
+        monkeypatch.setattr(ee, "_protobuf_installed", lambda: False)
+        with pytest.raises(ExtractionError, match="protobuf"):
+            ee.GLiNERExtractor()._load_model()
+
+    def test_load_failure_is_raised_once_not_retried(self, monkeypatch):
+        """A failed load is remembered: later chunks fail fast with the same
+        error instead of reloading the model once per chunk."""
+        from graphrag_sdk.core.exceptions import ExtractionError
+
+        loads: list[str] = []
+        ee = self._failing(monkeypatch, loads, OSError("no such model"))
+        for _ in range(3):
+            with pytest.raises(ExtractionError, match="no such model"):
+                ee.GLiNERExtractor()._load_model()
+        assert len(loads) == 1
+
     def test_inference_takes_no_lock(self):
         """Guards bug #8 against reintroduction."""
         import inspect

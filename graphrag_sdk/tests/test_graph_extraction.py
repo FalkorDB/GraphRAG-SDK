@@ -236,6 +236,25 @@ class TestGraphExtractionGraphOutput:
             assert rel.properties["rel_type"] == "WORKS_AT"
 
 
+class TestGraphExtractionModelLoadFailure:
+    async def test_model_load_failure_fails_extraction_once(self, ctx, caplog):
+        """A model that cannot load is an install problem, not a bad chunk: the
+        extraction fails with that error instead of warning once per chunk and
+        carrying on LLM-only."""
+        from graphrag_sdk.core.exceptions import ExtractionError
+
+        class Unloadable(EntityExtractor):
+            async def extract_entities(self, text, entity_types, source_chunk_id):
+                raise ExtractionError("GLiNER model could not be loaded: install protobuf")
+
+        llm = MockLLMWithGraphExtraction()
+        extractor = GraphExtraction(llm=llm, entity_extractor=Unloadable())
+        chunks = _make_chunks("Alice works at Acme.", "Bob works at Initech.", "Carol too.")
+        with pytest.raises(ExtractionError, match="protobuf"):
+            await extractor.extract(chunks, Ontology(), ctx)
+        assert "Step 1 NER failed" not in caplog.text
+
+
 class TestGraphExtractionPluggableExtractor:
     async def test_custom_ner_model(self, ctx):
         """GraphExtraction works with a custom NER model."""
