@@ -70,6 +70,17 @@ class ExtractionError(IngestionError):
     pass
 
 
+class ModelLoadError(ExtractionError):
+    """Raised when an extractor's model cannot be loaded.
+
+    Unlike a plain :class:`ExtractionError` about one chunk, it fails every
+    chunk the same way, so extraction stops with it instead of going on
+    without the model.
+    """
+
+    pass
+
+
 class ResolutionError(IngestionError):
     """Raised when entity resolution fails."""
 

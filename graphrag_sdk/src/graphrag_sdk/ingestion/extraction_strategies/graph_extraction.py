@@ -11,7 +11,7 @@ from datetime import date, datetime
 from typing import Any
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import ExtractionError
+from graphrag_sdk.core.exceptions import ModelLoadError
 from graphrag_sdk.core.models import (
     _SDK_MANAGED_ATTRIBUTE_NAMES,
     Attribute,
@@ -749,11 +749,11 @@ class GraphExtraction(ExtractionStrategy):
 
             tasks = [_step1(text, chunk.uid) for text, chunk in zip(chunk_texts, active_chunks)]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            # An ExtractionError (e.g. the GLiNER model could not load) is an
-            # install problem that fails every chunk the same way. Raise it
-            # once rather than warning per chunk and carrying on LLM-only.
+            # A model that could not load (e.g. GLiNER without protobuf) fails
+            # every chunk the same way. Raise it once rather than warning per
+            # chunk and carrying on LLM-only; other errors stay per chunk.
             for result in results:
-                if isinstance(result, ExtractionError):
+                if isinstance(result, ModelLoadError):
                     raise result
             for i, result in enumerate(results):
                 if isinstance(result, Exception):

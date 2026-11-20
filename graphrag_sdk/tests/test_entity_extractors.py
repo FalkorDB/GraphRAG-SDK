@@ -283,24 +283,48 @@ class TestGLiNERModelSharing:
     def test_load_failure_names_missing_protobuf(self, monkeypatch):
         """Without protobuf, transformers cannot read the DeBERTa spm.model and
         the load fails with an unhelpful parse error; the SDK names the fix."""
-        from graphrag_sdk.core.exceptions import ExtractionError
+        from graphrag_sdk.core.exceptions import ModelLoadError
 
         ee = self._failing(monkeypatch, [], ValueError("Error parsing line b'\\x0e' in spm.model"))
         monkeypatch.setattr(ee, "_protobuf_installed", lambda: False)
-        with pytest.raises(ExtractionError, match="protobuf"):
+        with pytest.raises(ModelLoadError, match="protobuf"):
             ee.GLiNERExtractor()._load_model()
 
     def test_load_failure_is_raised_once_not_retried(self, monkeypatch):
-        """A failed load is remembered: later chunks fail fast with the same
-        error instead of reloading the model once per chunk."""
-        from graphrag_sdk.core.exceptions import ExtractionError
+        """A failed load is remembered for a short while: the other chunks of
+        the same ingest fail fast instead of reloading the model once each.
+        Each raise is a fresh error, so no traceback (and the chunk text its
+        frames hold) is kept in the process-wide cache."""
+        from graphrag_sdk.core.exceptions import ModelLoadError
 
         loads: list[str] = []
         ee = self._failing(monkeypatch, loads, OSError("no such model"))
+        raised = []
         for _ in range(3):
-            with pytest.raises(ExtractionError, match="no such model"):
+            with pytest.raises(ModelLoadError, match="no such model") as info:
                 ee.GLiNERExtractor()._load_model()
+            raised.append(info.value)
         assert len(loads) == 1
+        assert len({id(e) for e in raised}) == 3
+        assert all(
+            not isinstance(v, BaseException) for v in ee.GLiNERExtractor._LOAD_ERRORS.values()
+        )
+
+    def test_load_is_tried_again_after_the_failure_expires(self, monkeypatch):
+        """A download that failed while the network was down is retried by a
+        later ingest instead of failing for the life of the process."""
+        from graphrag_sdk.core.exceptions import ModelLoadError
+
+        loads: list[str] = []
+        ee = self._failing(monkeypatch, loads, OSError("network down"))
+        now = [1000.0]
+        monkeypatch.setattr(ee.time, "monotonic", lambda: now[0])
+        with pytest.raises(ModelLoadError):
+            ee.GLiNERExtractor()._load_model()
+        now[0] += ee.GLiNERExtractor._LOAD_RETRY_AFTER_S + 1
+        with pytest.raises(ModelLoadError):
+            ee.GLiNERExtractor()._load_model()
+        assert len(loads) == 2
 
     def test_inference_takes_no_lock(self):
         """Guards bug #8 against reintroduction."""

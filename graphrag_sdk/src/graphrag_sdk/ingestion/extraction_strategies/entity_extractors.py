@@ -12,11 +12,12 @@ import json
 import logging
 import re
 import threading
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar
 
-from graphrag_sdk.core.exceptions import ExtractionError
+from graphrag_sdk.core.exceptions import ModelLoadError
 from graphrag_sdk.core.models import ExtractedEntity
 from graphrag_sdk.core.providers import LLMInterface
 
@@ -465,14 +466,14 @@ def _protobuf_installed() -> bool:
         return False
 
 
-def _load_error(model_name: str, exc: Exception) -> ExtractionError:
-    """A clear error for a GLiNER model that failed to load."""
+def _load_error(model_name: str, exc: Exception) -> str:
+    """A clear message for a GLiNER model that failed to load."""
     msg = f"GLiNER model {model_name!r} could not be loaded: {exc}"
     if not _protobuf_installed():
         # transformers needs protobuf to read the DeBERTa ``spm.model``
         # tokenizer; without it the load fails with "Error parsing line ...".
         msg += ". The protobuf package is not installed; install it with: pip install protobuf"
-    return ExtractionError(msg)
+    return msg
 
 
 class GLiNERExtractor(EntityExtractor):
@@ -678,9 +679,14 @@ class GLiNERExtractor(EntityExtractor):
     _MODEL_CACHE: ClassVar[dict[str, Any]] = {}
     _CACHE_LOCK: ClassVar[threading.Lock] = threading.Lock()
 
-    # A load that failed once fails the same way for every later chunk, so the
-    # error is kept and re-raised instead of reloading the model per chunk.
-    _LOAD_ERRORS: ClassVar[dict[str, ExtractionError]] = {}
+    # A load that failed fails the same way for the other chunks of the same
+    # ingest, so its message is kept for a short while and raised again rather
+    # than reloading the model per chunk. Only the message is kept: a cached
+    # exception would hold its traceback, and the chunk text in its frames, for
+    # the life of the process. After the window a new load is tried, so a
+    # download that failed while offline can recover.
+    _LOAD_ERRORS: ClassVar[dict[str, tuple[float, str]]] = {}
+    _LOAD_RETRY_AFTER_S: ClassVar[float] = 60.0
 
     @classmethod
     def _get_shared_model(cls, model_name: str) -> Any:
@@ -690,8 +696,12 @@ class GLiNERExtractor(EntityExtractor):
         with cls._CACHE_LOCK:
             # Double-checked: another thread may have loaded it while we waited.
             cached = cls._MODEL_CACHE.get(model_name)
-            if cached is None and model_name in cls._LOAD_ERRORS:
-                raise cls._LOAD_ERRORS[model_name]
+            failed = cls._LOAD_ERRORS.get(model_name)
+            if cached is None and failed is not None:
+                failed_at, message = failed
+                if time.monotonic() - failed_at < cls._LOAD_RETRY_AFTER_S:
+                    raise ModelLoadError(message)
+                del cls._LOAD_ERRORS[model_name]
             if cached is None:
                 try:
                     from gliner import GLiNER
@@ -702,8 +712,9 @@ class GLiNERExtractor(EntityExtractor):
                 try:
                     cached = GLiNER.from_pretrained(model_name)
                 except Exception as exc:
-                    cls._LOAD_ERRORS[model_name] = _load_error(model_name, exc)
-                    raise cls._LOAD_ERRORS[model_name] from exc
+                    message = _load_error(model_name, exc)
+                    cls._LOAD_ERRORS[model_name] = (time.monotonic(), message)
+                    raise ModelLoadError(message) from exc
                 cls._MODEL_CACHE[model_name] = cached
         return cached
 
