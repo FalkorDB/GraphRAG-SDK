@@ -90,3 +90,14 @@ async def test_extraction_stops_on_the_first_load_error_without_waiting(ctx):
     with pytest.raises(ModelLoadError):
         await asyncio.wait_for(extractor.extract(chunks, Ontology(), ctx), timeout=5)
     assert sorted(cancelled) == ["c1", "c2"]
+
+
+def test_a_missing_protobuf_import_asks_for_protobuf_not_gliner(monkeypatch):
+    """gliner importing fine but protobuf missing at load must still name
+    protobuf, and the model."""
+    _broken_gliner(monkeypatch, ModuleNotFoundError("No module named 'google'", name="google"))
+    with pytest.raises(ModelLoadError) as info:
+        ee.GLiNERExtractor()._load_model()
+    hint = info.value.hint
+    assert "pip install protobuf" in hint and "pip install gliner" not in hint
+    assert "urchade/gliner_medium-v2.1" in hint

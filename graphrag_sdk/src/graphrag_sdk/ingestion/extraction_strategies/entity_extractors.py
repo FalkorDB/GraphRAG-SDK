@@ -469,6 +469,14 @@ def _protobuf_installed() -> bool:
 def _load_error(model_name: str, exc: Exception) -> tuple[str, str]:
     """A clear message for a GLiNER model that failed to load, and a hint
     without the underlying error's text (safe to show a tool's caller)."""
+    missing = (getattr(exc, "name", None) or "").split(".")[0]
+    if isinstance(exc, ImportError) and missing == "google":
+        # protobuf itself is the missing import (``google.protobuf``).
+        hint = (
+            f"GLiNER model {model_name!r} could not load: the protobuf package is not "
+            "installed; install it with: pip install protobuf"
+        )
+        return f"{hint} ({exc})", hint
     if isinstance(exc, ImportError):
         hint = (
             f"GLiNER model {model_name!r} could not load: the gliner package, or one it "
