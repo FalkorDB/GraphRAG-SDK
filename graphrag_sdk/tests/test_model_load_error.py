@@ -134,3 +134,24 @@ async def test_a_composite_stops_on_a_load_error_without_waiting_for_the_others(
     with pytest.raises(ModelLoadError):
         await asyncio.wait_for(composite.extract_entities("Alice", ["Person"], "c1"), timeout=5)
     assert cancelled == ["c1"]
+
+
+async def test_another_members_error_does_not_hide_a_load_error():
+    class NoFile(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            raise OSError("model file missing")
+
+    class Broken(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            raise ModelLoadError("no model", hint="could not load")
+
+    composite = ee.CompositeExtractor([NoFile(), Broken()])
+    with pytest.raises(ModelLoadError):
+        await composite.extract_entities("Alice", ["Person"], "c1")
+
+
+def test_toolkit_logs_the_cause_the_hint_points_to(caplog):
+    exc = ModelLoadError("Error parsing line in spm.model", hint="see the server log")
+    with caplog.at_level("WARNING", logger="graphrag_sdk.tools.toolkit"):
+        _file_error(exc)
+    assert "Error parsing line in spm.model" in caplog.text

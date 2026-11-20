@@ -1403,6 +1403,11 @@ class CompositeExtractor(EntityExtractor):
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # A member's model that could not load is the error to report, even
+            # when another member's fault happened to be seen first.
+            for task in tasks:
+                if not task.cancelled() and isinstance(task.exception(), ModelLoadError):
+                    raise task.exception() from None
             raise
         results = [t.exception() or t.result() for t in tasks]
 
