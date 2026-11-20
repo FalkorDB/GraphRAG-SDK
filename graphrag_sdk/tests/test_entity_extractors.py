@@ -266,6 +266,98 @@ class TestGLiNERModelSharing:
         assert loads == ["model-a", "model-b"]
         assert a is not b
 
+    def _failing(self, monkeypatch, loads, exc):
+        from graphrag_sdk.ingestion.extraction_strategies import entity_extractors as ee
+
+        class BrokenGLiNER:
+            @staticmethod
+            def from_pretrained(name):
+                loads.append(name)
+                raise exc
+
+        monkeypatch.setitem(sys.modules, "gliner", type("m", (), {"GLiNER": BrokenGLiNER}))
+        monkeypatch.setattr(ee.GLiNERExtractor, "_MODEL_CACHE", {}, raising=False)
+        monkeypatch.setattr(ee.GLiNERExtractor, "_LOAD_ERRORS", {}, raising=False)
+        return ee
+
+    def test_load_failure_names_missing_protobuf(self, monkeypatch):
+        """Without protobuf, transformers cannot read the DeBERTa spm.model and
+        the load fails with an unhelpful parse error; the SDK names the fix."""
+        from graphrag_sdk.core.exceptions import ModelLoadError
+
+        ee = self._failing(monkeypatch, [], ValueError("Error parsing line b'\\x0e' in spm.model"))
+        monkeypatch.setattr(ee, "_protobuf_installed", lambda: False)
+        with pytest.raises(ModelLoadError, match="protobuf"):
+            ee.GLiNERExtractor()._load_model()
+
+    def test_load_failure_is_raised_once_not_retried(self, monkeypatch):
+        """A failed load is remembered for a short while: the other chunks of
+        the same ingest fail fast instead of reloading the model once each.
+        Each raise is a fresh error, so no traceback (and the chunk text its
+        frames hold) is kept in the process-wide cache."""
+        from graphrag_sdk.core.exceptions import ModelLoadError
+
+        loads: list[str] = []
+        ee = self._failing(monkeypatch, loads, OSError("no such model"))
+        raised = []
+        for _ in range(3):
+            with pytest.raises(ModelLoadError, match="no such model") as info:
+                ee.GLiNERExtractor()._load_model()
+            raised.append(info.value)
+        assert len(loads) == 1
+        assert len({id(e) for e in raised}) == 3
+        assert all(
+            not isinstance(v, BaseException) for v in ee.GLiNERExtractor._LOAD_ERRORS.values()
+        )
+
+    def test_a_missing_gliner_import_is_a_model_load_error(self, monkeypatch):
+        """gliner, or a package it imports, missing is the same install problem
+        as a model that fails to load: one clear error, not a per-chunk one."""
+        from graphrag_sdk.core.exceptions import ModelLoadError
+        from graphrag_sdk.ingestion.extraction_strategies import entity_extractors as ee
+
+        monkeypatch.setitem(sys.modules, "gliner", None)
+        monkeypatch.setattr(ee.GLiNERExtractor, "_MODEL_CACHE", {}, raising=False)
+        monkeypatch.setattr(ee.GLiNERExtractor, "_LOAD_ERRORS", {}, raising=False)
+        with pytest.raises(ModelLoadError, match="pip install gliner"):
+            ee.GLiNERExtractor()._load_model()
+
+    def test_a_composite_does_not_swallow_a_model_load_error(self):
+        """In a composite, the other extractors succeeding must not hide a
+        member whose model cannot load; nested composites included."""
+        from graphrag_sdk.core.exceptions import ModelLoadError
+
+        class Broken(EntityExtractor):
+            async def extract_entities(self, text, entity_types, source_chunk_id):
+                raise ModelLoadError("GLiNER model could not be loaded")
+
+        class Fine(EntityExtractor):
+            async def extract_entities(self, text, entity_types, source_chunk_id):
+                return []
+
+        for composite in (
+            CompositeExtractor([Broken(), Fine()]),
+            CompositeExtractor([Fine(), CompositeExtractor([Fine(), Broken()])]),
+        ):
+            with pytest.raises(ModelLoadError):
+                asyncio.run(composite.extract_entities("Alice", ["Person"], "c1"))
+
+    def test_load_is_tried_again_after_the_failure_expires(self, monkeypatch):
+        """A download that failed while the network was down is retried by a
+        later ingest instead of failing for the life of the process."""
+        from graphrag_sdk.core.exceptions import ModelLoadError
+
+        loads: list[str] = []
+        ee = self._failing(monkeypatch, loads, OSError("network down"))
+        now = [1000.0]
+        monkeypatch.setattr(ee.time, "monotonic", lambda: now[0])
+        with pytest.raises(ModelLoadError):
+            ee.GLiNERExtractor()._load_model()
+        now[0] += ee.GLiNERExtractor._LOAD_RETRY_AFTER_S + 1
+        with pytest.raises(ModelLoadError):
+            ee.GLiNERExtractor()._load_model()
+        assert len(loads) == 2
+
     def test_inference_takes_no_lock(self):
         """Guards bug #8 against reintroduction."""
         import inspect
