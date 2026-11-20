@@ -747,14 +747,28 @@ class GraphExtraction(ExtractionStrategy):
                         text, entity_types, chunk_uid
                     )
 
-            tasks = [_step1(text, chunk.uid) for text, chunk in zip(chunk_texts, active_chunks)]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            tasks = [
+                asyncio.ensure_future(_step1(text, chunk.uid))
+                for text, chunk in zip(chunk_texts, active_chunks)
+            ]
             # A model that could not load (e.g. GLiNER without protobuf) fails
-            # every chunk the same way. Raise it once rather than warning per
+            # every chunk the same way. Raise it as soon as one chunk reports
+            # it, cancelling the chunks still running, rather than warning per
             # chunk and carrying on LLM-only; other errors stay per chunk.
-            for result in results:
-                if isinstance(result, ModelLoadError):
-                    raise result
+            try:
+                for done in asyncio.as_completed(tasks):
+                    try:
+                        await done
+                    except ModelLoadError:
+                        raise
+                    except Exception:
+                        pass  # handled per chunk below
+            except BaseException:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+            results = [t.exception() or t.result() for t in tasks]
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
                     ctx.log(

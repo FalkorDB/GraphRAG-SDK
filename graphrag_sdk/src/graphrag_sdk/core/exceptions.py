@@ -76,9 +76,17 @@ class ModelLoadError(ExtractionError):
     Unlike a plain :class:`ExtractionError` about one chunk, it fails every
     chunk the same way, so extraction stops with it instead of going on
     without the model.
+
+    ``hint`` is a message the SDK writes itself (the model and what to
+    install), safe to show where the exception's own text is withheld
+    because the underlying error could quote a secret.
     """
 
-    pass
+    DEFAULT_HINT = "The entity-extraction model could not load (details are in the server log)."
+
+    def __init__(self, message: str, *, hint: str | None = None) -> None:
+        super().__init__(message)
+        self.hint = hint or self.DEFAULT_HINT
 
 
 class ResolutionError(IngestionError):

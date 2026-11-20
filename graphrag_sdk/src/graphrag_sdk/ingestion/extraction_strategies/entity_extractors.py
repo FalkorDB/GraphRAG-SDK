@@ -466,19 +466,24 @@ def _protobuf_installed() -> bool:
         return False
 
 
-def _load_error(model_name: str, exc: Exception) -> str:
-    """A clear message for a GLiNER model that failed to load."""
+def _load_error(model_name: str, exc: Exception) -> tuple[str, str]:
+    """A clear message for a GLiNER model that failed to load, and a hint
+    without the underlying error's text (safe to show a tool's caller)."""
     if isinstance(exc, ImportError):
-        return (
-            f"GLiNER is required for GLiNERExtractor but could not be imported ({exc}). "
-            "Install with: pip install gliner"
+        hint = (
+            f"GLiNER model {model_name!r} could not load: the gliner package, or one it "
+            "needs, is not installed. Install with: pip install gliner"
         )
+        return f"{hint} ({exc})", hint
     msg = f"GLiNER model {model_name!r} could not be loaded: {exc}"
+    hint = f"GLiNER model {model_name!r} could not load (details are in the server log)."
     if not _protobuf_installed():
         # transformers needs protobuf to read the DeBERTa ``spm.model``
         # tokenizer; without it the load fails with "Error parsing line ...".
-        msg += ". The protobuf package is not installed; install it with: pip install protobuf"
-    return msg
+        fix = "The protobuf package is not installed; install it with: pip install protobuf"
+        msg += f". {fix}"
+        hint = f"GLiNER model {model_name!r} could not load. {fix}"
+    return msg, hint
 
 
 class GLiNERExtractor(EntityExtractor):
@@ -690,7 +695,7 @@ class GLiNERExtractor(EntityExtractor):
     # exception would hold its traceback, and the chunk text in its frames, for
     # the life of the process. After the window a new load is tried, so a
     # download that failed while offline can recover.
-    _LOAD_ERRORS: ClassVar[dict[str, tuple[float, str]]] = {}
+    _LOAD_ERRORS: ClassVar[dict[str, tuple[float, str, str]]] = {}
     _LOAD_RETRY_AFTER_S: ClassVar[float] = 60.0
 
     @classmethod
@@ -703,9 +708,9 @@ class GLiNERExtractor(EntityExtractor):
             cached = cls._MODEL_CACHE.get(model_name)
             failed = cls._LOAD_ERRORS.get(model_name)
             if cached is None and failed is not None:
-                failed_at, message = failed
+                failed_at, message, hint = failed
                 if time.monotonic() - failed_at < cls._LOAD_RETRY_AFTER_S:
-                    raise ModelLoadError(message)
+                    raise ModelLoadError(message, hint=hint)
                 del cls._LOAD_ERRORS[model_name]
             if cached is None:
                 try:
@@ -715,9 +720,9 @@ class GLiNERExtractor(EntityExtractor):
 
                     cached = GLiNER.from_pretrained(model_name)
                 except Exception as exc:
-                    message = _load_error(model_name, exc)
-                    cls._LOAD_ERRORS[model_name] = (time.monotonic(), message)
-                    raise ModelLoadError(message) from exc
+                    message, hint = _load_error(model_name, exc)
+                    cls._LOAD_ERRORS[model_name] = (time.monotonic(), message, hint)
+                    raise ModelLoadError(message, hint=hint) from exc
                 cls._MODEL_CACHE[model_name] = cached
         return cached
 

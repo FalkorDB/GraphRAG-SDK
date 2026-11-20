@@ -29,6 +29,7 @@ from graphrag_sdk.core.exceptions import (
     LatencyBudgetExceededError,
     LLMError,
     LLMTimeoutError,
+    ModelLoadError,
     ReadOnlyViolation,
     RetrieverError,
     SchemaValidationError,
@@ -383,6 +384,11 @@ def describe_error(name: str, exc: BaseException) -> str:
     elif isinstance(exc, RetrieverError):
         message = f"{name} failed during retrieval ({kind})."
         hint = "Retry with fewer paths."
+    elif isinstance(exc, ModelLoadError):
+        # ``hint`` is SDK-written (the model, what to install), not the
+        # underlying error's text.
+        message = f"{name} failed: the entity-extraction model could not load ({kind})."
+        hint = redact(exc.hint)
     elif isinstance(exc, (ConfigError, SchemaValidationError)):
         message = f"{name} failed: the server is misconfigured ({kind})."
         hint = (
