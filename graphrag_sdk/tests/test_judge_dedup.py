@@ -132,12 +132,14 @@ def test_a_member_number_the_set_lacks_spoils_the_set():
     assert parse_groups(text, [2, 2]) == {0: [[0, 1]]}
 
 
-def test_a_merged_name_on_a_one_member_group_spoils_the_set():
-    """A NAME is the name of a merged entity; given to a member left alone,
-    the answer contradicts itself (measured: the model kept "Tim Cook" and
-    "Timothy Cook" apart and named each). The set is asked again."""
+def test_a_named_one_member_group_stands_alone():
+    """A one-member group merges nothing, whatever NAME or KEEP it carries:
+    the member stands alone and the name is not used. Rejecting the set
+    instead left it unanswered, since the model gave the same answer every
+    time it was asked (measured: gpt-4.1, three asks, the set stayed pending)."""
     text = "SET 1 GROUP: 1 | NAME: Tim Cook\nSET 1 GROUP: 2 | NAME: Timothy Cook"
-    assert parse_groups(text, [2]) == {}
+    assert parse_groups(text, [2]) == {0: [[0], [1]]}
+    assert _verdicts(text, [[10, 11]]).different == {(10, 11)}
     assert parse_groups("SET 1 GROUP: 1, 2 | NAME: Tim Cook", [2]) == {0: [[0, 1]]}
 
 
@@ -337,7 +339,6 @@ def test_pack_prompts_keeps_an_oversized_set_within_budget():
     assert len(enc.encode(prompts[0])) <= PROMPT_TOKEN_BUDGET
 
 
-
 def test_every_judge_prompt_opens_with_the_same_cacheable_instructions():
     """The provider caches a prompt prefix identical across calls once it is
     1,024 tokens or longer. The judge's instructions come before anything a
@@ -356,6 +357,7 @@ def test_every_judge_prompt_opens_with_the_same_cacheable_instructions():
     for p in (p1, p2):
         assert p.index("DECISION PROCEDURE") < p.index("--- Set 1 ---")
         assert p.index("OUTPUT") < p.index("--- Set 1 ---")
+
 
 # ── the judge and the run's decisions, simulated ───────────────────────────
 #
@@ -482,10 +484,27 @@ def test_the_judge_sends_its_concurrency_to_the_llm():
 
 
 def test_an_answer_that_is_not_a_clean_partition_is_not_a_verdict():
-    for answer in ("SET 1 GROUP: 1, 2, 7", "SET 1 GROUP: 1 | NAME: IBM", "SET 2 NONE"):
+    for answer in ("SET 1 GROUP: 1, 2, 7", "SET 2 NONE"):
         sim = _sim(judge=NameOracleLLM(rounds=[answer]))
         assert sim.merged == 0, answer
         assert set(_retried(sim)) == {"e1", "e2"}, answer
+
+
+def test_a_member_written_twice_in_an_answer_is_not_a_verdict():
+    """``1, 1`` is read as written, so the run's check sees the member listed
+    twice and asks again; it is not folded into a one-member group."""
+    assert parse_groups("SET 1 GROUP: 1, 1 | NAME: IBM", [2]) == {}
+    assert parse_groups("SET 1 GROUP: 1, 2, 2", [2]) == {}
+    assert parse_groups("SET 1 GROUP: 2, 1", [2]) == {0: [[0, 1]]}
+
+
+def test_a_judge_that_always_names_a_lone_member_still_decides_the_set():
+    """The model answered every ask with a named one-member group; the set
+    is decided (nothing merged) instead of staying pending after the re-asks."""
+    sim = _sim(judge=NameOracleLLM(rounds=["SET 1 GROUP: 1 | NAME: IBM\nEND"]))
+    assert sim.merged == 0
+    assert not _retried(sim)
+    assert {"e1", "e2"} <= set(sim.decisions.clear)
 
 
 def test_same_name_mentions_are_judged_even_without_name_vectors():
@@ -906,7 +925,7 @@ def test_a_label_holding_the_separator_is_refused_and_a_recorded_one_reads_back_
 def test_a_spoiled_answer_is_warned_about_once_per_answer(caplog):
     """One answer is parsed once: a spoiled set is one warning, not one per
     reading of the answer."""
-    llm = NameOracleLLM(rounds=["SET 1 GROUP: 1 | NAME: IBM\nSET 1 GROUP: 2\nEND"])
+    llm = NameOracleLLM(rounds=["SET 1 GROUP: 1, 2, 7\nEND"])
     with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.judge_dedup"):
         _sim(judge=llm)
     spoiled = [r for r in caplog.records if "has no verdict" in r.getMessage()]
@@ -967,7 +986,7 @@ def test_keep_names_members_and_an_attribute_ending_in_a_digit_is_not_one():
     assert _verdicts(text, order).keeps == {frozenset((10, 12)): {"address2": 12, "born": 10}}, (
         "member 2 is not in the group: its pick is dropped"
     )
-    assert parse_groups("SET 1 GROUP: 1 | KEEP: born=1\nSET 1 GROUP: 2", [2]) == {}
+    assert parse_groups("SET 1 GROUP: 1 | KEEP: born=1\nSET 1 GROUP: 2", [2]) == {0: [[0], [1]]}
 
 
 TIMS = [
@@ -1120,10 +1139,9 @@ def test_a_judge_gets_each_set_as_declared_and_answers_by_position():
         SetVerdict(groups=[JudgeGroup(members=[0, 1]), JudgeGroup(members=[1])]),
         SetVerdict(groups=[JudgeGroup(members=[0, 2])]),
         SetVerdict(groups=[JudgeGroup(members=[0, 0])]),
-        SetVerdict(groups=[JudgeGroup(members=[0], name="IBM")]),
         {"groups": [[0, 1]]},
     ],
-    ids=["overlapping", "a member the set lacks", "listed twice", "named alone", "not a verdict"],
+    ids=["overlapping", "a member the set lacks", "listed twice", "not a verdict"],
 )
 def test_whatever_the_judge_an_answer_counts_only_when_clean(answer):
     """The run checks every judge's answer; one that fails is no verdict, and

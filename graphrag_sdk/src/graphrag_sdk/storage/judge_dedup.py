@@ -663,12 +663,12 @@ def _usable(answer: Any, size: int) -> list[JudgeGroup] | None:
     ``size`` members, else ``None``.
 
     Groups that overlap — ``1, 2`` and ``1, 3`` — would merge 2 and 3 through
-    1 though the judge never put them together; a member the set does not
-    have, or a one-member group carrying a name or ``KEEP`` pick (the name or
-    values of a merged entity, given to an entity left alone), says the judge
-    lost track of the set. Each makes the whole set unanswered, so it is
-    asked again rather than half-read. A one-member group with neither says
-    what leaving the member out says.
+    1 though the judge never put them together, and a member the set does
+    not have says the judge lost track of the set. Each makes the whole set
+    unanswered, so it is asked again rather than half-read. A one-member group
+    says what leaving the member out says: it stands alone. A ``NAME`` or
+    ``KEEP`` on it is not used, since nothing is merged; rejecting the set for
+    it left the set unanswered, as the model gave the same answer every time.
     """
     if answer is None:
         return None
@@ -686,8 +686,6 @@ def _usable(answer: Any, size: int) -> list[JudgeGroup] | None:
             why = "a member number the set does not have"
         elif members & seen:
             why = "overlapping groups"
-        elif len(members) == 1 and (group.name or group.keep):
-            why = "a merged name given to a one-member group"
         if why is not None:
             logger.warning("judge dedup: a set answered with %s has no verdict", why)
             return None

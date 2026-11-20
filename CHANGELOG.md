@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The dedup judge accepts a one-member group.** The model sometimes answered
+  a set with a group of one entity carrying a name (`SET 1 GROUP: 5 | NAME:
+  ...`). The run rejected the whole set, asked again, got the same answer all
+  three times, and left the set's entities pending, so they were never
+  deduplicated. A one-member group now means that entity has no duplicate: it
+  stands alone and the name or `KEEP` on it is not used; the set's other groups
+  are kept.
+
 - **The agent asks before adding types to the user's ontology.** When
   ingestion drops types the ontology lacks, the MCP guide and the ingest hint
   told the agent to add them with `set_ontology` on its own, even when the user
