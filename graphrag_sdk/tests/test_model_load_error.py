@@ -96,6 +96,7 @@ def test_a_missing_protobuf_import_asks_for_protobuf_not_gliner(monkeypatch):
     """gliner importing fine but protobuf missing at load must still name
     protobuf, and the model."""
     _broken_gliner(monkeypatch, ModuleNotFoundError("No module named 'google'", name="google"))
+    monkeypatch.setattr(ee, "_protobuf_installed", lambda: False)
     with pytest.raises(ModelLoadError) as info:
         ee.GLiNERExtractor()._load_model()
     hint = info.value.hint
@@ -155,3 +156,67 @@ def test_toolkit_logs_the_cause_the_hint_points_to(caplog):
     with caplog.at_level("WARNING", logger="graphrag_sdk.tools.toolkit"):
         _file_error(exc)
     assert "Error parsing line in spm.model" in caplog.text
+
+
+def test_toolkit_redacts_the_hint_in_the_log(caplog):
+    exc = ModelLoadError("cause", hint="GLiNER model 'https://user:hunter2@host/m' could not load")
+    with caplog.at_level("WARNING", logger="graphrag_sdk.tools.toolkit"):
+        text = _file_error(exc)
+    assert "hunter2" not in caplog.text and "hunter2" not in text
+
+
+PROTOBUF, GLINER = "pip install protobuf", "pip install gliner"
+
+
+@pytest.mark.parametrize(
+    "exc, protobuf_installed, wants, rejects",
+    [
+        (ModuleNotFoundError("x", name="google.protobuf"), True, PROTOBUF, GLINER),
+        (ModuleNotFoundError("x", name="google"), False, PROTOBUF, GLINER),
+        (ModuleNotFoundError("x", name="google"), True, "'google'", "pip install protobuf"),
+        (ModuleNotFoundError("x", name="google.cloud"), False, "'google.cloud'", "pip install"),
+        (ImportError("cannot import name X"), False, PROTOBUF, GLINER),
+        (ModuleNotFoundError("x", name="gliner"), True, "pip install gliner", "protobuf"),
+    ],
+    ids=[
+        "protobuf",
+        "bare google, no protobuf",
+        "bare google, protobuf there",
+        "other google",
+        "unnamed, no protobuf",
+        "gliner",
+    ],
+)
+def test_import_failures_get_the_right_install_advice(
+    monkeypatch, exc, protobuf_installed, wants, rejects
+):
+    _broken_gliner(monkeypatch, exc)
+    monkeypatch.setattr(ee, "_protobuf_installed", lambda: protobuf_installed)
+    with pytest.raises(ModelLoadError) as info:
+        ee.GLiNERExtractor()._load_model()
+    hint = info.value.hint
+    assert wants in hint and rejects not in hint
+    assert "urchade/gliner_medium-v2.1" in hint
+
+
+async def test_cancelling_a_composite_is_not_replaced_by_a_members_load_error():
+    release = asyncio.Event()
+
+    class BrokenLater(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            await release.wait()
+            raise ModelLoadError("no model", hint="could not load")
+
+    class Hangs(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            await asyncio.Event().wait()
+            return []
+
+    composite = ee.CompositeExtractor([Hangs(), BrokenLater()])
+    task = asyncio.ensure_future(composite.extract_entities("Alice", ["Person"], "c1"))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    release.set()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task

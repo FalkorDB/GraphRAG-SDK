@@ -469,25 +469,21 @@ def _protobuf_installed() -> bool:
 def _load_error(model_name: str, exc: Exception) -> tuple[str, str]:
     """A clear message for a GLiNER model that failed to load, and a hint
     without the underlying error's text (safe to show a tool's caller)."""
-    missing = (getattr(exc, "name", None) or "").split(".")[0]
-    if isinstance(exc, ImportError) and missing == "google":
-        # protobuf itself is the missing import (``google.protobuf``).
-        hint = (
-            f"GLiNER model {model_name!r} could not load: the protobuf package is not "
-            "installed; install it with: pip install protobuf"
-        )
-        return f"{hint} ({exc})", hint
-    if isinstance(exc, ImportError) and missing and missing != "gliner":
-        hint = (
-            f"GLiNER model {model_name!r} could not load: the {missing!r} module it "
-            "needs is not installed; install the package that provides it."
-        )
-        return f"{hint} ({exc})", hint
     if isinstance(exc, ImportError):
-        hint = (
-            f"GLiNER model {model_name!r} could not load: the gliner package is not "
-            "installed. Install with: pip install gliner"
-        )
+        module = getattr(exc, "name", None) or ""
+        if module == "gliner" or module.startswith("gliner."):
+            what = "the gliner package is not installed. Install with: pip install gliner"
+        elif module.startswith("google.protobuf") or (
+            module in ("", "google") and not _protobuf_installed()
+        ):
+            # protobuf is ``google.protobuf``; an unnamed or bare ``google``
+            # import error is blamed on it only when it really is missing.
+            what = "the protobuf package is not installed; install it with: pip install protobuf"
+        elif module:
+            what = f"the {module!r} module it needs is not installed"
+        else:
+            what = "a module it needs could not be imported"
+        hint = f"GLiNER model {model_name!r} could not load: {what}"
         return f"{hint} ({exc})", hint
     msg = f"GLiNER model {model_name!r} could not be loaded: {exc}"
     hint = f"GLiNER model {model_name!r} could not load (details are in the server log)."
@@ -1378,6 +1374,12 @@ class CompositeExtractor(EntityExtractor):
                 if sp not in bucket:
                     bucket.append(sp)
 
+    @staticmethod
+    async def _cancel_and_drain(tasks: list[asyncio.Future[Any]]) -> None:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
     async def extract_entities(
         self,
         text: str,
@@ -1399,15 +1401,18 @@ class CompositeExtractor(EntityExtractor):
                     raise
                 except Exception:
                     pass  # an ordinary failure, handled below
-        except BaseException:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+        except (ImportError, OSError, ModelLoadError):
+            await self._cancel_and_drain(tasks)
             # A member's model that could not load is the error to report, even
             # when another member's fault happened to be seen first.
             for task in tasks:
                 if not task.cancelled() and isinstance(task.exception(), ModelLoadError):
                     raise task.exception() from None
+            raise
+        except BaseException:
+            # Cancellation or interpreter exit: stop the members and let it
+            # through unchanged.
+            await self._cancel_and_drain(tasks)
             raise
         results = [t.exception() or t.result() for t in tasks]
 

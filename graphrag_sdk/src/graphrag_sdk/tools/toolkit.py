@@ -375,7 +375,7 @@ def _file_error(exc: BaseException) -> str:
     if isinstance(exc, ModelLoadError):
         # Its hint is SDK-written (the model, what to install); the message
         # may quote the underlying error, so it stays in the log only.
-        logger.warning("A file failed: %s Cause: %s", exc.hint, redact(str(exc)))
+        logger.warning("A file failed: %s Cause: %s", redact(exc.hint), redact(str(exc)))
         return _short(redact(exc.hint), 300)
     logger.warning("A file failed (%s); details withheld.", type(exc).__name__)
     return (
