@@ -450,7 +450,8 @@ def _members_of(after: str) -> list[int] | None:
     listed = (part[head.end() :] if head else part).strip().lstrip("*` ").rstrip("*`. ")
     if not _MEMBER_LIST.fullmatch(listed):
         return None
-    return sorted({int(x) - 1 for x in re.findall(r"\d+", listed)})
+    # Repeats kept: the run's check rejects a member listed twice.
+    return sorted(int(x) - 1 for x in re.findall(r"\d+", listed))
 
 
 def cut_set(text: str, n_sets: int) -> int | None:

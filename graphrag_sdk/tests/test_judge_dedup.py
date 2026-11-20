@@ -490,6 +490,14 @@ def test_an_answer_that_is_not_a_clean_partition_is_not_a_verdict():
         assert set(_retried(sim)) == {"e1", "e2"}, answer
 
 
+def test_a_member_written_twice_in_an_answer_is_not_a_verdict():
+    """``1, 1`` is read as written, so the run's check sees the member listed
+    twice and asks again; it is not folded into a one-member group."""
+    assert parse_groups("SET 1 GROUP: 1, 1 | NAME: IBM", [2]) == {}
+    assert parse_groups("SET 1 GROUP: 1, 2, 2", [2]) == {}
+    assert parse_groups("SET 1 GROUP: 2, 1", [2]) == {0: [[0, 1]]}
+
+
 def test_a_judge_that_always_names_a_lone_member_still_decides_the_set():
     """The model answered every ask with a named one-member group; the set
     is decided (nothing merged) instead of staying pending after the re-asks."""
