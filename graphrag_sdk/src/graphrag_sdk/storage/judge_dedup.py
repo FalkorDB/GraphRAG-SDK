@@ -678,6 +678,8 @@ def _usable(
     Two exceptions say the judge meant a merge it did not write, so the set is
     asked again: two one-member groups given the same name, and a one-member
     group named as another member (its name or an alias, from ``entities``).
+    A NAME that is the lone member's own name or alias is neither: namesakes
+    the judge kept apart are each named as themselves.
     """
     if answer is None:
         return None
@@ -711,13 +713,15 @@ def _usable(
 
 def _lone_names_agree(lone: list[JudgeGroup], entities: Sequence[JudgeEntity]) -> bool:
     """Whether the NAMEs on one-member groups merely restate each member:
-    ``False`` (logged) when two share a name or one names another member."""
+    ``False`` (logged) when two share a name or one names another member.
+    A NAME that is the member's own name or alias is never a slip."""
     named: dict[str, int] = {}
     for group in lone:
         (member,) = group.members
         name = (group.name or "").strip().casefold()
+        own = _names(entities[member]) if member < len(entities) else set()
         others = [_names(e) for i, e in enumerate(entities) if i != member]
-        if name and (name in named or any(name in n for n in others)):
+        if name and name not in own and (name in named or any(name in n for n in others)):
             logger.warning(
                 "judge dedup: a set answered with a one-member group named as another "
                 "member has no verdict"

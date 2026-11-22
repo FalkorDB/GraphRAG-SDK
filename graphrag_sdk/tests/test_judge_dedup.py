@@ -1573,3 +1573,34 @@ def test_an_empty_named_group_from_a_custom_judge_does_not_abort_the_run():
     not reach the lone-member check and raise."""
     answer = SetVerdict(groups=[JudgeGroup(members=[], name="IBM", keep={"born": 0})])
     assert _usable(answer, 2) == []
+
+
+def _people(*names: str) -> list[JudgeEntity]:
+    return [JudgeEntity(name=n) for n in names]
+
+
+@pytest.mark.parametrize(
+    ("text", "members", "merged"),
+    [
+        # Namesakes the judge kept apart, each lone member named as itself.
+        ("SET 1 GROUP: 1 | NAME: John Smith\nEND", ("John Smith", "John Smith"), []),
+        (
+            "SET 1 GROUP: 1 | NAME: John Smith\nSET 1 GROUP: 2 | NAME: John Smith\nEND",
+            ("John Smith", "John Smith"),
+            [],
+        ),
+        # A correct answer: the company and its full name merge, the fruit stays.
+        (
+            "SET 1 GROUP: 1, 3 | NAME: Apple Inc.\nSET 1 GROUP: 2 | NAME: Apple\nEND",
+            ("Apple", "Apple", "Apple Inc."),
+            [[0, 2]],
+        ),
+    ],
+    ids=["namesake", "two namesakes", "apple"],
+)
+def test_a_lone_member_named_as_itself_is_a_verdict(text, members, merged):
+    """A NAME that is the lone member's own name says nothing about another
+    member, even when another member shares that name."""
+    groups = _usable(parse_answer(text, [len(members)])[0], len(members), _people(*members))
+    assert groups is not None
+    assert [sorted(g.members) for g in groups] == merged
