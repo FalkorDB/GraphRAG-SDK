@@ -57,6 +57,10 @@ llm = LiteLLM(
 | `temperature` | `float` | `0.0` | Sampling temperature |
 | `max_tokens` | `int \| None` | `None` | Max output tokens |
 
+Any other keyword argument is sent with every request, for example `reasoning_effort="low"`.
+
+**Reasoning models** (OpenAI o-series, gpt-5, gpt-6 and others) need no setting. Many of them reject a `temperature` other than 1 and take `max_completion_tokens` instead of `max_tokens`. When a model rejects one of the two, the SDK sends the request again at once, without the temperature or with `max_completion_tokens`, and keeps doing so for that LLM's later requests. LiteLLM rejects these itself, before anything is sent, for every model it knows; an Azure deployment name or a model newer than your LiteLLM costs at most one rejected request per parameter. With `reasoning_effort="none"` the temperature is sent, since a gpt-5.x model without reasoning takes one. `OpenRouterLLM` behaves the same way.
+
 ### Embedder
 
 ```python

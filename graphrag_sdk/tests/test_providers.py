@@ -652,6 +652,218 @@ class TestOpenRouterReasoningModelDetection:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# A rejected temperature / max_tokens is learned, and the request sent again
+# ═══════════════════════════════════════════════════════════════════
+
+
+class _Rejected(Exception):
+    """A provider's 400 answer, as LiteLLM and the OpenAI SDK raise it."""
+
+    status_code = 400
+
+
+# Wording of real rejections (OpenAI / Azure 400 answers, LiteLLM's own check).
+_TEMPERATURE_REJECTED = (
+    "litellm.BadRequestError: AzureException - Unsupported value: 'temperature' does "
+    "not support 0.0 with this model. Only the default (1) value is supported."
+)
+_MAX_TOKENS_REJECTED = (
+    "litellm.BadRequestError: OpenAIException - Unsupported parameter: 'max_tokens' "
+    "is not supported with this model. Use 'max_completion_tokens' instead."
+)
+
+
+class TestRejectedParams:
+    def test_names_the_rejected_parameter(self):
+        from graphrag_sdk.core.providers._sampling import rejected_params
+
+        assert rejected_params(_Rejected(_TEMPERATURE_REJECTED)) == {"temperature"}
+        # ``max_completion_tokens`` in the hint is not read as ``max_tokens``.
+        assert rejected_params(_Rejected(_MAX_TOKENS_REJECTED)) == {"max_tokens"}
+        assert rejected_params(
+            _Rejected("O-series models don't support temperature=0.0. Only temperature=1")
+        ) == {"temperature"}
+
+    def test_other_failures_name_nothing(self):
+        from graphrag_sdk.core.providers._sampling import rejected_params
+
+        # Not a 400.
+        assert rejected_params(RuntimeError(_TEMPERATURE_REJECTED)) == set()
+        server_error = _Rejected(_TEMPERATURE_REJECTED)
+        server_error.status_code = 500
+        assert rejected_params(server_error) == set()
+        # A 400 that rejects something else.
+        assert rejected_params(_Rejected("This model's maximum context length is 8192")) == set()
+        assert rejected_params(_Rejected("Unsupported parameter: 'logprobs'")) == set()
+
+    def test_reads_litellms_own_rejection(self):
+        """LiteLLM rejects temperature=0 for an o-series model before sending
+        anything; the port is closed, so a request that did go out fails as
+        a connection error, which names nothing."""
+        litellm = pytest.importorskip("litellm")
+        from graphrag_sdk.core.providers._sampling import rejected_params
+
+        with pytest.raises(Exception) as caught:
+            litellm.completion(
+                model="openai/o3",
+                messages=[{"role": "user", "content": "hi"}],
+                temperature=0.0,
+                api_key="sk-test",
+                api_base="http://127.0.0.1:9/v1",
+                num_retries=0,
+                timeout=2,
+            )
+        assert rejected_params(caught.value) == {"temperature"}
+
+
+class TestSamplingParams:
+    def test_name_guess_covers_o4_and_gpt6(self):
+        is_rm = LiteLLM._is_reasoning_model
+        assert is_rm("openai/o4-mini")
+        assert is_rm("openai/gpt-6-luna")
+        assert is_rm("azure/gpt-6.1-sol")
+        assert not is_rm("openai/gpt-4.1")
+        assert not is_rm("anthropic/claude-sonnet-4-5")
+        assert OpenRouterLLM._is_reasoning_model("openai/gpt-6-luna")
+
+    def test_reasoning_effort_none_keeps_the_temperature(self):
+        """With reasoning off a gpt-5.x model takes a temperature, so it is
+        sent; the token cap is still renamed."""
+        llm = LiteLLM(model="openai/gpt-5.5", reasoning_effort="none", max_tokens=100)
+        kw = llm._completion_kwargs("hi")
+        assert kw["temperature"] == 0.0
+        assert kw["reasoning_effort"] == "none"
+        assert kw["max_completion_tokens"] == 100
+        assert "max_tokens" not in kw
+
+    def test_a_request_built_before_the_change_is_sent_again(self):
+        """Another thread already dropped the temperature: a request that
+        still carried it is sent again, not failed."""
+        from graphrag_sdk.core.providers._sampling import SamplingParams
+
+        params = SamplingParams("azure/prod-chat")
+        stale = {"temperature": 0.0}
+        assert params.adapt(_Rejected(_TEMPERATURE_REJECTED), stale)
+        assert params.adapt(_Rejected(_TEMPERATURE_REJECTED), stale)
+        assert not params.adapt(_Rejected(_TEMPERATURE_REJECTED), {})
+
+
+class TestLiteLLMLearnsRejectedParams:
+    def test_invoke_drops_a_rejected_temperature_for_good(self):
+        mock_litellm = MagicMock()
+        mock_litellm.completion.side_effect = [
+            _Rejected(_TEMPERATURE_REJECTED),
+            _mock_litellm_completion_response("first"),
+            _mock_litellm_completion_response("second"),
+        ]
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            llm = LiteLLM(model="azure/prod-chat")
+            assert llm.invoke("hi").content == "first"
+            assert llm.invoke("again").content == "second"
+
+        sent = [c.kwargs for c in mock_litellm.completion.call_args_list]
+        assert len(sent) == 3
+        assert sent[0]["temperature"] == 0.0
+        assert "temperature" not in sent[1]
+        assert "temperature" not in sent[2]
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_learns_both_parameters_without_spending_retries(self):
+        mock_litellm = MagicMock()
+        mock_litellm.acompletion = AsyncMock(
+            side_effect=[
+                _Rejected(_TEMPERATURE_REJECTED),
+                _Rejected(_MAX_TOKENS_REJECTED),
+                _mock_litellm_completion_response("ok"),
+            ]
+        )
+        sleep = AsyncMock()
+        with (
+            patch.dict("sys.modules", {"litellm": mock_litellm}),
+            patch("graphrag_sdk.core.providers.litellm.asyncio.sleep", sleep),
+        ):
+            llm = LiteLLM(model="azure/prod-chat", max_tokens=300)
+            result = await llm.ainvoke("hi", max_retries=1)
+
+        assert result.content == "ok"
+        sleep.assert_not_awaited()
+        last = mock_litellm.acompletion.call_args_list[-1].kwargs
+        assert "temperature" not in last
+        assert "max_tokens" not in last
+        assert last["max_completion_tokens"] == 300
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_messages_learns_too(self):
+        from graphrag_sdk.core.models import ChatMessage
+
+        mock_litellm = MagicMock()
+        mock_litellm.acompletion = AsyncMock(
+            side_effect=[_Rejected(_TEMPERATURE_REJECTED), _mock_litellm_completion_response("ok")]
+        )
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            llm = LiteLLM(model="azure/prod-chat")
+            result = await llm.ainvoke_messages([ChatMessage(role="user", content="hi")])
+
+        assert result.content == "ok"
+        assert "temperature" not in mock_litellm.acompletion.call_args_list[-1].kwargs
+
+    def test_other_failures_are_not_sent_again(self):
+        mock_litellm = MagicMock()
+        mock_litellm.completion.side_effect = _Rejected("maximum context length is 8192")
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            llm = LiteLLM(model="azure/prod-chat")
+            with pytest.raises(_Rejected):
+                llm.invoke("hi")
+        assert mock_litellm.completion.call_count == 1
+
+    def test_a_parameter_is_dropped_once_then_the_failure_stands(self):
+        """A provider that still answers 'temperature' once it is gone is
+        not asked forever."""
+        mock_litellm = MagicMock()
+        mock_litellm.completion.side_effect = _Rejected(_TEMPERATURE_REJECTED)
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            llm = LiteLLM(model="azure/prod-chat")
+            with pytest.raises(_Rejected):
+                llm.invoke("hi")
+        assert mock_litellm.completion.call_count == 2
+
+
+class TestOpenRouterLearnsRejectedParams:
+    def test_invoke_drops_a_rejected_temperature(self):
+        mock_openai = MagicMock()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [
+            _Rejected(_TEMPERATURE_REJECTED),
+            _mock_openai_completion_response("ok"),
+        ]
+        mock_openai.OpenAI.return_value = mock_client
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            llm = OpenRouterLLM(model="openai/some-new-model", api_key="test")
+            assert llm.invoke("hi").content == "ok"
+
+        sent = [c.kwargs for c in mock_client.chat.completions.create.call_args_list]
+        assert sent[0]["temperature"] == 0.0
+        assert "temperature" not in sent[1]
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_renames_a_rejected_max_tokens(self):
+        mock_openai = MagicMock()
+        mock_async_client = MagicMock()
+        mock_async_client.chat.completions.create = AsyncMock(
+            side_effect=[_Rejected(_MAX_TOKENS_REJECTED), _mock_openai_completion_response("ok")]
+        )
+        mock_openai.AsyncOpenAI.return_value = mock_async_client
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            llm = OpenRouterLLM(model="openai/some-new-model", api_key="test", max_tokens=50)
+            result = await llm.ainvoke("hi", max_retries=1)
+
+        assert result.content == "ok"
+        last = mock_async_client.chat.completions.create.call_args_list[-1].kwargs
+        assert last["max_completion_tokens"] == 50
+        assert "max_tokens" not in last
+
+
+# ═══════════════════════════════════════════════════════════════════
 # TestLiteLLMEmbedder
 # ═══════════════════════════════════════════════════════════════════
 

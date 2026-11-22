@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Any reasoning model works without a setting.** `LiteLLM` and
+  `OpenRouterLLM` decided how to send `temperature` and the token cap by the
+  model's name, and knew only names starting `o1`, `o3` and `gpt-5`. A model
+  outside that list, such as `gpt-6-luna` (OpenAI's suggested replacement for
+  gpt-4.1 and gpt-4o-mini, which leave its API on 14 January 2027), `o4-mini`,
+  or any model behind an Azure deployment name, got `temperature=0.0` and
+  `max_tokens`, and a model that rejects them failed every call. The name is now
+  only a first guess (`o4` and `gpt-6` added): when a model rejects
+  `temperature` or `max_tokens`, the request is sent again at once without the
+  temperature, or with `max_completion_tokens`, and the LLM keeps that for its
+  later requests. These re-sends do not count against `max_retries` and wait
+  for no backoff. LiteLLM raises the rejection itself, before any network call,
+  for the models it knows, so they cost nothing; any other model costs at most
+  one rejected request per parameter. With `reasoning_effort="none"` the
+  temperature is sent, since a gpt-5.x model with reasoning off takes one.
+  LiteLLM's own `supports_reasoning` flag was not used: it is also true for
+  Claude and Gemini, which take a temperature.
+
 - **An entity's description is stored once.** A description of more than one
   piece (what several chunks said, or a merge) was stored twice: as the
   `descriptions` list and as `description`, the same text joined with `" | "`.
