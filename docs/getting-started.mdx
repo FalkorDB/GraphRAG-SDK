@@ -209,7 +209,7 @@ No model is involved, every column keeps its declared type, and a row and a pros
 
 ## 8. Finalize
 
-After all documents and tables have been ingested, run `finalize()`. It deduplicates entities across documents (and embeds their names), embeds relationships, and creates indexes:
+After all documents and tables have been ingested, run `finalize()`. It deduplicates entities across documents (and embeds their names), embeds relationships, creates indexes, and gives chunks readable names:
 
 ```python
 results = await rag.finalize()

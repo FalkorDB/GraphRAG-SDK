@@ -221,7 +221,7 @@ chunker = StructuralChunking(
 ```
 
 **Design Features:**
-- **Strict Fallback Configuration:** If you supply a custom `fallback_chunker` (to handle elements that individually exceed `max_tokens`), you **cannot** pass shorthand arguments like `overlap_sentences` or `encoding_name` to `StructuralChunking`. Those must be configured directly on your custom fallback chunker instance. This prevents configuration parameters from being silently dropped.
+- **Strict Fallback Configuration:** If you supply a custom `fallback_chunker` (to handle elements that individually exceed `max_tokens`), you **cannot** pass `max_tokens`, `overlap_sentences` or `encoding_name` to `StructuralChunking`: any of them raises `TypeError`. Those must be configured directly on your custom fallback chunker instance. This prevents configuration parameters from being silently dropped.
 - **Deep-Tree Resilience:** While loaders like `MarkdownLoader` produce flat element lists, the internal `_flatten` algorithm uses a recursive DFS approach. This guarantees future compatibility with highly nested DOM structures (like HTML or DOCX parsers) while preserving full hierarchical breadcrumbs.
 - **Graceful Raw Text Fallback:** Designed to compose safely with *any* loader. If the preceding loader does not extract structural AST elements (e.g., `PdfLoader` or `TextLoader` which output `elements=None`), the chunker gracefully bypasses its structural logic and delegates the entire raw text to the fallback chunker, without crashing or dropping content.
 
@@ -491,6 +491,7 @@ resolver = ExactMatchResolution(
     force_summary_threshold=3,     # descriptions at which an LLM summary is made (needs llm)
     max_summary_tokens=500,
     cross_label_merge=False,       # default False: never merge across labels
+    cross_label_min_descriptions=3,  # descriptions needed before a cross-label check (needs llm)
 )
 ```
 
@@ -629,6 +630,7 @@ retriever = MultiPathRetrieval(
     keyword_limit=10,       # accepted but not read; keyword caps are fixed (default: 10)
     enable_cypher=False,    # text-to-Cypher path, extra LLM call(s) per question (default: False)
     ontology=None,          # what generated Cypher is written against; GraphRAG keeps it current
+    router=None,            # optional path router choosing which paths run per question; None runs all
 )
 
 rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, retrieval_strategy=retriever)
@@ -750,7 +752,7 @@ A run adds what its judge spent — how much `usage()` grew while it ran — to 
 
 **Input — `JudgeSet`:** `entities`, each a `JudgeEntity` with `name`, `labels`, `aliases` (names it was already merged under), `description` and `attributes` (its values of the attributes the ontology declares for its types, e.g. `{"born": 1961, "role": "CEO"}`); and `types`, each a `JudgeType` with its `label`, `description` and declared `attributes` (`JudgeAttribute`: `name`, `type`, `description`). An entity under two types shows the attributes of both. Every field is document text: data to judge, never instructions.
 
-**Output — `SetVerdict`:** `groups`, each a `JudgeGroup` of `members` (positions in `JudgeSet.entities`, two or more), an optional `name` for the merged entity (one of its members' names or aliases; any other is ignored) and an optional `keep` (`{attribute: member}`: whose value the merged entity keeps where they disagree; the other value goes to `<attribute>__dropped`). A member no group lists is a different entity; `SetVerdict()` means nothing in the set merges.
+**Output — `SetVerdict`:** `groups`, each a `JudgeGroup` of `members` (positions in `JudgeSet.entities`, each listed once; two or more merge, one stands alone), an optional `name` for the merged entity (one of its members' names or aliases; any other is ignored) and an optional `keep` (`{attribute: member}`: whose value the merged entity keeps where they disagree; the other value goes to `<attribute>__dropped`). A member no group lists is a different entity; `SetVerdict()` means nothing in the set merges.
 
 ```python
 from graphrag_sdk import JudgeGroup, SetVerdict

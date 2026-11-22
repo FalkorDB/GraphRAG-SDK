@@ -93,7 +93,7 @@ Because a text-mode id is derived from the text, two `ingest(text=...)` calls wi
 
 #### Unchanged content is skipped
 
-Before chunking, the pipeline hashes the loaded text (SHA-256). If the graph already holds a Document with this id and the same `content_hash`, `ingest()` returns at once: no chunking, NER, LLM or graph writes. The result says so:
+Before chunking, the pipeline hashes the loaded text (SHA-256). If the graph already holds a Document with this id and the same `content_hash`, `ingest()` returns at once: no chunking, NER, LLM calls or document writes (the indexes are still ensured and the graph's config node is refreshed). The result says so:
 
 ```python
 result = await rag.ingest("docs/a.md")       # second time, file unchanged
@@ -226,7 +226,7 @@ your documents need alongside the ones your tables add.
 
 ---
 
-**What was pruned.** `IngestionResult.metadata["pruned"]` says what this step removed, so you can see what the ontology misses: `entities` (undeclared label → count), `relations` (undeclared type → count), `pattern_mismatches` (type → `"Source->Target"` → count), `dangling` (relations whose endpoint was dropped) and `unknown` (entities kept as `Unknown`, which is how extraction stores a type outside the declared ones). Only non-empty keys appear; `{}` means nothing was pruned.
+**What was pruned.** `IngestionResult.metadata["pruned"]` says what this step removed, so you can see what the ontology misses: `entities` (undeclared label → count), `relations` (undeclared type → count), `pattern_mismatches` (type → `"Source->Target"` → count), `pattern_examples` (type → `"Source->Target"` → one dropped fact, beside `pattern_mismatches`), `dangling` (relations whose endpoint was dropped) and `unknown` (entities kept as `Unknown`, which is how extraction stores a type outside the declared ones) and `unknown_endpoints` (type → count of relations dropped because an endpoint is an `Unknown` entity; no pattern can name `Unknown`, so these point at a missing entity type and are left out of `pattern_mismatches`). Only non-empty keys appear; `{}` means nothing was pruned.
 
 ### Step 6 — Resolve Duplicates
 
@@ -238,7 +238,7 @@ your documents need alongside the ones your tables add.
 - No embeddings, no LLM calls; zero added cost
 - Ingest is per document, so a resolver here can only compare one file's entities with each other — the cross-document duplicates that matter (`Airbus` in one file, `Airbus SE` in another) are handled once, at `finalize()`
 
-The facade's default is `ExactMatchResolution(llm=None, cross_label_merge=False)`. Given an `llm`, `ExactMatchResolution` replaces the joined `description` with a single LLM-written summary once a group has `force_summary_threshold` (default 3) descriptions or more; the `descriptions` list is kept either way. `cross_label_merge=True` additionally puts same-name groups spanning two labels to the LLM, once they have `cross_label_min_descriptions` (default 3) descriptions between them.
+The facade's default is `ExactMatchResolution(llm=None, cross_label_merge=False)`. Given an `llm`, `ExactMatchResolution` replaces the joined `description` with a single LLM-written summary once a group has `force_summary_threshold` (default 3) descriptions or more. Either way the descriptions live only in `description` (with `description_piece_count`); no separate `descriptions` list is written. `cross_label_merge=True` additionally puts same-name groups spanning two labels to the LLM, once they have `cross_label_min_descriptions` (default 3) descriptions between them.
 
 **Alternative: LLMVerifiedResolution**
 - Runs the same exact-match pass first, then embeds each surviving entity's `name: description`, finds candidate pairs by similarity (floor `unified_threshold`, default 0.65), merges same-label pairs at or above `hard_threshold` (default 0.95) outright and asks the LLM about the rest (a cross-label pair always goes to the LLM, whatever it scores)
@@ -282,7 +282,7 @@ For details on resolution strategies, see [Strategies](/strategies).
 - Nodes are written via `UNWIND $batch AS item MERGE (n:Label {id: item.id}) SET n += item.properties`
 - Relationships are written similarly, using label hints for efficient MATCH operations
 - Batch size: 500 items per query
-- Before writing into a label, the SDK creates range indexes on `id` and `entity_key` for it (and on `id` for `Document`, `Chunk` and `__Entity__`). A `MERGE` can only use an index on the label in its own pattern, so without these a large ingest grew quadratically; existing indexes are read once per process and only missing ones are created
+- Before writing into a label, the SDK creates range indexes on `id` and `entity_key` for it; every label written gets them, `Document`, `Chunk` and `__Entity__` included. A `MERGE` can only use an index on the label in its own pattern, so without these a large ingest grew quadratically; existing indexes are read once per store (`GraphStore` instance; `delete_all()` makes it read them again) and only missing ones are created
 - Writes that share a key within one batch are folded before sending, as if written one at a time: later properties win, an entity's descriptions are joined, and a `RELATES` edge's `source_chunk_ids` are combined. A `RELATES` edge's `source_chunk_ids` on the graph is likewise a union across ingests, not the last writer's list. An entity has no such list: its `MENTIONED_IN` edges say which chunks mention it
 - String values have control characters (other than tab, newline and carriage return) stripped, `None` values are dropped, and dict values are stored as JSON strings
 - Entity nodes automatically get the `__Entity__` secondary label (structural nodes like Chunk and Document do not). `Document` and `Chunk` are reserved and refused as entity types
@@ -325,7 +325,7 @@ A chunk left without an embedding (for example by a rate-limited embedder) is re
 | Call | Returns |
 |------|---------|
 | `ingest("a.pdf")` or `ingest(text=...)` | `IngestionResult` |
-| `ingest("employees.csv")` | `StructuredIngestionResult` — it reports `records`, `entities`, `edges` and the like instead of chunk counts; see [Structured Ingestion](/structured-ingestion#keeping-a-table-in-sync) |
+| `ingest("employees.csv")` | `StructuredIngestionResult` for an entity table, `RelationshipIngestionResult` for a relationship-only table — they report `records`, `entities`, `edges` and the like instead of chunk counts; see [Structured Ingestion](/structured-ingestion#keeping-a-table-in-sync) |
 | `ingest(["a.pdf", "b.md"])` | `list[IngestionResult \| Exception]`, aligned by index; one failing source does not abort the batch. A list may not contain a table: `ValueError` is raised before anything is ingested |
 
 ```python

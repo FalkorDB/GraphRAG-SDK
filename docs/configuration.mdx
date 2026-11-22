@@ -69,7 +69,7 @@ config = ConnectionConfig.from_url(
 )
 ```
 
-The URL format is `redis://[user:pass@]host[:port][/db]` (plaintext) or `rediss://...` (TLS). Any other scheme raises `ValueError`. Keyword arguments override the values parsed from the URL.
+The URL format is `redis://[user:pass@]host[:port]` (plaintext) or `rediss://...` (TLS); a `/db` path is ignored. A URL with no scheme is accepted too; any other scheme raises `ValueError`. Keyword arguments override the values parsed from the URL.
 
 ### Passing to GraphRAG
 
@@ -248,6 +248,9 @@ One `llm` serves every LLM call the SDK makes, unless you pass another for a spe
 | Answer generation | `completion()` | Uses the instance's `llm` |
 | Dedup judge | `finalize()` / `deduplicate_entities()` | A gpt-4.1-class model: `finalize(judge=LLMJudge(gpt41))`. See [Post-Ingestion](#7-post-ingestion) |
 | Mapping proposal for an undeclared table | `ingest()` of a `.csv` with no mapping | One call per table (up to 3 when a proposal does not fit the data) |
+| Description summary | `finalize()` | One call per entity holding more than 5 description pieces; uses the instance's `llm` |
+| Ingestion planning | `ingest(auto=True)` | `LLMIngestionPlanner` with the instance's `llm` |
+| Question rewrite | `completion(rewrite_question_with_history=True)` | Uses the instance's `llm` |
 
 ---
 
@@ -544,6 +547,7 @@ extractor = GraphExtraction(llm=my_llm, max_concurrency=6)
 | `keyword_limit`      | `int` | `10`    | Accepted but not read: the keyword caps are fixed (8 LLM keywords plus 12 question words). |
 | `enable_cypher`      | `bool` | `False` | Add the text-to-Cypher path.                         |
 | `ontology`           | `Ontology \| None` | `None` | The ontology generated Cypher is written against. |
+| `router`             | path router \| `None` | `None` | Optional path router (`HeuristicPathRouter`, `LLMPathRouter`) that chooses which paths run for each question; `None` runs all paths. |
 
 ### Text-to-Cypher
 
@@ -609,10 +613,10 @@ After all documents and tables have been ingested, call `finalize()`. It dedupli
 It bundles these steps in order:
 
 1. Remove NULL-name stub entities left by legacy writes (only nodes no mapping wrote).
-2. `deduplicate_entities()` -- incremental and crash-safe: the entities whose check is pending (added since the last `finalize()`, or left pending by it) get exact-name dedup, then one judge pass over their nearest names in the whole graph. Dedup also gives every entity its name embedding. A second `finalize()` with nothing pending does no dedup work. An entity whose check did not complete stays pending and is retried; after 3 judged runs without a usable verdict it is reported in `dedup_unresolved` and no longer retried. An interrupted `finalize()` is finished by the next one. `finalize(dedup_all=True)` checks every entity.
+2. `deduplicate_entities()` -- incremental and crash-safe: the entities whose check is pending (added since the last `finalize()`, or left pending by it) get exact-name dedup, then one judge pass over their nearest names in the whole graph. Dedup also gives every entity its name embedding. Then every entity holding more than 5 description pieces gets one LLM summary of them in their place (`descriptions_summarised` counts them). A second `finalize()` with nothing pending does no dedup work. An entity whose check did not complete stays pending and is retried; after 3 judged runs without a usable verdict it is reported in `dedup_unresolved` and no longer retried. An interrupted `finalize()` is finished by the next one. `finalize(dedup_all=True)` checks every entity.
 3. `embed_relationships()` -- embed fact text on RELATES edges.
 4. `ensure_indices()` -- create all standard indexes (idempotent) and wait until they are built.
-5. Name the chunks -- an unnamed `Chunk` gets `"<document id> · chunk <index>"`, except a table row and a chunk of a document being replaced by `update()` (its id carries `__pending__`). Pass `name_chunks=False` to leave chunks as written.
+5. Name the chunks -- an unnamed `Chunk` gets `"<document id> · chunk <index>"`, except a table row and a chunk of a document being replaced by `update()` (its id carries `__pending__`). `chunks_named` counts them. Pass `name_chunks=False` to leave chunks as written.
 6. Report what it found (probable duplicates, property conflicts, proposed table mappings and more) at WARNING and on the result.
 
 One dedup run per graph at a time: a second `finalize()` or `deduplicate_entities()` -- from another process, or on the same `GraphRAG` -- raises `DedupRunActiveError` when it reaches dedup, and the running one is left untouched. `update()` and deletes may run meanwhile.
@@ -639,7 +643,7 @@ All `FinalizeResult` fields are listed in the [API Reference](/api-reference#fin
 
 ### Choosing the judge model
 
-`finalize()` calls the LLM: the dedup judge decides which candidates are one entity. By default the judge is `LLMJudge` with the instance's `llm`. Give it a gpt-4.1-class model: on the benchmark corpus a gpt-4.1-class judge made 9 wrong merges where gpt-4o-mini made 51.
+`finalize()` calls the LLM for the dedup judge, which decides which candidates are one entity, and for the description summaries. By default the judge is `LLMJudge` with the instance's `llm`. Give it a gpt-4.1-class model: on the benchmark corpus a gpt-4.1-class judge made 9 wrong merges where gpt-4o-mini made 51.
 
 ```python
 from graphrag_sdk import LiteLLM, LLMJudge

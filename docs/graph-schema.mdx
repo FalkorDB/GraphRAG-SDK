@@ -72,6 +72,7 @@ The layers are connected by `MENTIONED_IN` edges, which link entities to the chu
 | `id` | `string` | Deterministic: `chunk-` plus a SHA-256 prefix of the document id, the chunk's position and its text, so re-ingesting the same document finds the same chunks |
 | `text` | `string` | The chunk's text content |
 | `index` | `integer` | Position within the document (0-based) |
+| `name` | `string` | Readable name set by `finalize()`: `<document id> · chunk <index>`. Not set on record chunks; `finalize(name_chunks=False)` skips it |
 | `embedding` | `vecf32` | Vector embedding for semantic search (added in Step 9) |
 | Chunker metadata | varies | Written by the chunking strategy. The default `SentenceTokenCapChunking` writes `strategy`, `max_tokens`, `overlap_sentences`, `token_count`, `sentence_count` and `char_count`; `FixedSizeChunking` writes `start_char`, `end_char`, `chunk_size` and `chunk_overlap`; `ContextualChunking` writes `context_prefix` and `original_chunk`, the chunk's text without the prefix, which `MultiPathRetrieval` shows as the passage |
 | `extracted_ops` | `list[string]` | Ids of the ontology-evolution backfills that have already processed this chunk, so an interrupted backfill resumes where it stopped |
@@ -174,11 +175,13 @@ Deduplicated by `(entity_id, chunk_id)`. Written once and deleted with its chunk
 | `description` | `string` | Relationship description from LLM (extracted edges only) |
 | `src_name` | `string` | Source entity name at extraction time (extracted edges only). A dedup merge leaves it as it was, so retrieval and the agent tools name an edge's ends from its endpoint nodes |
 | `tgt_name` | `string` | Target entity name at extraction time (extracted edges only); see `src_name` |
-| `source_chunk_ids` | `list[string]` | Chunks containing evidence for this relationship (a table edge: the row's record chunk) |
+| `source_chunk_ids` | `list[string]` | Chunks containing evidence for this relationship. A `Link` edge: the row's record chunk; an edge a relationship table wrote has none from it |
+| `structured_sources` | `list[string]` | Signatures of the relationship tables that wrote the edge |
+| `relationship_mapping_<signature>` | `integer` | The run snapshot of that relationship table's last write of the edge; a re-ingest takes the table's contribution off the edges its run did not write |
 | `spans` | `string` (JSON) | Character offsets of the evidence sentence (omitted when coreference resolution rewrites the chunk) |
 | Declared attributes | varies | Values for the `Attribute`s your ontology declares on the relation |
 | `<signature>__<property>` | varies | A `Link`'s own properties, always signed with the declaring table (`employees__since`) |
-| `embedding` | `vecf32` | Vector embedding of the `fact` text (added during `finalize()`) |
+| `embedding` | `vecf32` | Vector embedding of the `fact` text (added during `finalize()`). An edge only relationship tables wrote (no `source_chunk_ids`) gets none |
 
 Edge identity includes `rel_type`: two facts of different types between the same two entities are two edges, and a dedup merge keeps both.
 
@@ -246,7 +249,7 @@ Every write is a `MERGE` on `id`, and a `MERGE` can only use an index on the lab
 | Every entity label a write touches (`Person`, `Organization`, …) | `id` and `entity_key` |
 | A table's own label, which every table write looks its rows up on by key | the table's signed key column (e.g. `employees__employee_id`) |
 
-Without them, writing *n* nodes cost O(n²). Existing indexes are read once per process and only the missing ones are created.
+Without them, writing *n* nodes cost O(n²). Existing indexes are read once per store (`GraphStore` instance; `delete_all()` makes it read them again) and only the missing ones are created.
 
 ---
 
@@ -334,7 +337,7 @@ Avoid the names the SDK writes itself (`name`, `description`, `source_chunk_ids`
 
 ### Tables in the Ontology
 
-`Ontology(tables=[TableMapping(...)])` declares how a CSV or other tabular source becomes entities and edges. A mapping's labels, typed columns and links are registered in the ontology before any document is extracted. See [Structured Ingestion](/structured-ingestion).
+`Ontology(tables=[TableMapping(...)])` declares how a CSV or other tabular source becomes entities and edges, and `Ontology(relationship_tables=[RelationshipMapping(...)])` a table whose rows only connect existing entities. A mapping's labels, typed columns and links are registered in the ontology before any document is extracted. See [Structured Ingestion](/structured-ingestion).
 
 ### Open Ontology Mode
 

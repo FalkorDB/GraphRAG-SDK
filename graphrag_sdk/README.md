@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/LICENSE)
-[![Version: 1.0.0](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/pyproject.toml)
+[![Version: 1.6.0](https://img.shields.io/badge/version-1.6.0-blue.svg)](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/pyproject.toml)
 [![Tests: 582 passing](https://img.shields.io/badge/tests-582%20passing-brightgreen.svg)](https://github.com/FalkorDB/GraphRAG-SDK/tree/main/graphrag_sdk/tests/)
 
 GraphRAG SDK builds knowledge graphs from documents and answers questions over them using retrieval-augmented generation. Every algorithmic concern (chunking, extraction, resolution, retrieval, reranking) is a swappable strategy behind an abstract interface. The default pipeline scores **~85% accuracy** on a 100-question benchmark using GPT-4.1.
@@ -39,7 +39,7 @@ asyncio.run(main())
 pip install graphrag-sdk[litellm]       # OpenAI, Azure, Anthropic, 100+ models
 pip install graphrag-sdk[openrouter]    # OpenRouter models
 pip install graphrag-sdk[pdf]           # PDF ingestion
-pip install graphrag-sdk[all]           # Everything
+pip install graphrag-sdk[all]           # Common providers, PDF and the MCP server
 ```
 
 ### Prerequisites
@@ -63,7 +63,7 @@ async def main():
         embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small", dimensions=256),
     ) as rag:
         await rag.ingest("report.pdf")                              # PDF
-        await rag.ingest("source_id", text="Alice works at Acme.")  # Raw text
+        await rag.ingest(text="Alice works at Acme.", document_id="source_id")  # Raw text
         await rag.finalize()                                         # Dedup + index
 
         # Retrieve context only
@@ -140,9 +140,9 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 
 | Concern | ABC | Built-in Options | Default |
 |---------|-----|-----------------|---------|
-| **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader` | Auto-detect by extension |
-| **Chunking** | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` | `FixedSizeChunking` |
-| **Extraction** | `ExtractionStrategy` | `GraphExtraction` (GLiNER2 + LLM) | `GraphExtraction` |
+| **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader`, `MarkdownLoader` | Auto-detect by extension |
+| **Chunking** | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` | `SentenceTokenCapChunking` (384 tokens) |
+| **Extraction** | `ExtractionStrategy` | `GraphExtraction` (GLiNER + LLM) | `GraphExtraction` |
 | **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `LLMVerifiedResolution` | `ExactMatch` at ingest; incremental judged cross-document dedup in `finalize()` (`LLMVerifiedResolution` opt-in) |
 | **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | `MultiPath` (5-path) |
 | **Reranking** | `RerankingStrategy` | `CosineReranker` | Cosine |

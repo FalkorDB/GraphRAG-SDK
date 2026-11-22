@@ -34,7 +34,7 @@ There is no `mapping` argument. A `.csv` is records, its declaration is already 
 
 The same input always produces the same graph, because identity comes from a declared key and every type is declared rather than inferred.
 
-`Column`, `Link`, `TableMapping`, `MappingError`, `CsvRecordLoader`, `RecordLoaderStrategy`, `RecordBatch` and `TextLoader` are all importable from `graphrag_sdk`. The result type, `StructuredIngestionResult`, lives in `graphrag_sdk.ingestion.structured_pipeline`.
+`Column`, `Link`, `TableMapping`, `MappingError`, `CsvRecordLoader`, `RecordLoaderStrategy`, `RecordBatch` and `TextLoader` are all importable from `graphrag_sdk`, and so are the relationship-table types `RelationshipMapping`, `EndpointMapping`, `RelationshipIngestionResult` and `RelationshipResolutionError`. The result type, `StructuredIngestionResult`, lives in `graphrag_sdk.ingestion.structured_pipeline`.
 
 ---
 
@@ -220,7 +220,10 @@ does not embed an edge only relationship tables own; an edge a document also
 supports is embedded as before. Find the edges with graph queries (`rag.query()`, or
 text-to-Cypher with `enable_cypher=True`), or by following edges from an entity
 found by name, which needs the endpoint nodes to have a `name` (`name=` on their
-`TableMapping`). On an edge a document also wrote, the table's write keeps the
+`TableMapping`). The default retrieval walk from a found entity does this: with a
+question vector it fetches these unembedded edges apart, a few per entity, keeps up
+to a fifth of its relation lines for them, and shows their table values as
+`[key: value]`. On an edge a document also wrote, the table's write keeps the
 document's `fact`, chunks and embedding. If the document's cleanup later leaves
 the edge to the table alone, its embedding is removed.
 
@@ -596,7 +599,7 @@ property onto the key's slot is refused, because that property would otherwise
 be written over the row's identity.
 
 <Warning>
-`name` is not a mappable property — it has its own `name=` slot. It and `id`, `type`, `description`, `source_chunk_ids`, `spans`, `embedding`, `entity_key` and `is_stub`, all of which the SDK writes itself, are refused as property names with `MappingError`. A *column* with one of those names is fine: point a property with another name at it, or use it as `key=`, and it is stored under its `col_` name.
+`name` is not a mappable property — it has its own `name=` slot. It and `id`, `type`, `description`, `description_piece_count`, `source_chunk_ids`, `spans`, `embedding`, `entity_key` and `is_stub`, all of which the SDK writes itself, are refused as property names with `MappingError`. A *column* with one of those names is fine: point a property with another name at it, or use it as `key=`, and it is stored under its `col_` name.
 </Warning>
 
 ### When the key is not unique
@@ -734,7 +737,7 @@ the label the link points at — releases the `entity_key` and `is_stub` it gave
 unless another table still keys the node, and takes the mapping and its signed
 properties out of the ontology, so the next `ingest()` of that filename proposes
 afresh. `drop_table()` works for declared and proposed mappings alike, matches the
-source by basename like `ingest()`, returns the refreshed `Ontology`, and raises
+exact stored `source` first and then the basename, returns the refreshed `Ontology`, and raises
 `ValueError` when no table of that name is in the ontology. The label stays, because a document or another table may use it;
 `drop_entity()` removes a label nothing else does — while a table maps rows to it or
 links to it, `drop_entity()` refuses and names the table, since the mapping would
@@ -1136,6 +1139,8 @@ the ranges overlap and no threshold exists.
 ---
 
 ## Retrieval
+
+Without text-to-Cypher, the default retrieval context still shows a row's typed values: a Key Entities line carries the node's own signed columns as `(key: value; …)` and a relation line the edge's as `[key: value; …]`, each cut near 200 characters.
 
 Aggregation over typed columns needs the text-to-Cypher path, which is what turns a question into a query against the ontology your mappings declared. Turn it on when you build the client:
 

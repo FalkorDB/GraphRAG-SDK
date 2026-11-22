@@ -80,9 +80,11 @@ Ingest resolves duplicates only within one document; it never sees two documents
    - One rule does merge across types: when a name exists under exactly one custom label a table mapping declared and under labels nothing declared, the declared entity absorbs the others (an extracted `Concept` "Carbon Farming" joins the declared `MitigationPractice`), with no judge. It never applies to a built-in label such as `Organization`, which the extractor always had, nor to a name two rows of the declared label share.
    - Everything else goes to the **judge**, a pluggable `DedupJudge` (`LLMJudge` by default; every run has one), which partitions small candidate sets of nearest names.
    - Every merge is decided first, written as a sealed plan, and applied one atomic query per merge, so an interrupted run is finished by the next.
+   - Then every entity whose description holds more than 5 pieces gets one LLM summary (`FinalizeResult.descriptions_summarised`).
 3. Embed `RELATES` facts.
 4. Ensure every index exists, waiting up to 10 minutes for builds to finish.
-5. Report findings (probable duplicates, property conflicts, proposed table mappings) at WARNING and on `FinalizeResult`.
+5. Give unnamed chunks a readable name, `"<document id> · chunk <index>"` (table-row chunks and documents `update()` is still replacing are skipped; `finalize(name_chunks=False)` turns it off; counted in `FinalizeResult.chunks_named`).
+6. Report findings (probable duplicates, property conflicts, proposed table mappings) at WARNING and on `FinalizeResult`.
 
 Dedup bookkeeping lives in SDK system nodes (`__GraphRAGProcessing__`) beside the `__GraphRAGConfig__` node, with no edges; `get_statistics()` does not count them. See [Storage](/storage).
 

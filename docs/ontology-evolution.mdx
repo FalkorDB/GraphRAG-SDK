@@ -54,6 +54,7 @@ Every call checks its labels first and raises `ValueError` for an unknown label,
 
 - **`rename_entity()`** follows through to the table mappings that name the label, as the type of their rows or the target of a `Link`, so the stored ontology stays valid and the table's next re-sync finds its rows under the new label.
 - **`drop_entity()`** refuses (`ValueError`) a label a table mapping maps rows to or links to, naming the table. The mapping registers the label again on the next start, so the drop could only be undone. Drop the table first with `drop_table()`, or rename the label.
+- **`rename_relation()`** and **`drop_relation()`** refuse (`ValueError`) a type a relationship table writes, and **`rename_attribute()`** and **`drop_attribute()`** refuse an attribute a relationship table resolves an endpoint by: its stored mapping would go on using the old name. `drop_table()` that relationship table first, or redeclare it.
 - Both may run while `finalize()` deduplicates. A drop records the entities it deletes for the running dedup, and a rename changes the labels a planned merge was read with, so either way the merge is skipped or read again rather than applied to a changed node.
 
 ### Group 3 — Atomic attribute evolution (LLM, invariant-enforcing)
@@ -79,10 +80,10 @@ Entity owners only. `add_attribute`, `drop_attribute` and `rename_attribute` on 
 Return: `BackfillResult`. Use after `add_entity` / `add_relation_pattern` if you want to populate instances from the existing corpus.
 
 ```python
-rag.backfill_entity(label, *, scope="all" | list[chunk_id], dry_run=False)
+rag.backfill_entity(label, *, scope="all" | list[chunk_id], concurrency=4, dry_run=False)
 # "Re-scan chunks for any entities of this type I might have missed."
 
-rag.backfill_relation_pattern(rel_label, source, target, *, dry_run=False)
+rag.backfill_relation_pattern(rel_label, source, target, *, scope="candidate-pairs", concurrency=4, dry_run=False)
 # "Re-scan candidate co-mention chunks for any edges of this pattern."
 ```
 

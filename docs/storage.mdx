@@ -61,7 +61,7 @@ SET r += item.properties
 SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]
 ```
 
-Structural nodes (`Document`, `Chunk`) and every other edge type use a plain `MERGE ... SET n += item.properties`, keyed on `id` for nodes and on the two endpoints for edges.
+Structural nodes (`Document`, `Chunk`) and every other edge type use a plain `MERGE ... SET n += item.properties`, keyed on `id` for nodes and on the two endpoints for edges. The exception is `MENTIONED_IN`: an edge is the only record of what its chunk said about the entity, so its write adds the new spans and description pieces to the ones the edge already holds instead of replacing them.
 
 **Why MERGE, not CREATE?** MERGE is idempotent — if a node or relationship already exists, it updates the properties rather than creating a duplicate. This makes re-ingestion safe.
 
@@ -71,7 +71,7 @@ Structural nodes (`Document`, `Chunk`) and every other edge type use a plain `ME
 
 ### Repeated Keys in One Batch
 
-A batch can hold the same entity or relationship twice, for example an entity seen in two chunks of one document. FalkorDB resolves a repeated key inside one `UNWIND ... MERGE` differently by engine (4.x kept the first row's values, 6.0.x the last), and only one row's values survived on either. `upsert_nodes()` and `upsert_relationships()` therefore merge rows that share a key before sending the batch, as if they were written one at a time: later properties win, an entity's descriptions are joined, and a `RELATES` edge's chunk lists are combined. Other labels and edge types keep the last write's list.
+A batch can hold the same entity or relationship twice, for example an entity seen in two chunks of one document. FalkorDB resolves a repeated key inside one `UNWIND ... MERGE` differently by engine (4.x kept the first row's values, 6.0.x the last), and only one row's values survived on either. `upsert_nodes()` and `upsert_relationships()` therefore merge rows that share a key before sending the batch, as if they were written one at a time: later properties win, an entity's descriptions are joined, a `MENTIONED_IN` edge's spans and descriptions are combined, and a `RELATES` edge's chunk lists and `structured_sources` are combined. Other labels and edge types keep the last write's list.
 
 ### Range Indexes on `id`
 
@@ -177,9 +177,9 @@ Embeds entity nodes that have no name vector. `finalize()` does not call it: ded
 
 ### Relationship Embedding (embed_relationships)
 
-RELATES edges with a `fact` property but no embedding are batch-embedded:
+RELATES edges with a `fact` property but no embedding are batch-embedded. An edge written only by relationship tables (it has `structured_sources` and no `source_chunk_ids`) is not embedded: it carries its mapping's one template fact, which would only take relationship-search slots. An edge a document also states is embedded as usual.
 
-1. **Query:** Find edges with `r.embedding IS NULL AND r.fact IS NOT NULL`
+1. **Query:** Find edges with `r.embedding IS NULL AND r.fact IS NOT NULL AND (size(coalesce(r.structured_sources, [])) = 0 OR size(coalesce(r.source_chunk_ids, [])) > 0)`
 2. **Embed:** Batch-embed the `fact` text
 3. **Write:** Store vectors on each edge individually (using internal FalkorDB edge IDs):
    ```cypher

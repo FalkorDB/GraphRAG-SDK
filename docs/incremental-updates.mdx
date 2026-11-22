@@ -43,7 +43,7 @@ Every primitive addresses a `Document` by its id:
 
 Pass `document_id=` to choose your own. An id may not contain the reserved marker `__pending__` (`ValueError`), which the update cutover uses for its transient documents.
 
-The pipeline stores a SHA-256 `content_hash` on the Document. Re-ingesting or updating byte-identical content is a no-op: `ingest()` of prose returns before chunking with `metadata["skipped_unchanged"] = True` and `chunks_indexed = 0`, `ingest()` of a table returns a `StructuredIngestionResult` with `no_op=True`, and `update()` returns `no_op=True`. No chunker, extractor, LLM or graph write runs. For a table the hash covers the mapping as well as the rows, so re-declaring a column's type is never mistaken for unchanged data.
+The pipeline stores a SHA-256 `content_hash` on the Document. Re-ingesting or updating byte-identical content is a no-op: `ingest()` of prose returns before chunking with `metadata["skipped_unchanged"] = True` and `chunks_indexed = 0`, `ingest()` of a table returns a `StructuredIngestionResult` with `no_op=True`, and `update()` returns `no_op=True`. No chunker, extractor or LLM runs and nothing of the document is written (`ingest()` still refreshes the graph's config node). For a table the hash covers the mapping as well as the rows, so re-declaring a column's type is never mistaken for unchanged data.
 
 The hash is written last, and only when every write was reported in full. A failed extraction, an edge the graph store dropped after a transient error, or a chunk left without an embedding withholds it, and `metadata["incomplete_writes"]` lists the shortfalls. The next `ingest()` or `update()` of that content then runs again and repairs the document instead of skipping it.
 
@@ -115,7 +115,7 @@ For a table, `metadata` carries the structured counts (`records`, `entities`, `r
 | Entity still referenced by another doc    | **Preserved.** Orphan cleanup is scoped to candidates from this document — never global. Its `MENTIONED_IN` edges to the deleted chunks go with them.                                     |
 | `RELATES` edge sourced only from old chunks | **Removed** as a stale fact (cleanup keyed on `source_chunk_ids`).                                                                                                                          |
 | `if_missing="ingest"` and id unknown      | Behaves like a fresh `ingest()`. `replaced_existing=False`.                                                                                                                                  |
-| A table's new export                      | A **re-sync**: a row deleted from the export is removed, a blanked cell loses its column, a moved foreign key leaves its old target, and a node another source still mentions survives with the table's signed columns and identity taken back. See [Structured Ingestion](/structured-ingestion). |
+| A table's new export                      | A **re-sync** (a relationship-only table is re-synced with `ingest()`; `update()` refuses it with `ValueError`): a row deleted from the export is removed, a blanked cell loses its column, a moved foreign key leaves its old target, and a node another source still mentions survives with the table's signed columns and identity taken back. See [Structured Ingestion](/structured-ingestion). |
 
 A Document records how it was written. Updating a table's Document from a prose file, or a prose Document from a table, raises `ValueError` rather than re-reading one as the other; `delete_document()` it first if the source really changed kind.
 
@@ -227,7 +227,7 @@ await rag.delete_document("some/path.md", if_missing="ignore")
 
 Heterogeneous batch — the convenience wrapper for CI-driven incremental ingestion. Dispatches each list to the right primitive in a fixed order:
 
-1. `deleted` → `delete_document()`
+1. `deleted` → `delete_document()`; an id that is no Document's but names a relationship table removes that table's edges and keeps its mapping (`drop_table()` removes both)
 2. `modified` → `update(if_missing="ingest")` (so a "modified" file the graph has never seen is upserted, not errored)
 3. `added` → `ingest()`
 
@@ -256,7 +256,7 @@ result = await rag.apply_changes(
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `added`              | New file paths to ingest.                                                                                                                                                                              |
 | `modified`           | File paths whose content changed.                                                                                                                                                                      |
-| `deleted`            | Document ids (typically file paths) to remove.                                                                                                                                                         |
+| `deleted`            | Document ids (typically file paths) to remove. An id that is no Document's but names a relationship table removes that table's edges and keeps its mapping.                                          |
 | `loader` / `chunker` / `extractor` / `resolver` | Strategy overrides forwarded to the add/update path. Ignored for deletes.                                                                                                                  |
 | `cache_unchanged_chunks` | Forwarded to `update()` for the `modified` list. See [Chunk-level extraction cache](#chunk-level-extraction-cache).                                                                                |
 | `max_concurrency`    | Parallelism cap for `ingest()` of the `added` list. Safe to raise — adds have no orphan-cleanup race surface.                                                                                          |
@@ -421,7 +421,7 @@ for line in result.dedup_unresolved + result.probable_duplicates:
 | Single doc, may or may not exist (upsert)                                | `update(..., if_missing="ingest")`        |
 | Single doc, remove it                                                    | `delete_document(...)`                    |
 | Single doc, remove it but the caller is not sure it was ever ingested    | `delete_document(..., if_missing="ignore")` |
-| A table's new export                                                     | `update("employees.csv")` or `ingest("employees.csv")` — both re-sync |
+| A table's new export                                                     | `update("employees.csv")` or `ingest("employees.csv")` — both re-sync; a relationship-only table only with `ingest()` (`update()` raises `ValueError`) |
 | A table and its mapping, gone for good                                   | `drop_table("employees.csv")`             |
 | PR diff or any heterogeneous batch                                       | `apply_changes(added=..., modified=..., deleted=...)` then `finalize()` |
 | Just added/changed one doc and you're about to query                     | `ingest()` or `update()` then `finalize()` |

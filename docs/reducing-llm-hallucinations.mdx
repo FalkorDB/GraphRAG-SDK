@@ -70,11 +70,12 @@ while the graph has no `RELATES` vector index
 `retrieve_chunks()` in
 [`chunk_retrieval.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/chunk_retrieval.py)).
 
-Both paths return a similarity score (higher is closer), but note where that score is and isn't
+Both searches score by similarity (higher is closer), but note where that score is and isn't
 used as a filter: facts are thresholded by `filter_facts_by_relevance()`,
 whereas chunk retrieval applies **no similarity floor** — it takes the top *k*
-and ranks them. Scores reach you, but low-relevance passages are not dropped
-for you.
+and ranks them. The scores stay inside the pipeline (`MultiPathRetrieval` items
+carry `score = None` unless you attach a reranker), and low-relevance passages
+are not dropped for you.
 
 ### Full-text / keyword search
 
@@ -86,8 +87,9 @@ fallback, so both contribute candidates every query.
 
 ### Graph traversal and relationship expansion
 
-Entities discovered in the question are expanded outward through the graph:
-1-hop direct relationships and 2-hop indirect connections
+Entities discovered in the question are expanded outward through the graph,
+following relationships in both directions up to three links deep and keeping
+the edges closest to the question
 (`expand_relationships()` in
 [`relationship_expansion.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/relationship_expansion.py)),
 plus `MENTIONED_IN` traversal from an entity back to the chunks it was
@@ -133,9 +135,9 @@ is lent the current ontology for that call, unless you construct it with
 
 Passage candidates gathered from every path are pooled, then reranked by
 cosine similarity against the question using the embeddings already stored on
-each `Chunk` node at ingestion time — no extra embedding API call while at
-least 90% of the candidates have a stored vector; below that, the candidates
-are re-embedded (`rerank_chunks()` in
+each `Chunk` node at ingestion time. The few candidates without one (mostly
+table rows, which ingestion does not embed) are embedded in one call; when
+fewer than 90% have a stored vector, all the candidates are re-embedded (`rerank_chunks()` in
 [`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)).
 Knowledge-graph facts go through a separate similarity-floor filter
 (`filter_facts_by_relevance()`) instead, since short fact strings have higher

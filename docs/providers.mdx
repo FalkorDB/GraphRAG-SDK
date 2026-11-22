@@ -57,7 +57,7 @@ llm = LiteLLM(
 | `temperature` | `float` | `0.0` | Sampling temperature |
 | `max_tokens` | `int \| None` | `None` | Max output tokens. A call may pass its own `max_tokens`, which wins; the dedup judge uses that to raise a low limit to 4,096 for its answers |
 
-Other keyword arguments are forwarded to LiteLLM.
+Other keyword arguments are forwarded to LiteLLM. For reasoning models (`o1`, `o3`, `gpt-5*`), `temperature` is not sent and `max_tokens` is sent as `max_completion_tokens`.
 
 ### Embedder
 

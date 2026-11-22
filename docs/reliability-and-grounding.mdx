@@ -522,7 +522,7 @@ an LLM keyword-extraction call, plus a text-to-Cypher call when
 ```python Async
 retrieved = await rag.retrieve("Who founded Acme Corp?")
 
-print(retrieved.metadata)          # e.g. {'strategy': 'multi_path'}
+print(retrieved.metadata)          # e.g. {'strategy': 'multi_path', 'provenance': {...}}
 print(len(retrieved.items))
 
 for item in retrieved.items:

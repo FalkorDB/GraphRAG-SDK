@@ -104,7 +104,7 @@ draft = await Ontology.from_sources(
 
 With `llm` provided, after type detection the pipeline runs **one LLM call per detected type**: it shows the LLM the catalog's full property list plus up to 5 chunks where that type was detected, and asks "which of these properties are stated or implied in any chunk?" The result trims each entity to a corpus-specific subset.
 
-Cost: ~1 LLM call per *type*, not per chunk — much cheaper than `method="llm"`. Output is deterministic for label invention (still purely catalog) but stochastic for which properties survive (the LLM decides). When the trim's answers never validate, it soft-fails to the catalog's full list rather than silently losing schema information. An error from the LLM call itself propagates and fails the call.
+Cost: ~1 LLM call per *type*, not per chunk — much cheaper than `method="llm"`. Output is deterministic for label invention (still purely catalog) but stochastic for which properties survive (the LLM decides). When the trim's answers never validate, it soft-fails to the catalog's full list rather than silently losing schema information. A temporary model error that outlasts the retries also keeps the catalog's full list; any other error from the LLM call propagates and fails the call.
 
 #### Catalogs
 
@@ -217,7 +217,7 @@ Practical consequences:
 - **`suggest_schema_extensions` will never propose `name` as a new attribute.** It's conceptually always present on every entity, so adding it is a no-op.
 - **You should not declare `name` with a non-STRING type** — the SDK writes a string. The prompts ask for `name: STRING`, but the discovery validator does not reject another type for `name`, so check it when you review a draft.
 
-Other reserved-system names (`id`, `description`, `description_summarised`, `source_chunk_ids`, `spans`, `rel_type`, `fact`, `src_name`, `tgt_name`, `label`) are *not* schema-visible — they are internal SDK plumbing and the discovery validator still rejects them in proposals.
+Other reserved-system names (`id`, `description`, `description_summarised`, `description_piece_count`, `descriptions`, `source_chunk_ids`, `spans`, `rel_type`, `fact`, `src_name`, `tgt_name`, `label`) are *not* schema-visible — they are internal SDK plumbing and the discovery validator still rejects them in proposals.
 
 ---
 

@@ -452,5 +452,6 @@ result = await rag.completion("Your question", reranker=reranker)
 | [`cypher_generation.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/cypher_generation.py) | Text-to-Cypher: ontology prompt, generation, validation, execution, column-labelled rows |
 | [`base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/base.py) | RetrievalStrategy abstract base class |
 | [`local.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/local.py) | Simple vector + 1-hop retrieval (alternative strategy) |
+| [`path_router.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/path_router.py) | Path routers (`HeuristicPathRouter`, `LLMPathRouter`) and `RETRIEVAL_PATHS` |
 | [`cosine.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/reranking_strategies/cosine.py) | External cosine reranker |
 | [`router.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/router.py) | Semantic router for conditional strategy selection |
