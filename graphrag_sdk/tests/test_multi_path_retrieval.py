@@ -886,6 +886,28 @@ class TestExpandRelationships:
     async def test_room_first_link_lines_do_not_use_goes_deeper(self):
         assert self._hops(await self._expand(3, 25)) == (3, 17)
 
+    async def test_table_only_edges_keep_the_deeper_share_with_a_vector(self):
+        # No edge has an embedding (a graph built from relationship tables):
+        # with a question vector every line is unembedded, and the deeper
+        # lines still keep their share instead of losing to first-link lines.
+        rounds = iter(
+            [
+                [r[:5] + [None] + r[6:] for r in self._rows(30, "KNOWS", "A", "B")],
+                [r[:5] + [None] + r[6:] for r in self._rows(10, "WORKS_AT", "B", "C")],
+                [],
+            ]
+        )
+
+        async def query_raw(cypher, params=None):
+            if "AND r.embedding IS NULL" in cypher:
+                return MagicMock(result_set=[])
+            return MagicMock(result_set=next(rounds))
+
+        store = MagicMock()
+        store.query_raw = AsyncMock(side_effect=query_raw)
+        lines = await expand_relationships(store, [("a__x", {"name": "A"})], 20, query_vector=[0.1])
+        assert len(lines) == 20 and self._hops(lines) == (14, 6)
+
     async def test_under_the_cap_every_line_is_kept_in_order(self):
         lines = await self._expand(12, 8)
         assert lines == [f"A{i} —[KNOWS]→ B{i}" for i in range(12)] + [

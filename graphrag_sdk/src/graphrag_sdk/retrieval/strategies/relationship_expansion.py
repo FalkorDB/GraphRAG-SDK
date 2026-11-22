@@ -60,6 +60,14 @@ def _distance_expr(edge: str, has_vector: bool) -> str:
     )
 
 
+def _split_by_link(lines: list[tuple[float, int, str, int]], room: int) -> list:
+    """``room`` of ``lines``, the ones beyond the first link keeping up to a third."""
+    first = [s for s in lines if s[3] == 0]
+    deeper = [s for s in lines if s[3] > 0]
+    keep_deep = min(len(deeper), max(room // 3, room - len(first)))
+    return first[: room - keep_deep] + deeper[:keep_deep]
+
+
 def _round_query(distance: str, per_entity: int, where: str = "") -> str:
     """One round of the walk: each entity's ``per_entity`` closest edges."""
     extra = f" AND {where}" if where else ""
@@ -212,13 +220,10 @@ async def expand_relationships(
         unembedded = [s for s in scored if s[0] >= _UNEMBEDDED_DISTANCE]
         embedded = [s for s in scored if s[0] < _UNEMBEDDED_DISTANCE]
         keep_unembedded = min(len(unembedded), max(cap // 5, cap - len(embedded)))
-        room = cap - keep_unembedded
-        first = [s for s in embedded if s[3] == 0]
-        deeper = [s for s in embedded if s[3] > 0]
-        keep_deep = min(len(deeper), max(room // 3, room - len(first)))
         kept = {
             s[1]
-            for s in first[: room - keep_deep] + deeper[:keep_deep] + unembedded[:keep_unembedded]
+            for s in _split_by_link(embedded, cap - keep_unembedded)
+            + _split_by_link(unembedded, keep_unembedded)
         }
         scored = [s for s in scored if s[1] in kept]
     return [line for _, _, line, _ in scored]

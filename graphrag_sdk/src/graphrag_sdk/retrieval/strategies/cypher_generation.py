@@ -570,19 +570,20 @@ def _render_value(val: Any) -> str:
     props = getattr(val, "properties", None)
     if not isinstance(props, dict):
         return str(val)
+    if "Chunk" in (getattr(val, "labels", None) or []):
+        # A whole Chunk node: its passage is the value, even when finalize()
+        # gave it a name. ContextualChunking's ``text`` opens with a
+        # model-written sentence; the document's own passage is
+        # ``original_chunk``.
+        text = props.get("original_chunk")
+        if not (isinstance(text, str) and text.strip()):
+            text = props.get("text")
+        return text if isinstance(text, str) else ""
     desc = props.get("description") or ""
     if isinstance(desc, str) and len(desc) > _MAX_VALUE_DESCRIPTION_CHARS:
         desc = desc[:_MAX_VALUE_DESCRIPTION_CHARS].rsplit(" ", 1)[0] + " …"
     head = props.get("name") if hasattr(val, "labels") else props.get("rel_type")
     head = head or getattr(val, "relation", "") or ""
-    if not head and not desc and hasattr(val, "labels"):
-        # A whole Chunk node: its passage is the value. ContextualChunking's
-        # ``text`` opens with a model-written sentence; the document's own
-        # passage is ``original_chunk``.
-        text = props.get("original_chunk")
-        if not (isinstance(text, str) and text.strip()):
-            text = props.get("text")
-        return text if isinstance(text, str) else ""
     if head and desc:
         return f"{head}: {desc}"
     return str(head or desc or "")

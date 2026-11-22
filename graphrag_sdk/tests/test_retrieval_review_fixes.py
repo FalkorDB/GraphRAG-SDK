@@ -401,6 +401,17 @@ def test_a_contextual_chunk_node_shows_the_documents_own_text():
     assert _render_value(node) == "Alice joined."
 
 
+def test_a_named_chunk_node_still_shows_its_passage():
+    from graphrag_sdk.retrieval.strategies.cypher_generation import _render_value
+
+    # finalize(name_chunks=True), the default, gives every chunk a name.
+    node = SimpleNamespace(
+        labels=["Chunk"],
+        properties={"name": "Acme hiring", "text": "Alice joined Acme in 2020."},
+    )
+    assert _render_value(node) == "Alice joined Acme in 2020."
+
+
 async def test_nodes_inside_collected_lists_seed_entities():
     from graphrag_sdk.core.models import LLMResponse
     from graphrag_sdk.retrieval.strategies.cypher_generation import execute_cypher_retrieval
