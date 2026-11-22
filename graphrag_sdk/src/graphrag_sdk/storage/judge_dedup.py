@@ -702,7 +702,7 @@ def _usable(
         seen |= members
         if len(members) > 1:
             groups.append(group)
-        elif group.name or group.keep:
+        elif len(members) == 1 and (group.name or group.keep):
             lone.append(group)
     if not _lone_names_agree(lone, entities):
         return None

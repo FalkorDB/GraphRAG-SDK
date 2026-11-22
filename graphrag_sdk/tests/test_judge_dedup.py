@@ -1566,3 +1566,10 @@ def test_a_dropped_lone_name_is_logged(caplog):
     with caplog.at_level(logging.DEBUG, logger="graphrag_sdk.storage.judge_dedup"):
         parse_groups("SET 1 GROUP: 1 | NAME: IBM", [2])
     assert "one-member group" in caplog.text
+
+
+def test_an_empty_named_group_from_a_custom_judge_does_not_abort_the_run():
+    """An empty group with a NAME or KEEP merges nothing, as before; it must
+    not reach the lone-member check and raise."""
+    answer = SetVerdict(groups=[JudgeGroup(members=[], name="IBM", keep={"born": 0})])
+    assert _usable(answer, 2) == []
