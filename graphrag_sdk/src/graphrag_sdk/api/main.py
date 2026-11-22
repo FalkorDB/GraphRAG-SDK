@@ -24,7 +24,11 @@ from graphrag_sdk.core.connection import (
     is_missing_graph_error,
 )
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.descriptions import description_piece
+from graphrag_sdk.core.descriptions import (
+    DESCRIPTION_COUNT_KEY,
+    LEGACY_LIST_KEY,
+    description_piece,
+)
 from graphrag_sdk.core.exceptions import (
     ConfigError,
     DatabaseError,
@@ -1834,6 +1838,11 @@ class GraphRAG:
                 said = description_piece(ent.get("description"))
                 props: dict[str, Any] = {"name": ent_name}
                 for attr in entity.properties:
+                    # The SDK's own description bookkeeping is never an
+                    # attribute value (read as evidence, it would reach the
+                    # node with no edge recording it).
+                    if attr.name in (DESCRIPTION_COUNT_KEY, LEGACY_LIST_KEY):
+                        continue
                     raw = (ent.get("attributes") or {}).get(attr.name)
                     if raw is None:
                         continue
@@ -1841,7 +1850,11 @@ class GraphRAG:
                     if ok:
                         props[attr.name] = coerced
                 # After the attributes: one named "description" must not
-                # replace what the edge below records the chunk said.
+                # replace what the edge below records the chunk said. It
+                # stands in only where the model wrote no description, and
+                # then the edge records it too.
+                if not said:
+                    said = description_piece(props.get("description"))
                 props["description"] = said
                 new_nodes.append(GraphNode(id=ent_id, label=label, properties=props))
                 # What this chunk said goes on its mention edge too, as an

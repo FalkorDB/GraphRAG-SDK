@@ -474,7 +474,8 @@ class TestFinalizeMergeFold:
         the query re-checks every field the fold was computed from, and writes
         nothing (the merge reads again) when one moved."""
         q = absorb_query([], ["s.description = $desc"], [])
-        for field in ("s_desc", "s_descs", "s_aliases", "s_merged", "d_desc", "d_aliases"):
+        fields = ("s_desc", "s_descs", "s_dcount", "s_aliases", "s_merged", "d_desc", "d_dcount")
+        for field in (*fields, "d_aliases"):
             assert f"${field}" in q
         assert "AS fresh" in q and "(present AND fresh AND unhandled = 0) AS ok" in q
 

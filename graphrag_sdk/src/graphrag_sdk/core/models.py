@@ -315,6 +315,10 @@ _RESERVED_ATTRIBUTE_NAMES: frozenset[str] = frozenset(
         "id",
         "label",
         "description_summarised",
+        # How the SDK stores an entity's description: the piece count, and an
+        # earlier version's list of the pieces.
+        "description_count",
+        "descriptions",
     }
 )
 

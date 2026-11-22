@@ -722,6 +722,33 @@ async def test_a_table_rekey_fold_keeps_text_only_the_survivors_string_holds(gra
     ) == [["Keep one | Only in string | Old A", None]]
 
 
+async def test_a_rekey_fold_reads_again_when_only_the_count_changed(graph, monkeypatch):
+    """"A | B" without a count is one piece, with one two: a write of the count
+    alone between the fold's read and the fold changes what the description
+    holds, so the fold reads again instead of writing what the first read saw."""
+    import graphrag_sdk.storage.graph_store as graph_store_module
+
+    await graph.query_raw(
+        "CREATE (o:__Entity__:Organization {id: 'old', name: 'Globex', description: 'Old fact'}), "
+        "(n:__Entity__:Organization {id: 'new', name: 'Initech', description: 'A | B'})"
+    )
+    real, reads = graph_store_module.read_for_merge, []
+
+    async def read_then_count(g, survivor, dup):
+        read = await real(g, survivor, dup)
+        reads.append(read)
+        if len(reads) == 1:
+            await graph.query_raw("MATCH (n:__Entity__ {id: 'new'}) SET n.description_count = 2")
+        return read
+
+    monkeypatch.setattr(graph_store_module, "read_for_merge", read_then_count)
+    assert await graph._move_entity("old", "new") == (0, 1)
+    assert len(reads) == 2
+    assert await rows(
+        graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description, n.description_count"
+    ) == [["A | B | Old fact", 3]]
+
+
 async def _globex_and_initech(graph):
     """A re-synced row's old node (Globex) and the node at its new id."""
     await graph.query_raw(

@@ -119,9 +119,9 @@ def handled(kinds: list[tuple[str, str]]) -> list[str]:
 
 #: Properties the freshness check leaves out of its property-by-property
 #: comparison: the name and the description, descriptions, aliases and merged
-#: labels have clauses of their own (the description's piece count changes only
-#: with the description), and the name vector does not survive the client round
-#: trip and is replaced only with the name, which is checked.
+#: labels and the description's piece count have clauses of their own, and the
+#: name vector does not survive the client round trip and is replaced only with
+#: the name, which is checked.
 _OWN_CLAUSES = frozenset(
     {
         "name",
@@ -167,6 +167,9 @@ def snapshot_params(
         for param, key, empty in (
             ("desc", "description", ""),
             ("descs", "descriptions", []),
+            # A description reads differently with a count and without one,
+            # so a write of the count alone is a change too.
+            ("dcount", DESCRIPTION_COUNT_KEY, -1),
             ("aliases", "aliases", []),
             ("merged", "merged_labels", ""),
         ):
@@ -319,8 +322,10 @@ def _unchanged_decimals(node: str) -> str:
 # with the duplicate.
 _UNCHANGED = (
     "coalesce(s.description, '') = $s_desc AND coalesce(s.descriptions, []) = $s_descs "
+    f"AND coalesce(s.{DESCRIPTION_COUNT_KEY}, -1) = $s_dcount "
     "AND coalesce(s.aliases, []) = $s_aliases AND coalesce(s.merged_labels, '') = $s_merged "
     "AND coalesce(d.description, '') = $d_desc AND coalesce(d.descriptions, []) = $d_descs "
+    f"AND coalesce(d.{DESCRIPTION_COUNT_KEY}, -1) = $d_dcount "
     "AND coalesce(d.aliases, []) = $d_aliases AND coalesce(d.merged_labels, '') = $d_merged "
     "AND all(k IN keys($s_seen) WHERE s[k] = $s_seen[k]) "
     "AND all(k IN keys($d_seen) WHERE d[k] = $d_seen[k]) "

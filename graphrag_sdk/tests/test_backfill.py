@@ -406,6 +406,57 @@ class TestBackfillEntity:
         assert rel_call[0].start_node_id == node.id
 
     @pytest.mark.asyncio
+    async def test_an_attribute_named_description_stands_in_and_bookkeeping_is_skipped(
+        self, rag
+    ):
+        """The model wrote no description: an attribute named "description"
+        stands in, on the node and on the edge that records it. Attributes
+        named like the SDK's own description bookkeeping are never written."""
+        rag._global_ontology = Ontology(
+            entities=[
+                Entity(
+                    label="Person",
+                    properties=[
+                        Attribute(name="description", type="STRING"),
+                        Attribute(name="descriptions", type="LIST"),
+                        Attribute(name="description_count", type="INTEGER"),
+                    ],
+                )
+            ]
+        )
+        rag.llm = MockLLM(
+            responses=[
+                json.dumps(
+                    {
+                        "entities": [
+                            {
+                                "name": "Bob",
+                                "description": "",
+                                "attributes": {
+                                    "description": "Founder of Acme",
+                                    "descriptions": ["Not evidence"],
+                                    "description_count": 7,
+                                },
+                            }
+                        ]
+                    }
+                )
+            ]
+        )
+        rag._graph_store.list_chunks_for_entity_backfill = AsyncMock(
+            return_value=[{"chunk_id": "c1", "chunk_text": "Bob founded Acme"}]
+        )
+        rag._graph_store.upsert_nodes = AsyncMock(return_value=1)
+        rag._graph_store.upsert_relationships = AsyncMock(return_value=1)
+        await rag.backfill_entity("Person", scope="all")
+        first, second = (c.args[0][0] for c in rag._graph_store.upsert_nodes.await_args_list)
+        assert "descriptions" not in first.properties
+        assert "description_count" not in first.properties
+        assert second.properties["description"] == "Founder of Acme"
+        (edge,) = rag._graph_store.upsert_relationships.await_args.args[0]
+        assert edge.properties == {"description": "Founder of Acme"}
+
+    @pytest.mark.asyncio
     async def test_a_backfilled_description_holding_a_pipe_stays_one_piece(self, rag):
         """The store splits a description at "|": the model's text is made one
         piece ("|" becomes "¦") on the node and on its edge, as extraction
