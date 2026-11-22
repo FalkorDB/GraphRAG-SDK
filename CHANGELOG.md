@@ -26,7 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   three times, and left the set's entities pending, so they were never
   deduplicated. A one-member group now means that entity has no duplicate: it
   stands alone and the name or `KEEP` on it is not used; the set's other groups
-  are kept.
+  are kept. Two exceptions still ask the set again, since the judge meant a
+  merge it did not write: two one-member groups with the same name, and a
+  one-member group named as another member. A member number written twice
+  (`GROUP: 1, 2, 2`) is still read once.
 
 - **The agent asks before adding types to the user's ontology.** When
   ingestion drops types the ontology lacks, the MCP guide and the ingest hint

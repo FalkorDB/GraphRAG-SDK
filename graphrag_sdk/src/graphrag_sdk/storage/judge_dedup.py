@@ -29,7 +29,7 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Callable, Hashable, Iterable, Mapping
+from collections.abc import AsyncIterator, Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
 from numbers import Integral
@@ -612,7 +612,7 @@ async def ask_judge(
             answers = [None] * len(todo)
         unanswered: list[int] = []
         for s, answer in zip(todo, answers):
-            groups = _usable(answer, len(sets[s]))
+            groups = _usable(answer, len(sets[s]), asked[s].entities)
             if groups is None:
                 unanswered.append(s)
             else:
@@ -658,7 +658,13 @@ def counted_usage(judge: DedupJudge, *, warn: bool = False) -> dict[str, int] | 
     return kept
 
 
-def _usable(answer: Any, size: int) -> list[JudgeGroup] | None:
+def _names(entity: JudgeEntity) -> set[str]:
+    return {n.strip().casefold() for n in (entity.name, *entity.aliases) if n and n.strip()}
+
+
+def _usable(
+    answer: Any, size: int, entities: Sequence[JudgeEntity] = ()
+) -> list[JudgeGroup] | None:
     """The groups of ``answer`` when it is a clean verdict about a set of
     ``size`` members, else ``None``.
 
@@ -669,6 +675,9 @@ def _usable(answer: Any, size: int) -> list[JudgeGroup] | None:
     says what leaving the member out says: it stands alone. A ``NAME`` or
     ``KEEP`` on it is not used, since nothing is merged; rejecting the set for
     it left the set unanswered, as the model gave the same answer every time.
+    Two exceptions say the judge meant a merge it did not write, so the set is
+    asked again: two one-member groups given the same name, and a one-member
+    group named as another member (its name or an alias, from ``entities``).
     """
     if answer is None:
         return None
@@ -676,6 +685,7 @@ def _usable(answer: Any, size: int) -> list[JudgeGroup] | None:
         logger.warning("judge dedup: a %s is not a verdict", type(answer).__name__)
         return None
     groups: list[JudgeGroup] = []
+    lone: list[JudgeGroup] = []
     seen: set[int] = set()
     for group in answer.groups:
         members = set(group.members)
@@ -692,4 +702,30 @@ def _usable(answer: Any, size: int) -> list[JudgeGroup] | None:
         seen |= members
         if len(members) > 1:
             groups.append(group)
+        elif group.name or group.keep:
+            lone.append(group)
+    if not _lone_names_agree(lone, entities):
+        return None
     return groups
+
+
+def _lone_names_agree(lone: list[JudgeGroup], entities: Sequence[JudgeEntity]) -> bool:
+    """Whether the NAMEs on one-member groups merely restate each member:
+    ``False`` (logged) when two share a name or one names another member."""
+    named: dict[str, int] = {}
+    for group in lone:
+        (member,) = group.members
+        name = (group.name or "").strip().casefold()
+        others = [_names(e) for i, e in enumerate(entities) if i != member]
+        if name and (name in named or any(name in n for n in others)):
+            logger.warning(
+                "judge dedup: a set answered with a one-member group named as another "
+                "member has no verdict"
+            )
+            return False
+        if name:
+            named[name] = member
+        logger.debug(
+            "judge dedup: the NAME/KEEP of a one-member group is not used (member %d)", member
+        )
+    return True

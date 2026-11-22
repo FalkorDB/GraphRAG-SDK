@@ -1002,7 +1002,9 @@ class JudgeSet(DataModel):
 class JudgeGroup(DataModel):
     """Members of one set that are the same real-world entity."""
 
-    #: Positions in ``JudgeSet.entities``, two or more.
+    #: Positions in ``JudgeSet.entities``, each listed once. One member means
+    #: it stands alone (its ``name`` and ``keep`` are not used); two or more
+    #: are merged.
     members: list[int]
     #: The merged entity's name, copied from its members' names or aliases;
     #: any other is ignored.

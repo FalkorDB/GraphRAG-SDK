@@ -490,11 +490,12 @@ def test_an_answer_that_is_not_a_clean_partition_is_not_a_verdict():
         assert set(_retried(sim)) == {"e1", "e2"}, answer
 
 
-def test_a_member_written_twice_in_an_answer_is_not_a_verdict():
-    """``1, 1`` is read as written, so the run's check sees the member listed
-    twice and asks again; it is not folded into a one-member group."""
-    assert parse_groups("SET 1 GROUP: 1, 1 | NAME: IBM", [2]) == {}
-    assert parse_groups("SET 1 GROUP: 1, 2, 2", [2]) == {}
+def test_a_member_written_twice_is_read_once():
+    """A repeated number is a slip, not a second member: ``1, 2, 2`` is the
+    group 1, 2, and ``1, 1`` is member 1 standing alone. Rejecting them left
+    the set pending when the model repeated the answer on every ask."""
+    assert parse_groups("SET 1 GROUP: 1, 2, 2 | NAME: IBM", [2]) == {0: [[0, 1]]}
+    assert parse_groups("SET 1 GROUP: 1, 1", [2]) == {0: [[0], [1]]}
     assert parse_groups("SET 1 GROUP: 2, 1", [2]) == {0: [[0, 1]]}
 
 
@@ -1530,3 +1531,38 @@ def test_adoption_goes_to_the_row_whatever_the_read_order(order):
     sim = asyncio.run(simulate([list(r) for r in rows[::order]], declared_labels={"Employee"}))
     adopted = {(op.dup, op.survivor) for op in sim.ops if op.policy == ADOPT}
     assert adopted == {("m", "e1")}
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        # A lone member named as the other member: the judge meant one entity.
+        "SET 1 GROUP: 1 | NAME: International Business Machines\nEND",
+        # Two lone members given one name: the same slip.
+        "SET 1 GROUP: 1 | NAME: IBM\nSET 1 GROUP: 2 | NAME: IBM\nEND",
+    ],
+)
+def test_a_lone_member_named_as_another_member_is_not_a_verdict(answer):
+    sim = _sim(judge=NameOracleLLM(rounds=[answer]))
+    assert sim.merged == 0
+    assert {"e1", "e2"} <= set(_retried(sim))
+
+
+def test_a_custom_judges_named_lone_member_is_a_verdict():
+    """The same rule for a judge that returns ``SetVerdict`` objects: the
+    member stands alone, nothing merges and nothing is asked again."""
+
+    class Lone(DedupJudge):
+        async def judge(self, sets, *, retry=False):
+            return [SetVerdict(groups=[JudgeGroup(members=[0], name="IBM")]) for _ in sets]
+
+    sim = _sim(judge=Lone())
+    assert sim.merged == 0
+    assert not _retried(sim)
+    assert {"e1", "e2"} <= set(sim.decisions.clear)
+
+
+def test_a_dropped_lone_name_is_logged(caplog):
+    with caplog.at_level(logging.DEBUG, logger="graphrag_sdk.storage.judge_dedup"):
+        parse_groups("SET 1 GROUP: 1 | NAME: IBM", [2])
+    assert "one-member group" in caplog.text
