@@ -105,6 +105,8 @@ class SimGraph:
             labels,
             p.get("merged_labels"),
             bool(n["embedding"]),
+            p.get("description_piece_count"),
+            p.get("descriptions"),
         ]
 
     async def query_raw(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
@@ -277,9 +279,17 @@ def _apply(nodes: dict[str, dict[str, Any]], op: PlanOp, sets, labels, params) -
         sp["source_chunk_ids"] = old + [c for c in dp["source_chunk_ids"] if c not in old]
     for item in sets:
         if item == "s.description = $desc":
-            sp["description"] = params["desc"]
-        elif item == "s.descriptions = $descs":
-            sp["descriptions"] = list(params["descs"])
+            if params["desc"] is None:
+                sp.pop("description", None)
+            else:
+                sp["description"] = params["desc"]
+        elif item == "s.descriptions = null":
+            sp.pop("descriptions", None)
+        elif item == "s.description_piece_count = $desc_count":
+            if params["desc_count"] is None:
+                sp.pop("description_piece_count", None)
+            else:
+                sp["description_piece_count"] = params["desc_count"]
         elif item == "s.aliases = $aliases":
             sp["aliases"] = list(params["aliases"])
         elif item == "s += $carry":
