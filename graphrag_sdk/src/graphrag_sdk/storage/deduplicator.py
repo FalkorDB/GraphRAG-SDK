@@ -32,7 +32,6 @@ from graphrag_sdk.core.descriptions import (
     description_count,
     description_piece,
     join_description,
-    split_description,
 )
 from graphrag_sdk.core.models import RESERVED_NODE_LABELS
 from graphrag_sdk.core.providers import Embedder
@@ -234,17 +233,6 @@ def _description_members(props: dict[str, Any]) -> list[str]:
     still has one with text in it — an empty one does not hide the string,
     because a merge that misread it would delete the only other copy."""
     return description_list(props)
-
-
-def _merge_description_segments(current: str, absorbed: str) -> list[str]:
-    """:func:`_merge_description_members` over two stored description
-    strings, each split into its pieces."""
-    return _merge_description_members(split_description(current), split_description(absorbed))
-
-
-def _merge_description(current: str, absorbed: str) -> str:
-    """:func:`_merge_description_segments`, joined with ``" | "``."""
-    return join_description(_merge_description_segments(current, absorbed))
 
 
 def _string_list(value: Any) -> list[str]:
@@ -452,7 +440,8 @@ _ENTITY_RETURN = (
     "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
     f"e.aliases AS aliases, e.is_stub AS is_stub, {_DEGREE_EXPR} AS degree, "
     "[l IN labels(e) WHERE l <> '__Entity__'] AS labels, "
-    f"e.{MERGED_LABELS_KEY} AS merged_labels, e.embedding IS NOT NULL AS has_vector"
+    f"e.{MERGED_LABELS_KEY} AS merged_labels, e.embedding IS NOT NULL AS has_vector, "
+    f"e.{DESCRIPTION_COUNT_KEY} AS desc_count, e.{LEGACY_LIST_KEY} AS legacy_descs"
 )
 
 
@@ -475,6 +464,10 @@ def _entity_from_row(row: list[Any]) -> dict[str, Any]:
         # for a placeholder), so its presence marks a keyed node.
         "is_stub": row[5] if len(row) > 5 else None,
         "degree": row[6] if len(row) > 6 else 0,
+        # How the description reads (description_list): its piece count, or
+        # an earlier version's list.
+        DESCRIPTION_COUNT_KEY: row[10] if len(row) > 10 else None,
+        LEGACY_LIST_KEY: row[11] if len(row) > 11 else None,
     }
 
 
@@ -556,9 +549,11 @@ def _fold_for_ranking(survivor: dict[str, Any], dup: dict[str, Any]) -> None:
     decision of the same run ranks on it: the connections, the description,
     the aliases and a declared key. The graph is written only by the plan."""
     survivor["degree"] = int(survivor.get("degree") or 0) + int(dup.get("degree") or 0)
-    survivor["description"] = _merge_description(
-        str(survivor.get("description") or ""), str(dup.get("description") or "")
-    )
+    # Read as the merge reads them, so the judge sees what will be stored.
+    pieces = _merge_description_members(description_list(survivor), description_list(dup))
+    survivor["description"] = join_description(pieces)
+    survivor[DESCRIPTION_COUNT_KEY] = description_count(pieces)
+    survivor[LEGACY_LIST_KEY] = None
     survivor["aliases"] = EntityDeduplicator._merged_aliases(survivor, dup)
     if survivor.get("is_stub") is None and dup.get("is_stub") is not None:
         survivor["is_stub"] = dup["is_stub"]

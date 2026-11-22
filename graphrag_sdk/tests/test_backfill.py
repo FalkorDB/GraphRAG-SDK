@@ -419,7 +419,7 @@ class TestBackfillEntity:
                     properties=[
                         Attribute(name="description", type="STRING"),
                         Attribute(name="descriptions", type="LIST"),
-                        Attribute(name="description_count", type="INTEGER"),
+                        Attribute(name="description_piece_count", type="INTEGER"),
                     ],
                 )
             ]
@@ -435,7 +435,7 @@ class TestBackfillEntity:
                                 "attributes": {
                                     "description": "Founder of Acme",
                                     "descriptions": ["Not evidence"],
-                                    "description_count": 7,
+                                    "description_piece_count": 7,
                                 },
                             }
                         ]
@@ -451,7 +451,7 @@ class TestBackfillEntity:
         await rag.backfill_entity("Person", scope="all")
         first, second = (c.args[0][0] for c in rag._graph_store.upsert_nodes.await_args_list)
         assert "descriptions" not in first.properties
-        assert "description_count" not in first.properties
+        assert "description_piece_count" not in first.properties
         assert second.properties["description"] == "Founder of Acme"
         (edge,) = rag._graph_store.upsert_relationships.await_args.args[0]
         assert edge.properties == {"description": "Founder of Acme"}

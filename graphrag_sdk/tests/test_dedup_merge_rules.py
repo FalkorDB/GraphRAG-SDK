@@ -6,7 +6,9 @@ descriptions, and leaves provenance to the merge query.
 
 from __future__ import annotations
 
+from graphrag_sdk.core.descriptions import description_piece
 from graphrag_sdk.storage.deduplicator import (
+    _fold_for_ranking,
     _mentions_two_rows_could_own,
     properties_to_carry,
 )
@@ -56,14 +58,14 @@ class TestWhatAMergeKeeps:
         carried = properties_to_carry(keep, dup, never=self.NEVER)
         assert carried == {
             "description": f"{keep['description']} | {dup['description']}",
-            "description_count": 2,
+            "description_piece_count": 2,
         }
 
         carried = properties_to_carry(dup, keep, never=self.NEVER)
         assert carried == {
             "age": 34,
             "description": f"{dup['description']} | {keep['description']}",
-            "description_count": 2,
+            "description_piece_count": 2,
         }, "the survivor's own text comes first"
 
     def test_an_identical_description_is_not_repeated(self):
@@ -88,3 +90,23 @@ class TestWhatAMergeKeeps:
         keep = {"id": "a", "description": ""}
         dup = {"id": "b", "description": "Something."}
         assert properties_to_carry(keep, dup, never=self.NEVER) == {"description": "Something."}
+
+
+class TestWhatAFoldShowsTheJudge:
+    """``_fold_for_ranking`` reads descriptions as the merge does, so a later
+    decision of the run sees what the merge will store."""
+
+    def test_an_earlier_versions_row_is_one_piece(self):
+        survivor = {"id": "a", "description": "|Revenue|10|Profit|10|"}
+        _fold_for_ranking(survivor, {"id": "b", "description": "Other fact"})
+        assert survivor["description"] == (
+            f"{description_piece('|Revenue|10|Profit|10|')} | Other fact"
+        )
+        assert survivor["description_piece_count"] == 2
+
+    def test_a_counted_description_splits_into_its_pieces(self):
+        survivor = {"id": "a", "description": "A | B", "description_piece_count": 2}
+        dup = {"id": "b", "description": "B | C", "description_piece_count": 2}
+        _fold_for_ranking(survivor, dup)
+        assert survivor["description"] == "A | B | C"
+        assert survivor["description_piece_count"] == 3

@@ -686,7 +686,7 @@ async def test_a_table_rekey_fold_never_leaves_an_earlier_versions_list(graph, l
     the next write read it first and lost the survivor's own text. The other
     node is this version's: its two pieces have a count."""
     form = {
-        side: f", descriptions: {items}" if list_on == side else ", description_count: 2"
+        side: f", descriptions: {items}" if list_on == side else ", description_piece_count: 2"
         for side, items in (("old", "['Old A', 'Old B']"), ("new", "['Keep one', 'Keep two']"))
     }
     await graph.query_raw(
@@ -698,7 +698,8 @@ async def test_a_table_rekey_fold_never_leaves_an_earlier_versions_list(graph, l
     assert await graph._move_entity("old", "new") == (0, 1)
     assert await rows(
         graph,
-        "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description, n.descriptions, n.description_count",
+        "MATCH (n:__Entity__ {id: 'new'}) "
+        "RETURN n.description, n.descriptions, n.description_piece_count",
     ) == [["Keep one | Keep two | Old A | Old B", None, 4]]
     await graph.upsert_nodes(
         [GraphNode(id="new", label="Organization", properties={"description": "New fact"})]
@@ -736,14 +737,16 @@ async def test_a_rekey_fold_reads_again_when_only_the_count_changed(graph, monke
         read = await read_for_merge(g, survivor, dup)
         reads.append(read)
         if len(reads) == 1:
-            await graph.query_raw("MATCH (n:__Entity__ {id: 'new'}) SET n.description_count = 2")
+            await graph.query_raw(
+                "MATCH (n:__Entity__ {id: 'new'}) SET n.description_piece_count = 2"
+            )
         return read
 
     monkeypatch.setattr("graphrag_sdk.storage.graph_store.read_for_merge", read_then_count)
     assert await graph._move_entity("old", "new") == (0, 1)
     assert len(reads) == 2
     assert await rows(
-        graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description, n.description_count"
+        graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description, n.description_piece_count"
     ) == [["A | B | Old fact", 3]]
 
 

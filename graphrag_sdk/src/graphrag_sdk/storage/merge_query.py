@@ -417,7 +417,7 @@ def _piece(text: str) -> str:
 def description_members(holder: str) -> str:
     """Cypher: the description pieces ``holder`` (a node, an edge or a map)
     holds, as a list, each kept once in order, blanks left out. With a
-    ``description_count``: ``description`` split at ``|``. Without one, the
+    ``description_piece_count``: ``description`` split at ``|``. Without one, the
     text read whole, as an earlier version or a single piece left it: an
     earlier version's ``descriptions`` items (where the list has text) and
     what the string holds beyond them, or else the whole string, each made
@@ -450,7 +450,7 @@ def description_members(holder: str) -> str:
 
 
 def description_count_of(pieces: str) -> str:
-    """Cypher: the ``description_count`` stored with list ``pieces``: their
+    """Cypher: the ``description_piece_count`` stored with list ``pieces``: their
     number when two or more, else null."""
     return f"CASE WHEN size({pieces}) > 1 THEN size({pieces}) ELSE null END"
 

@@ -105,7 +105,7 @@ class TestHelpers:
         """No piece holds "|" (every writer makes one " ¦ "), so a stored
         string with a count splits back into exactly the pieces joined."""
         assert description_list(
-            {"description": "CEO \u00a6 founder | born 1970", "description_count": 2}
+            {"description": "CEO \u00a6 founder | born 1970", "description_piece_count": 2}
         ) == ["CEO \u00a6 founder", "born 1970"]
 
     def test_a_description_without_a_count_is_one_piece(self):
@@ -141,7 +141,7 @@ class TestHelpers:
     def test_newlines_and_tabs_read_as_spaces(self):
         """The same rule as the Cypher reader, whose trim is not strip()."""
         assert description_list(
-            {"description": "CEO |\nFounded Acme\t", "description_count": 2}
+            {"description": "CEO |\nFounded Acme\t", "description_piece_count": 2}
         ) == ["CEO", "Founded Acme"]
         assert description_list({"description": "CEO |\nFounded Acme\t"}) == [
             "CEO \u00a6 Founded Acme"
@@ -173,13 +173,13 @@ class TestPropertiesToCarry:
     def test_an_earlier_versions_list_is_never_carried(self):
         """Read before the string, a carried list hid the survivor's text."""
         carry = properties_to_carry(
-            {"id": "keep", "description": "Keep one | Keep two", "description_count": 2},
+            {"id": "keep", "description": "Keep one | Keep two", "description_piece_count": 2},
             {"id": "dup", "description": "Old A | Old B", "descriptions": ["Old A", "Old B"]},
             never=frozenset({"id"}),
         )
         assert "descriptions" not in carry
         assert carry["description"] == "Keep one | Keep two | Old A | Old B"
-        assert carry["description_count"] == 4
+        assert carry["description_piece_count"] == 4
 
 
 class TestExactMatchAtIngest:
@@ -389,7 +389,9 @@ class TestFinalizeMergeFold:
 
     async def test_three_rules(self):
         sim = await simulate(
-            self._ROWS, stored={"e2": {"props": {"description_count": 2}}}, judge=AllSameJudge()
+            self._ROWS,
+            stored={"e2": {"props": {"description_piece_count": 2}}},
+            judge=AllSameJudge(),
         )
         assert sim.merged == 1
         (write,) = self._description_writes(sim)

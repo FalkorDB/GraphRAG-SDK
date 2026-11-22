@@ -855,7 +855,7 @@ class TestValidateProposal:
         errors = _validate_proposal(proposal)
         assert any("reserved" in e for e in errors)
 
-    @pytest.mark.parametrize("name", ["description_count", "descriptions"])
+    @pytest.mark.parametrize("name", ["description_piece_count", "descriptions"])
     def test_rejects_the_description_bookkeeping_names_on_entities(self, name) -> None:
         """How the SDK stores a description: never an attribute."""
         proposal = ChunkProposal(

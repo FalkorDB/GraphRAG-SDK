@@ -105,6 +105,8 @@ class SimGraph:
             labels,
             p.get("merged_labels"),
             bool(n["embedding"]),
+            p.get("description_piece_count"),
+            p.get("descriptions"),
         ]
 
     async def query_raw(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
@@ -283,11 +285,11 @@ def _apply(nodes: dict[str, dict[str, Any]], op: PlanOp, sets, labels, params) -
                 sp["description"] = params["desc"]
         elif item == "s.descriptions = null":
             sp.pop("descriptions", None)
-        elif item == "s.description_count = $desc_count":
+        elif item == "s.description_piece_count = $desc_count":
             if params["desc_count"] is None:
-                sp.pop("description_count", None)
+                sp.pop("description_piece_count", None)
             else:
-                sp["description_count"] = params["desc_count"]
+                sp["description_piece_count"] = params["desc_count"]
         elif item == "s.aliases = $aliases":
             sp["aliases"] = list(params["aliases"])
         elif item == "s += $carry":

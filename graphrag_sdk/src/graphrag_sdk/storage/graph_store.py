@@ -22,6 +22,7 @@ from graphrag_sdk.core.descriptions import (
     description_pieces,
     join_description,
     set_description,
+    shared_earlier_pieces,
     split_description,
 )
 from graphrag_sdk.core.exceptions import DatabaseError
@@ -883,12 +884,17 @@ class GraphStore:
         (:func:`description_pieces`). ``held`` is what a read returned beside
         the string (:func:`_held`: the count and an earlier version's list),
         or a bare list, read as an earlier version's."""
+        return description_pieces(GraphStore._held_props(description, held))
+
+    @staticmethod
+    def _held_props(description: Any, held: Any) -> dict[str, Any]:
+        """``description`` and what a read returned beside it, as properties."""
         props: dict[str, Any] = {"description": description}
         if isinstance(held, dict):
             props.update(held)
         else:
             props[LEGACY_LIST_KEY] = held
-        return description_pieces(props)
+        return props
 
     async def _write_description(
         self, eid: str, old: str, members: list[str], *, summarised: bool | None = None
@@ -940,13 +946,17 @@ class GraphStore:
                 {"over": over},
             )
         ).result_set or []
+        # A count left stale by a direct write of ``description`` selects a
+        # node whose text no longer holds that many pieces: it is not long.
+        found = [
+            (eid, name or eid, current, self._members(current, held))
+            for eid, name, current, held in rows
+        ]
+        found = [row for row in found if len(row[3]) > over]
         written = 0
         failed: list[str] = failures if failures is not None else []
-        for start in range(0, len(rows), SUMMARY_PAGE):
-            page = [
-                (eid, name or eid, current, self._members(current, members))
-                for eid, name, current, members in rows[start : start + SUMMARY_PAGE]
-            ]
+        for start in range(0, len(found), SUMMARY_PAGE):
+            page = found[start : start + SUMMARY_PAGE]
             prompts = [
                 _DESCRIPTION_SUMMARY_PROMPT.format(
                     name=name,
@@ -982,7 +992,7 @@ class GraphStore:
                 len(failed),
                 ", ".join(failed[:10]),
             )
-        logger.info("Summarised %d of %d long entity descriptions", written, len(rows))
+        logger.info("Summarised %d of %d long entity descriptions", written, len(found))
         return written
 
     async def capture_cleanup_said(self, document_id: str, chunk_ids: list[str]) -> None:
@@ -1017,8 +1027,9 @@ class GraphStore:
 
     async def get_cleanup_said(self, document_id: str) -> dict[str, set[str]]:
         """What :meth:`capture_cleanup_said` recorded, by entity, as pieces:
-        a cleanup an earlier version started recorded a piece holding "|"
-        whole, and is split at it as that version's descriptions are read."""
+        each recorded text is one piece (:func:`description_piece`), so a
+        piece holding "|" that a cleanup an earlier version started recorded
+        is read whole, as that version's descriptions are."""
         rows = (
             await self._conn.query(
                 "MATCH (d:Document {id: $id}) RETURN d.cleanup_said_ids, d.cleanup_said LIMIT 1",
@@ -1119,6 +1130,11 @@ class GraphStore:
                 if not dropped:
                     continue
                 still = await self._remaining_said(eid, among=dropped)
+                if undescribed:
+                    # Two different items of an earlier version's text that
+                    # read as one piece: the removed chunk said one of them,
+                    # and an edge that records nothing may have said the other.
+                    still += shared_earlier_pieces(self._held_props(current, held))
                 kept = [m for m in members if m not in gone or m in still]
                 # Not beside a kept summary, which may already cover them.
                 if not summarised and len(members) >= MAX_DESCRIPTION_MEMBERS > len(kept):

@@ -327,7 +327,7 @@ class TestMergePreservesDescriptions:
                 ["e1", "Cape Morrow Light", "a lighthouse | first lit in 1871", "Location"],
                 ["e2", "cape morrow light", "first lit in 1871", "Location"],
             ],
-            stored={"e1": {"props": {"description_count": 2}}},
+            stored={"e1": {"props": {"description_piece_count": 2}}},
             judge=AllSameJudge(),
         )
         assert sim.merged == 1

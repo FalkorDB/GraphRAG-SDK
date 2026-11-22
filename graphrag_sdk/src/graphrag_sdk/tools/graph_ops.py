@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 #: among it the description's piece count, and an earlier version's
 #: ``descriptions`` list, the same text as the ``description`` every card
 #: already shows.
-_BULKY_PROPS = frozenset({"source_chunk_ids", "spans", "descriptions", "description_count"})
+_BULKY_PROPS = frozenset({"source_chunk_ids", "spans", "descriptions", "description_piece_count"})
 #: Keys of the SDK's ``__GraphRAGConfig__`` node (never shown).
 _CONFIG_KEYS = frozenset({"sdk_version", "embedding_dimension"})
 #: ``kind`` values of the SDK's ``__GraphRAGProcessing__`` records.

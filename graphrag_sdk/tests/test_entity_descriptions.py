@@ -135,7 +135,7 @@ class TestSummaries:
         members = [f"fact {i}" for i in range(SUMMARISE_OVER_MEMBERS + 1)]
         current = " | ".join(members)
         # No list on the node: its count says to split its one string at "|".
-        held = {"descriptions": None, "description_count": len(members)}
+        held = {"descriptions": None, "description_piece_count": len(members)}
         mock_connection.query = AsyncMock(
             side_effect=[_result([["alice", "Alice", current, held]]), _result([[1]])]
         )
@@ -145,7 +145,7 @@ class TestSummaries:
         assert "- fact 0" in llm.prompts[0] and "- fact 5" in llm.prompts[0]
         scan = mock_connection.query.call_args_list[0][0][0]
         # Found by its count; only an earlier version's list is read.
-        assert "e.description_count > $over" in scan
+        assert "e.description_piece_count > $over" in scan
         (write,) = _writes(mock_connection)
         cypher, params = write[0]
         # Written only if the node still holds what was summarised.
@@ -156,8 +156,9 @@ class TestSummaries:
 
     async def test_a_summary_holding_the_separator_stays_one_piece(self, mock_connection):
         members = [f"fact {i}" for i in range(SUMMARISE_OVER_MEMBERS + 1)]
+        held = {"description_piece_count": len(members)}
         mock_connection.query = AsyncMock(
-            side_effect=[_result([["a", "A", " | ".join(members), None]]), _result([[1]])]
+            side_effect=[_result([["a", "A", " | ".join(members), held]]), _result([[1]])]
         )
         await GraphStore(mock_connection).summarise_long_descriptions(SummaryLLM("CEO | founder"))
         (write,) = _writes(mock_connection)
@@ -244,7 +245,9 @@ class TestTakingARemovedDocumentOff:
         mock_connection.query = AsyncMock(
             side_effect=[
                 # alice: not summarised, no undescribed edge, two pieces
-                _result([["alice", "Legacy | From C", {"description_count": 2}, False, False]]),
+                _result(
+                    [["alice", "Legacy | From C", {"description_piece_count": 2}, False, False]]
+                ),
                 _result([]),  # no remaining edge still says "From C"
                 _result([[1]]),
             ]
@@ -322,7 +325,7 @@ class TestMentionEdges:
         # More than one: one string and its count, as on a node.
         assert rels[1].properties == {
             "description": "CEO | Founder \u00a6 Acme",
-            "description_count": 2,
+            "description_piece_count": 2,
         }
         assert rels[2].properties == {"description": "CEO \u00a6 Acme"}
 
@@ -346,7 +349,7 @@ class TestMentionEdges:
         assert rels[0].properties == {
             "spans": [0, 8, 20, 28],
             "description": "A city | A state",
-            "description_count": 2,
+            "description_piece_count": 2,
         }
 
 
@@ -378,7 +381,7 @@ async def _entity(store, eid="alice"):
     rows = (
         await store.query_raw(
             "MATCH (e:__Entity__ {id: $id}) RETURN e.description, e.descriptions, "
-            "e.source_chunk_ids, e.spans, e.description_summarised, e.description_count",
+            "e.source_chunk_ids, e.spans, e.description_summarised, e.description_piece_count",
             {"id": eid},
         )
     ).result_set
@@ -386,7 +389,7 @@ async def _entity(store, eid="alice"):
         return None
     desc, stored_list, chunks, spans, summarised, count = rows[0]
     assert stored_list is None, "a write left a descriptions list on the node"
-    pieces = description_pieces({"description": desc, "description_count": count})
+    pieces = description_pieces({"description": desc, "description_piece_count": count})
     assert count == (len(pieces) if len(pieces) > 1 else None), (count, pieces)
     return desc, pieces if len(pieces) > 1 else None, chunks, spans, summarised
 
@@ -414,7 +417,7 @@ async def _mentions(store, *edges):
         await store.query_raw(
             "MERGE (c:Chunk {id: $c}) WITH c MATCH (e:__Entity__ {id: 'alice'}) "
             "CREATE (e)-[m:MENTIONED_IN]->(c) "
-            "SET m.description = $d, m.description_count = $n, m.spans = [0, 5], "
+            "SET m.description = $d, m.description_piece_count = $n, m.spans = [0, 5], "
             "m.said_version = $v",
             {
                 "c": chunk,
@@ -489,7 +492,7 @@ class TestOnRealFalkorDB:
         """A write whose pieces repeat one twenty times: kept once, so the cap
         does not cut the piece after it."""
         node = _alice(" | ".join(["CEO"] * MAX_DESCRIPTION_MEMBERS + ["Founder"]))
-        node.properties["description_count"] = MAX_DESCRIPTION_MEMBERS + 1
+        node.properties["description_piece_count"] = MAX_DESCRIPTION_MEMBERS + 1
         await store.upsert_nodes([node])
         desc, _, _, _, _ = await _entity(store)
         assert desc == "CEO | Founder"
@@ -519,7 +522,8 @@ class TestOnRealFalkorDB:
         another item, recorded by no edge, also holds."""
         await store.upsert_nodes([_alice("x")])
         await store.query_raw(
-            "MATCH (e:__Entity__ {id: 'alice'}) SET e.descriptions = $items, e.description = $joined "
+            "MATCH (e:__Entity__ {id: 'alice'}) "
+            "SET e.descriptions = $items, e.description = $joined "
             "CREATE (e)-[:MENTIONED_IN {spans: [0, 5]}]->(:Chunk {id: 'c0'}), "
             "(e)-[:MENTIONED_IN {description: $removed, said_version: 1}]->(:Chunk {id: 'c1'})",
             {"items": items, "joined": " | ".join(items), "removed": removed},
@@ -528,10 +532,35 @@ class TestOnRealFalkorDB:
         desc, _, _, _, _ = await _entity(store)
         assert desc == left
 
+    @pytest.mark.parametrize(
+        "items", [["Public \u00a6 Sector", "Public | Sector"], ["a|b", "a | b"]]
+    )
+    async def test_two_older_items_that_read_as_one_piece_stay_on_delete(self, store, items):
+        """Both items read as one piece. c1 said the second; c0 records
+        nothing, so it may have said the first: the piece stays."""
+        await store.upsert_nodes([_alice("x")])
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) "
+            "SET e.descriptions = $items, e.description = $joined "
+            "CREATE (e)-[:MENTIONED_IN {spans: [0, 5]}]->(:Chunk {id: 'c0'}), "
+            "(e)-[:MENTIONED_IN {description: $removed, said_version: 1}]->(:Chunk {id: 'c1'})",
+            {"items": items, "joined": " | ".join(items), "removed": items[1]},
+        )
+        assert await _remove(store, "doc", ["c1"]) == 0
+        rows = await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) "
+            "RETURN e.description, e.descriptions, e.description_piece_count"
+        )
+        desc, legacy, count = rows.result_set[0]
+        pieces = description_pieces(
+            {"description": desc, "descriptions": legacy, "description_piece_count": count}
+        )
+        assert pieces == [description_piece(items[0])]
+
     async def test_a_custom_extractors_text_with_a_pipe_comes_off_on_delete(self, store):
         """A custom extractor gives the node and its mention the same text,
-        "CEO | Acme". The node reads it as two pieces; the mention edge is
-        written the same way, so deleting the chunk takes both off."""
+        "CEO | Acme". The node reads it as one piece (it has no count); the
+        mention edge is written the same way, so deleting the chunk takes it off."""
         await store.upsert_nodes([_alice("CEO | Acme")])
         await store.upsert_nodes([_alice("Other fact")])
         await store.query_raw("CREATE (:Chunk {id: 'c1'}), (:Chunk {id: 'c2'})")
@@ -549,6 +578,31 @@ class TestOnRealFalkorDB:
         assert await _remove(store, "doc", ["c1"]) == 1
         desc, _, _, _, _ = await _entity(store)
         assert desc == "Other fact"
+
+    async def test_a_stale_piece_count_does_not_summarise_one_piece(self, store):
+        """A description written straight over one that had a count keeps the
+        count; finalize() checks the pieces, not the count alone."""
+        await store.upsert_nodes([_alice("x")])
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) "
+            "SET e.description = 'Alice leads Acme.', e.description_piece_count = 6"
+        )
+        llm = SummaryLLM()
+        assert await store.summarise_long_descriptions(llm) == 0
+        assert llm.prompts == []
+
+    async def test_an_attribute_named_description_count_is_the_users(self, store):
+        """``description_count`` is an ordinary property: a write keeps it, and
+        finalize() does not read it as the number of pieces."""
+        node = _alice("CEO of Acme.")
+        node.properties["description_count"] = 12
+        await store.upsert_nodes([node])
+        await store.upsert_nodes([_alice("Founded Acme.")])
+        rows = await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) RETURN e.description_count"
+        )
+        assert rows.result_set == [[12]]
+        assert await store.summarise_long_descriptions(SummaryLLM()) == 0
 
     async def test_an_earlier_versions_long_list_is_summarised(self, store):
         """Its string may hold no "|" (stale, or one piece); the list's six
@@ -617,7 +671,8 @@ class TestOnRealFalkorDB:
         await store.query_raw(
             "MATCH (e:__Entity__ {id: 'alice'}) "
             "CREATE (e)-[:MENTIONED_IN {spans: [0, 5]}]->(:Chunk {id: 'c0'}), "
-            "(e)-[:MENTIONED_IN {description: 'Founder | Acme', said_version: 1}]->(:Chunk {id: 'c1'})"
+            "(e)-[:MENTIONED_IN {description: 'Founder | Acme', said_version: 1}]"
+            "->(:Chunk {id: 'c1'})"
         )
         assert await _remove(store, "doc", ["c1"]) == 1
         desc, _, _, _, _ = await _entity(store)
@@ -737,7 +792,7 @@ class TestOnRealFalkorDB:
                 edge(
                     spans=[0, 5],
                     description=join_description(["CEO", "Founder | Acme"]),
-                    description_count=2,
+                    description_piece_count=2,
                 )
             ]
         )

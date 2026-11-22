@@ -15,17 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Search, prompts, the dedup judge and the tools only ever read `description`,
   so the list is no longer written, on entities or on `MENTIONED_IN` edges.
   In its place, a description of two or more pieces carries
-  `description_count`, the number of pieces: an integer, not a second copy of
-  the text. A `|` inside one piece is stored as `" ¦ "`, so a description
-  with a count splits back into its pieces exactly at `|`; one without a count
-  is read whole. The limits are unchanged: a write adds at most 20 pieces and
-  `finalize()` summarises an entity holding more than 5 (found by the count,
-  without reading the text). Graphs written by earlier versions keep working:
-  their text has no count, so it is read as it was written, each list item
-  one piece and a description without a list one piece, `|` and all (a table
-  row's evidence stays one piece). The next write of a description stores it
-  with a count and drops the list. A `description` written straight to the
-  graph, or by a custom extractor, is one piece too.
+  `description_piece_count`, the number of pieces: an integer, not a second
+  copy of the text. A `|` inside one piece is stored as `" ¦ "`, so a
+  description with a count splits back into its pieces exactly at `|`; one
+  without a count is read whole. The limits are unchanged: a write adds at most
+  20 pieces and `finalize()` summarises an entity holding more than 5 (found by
+  the count, without reading the text). Graphs written by earlier versions keep
+  working: their text has no count, so it is read as it was written, each list
+  item one piece and a description without a list one piece, `|` and all (a
+  table row's evidence stays one piece). The next write of a description stores
+  it with a count and drops the list. A custom extractor's description is one
+  piece too, and so is a `description` written straight to the graph on an
+  entity without a count; one written straight over a description that has a
+  count must also remove `description_piece_count`, or it is split at `|`.
 - **An ontology attribute named `description` no longer replaces the
   extracted description.** What the chunks said wins; the attribute's value
   stands in only where they said nothing.

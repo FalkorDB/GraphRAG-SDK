@@ -317,7 +317,7 @@ _RESERVED_ATTRIBUTE_NAMES: frozenset[str] = frozenset(
         "description_summarised",
         # How the SDK stores an entity's description: the piece count, and an
         # earlier version's list of the pieces.
-        "description_count",
+        "description_piece_count",
         "descriptions",
     }
 )
@@ -915,8 +915,8 @@ class EntityMention(DataModel):
     says the entity is — one, or more when the chunk describes it twice or two
     mentions land on it (a merge, a remap). Both are written on the
     ``MENTIONED_IN`` edge, the descriptions as on a node (pieces of one
-    ``description`` string joined with " | "; a "|" inside one separates
-    pieces, as in a node's description), so they go when the chunk goes, and
+    ``description`` string joined with " | "; each item is one piece, a "|"
+    inside it written as " ¦ "), so they go when the chunk goes, and
     what a deleted document said can be taken off the entity's description.
     """
 

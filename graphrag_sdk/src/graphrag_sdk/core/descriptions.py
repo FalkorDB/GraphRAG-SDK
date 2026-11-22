@@ -6,7 +6,7 @@
 # judge and the tools read. A piece this version writes never contains ``|``
 # — every writer replaces one with ``" ¦ "`` — so a description of several
 # pieces splits back into them exactly at ``|``. Such a description also
-# carries ``description_count``, the number of pieces: a small integer, not a
+# carries ``description_piece_count``, the number of pieces: a small integer, not a
 # second copy of the text, and what marks the string as one to split.
 #
 # Text without a count is read whole. A one-piece description needs no count:
@@ -37,7 +37,7 @@ DESCRIPTION_SEPARATOR = " | "
 #: The character that separates pieces in a description that has a count.
 PIECE_BREAK = "|"
 #: How many pieces a description holds, stored only when it holds two or more.
-DESCRIPTION_COUNT_KEY = "description_count"
+DESCRIPTION_COUNT_KEY = "description_piece_count"
 #: An earlier version's list of the pieces, kept beside ``description``. Read
 #: where a graph still has one; never written, and never copied from a merged
 #: duplicate onto its survivor (read first, it would hide the survivor's own).
@@ -97,7 +97,7 @@ def join_description(pieces: Iterable[Any]) -> str:
 
 
 def description_count(pieces: list[str]) -> int | None:
-    """The ``description_count`` to store with ``pieces``: their number when
+    """The ``description_piece_count`` to store with ``pieces``: their number when
     two or more, else none (one piece has nothing to split)."""
     return len(pieces) if len(pieces) > 1 else None
 
@@ -120,7 +120,7 @@ def _earlier_text(description: Any, legacy: Any) -> list[str]:
 
 def description_pieces(props: Mapping[str, Any]) -> list[str]:
     """The pieces a node's or edge's properties hold: with a
-    ``description_count``, ``description`` split at ``|``; without one, the
+    ``description_piece_count``, ``description`` split at ``|``; without one, the
     text as an earlier version or a single piece left it, each item whole
     (see the module notes)."""
     if props.get(DESCRIPTION_COUNT_KEY) is not None:
@@ -128,9 +128,24 @@ def description_pieces(props: Mapping[str, Any]) -> list[str]:
     return _unique(_earlier_text(props.get("description"), props.get(LEGACY_LIST_KEY)))
 
 
+def shared_earlier_pieces(props: Mapping[str, Any]) -> set[str]:
+    """The pieces that two or more different items of an earlier version's
+    text give (``"Public | Sector"`` and ``"Public ¦ Sector"`` are one piece).
+    Text with a count has none: this version wrote it."""
+    if props.get(DESCRIPTION_COUNT_KEY) is not None:
+        return set()
+    seen: dict[str, str] = {}
+    shared: set[str] = set()
+    for item in _earlier_text(props.get("description"), props.get(LEGACY_LIST_KEY)):
+        piece, raw = description_piece(item), _tidy(item)
+        if piece and seen.setdefault(piece, raw) != raw:
+            shared.add(piece)
+    return shared
+
+
 def set_description(props: dict[str, Any], pieces: Iterable[Any]) -> list[str]:
     """Store ``pieces`` on ``props``: ``description`` (removed when there are
-    none) and its ``description_count`` (when two or more); an earlier
+    none) and its ``description_piece_count`` (when two or more); an earlier
     version's ``descriptions`` list goes. Returns the pieces stored."""
     stored = _unique(pieces)
     props.pop(LEGACY_LIST_KEY, None)
