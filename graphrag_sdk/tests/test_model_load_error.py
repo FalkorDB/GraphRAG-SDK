@@ -394,3 +394,40 @@ async def test_a_members_cancellation_is_not_replaced_by_another_members_load_er
         await ee.CompositeExtractor([Broken(), Cancelled()]).extract_entities(
             "Alice", ["Person"], "c1"
         )
+
+
+async def test_a_composite_member_without_ensure_ready_is_ready():
+    """A member that only defines ``extract_entities`` (no EntityExtractor
+    subclass) extracted fine before readiness hooks; preparing must not break it."""
+
+    class Duck:
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            return []
+
+    composite = ee.CompositeExtractor([Duck()])
+    await composite.ensure_ready()
+    await GraphExtraction(llm=MockLLMWithGraphExtraction(), entity_extractor=composite).prepare()
+
+
+async def test_a_spacy_load_error_is_raised_fresh_and_retried_later(monkeypatch):
+    """A remembered failure is a new error each time (no frames pile up on
+    one object), and a model downloaded later is picked up without a restart."""
+    _broken_spacy(monkeypatch)
+    now = [1000.0]
+    monkeypatch.setattr(ee.time, "monotonic", lambda: now[0])
+    extractor = ee.SpacyExtractor(model_name="en_core_web_xx")
+    errors = []
+    for _ in range(2):
+        with pytest.raises(ModelLoadError) as info:
+            await extractor.ensure_ready()
+        errors.append(info.value)
+    assert errors[0] is not errors[1]
+    assert isinstance(errors[1], OSError)
+    assert "python -m spacy download en_core_web_xx" in errors[1].hint
+
+    nlp = object()
+    loaded = type("m", (), {"load": staticmethod(lambda *a, **k: nlp)})
+    monkeypatch.setitem(sys.modules, "spacy", loaded)
+    now[0] += ee.SpacyExtractor._LOAD_RETRY_AFTER_S + 1
+    await extractor.ensure_ready()
+    assert extractor._nlp is nlp

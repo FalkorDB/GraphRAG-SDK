@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import inspect
 import json
 import logging
 import re
@@ -1132,19 +1133,25 @@ class SpacyExtractor(EntityExtractor):
         self._labels = frozenset(labels) if labels is not None else self.DEFAULT_LABELS
         self._confidence = self.DEFAULT_CONFIDENCE if confidence is None else confidence
         self._nlp: Any = None
-        self._load_error: Exception | None = None
+        # (failed_at, message, hint, error class) of the last failed load.
+        self._load_error: tuple[float, str, str, type[ModelLoadError]] | None = None
 
     async def _get_nlp(self) -> Any:
         if self._nlp is not None:
             return self._nlp
-        # A missing package or model is permanent for the life of this process;
-        # remember it so every chunk does not re-attempt the load in a thread.
+        # Remember a failed load for a while, so every chunk does not retry it
+        # in a thread, then try again: a model downloaded meanwhile is picked
+        # up without a restart. Each raise is a fresh error, so traceback
+        # frames (and the chunk text they hold) do not pile up on one object.
         if self._load_error is not None:
-            raise self._load_error
+            failed_at, message, hint, error = self._load_error
+            if time.monotonic() - failed_at < self._LOAD_RETRY_AFTER_S:
+                raise error(message, hint=hint)
+            self._load_error = None
         try:
             self._nlp = await asyncio.to_thread(self._get_shared_nlp, self._model_name)
-        except (ImportError, OSError) as exc:
-            self._load_error = exc
+        except ModelLoadError as exc:
+            self._load_error = (time.monotonic(), str(exc), exc.hint, type(exc))
             raise
         return self._nlp
 
@@ -1160,6 +1167,7 @@ class SpacyExtractor(EntityExtractor):
     # document pays that per document.
     _MODEL_CACHE: ClassVar[dict[str, Any]] = {}
     _CACHE_LOCK: ClassVar[threading.Lock] = threading.Lock()
+    _LOAD_RETRY_AFTER_S: ClassVar[float] = 60.0
 
     @classmethod
     def _get_shared_nlp(cls, model_name: str) -> Any:
@@ -1419,8 +1427,12 @@ class CompositeExtractor(EntityExtractor):
         return isinstance(exc, (ImportError, OSError, ModelLoadError))
 
     async def ensure_ready(self) -> None:
+        # A member need not subclass EntityExtractor; one without the hook is
+        # ready, as GraphExtraction.prepare() and the pipeline assume.
         for extractor in self._extractors:
-            await extractor.ensure_ready()
+            ready = getattr(extractor, "ensure_ready", lambda: None)()
+            if inspect.isawaitable(ready):
+                await ready
 
     async def extract_entities(
         self,

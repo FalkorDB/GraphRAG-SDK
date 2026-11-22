@@ -61,12 +61,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `ExtractionStrategy.prepare()` and `EntityExtractor.ensure_ready()`, both
     no-ops by default), so a broken model leaves no half-written document.
   - `SpacyExtractor` raises `ModelLoadError` for a missing package or model
-    (still an `ImportError` / `OSError`), and grounded discovery stops on a
-    `ModelLoadError` instead of returning an empty ontology.
+    (still an `ImportError` / `OSError`) and, like GLiNER, tries the load
+    again after 60 s, so a model downloaded later is picked up without a
+    restart. Grounded discovery stops on a `ModelLoadError` instead of
+    returning an empty ontology.
   - `CompositeExtractor` lets every member finish the chunk before raising, so
     a member in a worker thread (GLiNER, spaCy) is not abandoned mid-inference
     and its load error is the one reported. A `TimeoutError` or
-    `ConnectionError` now fails only its member, on every Python version.
+    `ConnectionError` now fails only its member, on every Python version. A
+    member without `ensure_ready()` counts as ready.
 
 - **The agent asks before adding types to the user's ontology.** When
   ingestion drops types the ontology lacks, the MCP guide and the ingest hint
