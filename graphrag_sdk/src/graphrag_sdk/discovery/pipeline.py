@@ -885,14 +885,14 @@ async def discover_grounded(
                 names = await _extract_mentions_from_chunk(entity_extractor, chunk)
                 return chunk, names
 
-        per_chunk = await asyncio.gather(*[_bounded(c) for c in sampled])
+        per_chunk = await _gather_or_cancel(*[_bounded(c) for c in sampled])
         chunks_per_mention: dict[str, list[TextChunk]] = {}
         for chunk, names in per_chunk:
             for name in names:
                 chunks_per_mention.setdefault(name, []).append(chunk)
         return chunks_per_mention
 
-    per_source = await asyncio.gather(*[_process(s) for s in sources_list])
+    per_source = await _gather_or_cancel(*[_process(s) for s in sources_list])
 
     # Merge per-source maps into one ``mention_name → [chunks across corpus]``.
     chunks_by_mention: dict[str, list[TextChunk]] = {}
