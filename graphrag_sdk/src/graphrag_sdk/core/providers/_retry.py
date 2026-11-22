@@ -3,11 +3,18 @@
 
 from __future__ import annotations
 
+import builtins
+import email.utils
 import logging
-from collections.abc import Awaitable, Callable
+import math
+import sys
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import datetime, timezone
 from typing import Any
 
-from graphrag_sdk.core.exceptions import EmbeddingTimeoutError
+from graphrag_sdk.core.exceptions import EmbeddingTimeoutError, LLMTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +34,266 @@ def summarize_exception(exc: BaseException) -> str:
     if len(msg) > _MAX_EXC_SUMMARY_LEN:
         msg = msg[:_MAX_EXC_SUMMARY_LEN] + "..."
     return f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
+
+
+#: HTTP statuses a provider returns for a condition that passes on its own:
+#: request timeout, conflict, rate limit. Every 5xx counts as well.
+_TRANSIENT_STATUSES = frozenset({408, 409, 429})
+
+
+def _status_code(exc: BaseException) -> int | None:
+    """The HTTP status a provider exception carries, on itself or its response.
+
+    ``status_code`` is the openai/LiteLLM/httpx spelling; aiohttp's
+    ``ClientResponseError`` keeps it on ``status``, which is only trusted as
+    an HTTP status (100-599).
+    """
+    for owner in (exc, getattr(exc, "response", None)):
+        status = getattr(owner, "status_code", None)
+        if isinstance(status, int) and not isinstance(status, bool):
+            return status
+        status = getattr(owner, "status", None)
+        if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+            return status
+    return None
+
+
+#: How far down a chain of wrapped exceptions the classifier looks.
+_MAX_CAUSE_DEPTH = 5
+
+
+def is_transient_llm_error(exc: BaseException) -> bool:
+    """Return True if an LLM call failed for a reason worth retrying shortly.
+
+    Provider exceptions (LiteLLM, OpenAI, Azure) carry an HTTP status: a
+    5xx, 408, 409 or 429 is temporary, anything else (400, 401, 403, 404,
+    422, a content filter) will fail the same way again. Without a status,
+    only a dropped connection counts: the built-in ``ConnectionError``, or
+    the connection error of an HTTP client that is loaded (openai's
+    ``APIConnectionError``, httpx, aiohttp, requests), also when it is the
+    cause of the exception a custom provider raises, or every member of an
+    exception group. An ``LLMTimeoutError`` is not retried: the timeout is
+    the caller's deadline, and retrying would stretch it.
+
+    A missing optional dependency is never temporary, although LiteLLM
+    reports it as an ``APIConnectionError`` with status 500. Other local
+    failures LiteLLM stamps 500 (a missing ``api_base``, a reply it cannot
+    convert) are still retried: from the outside they look like an empty or
+    cut-off reply, which can pass on a retry.
+    """
+    if _wraps_missing_dependency(exc):
+        return False
+    return _is_transient(exc, _MAX_CAUSE_DEPTH)
+
+
+def _wraps_missing_dependency(exc: BaseException, depth: int = _MAX_CAUSE_DEPTH) -> bool:
+    """Whether ``exc``, what it wraps, or a member of an exception group
+    among them is an ``ImportError``."""
+    for link in _wrapped_chain(exc):
+        if isinstance(link, ImportError):
+            return True
+        members = getattr(link, "exceptions", None)
+        if depth > 0 and isinstance(link, _EXCEPTION_GROUPS) and members:
+            if any(_wraps_missing_dependency(member, depth - 1) for member in members):
+                return True
+    return False
+
+
+def _is_transient(exc: BaseException, depth: int) -> bool:
+    if isinstance(exc, LLMTimeoutError):
+        return False
+    status = _status_code(exc)
+    if status is not None:
+        return 500 <= status < 600 or status in _TRANSIENT_STATUSES
+    if isinstance(exc, (ConnectionError, *_provider_connection_errors())):
+        return True
+    if depth <= 0:
+        return False
+    members = getattr(exc, "exceptions", None)
+    if isinstance(exc, _EXCEPTION_GROUPS) and members:
+        return all(_is_transient(member, depth - 1) for member in members)
+    # What a provider wrapped: ``raise ProviderError(...) from err``, or an
+    # error raised while handling one (unless ``from None`` hid it).
+    cause = exc.__cause__
+    if cause is None and not exc.__suppress_context__:
+        cause = exc.__context__
+    return cause is not None and cause is not exc and _is_transient(cause, depth - 1)
+
+
+#: ``BaseExceptionGroup`` exists from Python 3.11.
+_EXCEPTION_GROUPS: tuple[type[BaseException], ...] = tuple(
+    group for group in (getattr(builtins, "BaseExceptionGroup", None),) if group is not None
+)
+
+
+#: Set while a caller makes a model call whose temporary failure it retries
+#: itself (ontology discovery passes ``max_retries=1`` and retries in
+#: ``_call_once``), so the provider does not report that failure as final.
+_CALLER_RETRIES_TRANSIENT: ContextVar[bool] = ContextVar(
+    "graphrag_caller_retries_transient", default=False
+)
+
+
+@contextmanager
+def caller_retries_transient_errors() -> Iterator[None]:
+    """Mark the model calls made inside as ones whose temporary failure the
+    caller retries itself."""
+    token = _CALLER_RETRIES_TRANSIENT.set(True)
+    try:
+        yield
+    finally:
+        _CALLER_RETRIES_TRANSIENT.reset(token)
+
+
+def final_failure_log_level(exc: BaseException | None) -> int:
+    """The level a provider logs its last failed attempt at.
+
+    ERROR, unless the caller said it retries this temporary failure itself:
+    then the call can still succeed, and an ERROR carrying the exception
+    text would be both wrong and a leak, so it is DEBUG. A permanent error,
+    or any failure of a caller that does not retry, stays an ERROR.
+    """
+    if exc is not None and _CALLER_RETRIES_TRANSIENT.get() and is_transient_llm_error(exc):
+        return logging.DEBUG
+    return logging.ERROR
+
+
+def _wrapped_chain(exc: BaseException) -> Iterator[BaseException]:
+    """``exc``, then what it wraps: ``raise ... from err``, or an error raised
+    while handling one (unless ``from None`` hid it), up to the classifier's
+    depth."""
+    current: BaseException | None = exc
+    for _ in range(_MAX_CAUSE_DEPTH + 1):
+        if current is None:
+            return
+        yield current
+        following = current.__cause__
+        if following is None and not current.__suppress_context__:
+            following = current.__context__
+        if following is current:
+            return
+        current = following
+
+
+def _reply_header(exc: BaseException, name: str) -> str | None:
+    """A header of the HTTP reply a provider exception carries, if any.
+
+    Looked for wherever the classifier can find the status: on the exception
+    and on what it wraps. openai, LiteLLM and httpx keep the reply on
+    ``exc.response`` (an ``httpx.Response``); LiteLLM also copies its headers
+    to ``exc.litellm_response_headers``; aiohttp's ``ClientResponseError``
+    has them on ``exc.headers``. Header names are matched without regard to
+    case, in a plain dict as in ``httpx.Headers``.
+    """
+    for link in _wrapped_chain(exc):
+        for headers in (
+            getattr(getattr(link, "response", None), "headers", None),
+            getattr(link, "litellm_response_headers", None),
+            getattr(link, "headers", None),
+        ):
+            getter = getattr(headers, "get", None)
+            if getter is None:
+                continue
+            try:
+                value = getter(name)
+                if value is None and isinstance(headers, Mapping):
+                    value = next(
+                        (v for k, v in headers.items() if isinstance(k, str) and k.lower() == name),
+                        None,
+                    )
+            except Exception:  # noqa: BLE001 - reading a header must never mask the error
+                continue
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def retry_after_seconds(exc: BaseException) -> float | None:
+    """How long the provider asked to wait before a retry, or ``None``.
+
+    Reads ``retry-after-ms`` (milliseconds, sent by OpenAI and Azure), then
+    ``retry-after`` (seconds or an HTTP date) from the reply the exception
+    carries. A value that does not parse is ignored; one too large for a
+    float is an endless wait (``math.inf``), past any cap, not "no hint".
+    """
+    raw_ms = _reply_header(exc, "retry-after-ms")
+    if raw_ms is not None:
+        try:
+            millis = float(raw_ms)
+        except ValueError:
+            millis = math.nan
+        if millis == math.inf:
+            return math.inf
+        if math.isfinite(millis) and millis >= 0:
+            return millis / 1000
+    raw = _reply_header(exc, "retry-after")
+    if raw is None:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(raw)
+        except (TypeError, ValueError, IndexError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = (when - datetime.now(timezone.utc)).total_seconds()
+    if math.isnan(seconds):
+        return None
+    return max(seconds, 0.0)
+
+
+def provider_refuses_retry(exc: BaseException) -> bool:
+    """True when the provider's reply says a retry will not help.
+
+    OpenAI sends ``x-should-retry: false`` with errors such as an exhausted
+    quota, where the status alone (a 429) looks temporary.
+    """
+    return (_reply_header(exc, "x-should-retry") or "").lower() == "false"
+
+
+def describe_llm_error(exc: BaseException) -> str:
+    """``TypeName (HTTP 503)``: an LLM error for a shared log, without its text.
+
+    The exception text can carry request content, so a WARNING that may
+    reach shared log streams names only the type and the HTTP status.
+    """
+    status = _status_code(exc)
+    name = type(exc).__name__
+    return f"{name} (HTTP {status})" if status is not None else name
+
+
+#: Status-less connection errors of optional HTTP clients, as
+#: ``(module, attribute)``. Only modules already imported are consulted: an
+#: exception of a client that was never imported cannot exist, and importing
+#: one here would block the event loop on the first error.
+_CONNECTION_ERRORS = (
+    # OpenRouter, and LiteLLM's OpenAI and Azure routes; outside the
+    # built-in ConnectionError hierarchy.
+    ("openai", "APIConnectionError"),
+    # Custom providers (Ollama, vLLM, ...) built on a plain HTTP client.
+    ("httpx", "NetworkError"),
+    ("httpx", "RemoteProtocolError"),
+    ("httpx", "TimeoutException"),
+    ("aiohttp", "ClientConnectionError"),
+    ("requests.exceptions", "ConnectionError"),
+)
+
+
+def _provider_connection_errors() -> tuple[type[BaseException], ...]:
+    """Status-less connection errors of the HTTP clients that are loaded.
+
+    An attribute that is not an exception class (a test that put a mock in
+    ``sys.modules``, say) is skipped rather than handed to ``isinstance``.
+    """
+    found: list[type[BaseException]] = []
+    for module_name, attribute in _CONNECTION_ERRORS:
+        module = sys.modules.get(module_name)
+        candidate = getattr(module, attribute, None) if module is not None else None
+        if isinstance(candidate, type) and issubclass(candidate, BaseException):
+            found.append(candidate)
+    return tuple(found)
 
 
 def is_transient_embedding_error(exc: Exception) -> bool:

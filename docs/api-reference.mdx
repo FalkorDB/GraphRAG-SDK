@@ -1424,7 +1424,7 @@ from graphrag_sdk.core.exceptions import DatabaseError, DatabaseUnavailableError
 | `LatencyBudgetExceededError` | `GraphRAGError` | An operation cannot start within the `Context` latency budget |
 | `MappingError` | `ValueError` | A table mapping is malformed or does not fit its file |
 | `OntologyContradictionError` | `ValueError` | An ontology retypes an existing property, or a table mapping clashes with a stored one (two sources with one signature, or a `Link` target keyed by two columns) |
-| `OntologyModificationNotAllowedError` | `ValueError` | An ontology modifies an existing label through the additive path |
+| `OntologyModificationNotAllowedError` | `ValueError` | An ontology adds properties or patterns, through the additive path, to an existing label that already holds data |
 | `OntologyEvolutionError` | `RuntimeError` | `add_attribute()` had chunks hard-fail; the ontology is not updated. Carries `failed_chunks`, `chunks_scanned` |
 | `OntologyDiscoveryError` | `RuntimeError` | Ontology discovery exhausted `max_retries`; carries `chunk_id`, `attempts`, `last_error` |
 | `RetrieverError` | `GraphRAGError` | Retrieval execution failures (empty query, or an error inside a strategy) |

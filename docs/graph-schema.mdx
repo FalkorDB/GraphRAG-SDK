@@ -102,10 +102,10 @@ Record chunks are not chained with `NEXT_CHUNK` (rows have no reading order) and
 | `id` | `string` | Deterministic: `"name__type"` (e.g., `"alice__person"`), derived from the name the same way for a prose mention and a table row. A table row with no name, or whose name another row of the file shares under a different key, derives it from its key instead |
 | `name` | `string` | Entity name as extracted, or the row's `name=` column |
 | `type` | `string` | The entity type the extractor assigned (prose-extracted entities only) |
-| `description` | `string` | What the documents say the entity is: the descriptions it holds, joined with `" \| "`, or one summary of them (see below) |
+| `description` | `string` | What the documents say the entity is: the pieces it holds (what each chunk or merge said), joined with `" \| "`, or one summary of them (see below). A `\|` inside one piece is stored as `" ¦ "`, so a description with a count splits back into its pieces exactly at `\|` |
 | `embedding` | `vecf32` | Vector embedding of the entity name, written by `finalize()`'s dedup. Its absence marks a new entity pending dedup (a `pending` system record marks the rest); nothing else is written on an entity for dedup |
 | `aliases` | `list[string]` | Other names the entity was merged under |
-| `descriptions` | `list[string]` | The descriptions `description` joins, when there is more than one: a later mention or a merge adds its own rather than replacing |
+| `description_piece_count` | `integer` | How many pieces `description` holds, set only when it holds two or more: a later mention or a merge adds its own piece rather than replacing. The text is stored once; there is no second copy as a list |
 | `description_summarised` | `boolean` | Set when `description` holds an LLM summary of earlier descriptions (written by `finalize()` or an ingest-time resolver) |
 | `merged_labels` | `string` | Labels a merge added, joined with `" \| "` |
 | `<property>__dropped` | `list` | Values of `<property>` a dedup merge displaced: the two merged entities held different values, and the one that stayed is the judge's choice or the survivor's (e.g. `born__dropped: [1961]`) |
@@ -121,6 +121,8 @@ Record chunks are not chained with `NEXT_CHUNK` (rows have no reading order) and
 **What a deleted or updated document said is taken off.** Before `delete_document()` or `update()` removes a document's chunks, it records what their mention edges said, with the rest of its crash-safe cleanup state; the cleanup then drops exactly that text from the entities' descriptions, keeping anything a remaining chunk still says, and fills the places this frees on a full node (20) from what the remaining chunks say. No LLM call. If something else writes an entity's description meanwhile, the entity is read again; one that keeps changing is logged and left, since the delete or update has already taken effect. A summarised entity cannot have text taken out of its summary: when the removed text is no longer said by any remaining edge and every remaining edge records what its chunk said (has `said_version`; a table row's edge, which never says anything, does not count), it is rebuilt from them (and summarised again by the next `finalize()`); otherwise its summary is kept, and the removed text beside it is still dropped.
 
 **Graphs written by an earlier version** keep their entities' `source_chunk_ids` lists and descriptions. `MENTIONED_IN` edges are what the SDK reads for provenance; the update and delete paths still trim the old lists. Their mention edges carry no `said_version` — and keep none when a later write adds a description to one — so text a document ingested by an earlier version wrote cannot be taken off on its delete: it is kept, as before this version, and a summarised entity with such an edge is never rebuilt from its edges.
+
+**A description stored by an earlier version** has no `description_piece_count`, so it is read as it was written: with the old `descriptions` list, each list item is one piece; without one, the whole string is one piece, `|` and all (a table row's evidence stays whole). The next write of that description stores it with a count and drops the list. A `description` you write straight to the graph is read as one piece too; one written over a description that has a count must also remove `description_piece_count`, or it is split at `|`.
 
 **Default entity types (11):** Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method
 
@@ -155,8 +157,8 @@ No additional properties.
 | Property | Type | Description |
 |----------|------|-------------|
 | `spans` | `list[integer]` | Where the chunk names the entity, flat: `[start, end, start, end, ...]` (character offsets in the chunk's `text`) |
-| `description` | `string` | What this chunk says the entity is: the extraction model's description, or the sentence around the spans when it gave none. Joined with `" \| "` when there is more than one |
-| `descriptions` | `list[string]` | The same descriptions, each whole, when there is more than one: the chunk described the entity twice, or a merge or a remap put two mentions on one edge. A write adds up to 20; a merge keeps both edges' |
+| `description` | `string` | What this chunk says the entity is: the extraction model's description, or the sentence around the spans when it gave none. Joined with `" \| "` when there is more than one: the chunk described the entity twice, or a merge or a remap put two mentions on one edge. A write adds up to 20 pieces; a merge keeps both edges' |
+| `description_piece_count` | `integer` | How many pieces `description` holds, when two or more |
 | `said_version` | `integer` | Set when this version creates the edge: it records everything its chunk put on the entity's description. An edge an earlier version wrote has none, even after a later write (a backfill) adds a description |
 
 Deduplicated by `(entity_id, chunk_id)`. Written once and deleted with its chunk, so what a deleted document said can be taken off its entities' descriptions.

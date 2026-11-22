@@ -478,7 +478,7 @@ Returns `ResolutionResult` with deduplicated `nodes`, remapped `relationships`, 
 
 ### Built-in: ExactMatchResolution (ingest default)
 
-Deduplicates by `(normalized name, label)` only. Fast, no embeddings, no LLM calls. Same-name entities with different labels (Person "Paris" vs Location "Paris") stay separate; the survivor keeps every member's description as a list (`descriptions`) and joined with `" | "` (`description`), and every relationship endpoint is re-pointed to it.
+Deduplicates by `(normalized name, label)` only. Fast, no embeddings, no LLM calls. Same-name entities with different labels (Person "Paris" vs Location "Paris") stay separate; the survivor keeps every member's description, joined with `" | "` in `description` (with `description_piece_count`), and every relationship endpoint is re-pointed to it.
 
 ```python
 from graphrag_sdk import ExactMatchResolution
@@ -508,7 +508,7 @@ Three tiers that catch the near-duplicates exact match misses (e.g. `Acme Corp` 
    A label-family gate keeps pairs that cannot be one thing (Person vs Place) away from the LLM, and a cross-label merge needs a second, A/B-swapped vote to agree. `soft_threshold` is the floor only for the legacy label-bucket stage (`unified_stage=False`).
 3. Merge the confirmed clusters, then remap and deduplicate relationships.
 
-Merged descriptions are kept as a list and joined with `" | "` (concatenated below `force_summary_threshold`, LLM-summarized at or above it); labels absorbed from cross-label merges are kept in `merged_labels` and promoted to real Cypher labels on write.
+Merged descriptions are joined with `" | "` in `description` (concatenated below `force_summary_threshold`, LLM-summarized at or above it); labels absorbed from cross-label merges are kept in `merged_labels` and promoted to real Cypher labels on write.
 
 ```python
 from graphrag_sdk import LLMVerifiedResolution
@@ -723,8 +723,8 @@ class LLMReranker(RerankingStrategy):
 
 Decides which entities are the same real-world entity in `finalize()`'s cross-document dedup. Every dedup run has a judge; there is no way to run without one. The run finds the candidates — each pending entity with its nearest names from the vector index, in small sets of at most 8 — and the judge only says which members of a set are one entity. Whatever the judge, the run keeps the rest:
 
-- **It checks every answer.** A member the set does not have, a member in two groups, or a name or `keep` pick on a one-member group make the answer no answer. A set without an answer is asked again, up to 2 more times (`retry=True`); then it waits for the next `finalize()`, and after 3 runs it is reported in `FinalizeResult.dedup_unresolved`.
-- **It does the merge.** The survivor, the label union, the descriptions list, the moved relationships and `<attribute>__dropped` follow the run's own rules. A judge never writes to the graph.
+- **It checks every answer.** A member the set does not have, a member in two groups, two one-member groups with the same name, or a one-member group named as another member make the answer no answer. Any other one-member group stands alone; a name or `keep` on it is not used. A set without an answer is asked again, up to 2 more times (`retry=True`); then it waits for the next `finalize()`, and after 3 runs it is reported in `FinalizeResult.dedup_unresolved`.
+- **It does the merge.** The survivor, the label union, the merged description, the moved relationships and `<attribute>__dropped` follow the run's own rules. A judge never writes to the graph.
 
 ### ABC
 

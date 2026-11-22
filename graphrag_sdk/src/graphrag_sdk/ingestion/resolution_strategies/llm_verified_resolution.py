@@ -26,6 +26,7 @@ except ImportError:  # pragma: no cover
     _hnswlib = None  # type: ignore[assignment]
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.descriptions import LEGACY_LIST_KEY
 from graphrag_sdk.core.models import (
     GraphData,
     GraphNode,
@@ -1181,11 +1182,11 @@ class LLMVerifiedResolution(ResolutionStrategy):
             # the property is additive and loses nothing.
             dups = [valid[mi] for mi in members[1:]]
             # Both run BEFORE the "copy keys the survivor lacks" loop below,
-            # not after. That loop copies any key the survivor is missing, and a
-            # dup merged in an earlier phase carries a `descriptions` LIST. Copied
-            # first, it becomes what description_list() reads for the survivor, so
-            # the survivor's own `description` is never seen by
-            # set_merged_descriptions and is silently dropped. Measured on
+            # not after. That loop copies any key the survivor is missing, and an
+            # earlier version's `descriptions` LIST on a dup (a cached part can
+            # still hand one) copied first becomes what description_list() reads
+            # for the survivor, so the survivor's own `description` is never seen
+            # by set_merged_descriptions and is silently dropped. Measured on
             # Alicia(D3) + [Alice(D1), alice(D2)]: the survivor came out as
             # "D1 | D2" with D3 gone. base.py Stage 5 orders it this way for the
             # same reason. source_chunk_ids has the same shape of defect — the
@@ -1204,7 +1205,11 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     if lbl and lbl != survivor.label and lbl not in merged_labels:
                         merged_labels.append(lbl)
                 for key, value in dup.properties.items():
-                    if survivor.properties.get(key) is None and value is not None:
+                    if (
+                        key != LEGACY_LIST_KEY
+                        and survivor.properties.get(key) is None
+                        and value is not None
+                    ):
                         survivor.properties[key] = value
             if merged_labels:
                 existing = str(survivor.properties.get("merged_labels", "") or "")
@@ -1913,11 +1918,11 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 # the evidence in a property is additive and loses nothing.
                 dups = [valid_nodes[mi] for mi in members[1:]]
                 # Both run BEFORE the "copy keys the survivor lacks" loop below,
-                # not after. That loop copies any key the survivor is missing, and a
-                # dup merged in an earlier phase carries a `descriptions` LIST. Copied
-                # first, it becomes what description_list() reads for the survivor, so
-                # the survivor's own `description` is never seen by
-                # set_merged_descriptions and is silently dropped. Measured on
+                # not after. That loop copies any key the survivor is missing, and an
+                # earlier version's `descriptions` LIST on a dup (a cached part can
+                # still hand one) copied first becomes what description_list() reads
+                # for the survivor, so the survivor's own `description` is never seen
+                # by set_merged_descriptions and is silently dropped. Measured on
                 # Alicia(D3) + [Alice(D1), alice(D2)]: the survivor came out as
                 # "D1 | D2" with D3 gone. base.py Stage 5 orders it this way for the
                 # same reason. source_chunk_ids has the same shape of defect — the
@@ -1934,7 +1939,11 @@ class LLMVerifiedResolution(ResolutionStrategy):
                         if lbl and lbl != survivor.label and lbl not in merged_labels:
                             merged_labels.append(lbl)
                     for key, value in dup.properties.items():
-                        if survivor.properties.get(key) is None and value is not None:
+                        if (
+                            key != LEGACY_LIST_KEY
+                            and survivor.properties.get(key) is None
+                            and value is not None
+                        ):
                             survivor.properties[key] = value
                 if merged_labels:
                     # Same " | " convention as `description` above.

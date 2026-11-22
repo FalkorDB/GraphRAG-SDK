@@ -422,7 +422,7 @@ After aggregation, each entity becomes a `GraphNode`:
 
 - **ID:** `compute_entity_id(name, type)` — deterministic: `"alice__person"` (lowercase, spaces replaced with underscores, type-qualified to prevent collisions). A table row's id is derived the same way from its name, which is why a row and a mention of the same name are one node
 - **Label:** The entity type (e.g., `Person`, `Organization`)
-- **Properties:** `name`, `type` and `description` — what the document's chunks that named it said, joined with `" | "` (with `descriptions`, the list, when there is more than one). The store adds these to what the entity already holds from other documents, and `finalize()` summarises an entity holding more than 5. Which chunks named it, where in each (`spans`), and what each said about it go on its `MENTIONED_IN` edges, one per chunk, not on the node. Declared attribute values are set on the node too
+- **Properties:** `name`, `type` and `description` — what the document's chunks that named it said, joined with `" | "` into one string (a `|` inside one is stored as `¦`, so the string splits back into exactly what each said; `description_piece_count` holds the number of pieces when there are two or more). The store adds these to what the entity already holds from other documents, and `finalize()` summarises an entity holding more than 5. Which chunks named it, where in each (`spans`), and what each said about it go on its `MENTIONED_IN` edges, one per chunk, not on the node. Declared attribute values are set on the node too; an attribute named `description` stands in only where the chunks said nothing, and never replaces what they said
 
 ---
 
