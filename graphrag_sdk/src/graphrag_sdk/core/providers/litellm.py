@@ -39,8 +39,10 @@ class LiteLLM(LLMInterface):
     Reasoning models (o-series, gpt-5, gpt-6 …) need no setting: when a
     model rejects ``temperature`` or ``max_tokens``, the request goes again
     without the temperature, or with ``max_completion_tokens``, and so do
-    the instance's later requests. Extra keyword arguments, such as
-    ``reasoning_effort="low"``, are sent with every request.
+    the instance's later requests (for the temperature, those at the same
+    ``reasoning_effort``; with ``"none"`` it is sent). Extra keyword
+    arguments, such as ``reasoning_effort="low"``, are sent with every
+    request.
     """
 
     def __init__(
@@ -61,7 +63,7 @@ class LiteLLM(LLMInterface):
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._extra = kwargs
-        self._sampling = SamplingParams(model, kwargs)
+        self._sampling = SamplingParams(model)
 
     @staticmethod
     def _is_reasoning_model(model: str) -> bool:

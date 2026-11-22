@@ -59,7 +59,9 @@ llm = LiteLLM(
 
 Any other keyword argument is sent with every request, for example `reasoning_effort="low"`.
 
-**Reasoning models** (OpenAI o-series, gpt-5, gpt-6 and others) need no setting. Many of them reject a `temperature` other than 1 and take `max_completion_tokens` instead of `max_tokens`. When a model rejects one of the two, the SDK sends the request again at once, without the temperature or with `max_completion_tokens`, and keeps doing so for that LLM's later requests. LiteLLM rejects these itself, before anything is sent, for every model it knows; an Azure deployment name or a model newer than your LiteLLM costs at most one rejected request per parameter. With `reasoning_effort="none"` the temperature is sent, since a gpt-5.x model without reasoning takes one. `OpenRouterLLM` behaves the same way.
+**Reasoning models** (OpenAI o-series, gpt-5, gpt-6 and others) need no setting. Many of them reject a `temperature` other than 1 and take `max_completion_tokens` instead of `max_tokens`. When a model rejects one of the two, the SDK sends the request again at once, without the temperature or with `max_completion_tokens`, and keeps doing so for that LLM's later requests. LiteLLM rejects these itself, before anything is sent, for every model it knows; an Azure deployment name or a model newer than your LiteLLM costs at most one rejected request per parameter. With `reasoning_effort="none"`, set on the LLM or passed with a call, the temperature is sent, since a gpt-5.x model without reasoning takes one; a temperature rejected at one `reasoning_effort` is dropped at that effort only. A re-sent request gets its own `timeout` (a rejection usually comes back at once), so one call can take up to three timeouts. `OpenRouterLLM` behaves the same way (it takes `reasoning_effort` per call).
+
+A `max_tokens` passed with a call replaces the LLM's; `max_tokens=None` there means no limit.
 
 ### Embedder
 

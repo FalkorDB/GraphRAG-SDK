@@ -38,7 +38,9 @@ class OpenRouterLLM(LLMInterface):
 
     Reasoning models need no setting: when a model rejects ``temperature``
     or ``max_tokens``, the request goes again without the temperature, or
-    with ``max_completion_tokens``, and so do the instance's later requests.
+    with ``max_completion_tokens``, and so do the instance's later requests
+    (for the temperature, those at the same ``reasoning_effort``, which a
+    call can pass; with ``"none"`` it is sent).
     """
 
     def __init__(

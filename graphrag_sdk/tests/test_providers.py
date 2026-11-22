@@ -736,6 +736,43 @@ class TestSamplingParams:
         assert kw["max_completion_tokens"] == 100
         assert "max_tokens" not in kw
 
+    def test_reasoning_effort_none_on_a_call_keeps_the_temperature(self):
+        """Per call it counts too, and on OpenRouter, which has no
+        constructor extras; gpt-6-luna got temperature=0 before the name
+        guess knew it."""
+        llm = LiteLLM(model="openai/gpt-6-luna")
+        assert "temperature" not in llm._completion_kwargs("hi")
+        assert llm._completion_kwargs("hi", reasoning_effort="none")["temperature"] == 0.0
+
+        router = OpenRouterLLM(model="openai/gpt-6-luna", api_key="test")
+        msgs = [{"role": "user", "content": "hi"}]
+        assert "temperature" not in router._build_create_kwargs(msgs, extra={})
+        kw = router._build_create_kwargs(msgs, extra={"reasoning_effort": "none"})
+        assert kw["temperature"] == 0.0
+
+    def test_a_callers_max_tokens_none_means_no_cap(self):
+        """An explicit ``max_tokens=None`` overrides the instance cap rather
+        than falling back to it, on both paths."""
+        chat = LiteLLM(model="openai/gpt-4o", max_tokens=100)
+        kw = chat._completion_kwargs("hi", max_tokens=None)
+        assert "max_tokens" not in kw
+        assert "max_completion_tokens" not in kw
+        reasoning = LiteLLM(model="openai/gpt-5.5", max_tokens=100)
+        kw = reasoning._completion_kwargs("hi", max_tokens=None)
+        assert "max_tokens" not in kw
+        assert "max_completion_tokens" not in kw
+        router = OpenRouterLLM(model="openai/gpt-4o", api_key="test", max_tokens=100)
+        kw = router._build_create_kwargs([], extra={"max_tokens": None})
+        assert "max_tokens" not in kw
+
+    def test_the_default_cap_does_not_overwrite_a_callers_max_completion_tokens(self):
+        llm = LiteLLM(model="openai/gpt-5.5", max_tokens=100)
+        assert (
+            llm._completion_kwargs("hi", max_completion_tokens=500)["max_completion_tokens"] == 500
+        )
+        # The caller's own max_tokens still wins, renamed.
+        assert llm._completion_kwargs("hi", max_tokens=300)["max_completion_tokens"] == 300
+
     def test_a_request_built_before_the_change_is_sent_again(self):
         """Another thread already dropped the temperature: a request that
         still carried it is sent again, not failed."""
@@ -807,6 +844,49 @@ class TestLiteLLMLearnsRejectedParams:
         assert result.content == "ok"
         assert "temperature" not in mock_litellm.acompletion.call_args_list[-1].kwargs
 
+    def test_a_rejection_at_one_effort_does_not_stick_at_another(self):
+        """One call at "low" loses its temperature; the instance's own
+        "none" calls keep theirs. (An Azure name, so the name guess does not
+        already drop it at "low".)"""
+        mock_litellm = MagicMock()
+        mock_litellm.completion.side_effect = [
+            _Rejected(_TEMPERATURE_REJECTED),
+            _mock_litellm_completion_response("low"),
+            _mock_litellm_completion_response("none"),
+            _mock_litellm_completion_response("low again"),
+        ]
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            llm = LiteLLM(model="azure/prod-chat", reasoning_effort="none")
+            llm.invoke("hi", reasoning_effort="low")
+            llm.invoke("hi")
+            llm.invoke("hi", reasoning_effort="low")
+
+        sent = [c.kwargs for c in mock_litellm.completion.call_args_list]
+        assert [k["reasoning_effort"] for k in sent] == ["low", "low", "none", "low"]
+        assert sent[0]["temperature"] == 0.0
+        assert "temperature" not in sent[1]
+        assert sent[2]["temperature"] == 0.0
+        assert "temperature" not in sent[3]
+
+    def test_one_rejection_naming_both_parameters_fixes_both(self):
+        mock_litellm = MagicMock()
+        mock_litellm.completion.side_effect = [
+            _Rejected(
+                "Unsupported parameters: 'temperature' and 'max_tokens' are not "
+                "supported with this model."
+            ),
+            _mock_litellm_completion_response("ok"),
+        ]
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            llm = LiteLLM(model="azure/prod-chat", max_tokens=300)
+            assert llm.invoke("hi").content == "ok"
+
+        assert mock_litellm.completion.call_count == 2
+        last = mock_litellm.completion.call_args_list[-1].kwargs
+        assert "temperature" not in last
+        assert "max_tokens" not in last
+        assert last["max_completion_tokens"] == 300
+
     def test_other_failures_are_not_sent_again(self):
         mock_litellm = MagicMock()
         mock_litellm.completion.side_effect = _Rejected("maximum context length is 8192")
@@ -861,6 +941,28 @@ class TestOpenRouterLearnsRejectedParams:
         last = mock_async_client.chat.completions.create.call_args_list[-1].kwargs
         assert last["max_completion_tokens"] == 50
         assert "max_tokens" not in last
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_messages_drops_a_rejected_temperature(self):
+        from graphrag_sdk.core.models import ChatMessage
+
+        mock_openai = MagicMock()
+        mock_async_client = MagicMock()
+        mock_async_client.chat.completions.create = AsyncMock(
+            side_effect=[_Rejected(_TEMPERATURE_REJECTED), _mock_openai_completion_response("ok")]
+        )
+        mock_openai.AsyncOpenAI.return_value = mock_async_client
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            llm = OpenRouterLLM(model="openai/some-new-model", api_key="test")
+            result = await llm.ainvoke_messages(
+                [ChatMessage(role="user", content="hi")], max_retries=1
+            )
+
+        assert result.content == "ok"
+        sent = [c.kwargs for c in mock_async_client.chat.completions.create.call_args_list]
+        assert sent[0]["temperature"] == 0.0
+        assert "temperature" not in sent[1]
+        assert sent[1]["messages"] == [{"role": "user", "content": "hi"}]
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -22,10 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   later requests. These re-sends do not count against `max_retries` and wait
   for no backoff. LiteLLM raises the rejection itself, before any network call,
   for the models it knows, so they cost nothing; any other model costs at most
-  one rejected request per parameter. With `reasoning_effort="none"` the
-  temperature is sent, since a gpt-5.x model with reasoning off takes one.
+  one rejected request per parameter. With `reasoning_effort="none"`, on the
+  LLM or on a call, the temperature is sent, since a gpt-5.x model with
+  reasoning off takes one; a temperature rejected at one `reasoning_effort` is
+  dropped at that effort only. A re-sent request gets its own `timeout`.
   LiteLLM's own `supports_reasoning` flag was not used: it is also true for
   Claude and Gemini, which take a temperature.
+- A call's `max_tokens=None` now means no output limit on every model; on a
+  reasoning model it used to fall back to the LLM's own `max_tokens`. The
+  LLM's `max_tokens` no longer overwrites a `max_completion_tokens` passed
+  with a call.
 
 - **An entity's description is stored once.** A description of more than one
   piece (what several chunks said, or a merge) was stored twice: as the

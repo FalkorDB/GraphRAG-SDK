@@ -4,8 +4,9 @@
 # ``temperature`` and take ``max_completion_tokens`` instead of ``max_tokens``.
 # A provider starts from a guess by model name, then learns from the answers:
 # when a request is rejected because of one of these two parameters, the
-# parameter is dropped (``temperature``) or renamed (``max_tokens``) for that
-# LLM instance and the request is sent again at once.
+# parameter is dropped (``temperature``, at that request's reasoning effort) or
+# renamed (``max_tokens``) for that LLM instance and the request is sent again
+# at once.
 #
 # LiteLLM raises that rejection itself, before any network call, for every
 # model it knows (it also knows that ``reasoning_effort="none"`` lets a
@@ -67,60 +68,84 @@ def rejected_params(exc: BaseException) -> set[str]:
     return {name for name, pattern in _PARAM_RES.items() if pattern.search(text)}
 
 
+def _effort_of(kw: dict[str, Any]) -> str | None:
+    """The request's ``reasoning_effort``, as a string; None when it sets none."""
+    effort = kw.get("reasoning_effort")
+    return None if effort is None else str(effort)
+
+
 class SamplingParams:
     """How one LLM instance sends ``temperature`` and its token cap.
 
     Starts from the model name (see :data:`REASONING_NAME_PREFIXES`) and
     changes when a request is rejected over one of the two (:meth:`adapt`).
-    A change lasts for the life of the instance and only ever goes one way —
-    ``temperature`` dropped, ``max_tokens`` renamed — so a request is sent
-    again at most twice.
+
+    Whether a temperature goes depends on each request's
+    ``reasoning_effort`` — set on the LLM or passed with the call: with
+    ``"none"`` a gpt-5.x model takes one, so the name alone never drops it.
+    A rejected temperature is remembered for the effort it was sent at only,
+    so one call at ``"low"`` does not cost the later ``"none"`` calls their
+    temperature. A rejected ``max_tokens`` is renamed for every request.
+    Changes only ever go one way, so a request is sent again at most twice.
     """
 
-    def __init__(self, model: str, extra: dict[str, Any] | None = None) -> None:
+    def __init__(self, model: str) -> None:
         self._model = model
-        reasoning = name_says_reasoning(model)
-        # With reasoning switched off, a gpt-5.x model takes a temperature:
-        # send it, and let LiteLLM or the provider reject it if this one doesn't.
-        effort_none = (extra or {}).get("reasoning_effort") == "none"
-        self.omit_temperature = reasoning and not effort_none
-        self.use_max_completion_tokens = reasoning
+        self._name_says_reasoning = name_says_reasoning(model)
+        # Efforts (a request's ``reasoning_effort``; None when unset) at which
+        # the model rejected a temperature.
+        self._temperature_rejected_at: set[str | None] = set()
+        self.use_max_completion_tokens = self._name_says_reasoning
+
+    def omits_temperature(self, effort: str | None) -> bool:
+        """Whether a request at ``reasoning_effort`` *effort* goes without a temperature."""
+        if effort in self._temperature_rejected_at:
+            return True
+        return self._name_says_reasoning and effort != "none"
 
     def apply(self, kw: dict[str, Any], temperature: float, max_tokens: int | None) -> None:
         """Set the temperature and the token cap on request kwargs *kw*, in place.
 
-        A ``temperature`` or ``max_tokens`` already in *kw* (from the caller)
-        wins over the instance default; a dropped ``temperature`` is dropped
-        whoever set it, and the caller's ``max_tokens`` is renamed with the
-        default's.
+        *kw* already holds the caller's arguments, which win over the
+        instance defaults *temperature* and *max_tokens*: a caller's
+        ``max_tokens`` (renamed when the model wants ``max_completion_tokens``)
+        replaces the default, ``max_tokens=None`` from the caller means no
+        cap, and the default never overwrites a caller's
+        ``max_completion_tokens``. A dropped temperature is dropped whoever
+        set it.
         """
-        if self.omit_temperature:
+        if self.omits_temperature(_effort_of(kw)):
             kw.pop("temperature", None)
         else:
             kw.setdefault("temperature", temperature)
-        caller_max_tokens = kw.pop("max_tokens", None)
-        cap = caller_max_tokens if caller_max_tokens is not None else max_tokens
-        if cap is not None:
-            key = "max_completion_tokens" if self.use_max_completion_tokens else "max_tokens"
-            kw[key] = cap
+        key = "max_completion_tokens" if self.use_max_completion_tokens else "max_tokens"
+        if "max_tokens" in kw:
+            cap = kw.pop("max_tokens")
+            if cap is not None:
+                kw[key] = cap
+        elif max_tokens is not None:
+            kw.setdefault(key, max_tokens)
 
     def adapt(self, exc: BaseException, sent: dict[str, Any]) -> bool:
         """Learn from *exc*, the answer to request kwargs *sent*.
 
         Returns True when *exc* rejected a parameter that *sent* carried and
-        that is no longer sent, i.e. when the request should go again now. A
-        request built before another thread made the same change also gets
-        True, so it is not failed for what was already fixed.
+        that the same request would no longer carry, i.e. when it should go
+        again now. A request built before another thread made the same change
+        also gets True, so it is not failed for what was already fixed.
         """
         rejected = rejected_params(exc)
         retry = False
         if "temperature" in rejected and "temperature" in sent:
-            if not self.omit_temperature:
-                self.omit_temperature = True
+            effort = _effort_of(sent)
+            if effort not in self._temperature_rejected_at:
+                self._temperature_rejected_at.add(effort)
+                at = "" if effort is None else f" at reasoning_effort={effort!r}"
                 logger.info(
-                    "%s does not accept temperature=%s; its requests go without a temperature",
+                    "%s does not accept temperature=%s%s; such requests go without a temperature",
                     self._model,
                     sent["temperature"],
+                    at,
                 )
             retry = True
         if "max_tokens" in rejected and "max_tokens" in sent:
