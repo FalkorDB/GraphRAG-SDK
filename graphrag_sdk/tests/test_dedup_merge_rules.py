@@ -54,12 +54,16 @@ class TestWhatAMergeKeeps:
         keep = {"id": "a", "description": "An engineer.", "age": 34}
         dup = {"id": "b", "description": "An engineer who led the remediation plan in 2024."}
         carried = properties_to_carry(keep, dup, never=self.NEVER)
-        assert carried == {"description": f"{keep['description']} | {dup['description']}"}
+        assert carried == {
+            "description": f"{keep['description']} | {dup['description']}",
+            "description_count": 2,
+        }
 
         carried = properties_to_carry(dup, keep, never=self.NEVER)
         assert carried == {
             "age": 34,
             "description": f"{dup['description']} | {keep['description']}",
+            "description_count": 2,
         }, "the survivor's own text comes first"
 
     def test_an_identical_description_is_not_repeated(self):

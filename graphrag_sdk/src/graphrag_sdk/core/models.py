@@ -534,7 +534,9 @@ class Ontology(DataModel):
         ``description``, ``source_chunk_ids``, ``spans``, ``rel_type``,
         ``fact``, ``src_name``, ``tgt_name``, ``id``, ``label``). Declaring
         a ``Attribute`` with one of these names will shadow the system
-        value on extracted nodes. Don't do that.
+        value on extracted nodes. Don't do that. The one exception is
+        ``description``: what the chunks said wins, and an attribute of
+        that name stands in only where they said nothing.
         """
         if not self.entities:
             return self

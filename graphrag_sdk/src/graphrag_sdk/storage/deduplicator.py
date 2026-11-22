@@ -27,7 +27,9 @@ from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
 from graphrag_sdk.core.descriptions import (
+    DESCRIPTION_COUNT_KEY,
     LEGACY_LIST_KEY,
+    description_count,
     description_piece,
     join_description,
     split_description,
@@ -276,18 +278,29 @@ def properties_to_carry(
         key: value
         for key, value in dup.items()
         if key not in never
-        and key not in ("source_chunk_ids", LEGACY_LIST_KEY)
+        and key not in ("source_chunk_ids", LEGACY_LIST_KEY, DESCRIPTION_COUNT_KEY)
         and value is not None
         and keep.get(key) in (None, "", [])
     }
-    description = join_description(
-        _merge_description_members(description_list(keep), description_list(dup))
-    )
-    if description != str(keep.get("description") or ""):
-        carry["description"] = description
-    else:
-        carry.pop("description", None)
+    carry.pop("description", None)
+    pieces = _merge_description_members(description_list(keep), description_list(dup))
+    if _description_changes(keep, pieces):
+        carry["description"] = join_description(pieces)
+        count = description_count(pieces)
+        if count is not None:
+            carry[DESCRIPTION_COUNT_KEY] = count
     return carry
+
+
+def _description_changes(keep: dict[str, Any], pieces: list[str]) -> bool:
+    """Whether a merge leaving ``pieces`` must write the survivor's
+    description: its text changes, or it is not yet stored in this version's
+    form (an earlier version's list, or a count that does not match)."""
+    return (
+        join_description(pieces) != str(keep.get("description") or "")
+        or keep.get(LEGACY_LIST_KEY) is not None
+        or keep.get(DESCRIPTION_COUNT_KEY) != description_count(pieces)
+    )
 
 
 def _keep_declared_identities_apart(
@@ -1741,15 +1754,19 @@ class EntityDeduplicator:
         params: dict[str, Any] = {}
         # Joined with " | ", matching LLMVerifiedResolution's survivor rule, so
         # both mechanisms leave the same shape behind — and counted by the same
-        # rule (``description_list``). One string: an earlier version's
-        # ``descriptions`` list on the survivor goes with this write, since
-        # ``description_list`` would otherwise go on reading it.
+        # rule (``description_list``). One string and its piece count; an
+        # earlier version's ``descriptions`` list on the survivor goes with
+        # this write, since ``description_list`` would otherwise go on reading it.
         segments = _merge_description_members(_description_members(keep), _description_members(dup))
-        description = join_description(segments)
-        legacy_list = keep.get("descriptions") is not None
-        if description != str(keep.get("description") or "") or legacy_list:
-            sets += ["s.description = $desc", "s.descriptions = null"]
-            params.update(desc=description or None)
+        if _description_changes(keep, segments):
+            sets += [
+                "s.description = $desc",
+                f"s.{DESCRIPTION_COUNT_KEY} = $desc_count",
+                "s.descriptions = null",
+            ]
+            params.update(
+                desc=join_description(segments) or None, desc_count=description_count(segments)
+            )
 
         current = _string_list(keep.get("aliases"))
         aliases = self._merged_aliases(
@@ -2178,7 +2195,14 @@ class EntityDeduplicator:
 DROPPED_SUFFIX = "__dropped"
 # Properties a merge folds by a rule of its own, never by carry.
 _FOLDED_KEYS = frozenset(
-    {"description", "descriptions", "aliases", "source_chunk_ids", MERGED_LABELS_KEY}
+    {
+        "description",
+        "descriptions",
+        DESCRIPTION_COUNT_KEY,
+        "aliases",
+        "source_chunk_ids",
+        MERGED_LABELS_KEY,
+    }
 )
 # Properties the SDK owns; none collides — the survivor's stays, and one the
 # survivor lacks is carried (``is_stub``, ``entity_key``: it now holds the row).

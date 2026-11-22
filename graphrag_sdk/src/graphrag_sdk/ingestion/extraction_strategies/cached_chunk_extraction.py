@@ -57,7 +57,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.descriptions import join_description, set_description, split_description
+from graphrag_sdk.core.descriptions import description_pieces, set_description
 from graphrag_sdk.core.exceptions import DatabaseUnavailableError, LatencyBudgetExceededError
 from graphrag_sdk.core.models import (
     EntityMention,
@@ -251,7 +251,7 @@ class CachedChunkExtraction(ExtractionStrategy):
             new_uids = id_map.get(row.chunk_id)
             if not new_uids:
                 continue
-            said = row.descriptions or split_description(row.description)
+            said = row.descriptions or description_pieces({"description": row.description})
             for new_uid in new_uids:
                 # The unchanged chunk keeps what its old mention edge held:
                 # the same text, so the same spans and the same descriptions.
@@ -273,7 +273,7 @@ class CachedChunkExtraction(ExtractionStrategy):
                 if row.type:
                     props["type"] = row.type
                 if said:
-                    props["description"] = join_description(said)
+                    set_description(props, said)
                 ent_props[row.entity_id] = props
                 ent_labels[row.entity_id] = row.label
                 # Remap provenance onto post-update chunk ids: this doc's

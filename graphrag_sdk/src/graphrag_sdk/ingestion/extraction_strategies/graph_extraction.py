@@ -11,7 +11,7 @@ from datetime import date, datetime
 from typing import Any
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.descriptions import description_piece, join_description
+from graphrag_sdk.core.descriptions import description_piece, set_description
 from graphrag_sdk.core.models import (
     _SDK_MANAGED_ATTRIBUTE_NAMES,
     Attribute,
@@ -1277,11 +1277,12 @@ class GraphExtraction(ExtractionStrategy):
                 props.update(
                     {key: value for key, value in ent.attributes.items() if value is not None}
                 )
-            # Every piece in the one string, a piece never holding "|"; set
-            # after the attributes, so one named "description" cannot replace
-            # what the chunks said (their edges record it). It stands in only
-            # where the chunks said nothing.
-            props["description"] = join_description(members or [props.get("description")])
+            # Every piece in the one string, a piece never holding "|", with
+            # its count; set after the attributes, so one named "description"
+            # cannot replace what the chunks said (their edges record it). It
+            # stands in only where the chunks said nothing.
+            if not set_description(props, members or [props.get("description")]):
+                props["description"] = ""
             nodes.append(
                 GraphNode(
                     id=node_id,

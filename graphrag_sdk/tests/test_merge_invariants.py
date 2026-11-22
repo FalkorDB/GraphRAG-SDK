@@ -101,17 +101,27 @@ class TestHelpers:
     def test_description_list_from_single_string(self):
         assert description_list({"description": "a"}) == ["a"]
 
-    def test_description_list_splits_the_string_into_its_pieces(self):
-        """No piece holds "|" (every writer makes one "¦"), so the stored
-        string splits back into exactly the pieces that were joined."""
+    def test_a_description_with_a_count_splits_into_its_pieces(self):
+        """No piece holds "|" (every writer makes one " ¦ "), so a stored
+        string with a count splits back into exactly the pieces joined."""
+        assert description_list(
+            {"description": "CEO \u00a6 founder | born 1970", "description_count": 2}
+        ) == ["CEO \u00a6 founder", "born 1970"]
+
+    def test_a_description_without_a_count_is_one_piece(self):
+        """An earlier version's text, a custom extractor's, or one written
+        straight to the graph: a "|" in it can belong to the text (a table
+        row), so it is read whole, its "|" made " ¦ "."""
         assert description_list({"description": "CEO | founder of Acme"}) == [
-            "CEO",
-            "founder of Acme",
+            "CEO \u00a6 founder of Acme"
         ]
-        assert description_list({"description": "CEO \u00a6 founder | born 1970"}) == [
-            "CEO \u00a6 founder",
-            "born 1970",
+        assert description_list({"description": "| Revenue | 10 | Profit | 10 |"}) == [
+            "\u00a6  Revenue \u00a6 10 \u00a6 Profit \u00a6 10  \u00a6"
         ]
+
+    def test_an_earlier_versions_list_items_are_each_one_piece(self):
+        props = {"descriptions": ["CEO", "Founder | Acme"], "description": "CEO | Founder | Acme"}
+        assert description_list(props) == ["CEO", "Founder \u00a6 Acme"]
 
     def test_description_list_prefers_the_members_list(self):
         assert description_list({"descriptions": ["a", "b", "a"], "description": "a | b | a"}) == [
@@ -128,11 +138,13 @@ class TestHelpers:
         props = {"descriptions": ["Keep one"], "description": "Keep one | Only in string"}
         assert description_list(props) == ["Keep one", "Only in string"]
 
-    def test_newlines_and_tabs_read_as_spaces_at_a_pieces_ends(self):
+    def test_newlines_and_tabs_read_as_spaces(self):
         """The same rule as the Cypher reader, whose trim is not strip()."""
+        assert description_list(
+            {"description": "CEO |\nFounded Acme\t", "description_count": 2}
+        ) == ["CEO", "Founded Acme"]
         assert description_list({"description": "CEO |\nFounded Acme\t"}) == [
-            "CEO",
-            "Founded Acme",
+            "CEO \u00a6 Founded Acme"
         ]
 
     def test_set_merged_descriptions_writes_one_string(self):
@@ -161,12 +173,13 @@ class TestPropertiesToCarry:
     def test_an_earlier_versions_list_is_never_carried(self):
         """Read before the string, a carried list hid the survivor's text."""
         carry = properties_to_carry(
-            {"id": "keep", "description": "Keep one | Keep two"},
+            {"id": "keep", "description": "Keep one | Keep two", "description_count": 2},
             {"id": "dup", "description": "Old A | Old B", "descriptions": ["Old A", "Old B"]},
             never=frozenset({"id"}),
         )
         assert "descriptions" not in carry
         assert carry["description"] == "Keep one | Keep two | Old A | Old B"
+        assert carry["description_count"] == 4
 
 
 class TestExactMatchAtIngest:
@@ -375,7 +388,9 @@ class TestFinalizeMergeFold:
         return [w for w in sim.writes if "s.description = $desc" in w.sets]
 
     async def test_three_rules(self):
-        sim = await simulate(self._ROWS, judge=AllSameJudge())
+        sim = await simulate(
+            self._ROWS, stored={"e2": {"props": {"description_count": 2}}}, judge=AllSameJudge()
+        )
         assert sim.merged == 1
         (write,) = self._description_writes(sim)
         # rule 1: one joined string; survivor = longest description (e2), whose

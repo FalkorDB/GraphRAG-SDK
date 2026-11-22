@@ -683,18 +683,23 @@ async def test_a_table_rekey_folds_into_the_taken_id_in_one_query(graph):
 async def test_a_table_rekey_fold_never_leaves_an_earlier_versions_list(graph, list_on):
     """An earlier version's ``descriptions`` list, on either node, is read
     into the one description and dropped. Carried (or left on the survivor),
-    the next write read it first and lost the survivor's own text."""
-    lists = {"old": "['Old A', 'Old B']", "new": "['Keep one', 'Keep two']"}
+    the next write read it first and lost the survivor's own text. The other
+    node is this version's: its two pieces have a count."""
+    form = {
+        side: f", descriptions: {items}" if list_on == side else ", description_count: 2"
+        for side, items in (("old", "['Old A', 'Old B']"), ("new", "['Keep one', 'Keep two']"))
+    }
     await graph.query_raw(
         "CREATE (o:__Entity__:Organization {id: 'old', name: 'Globex', "
-        f"description: 'Old A | Old B'{', descriptions: ' + lists['old'] if list_on == 'old' else ''}}}), "
+        f"description: 'Old A | Old B'{form['old']}}}), "
         "(n:__Entity__:Organization {id: 'new', name: 'Initech', "
-        f"description: 'Keep one | Keep two'{', descriptions: ' + lists['new'] if list_on == 'new' else ''}}})"
+        f"description: 'Keep one | Keep two'{form['new']}}})"
     )
     assert await graph._move_entity("old", "new") == (0, 1)
     assert await rows(
-        graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description, n.descriptions"
-    ) == [["Keep one | Keep two | Old A | Old B", None]]
+        graph,
+        "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description, n.descriptions, n.description_count",
+    ) == [["Keep one | Keep two | Old A | Old B", None, 4]]
     await graph.upsert_nodes(
         [GraphNode(id="new", label="Organization", properties={"description": "New fact"})]
     )

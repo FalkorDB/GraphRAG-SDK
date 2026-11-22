@@ -36,6 +36,7 @@ RESERVED_PROPERTY_NAMES: frozenset[str] = frozenset(
         "name",
         "type",
         "description",
+        "description_count",
         "source_chunk_ids",
         "spans",
         "embedding",

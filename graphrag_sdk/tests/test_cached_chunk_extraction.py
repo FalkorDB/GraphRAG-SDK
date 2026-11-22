@@ -744,10 +744,9 @@ class TestGraphStoreCacheAccessors:
         assert row.label == "Person"  # __Entity__ filtered out
         assert row.source_chunk_ids == ["c1", "x"]
         # What this chunk's own edge holds — not the entity's description.
-        # An earlier version's list is read as the pieces, every "|" (inside
-        # an item too) separating two, as that version's strings are read.
+        # An earlier version's list: each item one piece, its "|" made " ¦ ".
         assert row.description == "Engineer | Founder | Acme" and row.spans == [3, 8]
-        assert row.descriptions == ["Engineer", "Founder", "Acme"]
+        assert row.descriptions == ["Engineer", "Founder \u00a6 Acme"]
         # An earlier version wrote this edge: it never recorded what the chunk said.
         assert row.recorded is False
         assert "said_version" in mock_connection.query.call_args[0][0]

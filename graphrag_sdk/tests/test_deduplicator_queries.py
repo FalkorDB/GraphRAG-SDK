@@ -319,13 +319,15 @@ class TestMergePreservesDescriptions:
         absorbing a node described as ``"first lit in 1871"`` used to append
         it again. Across incremental finalize cycles that compounds on hub
         entities. The members are the pieces of the survivor's one stored
-        ``description``, split at ``|``, the shape every merge writes.
+        ``description``, split at ``|`` (its count says it holds two), the
+        shape every merge writes.
         """
         sim = await simulate(
             [
                 ["e1", "Cape Morrow Light", "a lighthouse | first lit in 1871", "Location"],
                 ["e2", "cape morrow light", "first lit in 1871", "Location"],
             ],
+            stored={"e1": {"props": {"description_count": 2}}},
             judge=AllSameJudge(),
         )
         assert sim.merged == 1

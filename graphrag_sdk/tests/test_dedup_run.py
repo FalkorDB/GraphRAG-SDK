@@ -686,7 +686,7 @@ async def test_a_merge_adds_each_description_of_a_shared_chunk_once_and_whole(gr
         "CREATE (c:Chunk {id: 'c1'}) WITH c "
         "MATCH (t:__Entity__ {id: 'tim'}), (u:__Entity__ {id: 'timothy'}) "
         "CREATE (t)-[:MENTIONED_IN {description: 'CEO of Apple', spans: [0, 8]}]->(c), "
-        "(u)-[:MENTIONED_IN {description: $two, spans: [0, 8]}]->(c)",
+        "(u)-[:MENTIONED_IN {description: $two, description_count: 2, spans: [0, 8]}]->(c)",
         {"two": join_description(["Dr. Cook | Apple", "CEO of Apple"])},
     )
     await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([TIM, APPLE])))

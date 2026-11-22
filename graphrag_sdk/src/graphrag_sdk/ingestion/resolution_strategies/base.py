@@ -14,9 +14,7 @@ from graphrag_sdk.core.descriptions import (
     LEGACY_LIST_KEY,
     description_piece,
     description_pieces,
-    join_description,
     set_description,
-    split_description,
 )
 from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship, ResolutionResult
 
@@ -341,15 +339,10 @@ async def exact_match_merge(
             parts = first_line.split(None, 1)
             chosen = parts[1].strip() if len(parts) >= 2 else ""
             lines = content.split("\n", 1)
-            # The model's summary is one piece; without one, the members'
-            # pieces as they are.
-            cl_summary = (
-                description_piece(lines[1])
-                if len(lines) > 1
-                else join_description(
-                    p for d in cl_candidates[cl_idx]["descriptions"] for p in split_description(d)
-                )
-            )
+            # The model's summary is one piece. A reply with no second line
+            # leaves None: the survivor keeps every member's description,
+            # joined by set_merged_descriptions, as its summary.
+            cl_summary = description_piece(lines[1]) if len(lines) > 1 else None
             cl_approvals[cl_idx] = (chosen, cl_summary)
 
     # ── Stage 4b: second opinion on cross-label approvals ──
@@ -424,8 +417,7 @@ async def exact_match_merge(
             # the copy above took from a duplicate would throw the summary
             # away. What each chunk said stays on its MENTIONED_IN edge. Last,
             # so nothing writes these keys after it.
-            survivor.properties["description"] = sl_summaries[i]
-            survivor.properties.pop("descriptions", None)
+            set_description(survivor.properties, [sl_summaries[i]])
             survivor.properties["description_summarised"] = True
         sl_survivor_by_idx[i] = survivor
 
@@ -491,8 +483,9 @@ async def exact_match_merge(
         # description ``set_merged_descriptions`` just built from every member,
         # and it is the field search, the fulltext index and the prompts read.
         if cl_summary:
-            cl_survivor.properties["description"] = cl_summary
-            cl_survivor.properties.pop("descriptions", None)
+            set_description(cl_survivor.properties, [cl_summary])
+            cl_survivor.properties["description_summarised"] = True
+        elif cl_summary is None:
             cl_survivor.properties["description_summarised"] = True
 
     # ── Stage 7: resolve transitive id_remap chains (sl-loser → sl-survivor →

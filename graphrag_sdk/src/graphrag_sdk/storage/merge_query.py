@@ -33,7 +33,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from graphrag_sdk.core.descriptions import DESCRIPTION_SEPARATOR, PIECE_BREAK
+from graphrag_sdk.core.descriptions import (
+    DESCRIPTION_COUNT_KEY,
+    DESCRIPTION_SEPARATOR,
+    PIECE_BREAK,
+    PIPE_STAND_IN,
+)
 from graphrag_sdk.core.exceptions import GraphRAGError
 from graphrag_sdk.storage.system_store import PLAN, PROCESSING_LABEL, deleted_record_clause
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
@@ -114,10 +119,19 @@ def handled(kinds: list[tuple[str, str]]) -> list[str]:
 
 #: Properties the freshness check leaves out of its property-by-property
 #: comparison: the name and the description, descriptions, aliases and merged
-#: labels have clauses of their own, and the name vector does not survive the
-#: client round trip and is replaced only with the name, which is checked.
+#: labels have clauses of their own (the description's piece count changes only
+#: with the description), and the name vector does not survive the client round
+#: trip and is replaced only with the name, which is checked.
 _OWN_CLAUSES = frozenset(
-    {"name", "description", "descriptions", "aliases", "merged_labels", "embedding"}
+    {
+        "name",
+        "description",
+        "descriptions",
+        DESCRIPTION_COUNT_KEY,
+        "aliases",
+        "merged_labels",
+        "embedding",
+    }
 )
 
 
@@ -383,21 +397,57 @@ def _tidy(text: str) -> str:
     return "trim(replace(replace(replace(" + text + ", '\\r', ' '), '\\n', ' '), '\\t', ' '))"
 
 
+def _piece(text: str) -> str:
+    """Cypher for ``core.descriptions.description_piece``: carriage returns,
+    newlines and tabs made spaces; ``" | "``, then any other ``|``, made
+    ``" ¦ "``; trimmed."""
+    stand_in = f" {PIPE_STAND_IN} "
+    spaced = f"replace(replace(replace({text}, '\\r', ' '), '\\n', ' '), '\\t', ' ')"
+    return (
+        f"trim(replace(replace({spaced}, '{DESCRIPTION_SEPARATOR}', '{stand_in}'), "
+        f"'{PIECE_BREAK}', '{stand_in}'))"
+    )
+
+
 def description_members(holder: str) -> str:
     """Cypher: the description pieces ``holder`` (a node, an edge or a map)
-    holds, as a list: its ``description`` split at ``|``, after the items of
-    an earlier version's ``descriptions`` list where it holds text (each
-    split at ``|``); each tidied, blank ones left out, each kept once in
-    order. The Python rule is ``core.descriptions.description_pieces``."""
-    items = (
-        f"((CASE WHEN any(dz IN coalesce({holder}.descriptions, []) WHERE {_tidy('dz')} <> '') "
-        f"THEN {holder}.descriptions ELSE [] END) + "
-        f"(CASE WHEN {holder}.description IS NULL THEN [] ELSE [{holder}.description] END))"
+    holds, as a list, each kept once in order, blanks left out. With a
+    ``description_count``: ``description`` split at ``|``. Without one, the
+    text read whole, as an earlier version or a single piece left it: an
+    earlier version's ``descriptions`` items (where the list has text) and
+    what the string holds beyond them, or else the whole string, each made
+    one piece. The Python rule is ``core.descriptions.description_pieces``."""
+    # Every part null-safe: the C engine (4.x) evaluates CASE branches it
+    # does not take, and a null where substring() wants a number fails.
+    h = holder
+    text = f"coalesce({h}.description, '')"
+    items = f"coalesce({h}.descriptions, [])"
+    split_new = f"[dt IN split({text}, '{PIECE_BREAK}') | {_tidy('dt')}]"
+    joined = f"reduce(dj = coalesce(head({items}), ''), dw IN tail({items}) | dj + ' | ' + dw)"
+    prefix = f"({joined} + '{DESCRIPTION_SEPARATOR}')"
+    beyond = (
+        f"CASE WHEN {h}.description IS NULL OR {text} = {joined} THEN [] "
+        f"WHEN {text} STARTS WITH {prefix} "
+        f"THEN [substring({text}, size({prefix}), size({text}))] "
+        f"ELSE [{text}] END"
     )
-    split_items = f"reduce(dsp = [], dy IN {items} | dsp + split(dy, '{PIECE_BREAK}'))"
-    kept = f"[dx IN [dt IN {split_items} | {_tidy('dt')}] WHERE dx <> '']"
+    has_list = f"any(dz IN {items} WHERE {_tidy('dz')} <> '')"
+    earlier = (
+        f"CASE WHEN {has_list} THEN {items} + {beyond} "
+        f"WHEN {h}.description IS NULL THEN [] ELSE [{text}] END"
+    )
+    pieces = (
+        f"CASE WHEN {h}.{DESCRIPTION_COUNT_KEY} IS NOT NULL THEN {split_new} "
+        f"ELSE [dt IN {earlier} | {_piece('dt')}] END"
+    )
     once = "CASE WHEN du IN dseen THEN dseen ELSE dseen + [du] END"
-    return f"reduce(dseen = [], du IN {kept} | {once})"
+    return f"reduce(dseen = [], du IN [dx IN {pieces} WHERE dx <> ''] | {once})"
+
+
+def description_count_of(pieces: str) -> str:
+    """Cypher: the ``description_count`` stored with list ``pieces``: their
+    number when two or more, else null."""
+    return f"CASE WHEN size({pieces}) > 1 THEN size({pieces}) ELSE null END"
 
 
 def joined_description(pieces: str) -> str:
@@ -442,6 +492,7 @@ def mention_update(edge: str, new: str) -> str:
         f"WHERE acc[k] = {new}.spans[i] AND acc[k + 1] = {new}.spans[i + 1]) "
         f"THEN acc ELSE acc + [{new}.spans[i], {new}.spans[i + 1]] END) END, "
         f"{edge}.description = {joined_description('all_ds')}, "
+        f"{edge}.{DESCRIPTION_COUNT_KEY} = {description_count_of('all_ds')}, "
         f"{edge}.descriptions = null"
     )
 

@@ -18,7 +18,12 @@ import pytest
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.descriptions import description_piece, join_description, split_description
+from graphrag_sdk.core.descriptions import (
+    description_piece,
+    description_pieces,
+    join_description,
+    split_description,
+)
 from graphrag_sdk.core.models import (
     EntityMention,
     GraphData,
@@ -129,17 +134,18 @@ class TestSummaries:
     async def test_an_entity_over_the_limit_gets_one_marked_description(self, mock_connection):
         members = [f"fact {i}" for i in range(SUMMARISE_OVER_MEMBERS + 1)]
         current = " | ".join(members)
-        # No list on the node: its pieces are its one string, split at "|".
+        # No list on the node: its count says to split its one string at "|".
+        held = {"descriptions": None, "description_count": len(members)}
         mock_connection.query = AsyncMock(
-            side_effect=[_result([["alice", "Alice", current, None]]), _result([[1]])]
+            side_effect=[_result([["alice", "Alice", current, held]]), _result([[1]])]
         )
         llm = SummaryLLM("Alice leads Acme.")
         written = await GraphStore(mock_connection).summarise_long_descriptions(llm)
         assert written == 1
         assert "- fact 0" in llm.prompts[0] and "- fact 5" in llm.prompts[0]
         scan = mock_connection.query.call_args_list[0][0][0]
-        # Only descriptions of more than one piece are split and counted.
-        assert "e.description CONTAINS '|'" in scan and "split(" in scan
+        # Found by its count; only an earlier version's list is read.
+        assert "e.description_count > $over" in scan
         (write,) = _writes(mock_connection)
         cypher, params = write[0]
         # Written only if the node still holds what was summarised.
@@ -237,8 +243,8 @@ class TestTakingARemovedDocumentOff:
     async def test_only_what_the_removed_chunks_said_is_taken_off(self, mock_connection):
         mock_connection.query = AsyncMock(
             side_effect=[
-                # alice: not summarised, no undescribed edge, no list
-                _result([["alice", "Legacy | From C", None, False, False]]),
+                # alice: not summarised, no undescribed edge, two pieces
+                _result([["alice", "Legacy | From C", {"description_count": 2}, False, False]]),
                 _result([]),  # no remaining edge still says "From C"
                 _result([[1]]),
             ]
@@ -304,8 +310,8 @@ class TestMentionEdges:
                 EntityMention(
                     chunk_id="c2", entity_id="alice", descriptions=["CEO", "Founder \u00a6 Acme"]
                 ),
-                # A custom extractor's text with "|" in it: read as a node's
-                # description is, so the edge's pieces match the node's.
+                # A custom extractor's text with "|" in it: one piece, as the
+                # node reads the same text (it has no count).
                 EntityMention(chunk_id="c3", entity_id="alice", descriptions=["CEO | Acme"]),
             ]
         )
@@ -313,9 +319,12 @@ class TestMentionEdges:
         (rels,) = writer.graph_store.upsert_relationships.call_args[0]
         assert rels[0].type == "MENTIONED_IN"
         assert rels[0].properties == {"spans": [3, 8], "description": "CEO of Acme."}
-        # More than one: one string, as on a node.
-        assert rels[1].properties == {"description": "CEO | Founder \u00a6 Acme"}
-        assert rels[2].properties == {"description": "CEO | Acme"}
+        # More than one: one string and its count, as on a node.
+        assert rels[1].properties == {
+            "description": "CEO | Founder \u00a6 Acme",
+            "description_count": 2,
+        }
+        assert rels[2].properties == {"description": "CEO \u00a6 Acme"}
 
     async def test_two_names_with_one_id_in_a_chunk_make_one_edge_with_both(self):
         """``New York`` and ``New_York`` get one entity id; the second
@@ -334,7 +343,11 @@ class TestMentionEdges:
         await writer._write_mentions(data, MagicMock())
         (rels,) = writer.graph_store.upsert_relationships.call_args[0]
         assert len(rels) == 1
-        assert rels[0].properties == {"spans": [0, 8, 20, 28], "description": "A city | A state"}
+        assert rels[0].properties == {
+            "spans": [0, 8, 20, 28],
+            "description": "A city | A state",
+            "description_count": 2,
+        }
 
 
 # ── real FalkorDB ───────────────────────────────────────────────────────────
@@ -360,20 +373,21 @@ async def store():
 
 async def _entity(store, eid="alice"):
     """``(description, pieces, source_chunk_ids, spans, summarised)``. The
-    node keeps no list (checked here); ``pieces`` is its one string split at
-    "|" when it holds more than one piece, ``None`` when it holds one."""
+    node keeps no list, and its count matches its pieces (both checked here);
+    ``pieces`` are the pieces when it holds more than one, ``None`` when one."""
     rows = (
         await store.query_raw(
             "MATCH (e:__Entity__ {id: $id}) RETURN e.description, e.descriptions, "
-            "e.source_chunk_ids, e.spans, e.description_summarised",
+            "e.source_chunk_ids, e.spans, e.description_summarised, e.description_count",
             {"id": eid},
         )
     ).result_set
     if not rows:
         return None
-    desc, stored_list, chunks, spans, summarised = rows[0]
+    desc, stored_list, chunks, spans, summarised, count = rows[0]
     assert stored_list is None, "a write left a descriptions list on the node"
-    pieces = split_description(desc)
+    pieces = description_pieces({"description": desc, "description_count": count})
+    assert count == (len(pieces) if len(pieces) > 1 else None), (count, pieces)
     return desc, pieces if len(pieces) > 1 else None, chunks, spans, summarised
 
 
@@ -400,10 +414,12 @@ async def _mentions(store, *edges):
         await store.query_raw(
             "MERGE (c:Chunk {id: $c}) WITH c MATCH (e:__Entity__ {id: 'alice'}) "
             "CREATE (e)-[m:MENTIONED_IN]->(c) "
-            "SET m.description = $d, m.spans = [0, 5], m.said_version = $v",
+            "SET m.description = $d, m.description_count = $n, m.spans = [0, 5], "
+            "m.said_version = $v",
             {
                 "c": chunk,
                 "d": join_description(ds) or None,
+                "n": len(ds) if len(ds) > 1 else None,
                 "v": None if said is None else 1,
             },
         )
@@ -456,8 +472,8 @@ class TestOnRealFalkorDB:
         )
         await store.upsert_nodes([_alice("Board member")])
         desc, descs, _, _, _ = await _entity(store)
-        assert descs == ["CEO", "Founder", "Acme", "Board member"]
-        assert desc == "CEO | Founder | Acme | Board member"
+        assert descs == ["CEO", "Founder \u00a6 Acme", "Board member"]
+        assert desc == "CEO | Founder \u00a6 Acme | Board member"
 
     async def test_an_earlier_versions_list_without_text_does_not_hide_the_string(self, store):
         await store.upsert_nodes([_alice("x")])
@@ -470,11 +486,47 @@ class TestOnRealFalkorDB:
         assert desc == "Legacy fact | New fact"
 
     async def test_a_repeated_piece_is_kept_once_before_the_cap(self, store):
-        """A description written straight to the store with one piece twenty
-        times: kept once, so the cap does not cut the piece after it."""
-        await store.upsert_nodes([_alice(" | ".join(["CEO"] * MAX_DESCRIPTION_MEMBERS + ["Founder"]))])
+        """A write whose pieces repeat one twenty times: kept once, so the cap
+        does not cut the piece after it."""
+        node = _alice(" | ".join(["CEO"] * MAX_DESCRIPTION_MEMBERS + ["Founder"]))
+        node.properties["description_count"] = MAX_DESCRIPTION_MEMBERS + 1
+        await store.upsert_nodes([node])
         desc, _, _, _, _ = await _entity(store)
         assert desc == "CEO | Founder"
+
+    async def test_text_without_a_count_is_one_piece_whatever_its_pipes(self, store):
+        """A table row from an earlier version or a custom extractor: one
+        piece, every cell kept (repeats too), and it never fills the cap."""
+        row = "|" + "|".join(f"c{i % 3}" for i in range(25)) + "|"
+        await store.upsert_nodes([_alice(row)])
+        await store.upsert_nodes([_alice("New doc fact")])
+        _, descs, _, _, _ = await _entity(store)
+        assert descs == [description_piece(row), "New doc fact"]
+
+    @pytest.mark.parametrize(
+        "items, removed, left",
+        [
+            (["CEO", "|Tim Cook|CEO|Apple|"], "|Tim Cook|CEO|Apple|", "CEO"),
+            (["Founder | Acme", "Acme"], "Founder | Acme", "Acme"),
+            (["Public | Sector", "Gov | Public"], "Gov | Public", "Public \u00a6 Sector"),
+        ],
+    )
+    async def test_a_delete_takes_off_only_the_older_item_its_chunk_said(
+        self, store, items, removed, left
+    ):
+        """Naseem's repros on an earlier version's graph: each list item is
+        one piece, so deleting the chunk that said one never takes off words
+        another item, recorded by no edge, also holds."""
+        await store.upsert_nodes([_alice("x")])
+        await store.query_raw(
+            "MATCH (e:__Entity__ {id: 'alice'}) SET e.descriptions = $items, e.description = $joined "
+            "CREATE (e)-[:MENTIONED_IN {spans: [0, 5]}]->(:Chunk {id: 'c0'}), "
+            "(e)-[:MENTIONED_IN {description: $removed, said_version: 1}]->(:Chunk {id: 'c1'})",
+            {"items": items, "joined": " | ".join(items), "removed": removed},
+        )
+        assert await _remove(store, "doc", ["c1"]) == 1
+        desc, _, _, _, _ = await _entity(store)
+        assert desc == left
 
     async def test_a_custom_extractors_text_with_a_pipe_comes_off_on_delete(self, store):
         """A custom extractor gives the node and its mention the same text,
@@ -585,7 +637,7 @@ class TestOnRealFalkorDB:
             "cleanup_said: ['Founder | Acme']})"
         )
         said = await store.get_cleanup_said("doc")
-        assert said == {"alice": {"Founder", "Acme"}}
+        assert said == {"alice": {"Founder \u00a6 Acme"}}
         assert await store.rebuild_entity_descriptions(["alice"], said) == 1
         desc, _, _, _, _ = await _entity(store)
         assert desc == "Legacy fact"
@@ -681,7 +733,13 @@ class TestOnRealFalkorDB:
             )
 
         await store.upsert_relationships(
-            [edge(spans=[0, 5], description=join_description(["CEO", "Founder | Acme"]))]
+            [
+                edge(
+                    spans=[0, 5],
+                    description=join_description(["CEO", "Founder | Acme"]),
+                    description_count=2,
+                )
+            ]
         )
         await store.upsert_relationships(
             [edge(description="Backfilled"), edge(spans=[0, 5, 9, 14])]
