@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar
 
-from graphrag_sdk.core.exceptions import ModelImportError, ModelLoadError
+from graphrag_sdk.core.exceptions import ModelImportError, ModelLoadError, ModelMissingError
 from graphrag_sdk.core.models import ExtractedEntity
 from graphrag_sdk.core.providers import LLMInterface
 
@@ -455,6 +455,15 @@ class EntityExtractor(ABC):
         """
         ...
 
+    async def ensure_ready(self) -> None:
+        """Load whatever the extractor needs before any chunk is extracted.
+
+        Ingestion calls it before writing a document, so a model that cannot
+        load fails the document before anything is written. The default does
+        nothing; a local model's extractor loads it and raises
+        :class:`~graphrag_sdk.core.exceptions.ModelLoadError` if it cannot.
+        """
+
 
 # ── GLiNER Extractor (default) ───────────────────────────────────
 
@@ -689,6 +698,9 @@ class GLiNERExtractor(EntityExtractor):
         if self._model is None:
             self._model = self._get_shared_model(self._model_name)
         return self._model
+
+    async def ensure_ready(self) -> None:
+        await asyncio.to_thread(self._load_model)
 
     # Process-wide cache of loaded GLiNER models, keyed on model name.
     #
@@ -1136,6 +1148,9 @@ class SpacyExtractor(EntityExtractor):
             raise
         return self._nlp
 
+    async def ensure_ready(self) -> None:
+        await self._get_nlp()
+
     # Process-wide cache of loaded spaCy pipelines, keyed on model name.
     #
     # Mirrors ``GLiNERExtractor._MODEL_CACHE`` for the same reason: extractors
@@ -1163,18 +1178,22 @@ class SpacyExtractor(EntityExtractor):
     def _load(cls, model_name: str) -> Any:
         try:
             import spacy
-        except ImportError as exc:  # pragma: no cover - depends on env
-            raise ImportError(
+        except ImportError as exc:
+            # A ModelLoadError, so extraction stops instead of warning on every
+            # chunk; still an ImportError for callers that caught one.
+            hint = (
                 "SpacyExtractor requires the 'spacy' extra. Install with: "
                 'pip install "graphrag-sdk[spacy]"'
-            ) from exc
+            )
+            raise ModelImportError(hint, hint=hint) from exc
         try:
             return spacy.load(model_name, disable=list(cls.DISABLED_COMPONENTS))
-        except OSError as exc:  # pragma: no cover - depends on env
-            raise OSError(
+        except OSError as exc:
+            hint = (
                 f"spaCy model '{model_name}' is not installed. Run: "
                 f"python -m spacy download {model_name}"
-            ) from exc
+            )
+            raise ModelMissingError(hint, hint=hint) from exc
 
     def _type_for(self, label: str, entity_types: list[str]) -> str | None:
         """Map a spaCy label onto an allowed type, or None if unrepresentable."""
@@ -1251,7 +1270,9 @@ class CompositeExtractor(EntityExtractor):
     are configuration faults rather than bad input and would otherwise repeat
     silently on every chunk: ``ImportError`` (a missing optional dependency),
     ``OSError`` (a model that is not installed) and ``ModelLoadError`` (a model
-    that could not load). Cancellation and other
+    that could not load), raised once every member has finished the chunk. A
+    ``TimeoutError`` or ``ConnectionError`` is one failed call, not a fault,
+    and fails only its member. Cancellation and other
     process-level ``BaseException`` subclasses propagate as well.
 
     ``LLMExtractor`` members are rejected. ``GraphExtraction`` dispatches on
@@ -1386,10 +1407,20 @@ class CompositeExtractor(EntityExtractor):
                     bucket.append(sp)
 
     @staticmethod
-    async def _cancel_and_drain(tasks: list[asyncio.Future[Any]]) -> None:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+    def _is_fault(exc: BaseException) -> bool:
+        """A configuration fault, which would repeat on every chunk.
+
+        ``TimeoutError`` and ``ConnectionError`` are ``OSError`` subclasses
+        (and ``asyncio.TimeoutError`` is ``TimeoutError`` from Python 3.11),
+        but they are one slow or dropped call, so they fail only that member.
+        """
+        if isinstance(exc, (TimeoutError, ConnectionError, asyncio.TimeoutError)):
+            return False
+        return isinstance(exc, (ImportError, OSError, ModelLoadError))
+
+    async def ensure_ready(self) -> None:
+        for extractor in self._extractors:
+            await extractor.ensure_ready()
 
     async def extract_entities(
         self,
@@ -1397,35 +1428,19 @@ class CompositeExtractor(EntityExtractor):
         entity_types: list[str],
         source_chunk_id: str,
     ) -> list[ExtractedEntity]:
-        tasks = [
-            asyncio.ensure_future(e.extract_entities(text, entity_types, source_chunk_id))
-            for e in self._extractors
-        ]
-        # A configuration fault in one member is raised as soon as it is
-        # reported, cancelling the members still running, rather than after
-        # every member has finished this chunk.
-        try:
-            for done in asyncio.as_completed(tasks):
-                try:
-                    await done
-                except (ImportError, OSError, ModelLoadError):
-                    raise
-                except Exception:
-                    pass  # an ordinary failure, handled below
-        except (ImportError, OSError, ModelLoadError):
-            await self._cancel_and_drain(tasks)
-            # A member's model that could not load is the error to report, even
-            # when another member's fault happened to be seen first.
-            for task in tasks:
-                if not task.cancelled() and isinstance(task.exception(), ModelLoadError):
-                    raise task.exception() from None
-            raise
-        except BaseException:
-            # Cancellation or interpreter exit: stop the members and let it
-            # through unchanged.
-            await self._cancel_and_drain(tasks)
-            raise
-        results = [t.exception() or t.result() for t in tasks]
+        # Every member finishes the chunk, even after another has failed: a
+        # member running in a worker thread (GLiNER, spaCy) cannot be
+        # cancelled, and returning early would let the caller start the next
+        # chunk while that thread still works.
+        results = await asyncio.gather(
+            *(e.extract_entities(text, entity_types, source_chunk_id) for e in self._extractors),
+            return_exceptions=True,
+        )
+        # A member's model that could not load is the error to report, even
+        # when another member also failed.
+        for result in results:
+            if isinstance(result, ModelLoadError):
+                raise result
 
         merged: dict[str, ExtractedEntity] = {}
         # Spans claimed by earlier extractors -> the merged key that owns each.
@@ -1433,9 +1448,7 @@ class CompositeExtractor(EntityExtractor):
         failures: list[Exception] = []
         for extractor, result in zip(self._extractors, results, strict=True):
             if isinstance(result, BaseException):
-                if not isinstance(result, Exception) or isinstance(
-                    result, (ImportError, OSError, ModelLoadError)
-                ):
+                if not isinstance(result, Exception) or self._is_fault(result):
                     # Cancellation / interpreter exit, or a configuration
                     # fault that would otherwise repeat on every chunk.
                     raise result

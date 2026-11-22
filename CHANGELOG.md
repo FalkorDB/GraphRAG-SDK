@@ -57,6 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ModelImportError`, which is also an `ImportError`, so `except ImportError`
   still catches a missing `gliner` as before. A plain `ExtractionError` from a
   custom extractor still fails only its own chunk.
+  - The model loads before a document's chunks are written (a new
+    `ExtractionStrategy.prepare()` and `EntityExtractor.ensure_ready()`, both
+    no-ops by default), so a broken model leaves no half-written document.
+  - `SpacyExtractor` raises `ModelLoadError` for a missing package or model
+    (still an `ImportError` / `OSError`), and grounded discovery stops on a
+    `ModelLoadError` instead of returning an empty ontology.
+  - `CompositeExtractor` lets every member finish the chunk before raising, so
+    a member in a worker thread (GLiNER, spaCy) is not abandoned mid-inference
+    and its load error is the one reported. A `TimeoutError` or
+    `ConnectionError` now fails only its member, on every Python version.
 
 - **The agent asks before adding types to the user's ontology.** When
   ingestion drops types the ontology lacks, the MCP guide and the ingest hint

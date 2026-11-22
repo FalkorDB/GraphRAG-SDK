@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from datetime import date, datetime
@@ -621,6 +622,14 @@ class GraphExtraction(ExtractionStrategy):
             list(DEFAULT_RELATION_TYPES) if relation_types is None else list(relation_types)
         )
         self._max_concurrency = max_concurrency
+
+    async def prepare(self) -> None:
+        # Loads a local NER model (GLiNER, spaCy) before the document is
+        # written; an LLMExtractor has nothing to load.
+        # A custom extractor that does not subclass EntityExtractor may lack it.
+        ready = getattr(self.entity_extractor, "ensure_ready", lambda: None)()
+        if inspect.isawaitable(ready):
+            await ready
 
     async def extract(
         self,

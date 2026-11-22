@@ -99,6 +99,15 @@ class ModelImportError(ModelLoadError, ImportError):
     """
 
 
+class ModelMissingError(ModelLoadError, OSError):
+    """A :class:`ModelLoadError` for a model that is not installed (a spaCy
+    pipeline not downloaded, say).
+
+    It is also an :class:`OSError`, as a missing model was before
+    ``ModelLoadError`` existed, so ``except OSError`` still catches it.
+    """
+
+
 class ResolutionError(IngestionError):
     """Raised when entity resolution fails."""
 

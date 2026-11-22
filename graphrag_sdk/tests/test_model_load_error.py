@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 
 import pytest
 
-from graphrag_sdk.core.exceptions import ModelLoadError
-from graphrag_sdk.core.models import Ontology, TextChunk, TextChunks
+from graphrag_sdk.core.exceptions import IngestionError, ModelLoadError
+from graphrag_sdk.core.models import ExtractedEntity, Ontology, TextChunk, TextChunks
+from graphrag_sdk.discovery.pipeline import _extract_mentions_from_chunk
+from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.extraction_strategies import entity_extractors as ee
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import EntityExtractor
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
+from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.mcp.server import describe_error
 from graphrag_sdk.tools.toolkit import _file_error
 
@@ -111,30 +115,6 @@ def test_another_missing_import_is_named_not_blamed_on_gliner(monkeypatch):
     hint = info.value.hint
     assert "torch" in hint and "urchade/gliner_medium-v2.1" in hint
     assert "pip install gliner" not in hint
-
-
-async def test_a_composite_stops_on_a_load_error_without_waiting_for_the_others():
-    """A broken member's load error is raised while another member still
-    runs; that member is cancelled, not awaited."""
-    cancelled: list[str] = []
-
-    class Broken(EntityExtractor):
-        async def extract_entities(self, text, entity_types, source_chunk_id):
-            raise ModelLoadError("no model", hint="could not load")
-
-    class Hangs(EntityExtractor):
-        async def extract_entities(self, text, entity_types, source_chunk_id):
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                cancelled.append(source_chunk_id)
-                raise
-            return []
-
-    composite = ee.CompositeExtractor([Hangs(), Broken()])
-    with pytest.raises(ModelLoadError):
-        await asyncio.wait_for(composite.extract_entities("Alice", ["Person"], "c1"), timeout=5)
-    assert cancelled == ["c1"]
 
 
 async def test_another_members_error_does_not_hide_a_load_error():
@@ -270,3 +250,132 @@ def test_a_failure_that_is_not_an_import_is_not_an_import_error(monkeypatch):
     with pytest.raises(ModelLoadError) as info:
         ee.GLiNERExtractor()._load_model()
     assert not isinstance(info.value, ImportError)
+
+
+class _OneChunk(ChunkingStrategy):
+    async def chunk(self, text, ctx):
+        return TextChunks(chunks=[TextChunk(text=text, index=0, uid="c0")])
+
+
+class _OSErrorSoon(EntityExtractor):
+    async def extract_entities(self, text, entity_types, source_chunk_id):
+        await asyncio.sleep(0.01)
+        raise OSError("model file missing")
+
+
+class _ThreadedBroken(EntityExtractor):
+    """Like GLiNER: the load runs in a worker thread, then fails."""
+
+    async def extract_entities(self, text, entity_types, source_chunk_id):
+        await asyncio.to_thread(time.sleep, 0.1)
+        raise ModelLoadError("no model", hint="could not load")
+
+
+async def test_a_threaded_members_load_error_is_not_lost_to_another_fault():
+    composite = ee.CompositeExtractor([_OSErrorSoon(), _ThreadedBroken()])
+    with pytest.raises(ModelLoadError):
+        await composite.extract_entities("Alice", ["Person"], "c1")
+
+
+async def test_a_composite_does_not_return_while_a_member_thread_still_runs():
+    """A worker thread cannot be cancelled: returning early would free the
+    caller's concurrency slot while the thread still works."""
+    finished: list[bool] = []
+
+    def infer():
+        time.sleep(0.2)
+        finished.append(True)
+
+    class Threaded(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            await asyncio.to_thread(infer)
+            return []
+
+    composite = ee.CompositeExtractor([Threaded(), _OSErrorSoon()])
+    with pytest.raises(OSError):
+        await composite.extract_entities("Alice", ["Person"], "c1")
+    assert finished == [True]
+
+
+@pytest.mark.parametrize("exc", [TimeoutError("slow"), ConnectionError("reset")])
+async def test_a_timeout_or_dropped_connection_fails_only_that_member(exc):
+    class Good(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            return [
+                ExtractedEntity(name="Alice", type="Person", source_chunk_ids=[source_chunk_id])
+            ]
+
+    class Flaky(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            raise exc
+
+    ents = await ee.CompositeExtractor([Good(), Flaky()]).extract_entities(
+        "Alice", ["Person"], "c1"
+    )
+    assert [e.name for e in ents] == ["Alice"]
+
+
+def _broken_spacy(monkeypatch, *, missing_package=False):
+    monkeypatch.setattr(ee.SpacyExtractor, "_MODEL_CACHE", {})
+    if missing_package:
+        monkeypatch.setitem(sys.modules, "spacy", None)
+        return
+
+    def load(name, disable=()):
+        raise OSError(f"[E050] Can't find model '{name}'")
+
+    monkeypatch.setitem(sys.modules, "spacy", type("m", (), {"load": staticmethod(load)}))
+
+
+async def test_a_missing_spacy_model_is_a_load_error_and_still_an_oserror(monkeypatch):
+    _broken_spacy(monkeypatch)
+    with pytest.raises(ModelLoadError) as info:
+        await ee.SpacyExtractor(model_name="en_core_web_xx").extract_entities("t", ["Person"], "c0")
+    assert isinstance(info.value, OSError)
+    assert "python -m spacy download en_core_web_xx" in info.value.hint
+
+
+async def test_a_missing_spacy_package_is_a_load_error_and_still_an_import_error(monkeypatch):
+    _broken_spacy(monkeypatch, missing_package=True)
+    with pytest.raises(ModelLoadError) as info:
+        await ee.SpacyExtractor().extract_entities("t", ["Person"], "c0")
+    assert isinstance(info.value, ImportError)
+    assert "graphrag-sdk[spacy]" in info.value.hint
+
+
+async def test_grounded_discovery_stops_on_a_model_load_error():
+    class Broken(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            raise ModelLoadError("no model", hint="could not load")
+
+    with pytest.raises(ModelLoadError):
+        await _extract_mentions_from_chunk(Broken(), TextChunk(text="Alice", index=0, uid="c0"))
+
+
+async def test_a_model_that_cannot_load_fails_before_the_document_is_written(
+    monkeypatch, ctx, mock_graph_store, mock_vector_store
+):
+    """The model is loaded before step 3, so a broken one leaves no chunks
+    behind without entities."""
+    _broken_gliner(monkeypatch, OSError("offline"))
+    pipeline = IngestionPipeline(
+        loader=None,
+        chunker=_OneChunk(),
+        extractor=GraphExtraction(llm=MockLLMWithGraphExtraction()),
+        resolver=None,
+        graph_store=mock_graph_store,
+        vector_store=mock_vector_store,
+        ontology=Ontology(),
+    )
+    with pytest.raises((ModelLoadError, IngestionError)) as info:
+        await pipeline.run("doc", ctx, text="Alice works at Acme.")
+    assert "could not" in str(info.value), repr(info.value)
+    assert not mock_graph_store.upsert_nodes.called
+
+
+async def test_a_composite_is_ready_only_when_every_member_is(monkeypatch):
+    _broken_gliner(monkeypatch, OSError("offline"))
+    _broken_spacy(monkeypatch)
+    composite = ee.CompositeExtractor([ee.GLiNERExtractor(), ee.SpacyExtractor()])
+    with pytest.raises(ModelLoadError):
+        await composite.ensure_ready()
