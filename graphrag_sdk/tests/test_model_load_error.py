@@ -379,3 +379,18 @@ async def test_a_composite_is_ready_only_when_every_member_is(monkeypatch):
     composite = ee.CompositeExtractor([ee.GLiNERExtractor(), ee.SpacyExtractor()])
     with pytest.raises(ModelLoadError):
         await composite.ensure_ready()
+
+
+async def test_a_members_cancellation_is_not_replaced_by_another_members_load_error():
+    class Cancelled(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            raise asyncio.CancelledError
+
+    class Broken(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            raise ModelLoadError("no model", hint="could not load")
+
+    with pytest.raises(asyncio.CancelledError):
+        await ee.CompositeExtractor([Broken(), Cancelled()]).extract_entities(
+            "Alice", ["Person"], "c1"
+        )

@@ -1436,8 +1436,12 @@ class CompositeExtractor(EntityExtractor):
             *(e.extract_entities(text, entity_types, source_chunk_id) for e in self._extractors),
             return_exceptions=True,
         )
-        # A member's model that could not load is the error to report, even
-        # when another member also failed.
+        # Cancellation or interpreter exit comes first, then a member's model
+        # that could not load: the error to report even when another member
+        # also failed.
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(result, Exception):
+                raise result
         for result in results:
             if isinstance(result, ModelLoadError):
                 raise result
