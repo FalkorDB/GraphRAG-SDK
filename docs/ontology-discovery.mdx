@@ -194,7 +194,9 @@ Open-vocabulary discovery is brittle by default. The pipeline applies three disc
 
 **3. Normalization as a separate pass.** Per-chunk proposals are merged naively (label-based union) and then a single cross-draft LLM call canonicalizes labels and direction. Without this, drafts accumulate synonyms across calls (`Org` + `Organization` + `Company` as three types) and the schema drifts. The normalization pass is also where the `existing` prior, if supplied, becomes a hard preference: "prefer these labels."
 
-The wrapper is strict — on exhausted retries it raises [`OntologyDiscoveryError`](#ontologydiscoveryerror-reference). The pipeline above it is soft-fail: a single bad chunk is logged and skipped, a failed summary degrades the doc to weaker anchoring, a failed normalization returns the un-normalized draft. Net effect: one noisy chunk or one rate-limited call does not kill the whole draft.
+The wrapper is strict — on exhausted retries it raises [`OntologyDiscoveryError`](#ontologydiscoveryerror-reference). The pipeline above it is soft-fail: a single bad chunk is logged and skipped, a failed summary degrades the doc to weaker anchoring, a failed normalization returns the un-normalized draft. Net effect: one noisy chunk does not kill the whole draft.
+
+A call that fails before any response comes back is a different case. The wrapper turns off the SDK provider's retry loop (`max_retries=1`) so its attempt count stays exact. The HTTP client inside the built-in providers still retries on its own: the OpenAI SDK, which LiteLLM's OpenAI and Azure routes and OpenRouter use, resends a 5xx, 408, 409, 429 or dropped connection twice on its own, normally within a couple of seconds, though it waits longer when the reply carries a `Retry-After`. The wrapper then retries a *temporary* failure that outlasts that: an HTTP 5xx, 408, 409 or 429, or a dropped connection, up to two more times with a short, jittered backoff (about 1 s, then 4 s), or longer when the provider's reply asks for it with `Retry-After` (honoured up to 60 s). A reply that asks for a longer wait, or says not to retry (`x-should-retry: false`, as with an exhausted quota), ends the retries. The same conversation is resent and the retry does not use up `max_retries`. A request that timed out at the provider (HTTP 408, or the OpenAI client's timeout error) counts as temporary and is retried the same way, so a stalled endpoint takes several request timeouts to fail. Any other error (401, 400, a content filter) is raised at once. A temporary failure that persists past those retries is raised by the wrapper too; in the pipeline, the summary, normalization and grounded-trim steps then fall back as above, while a chunk proposal fails the run, so a provider outage is not mistaken for documents with nothing in them.
 
 ---
 
@@ -306,7 +308,7 @@ Raised by the validation-retry wrapper inside the discovery pipeline when an ind
 | Field | Type | Description |
 |-------|------|-------------|
 | `chunk_id` | `str \| None` | Identifier of the unit being processed (chunk uid, `"summary:<source>"`, or `"normalize"`) |
-| `attempts` | `int` | How many LLM calls were made before giving up |
+| `attempts` | `int` | How many logical attempts were made before giving up: responses received and checked, whether they failed to parse or failed validation (calls resent after a temporary provider failure are not counted) |
 | `last_error` | `Exception \| None` | The last validation/parse error encountered |
 
 Subclasses `RuntimeError`.
@@ -324,7 +326,7 @@ Per call to `Ontology.from_sources(sources)` with `D` documents and `S = sample_
 | Normalization | `1` |
 | **Total** | `D × (S + 1) + 1` |
 
-Each call is bounded by `max_retries + 1`. Concurrency is capped by the `concurrency` parameter (default 4). For a 10-document corpus with `sample_chunks_per_doc=3` and no retries, that's 41 LLM calls — fast enough to run interactively, cheap on `gpt-4o-mini`-class models.
+Each call is bounded by `max_retries + 1` *logical* attempts (responses received and checked, whether they parse or not). A temporary provider failure (5xx, 408, 409, 429, dropped connection) is retried up to twice more per attempt without using that budget, so the worst case is `3 * (max_retries + 1)` provider calls per call. With the built-in providers each provider call can itself be up to 3 HTTP requests (the OpenAI SDK's own two retries), so the worst case is `9 * (max_retries + 1)` HTTP requests. Concurrency is capped by the `concurrency` parameter (default 4). For a 10-document corpus with `sample_chunks_per_doc=3` and no retries, that's 41 LLM calls — fast enough to run interactively, cheap on `gpt-4o-mini`-class models.
 
 `suggest_schema_extensions` has the same shape: it runs the full discovery pipeline on the new sources plus the diff at the end (zero LLM cost). The diff against the committed ontology is purely structural.
 

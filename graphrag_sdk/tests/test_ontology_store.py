@@ -101,20 +101,52 @@ class _FakeGraph:
         return await self.query(cypher, params)
 
 
+class _FakeDataGraph:
+    """The data graph the store governs: answers its read-only probes.
+
+    Every label holds data unless a test says otherwise, so a test that adds
+    to a stored label is refused for that reason, not for a failed probe.
+    The store never writes the data graph.
+    """
+
+    def __init__(self, rows: list[list] | None = None) -> None:
+        self.calls: list[tuple[str, dict | None]] = []
+        self.rows = [[1]] if rows is None else rows
+
+    async def ro_query(self, cypher: str, params: dict | None = None):
+        self.calls.append((cypher, params))
+        return _FakeQueryResult(self.rows)
+
+    async def query(self, cypher: str, params: dict | None = None):
+        raise AssertionError(f"the ontology store wrote to the data graph: {cypher}")
+
+
 @pytest.fixture
 def fake_graph():
     return _FakeGraph()
 
 
 @pytest.fixture
-def store_factory(fake_graph):
-    """Returns a callable producing an ``OntologyStore`` wired to ``fake_graph``."""
+def data_graph():
+    return _FakeDataGraph()
+
+
+@pytest.fixture
+def store_factory(fake_graph, data_graph):
+    """Returns a callable producing an ``OntologyStore`` wired to ``fake_graph``
+    (its ontology graph) and ``data_graph`` (the graph it governs)."""
 
     def _make(data_graph_name: str = "kg") -> OntologyStore:
         conn = MagicMock()
         conn._ensure_client = MagicMock()
         conn._check_server_version = AsyncMock()  # a supported server
-        conn._driver = SimpleNamespace(select_graph=MagicMock(return_value=fake_graph))
+
+        def select_graph(name: str):
+            if name.endswith(OntologyStore.ONTOLOGY_GRAPH_SUFFIX):
+                return fake_graph
+            return data_graph
+
+        conn._driver = SimpleNamespace(select_graph=MagicMock(side_effect=select_graph))
         return OntologyStore(conn, data_graph_name)
 
     return _make
@@ -632,3 +664,404 @@ class TestStrictModification:
                     ],
                 )
             )
+
+
+class TestModificationOfALabelWithNoData:
+    """A label that holds no data may gain attributes or patterns.
+
+    The strict rule keeps the ontology and the data graph aligned: a new
+    attribute on a label with nodes would describe values those nodes do
+    not have. A label with no nodes has nothing to fall out of line with.
+    The common case is the default seed: reading an empty store writes
+    eleven bare labels (``Event`` among them), and a first declared
+    ontology giving ``Event`` an ``event_type`` was then refused.
+    """
+
+    @staticmethod
+    def _data(store: OntologyStore, *, rows=None, error: Exception | None = None) -> AsyncMock:
+        """Answer the store's data-graph probes; returns the probe mock."""
+        probe = AsyncMock(
+            side_effect=error, return_value=_FakeQueryResult(rows if rows is not None else [])
+        )
+        store._data_graph = SimpleNamespace(
+            ro_query=probe, query=AsyncMock(side_effect=AssertionError("wrote to the data graph"))
+        )
+        return probe
+
+    @staticmethod
+    def _property_merges(fake_graph, owner: str) -> list[str]:
+        return [
+            (c[1] or {}).get("name")
+            for c in fake_graph.calls
+            if "MERGE (e)-[:HAS_PROPERTY]->(p:Property" in c[0]
+            and (c[1] or {}).get("owner") == owner
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_seeded_label_with_no_nodes_takes_new_attributes(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        fake_graph.set_load_response(entities=[["Event", None]])
+        self._data(store, rows=[])
+        await store.register(
+            Ontology(
+                entities=[
+                    Entity(
+                        label="Event",
+                        properties=[
+                            Attribute(name="event_type", type="STRING"),
+                            Attribute(name="timestamp", type="DATE"),
+                        ],
+                    )
+                ]
+            )
+        )
+        assert sorted(self._property_merges(fake_graph, "Event")) == ["event_type", "timestamp"]
+
+    @pytest.mark.asyncio
+    async def test_the_data_check_reads_the_data_graph_for_that_label(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        fake_graph.set_load_response(entities=[["Event", None]])
+        query = self._data(store, rows=[])
+        await store.register(
+            Ontology(entities=[Entity(label="Event", properties=[Attribute(name="when", type="DATE")])])
+        )
+        cypher = query.await_args.args[0]
+        assert "`Event`" in cypher and "LIMIT 1" in cypher
+        assert store._data_graph.query.await_count == 0  # read-only: ro_query
+
+    @pytest.mark.asyncio
+    async def test_a_label_with_nodes_is_still_refused(self, store_factory, fake_graph):
+        store = store_factory()
+        fake_graph.set_load_response(entities=[["Event", None]])
+        self._data(store, rows=[[1]])
+        with pytest.raises(OntologyModificationNotAllowedError) as exc:
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="DATE")])
+                    ]
+                )
+            )
+        assert "Event" in str(exc.value)
+        # The advice must work when the refused ontology came from the
+        # GraphRAG constructor too: there every call, add_attribute included,
+        # registers that ontology again, so it has to be declared without them.
+        assert "Declare 'Event' without them" in str(exc.value)
+        assert self._property_merges(fake_graph, "Event") == []
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_data_graph_raises_its_own_error(self, store_factory, fake_graph):
+        """A timeout or a lost connection leaves the answer unknown: register()
+        fails with that error, writes nothing, and does not claim the label
+        holds data (which would send the user to delete_all())."""
+        store = store_factory()
+        fake_graph.set_load_response(entities=[["Event", None]])
+        self._data(store, error=RuntimeError("connection lost"))
+        with pytest.raises(RuntimeError, match="connection lost"):
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="DATE")])
+                    ]
+                )
+            )
+        assert self._property_merges(fake_graph, "Event") == []
+
+    @pytest.mark.asyncio
+    async def test_a_data_graph_that_does_not_exist_yet_holds_no_data(
+        self, store_factory, fake_graph
+    ):
+        """A new graph: the seed wrote the ontology graph, nothing wrote the data graph."""
+        from graphrag_sdk.core.exceptions import DatabaseError
+
+        store = store_factory()
+        fake_graph.set_load_response(entities=[["Event", None]])
+        self._data(
+            store,
+            error=DatabaseError("FalkorDB query failed: Invalid graph operation on empty key"),
+        )
+        await store.register(
+            Ontology(entities=[Entity(label="Event", properties=[Attribute(name="when", type="DATE")])])
+        )
+        assert self._property_merges(fake_graph, "Event") == ["when"]
+
+    @pytest.mark.asyncio
+    async def test_a_type_change_on_a_label_with_no_nodes_is_still_a_contradiction(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        fake_graph.set_load_response(
+            entities=[["Event", None]],
+            entity_properties=[["Event", "when", "DATE", None]],
+        )
+        self._data(store, rows=[])
+        with pytest.raises(OntologyContradictionError):
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="STRING")])
+                    ]
+                )
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_first_label_that_holds_data_ends_the_check(
+        self, store_factory, fake_graph
+    ):
+        """Once one label refuses, the rest of the declaration is refused too,
+        so the data graph is not asked about the others."""
+        store = store_factory()
+        fake_graph.set_load_response(entities=[["Event", None], ["Venue", None]])
+        query = self._data(store, rows=[[1]])
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="DATE")]),
+                        Entity(label="Venue", properties=[Attribute(name="city", type="STRING")]),
+                    ]
+                )
+            )
+        assert query.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_relation_found_only_by_its_rel_type_is_refused(
+        self, store_factory, fake_graph
+    ):
+        """Extraction and relationship tables store a relation as RELATES
+        edges named by rel_type; no typed edge exists until a backfill."""
+        store = store_factory()
+        fake_graph.set_load_response(
+            patterned_relations=[["WORKS_AT", None, "Person", "Company"]],
+        )
+
+        async def answer(cypher, params=None):
+            return _FakeQueryResult([[1]] if "RELATES" in cypher else [])
+
+        probe = self._data(store)
+        probe.side_effect = answer
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await store.register(
+                Ontology(
+                    relations=[
+                        Relation(
+                            label="WORKS_AT",
+                            patterns=[("Person", "Company"), ("Person", "Organization")],
+                        )
+                    ]
+                )
+            )
+        # The probe that found it filters by this relation's own name, so an
+        # unrelated relation's RELATES edges cannot cause the refusal.
+        relates_probe = probe.await_args_list[0]
+        assert "r.rel_type = $label" in relates_probe.args[0]
+        assert relates_probe.kwargs["params"] == {"label": "WORKS_AT"}
+
+    @pytest.mark.asyncio
+    async def test_the_probe_reads_the_graph_this_store_governs(
+        self, store_factory, fake_graph, data_graph
+    ):
+        """OntologyStore(connection, data_graph_name) is public; the connection
+        may be bound to another graph, which says nothing about this one."""
+        store = store_factory("tenant_b")
+        store._conn.config = SimpleNamespace(graph_name="tenant_a")
+        fake_graph.set_load_response(entities=[["Event", None]])
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await store.register(
+                Ontology(entities=[Entity(label="Event", properties=[Attribute(name="when", type="DATE")])])
+            )
+        selected = [c.args[0] for c in store._conn._driver.select_graph.call_args_list]
+        assert "tenant_b" in selected and "tenant_a" not in selected
+        assert data_graph.calls
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_ontology_store_fails_the_registration(
+        self, store_factory, fake_graph
+    ):
+        """One failed read of the stored ontology must not look like an empty
+        store: every check would pass and the writes would retype Event.when."""
+        store = store_factory()
+        fake_graph.set_load_response(
+            entities=[["Event", None]],
+            entity_properties=[["Event", "when", "DATE", None]],
+        )
+        answer = fake_graph.query
+
+        async def reset_once(cypher, params=None):
+            if cypher.startswith("MATCH (e:Entity) RETURN"):
+                fake_graph.query = answer
+                raise ConnectionError("Connection reset by peer")
+            return await answer(cypher, params)
+
+        fake_graph.query = reset_once
+        with pytest.raises(ConnectionError):
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="STRING")])
+                    ]
+                )
+            )
+        assert not [c for c in fake_graph.calls if "MERGE" in c[0] or "SET p.type" in c[0]]
+
+    @pytest.mark.asyncio
+    async def test_an_open_relation_keeps_its_description_when_it_gains_a_pattern(
+        self, store_factory, fake_graph
+    ):
+        """load() reads the description from the patterns first: the first
+        pattern must carry the stored one when the declaration names none."""
+        store = store_factory()
+        fake_graph.set_load_response(
+            entities=[["A", None], ["B", None]], open_relations=[["R", "how A relates to B"]]
+        )
+        self._data(store, rows=[])
+        await store.register(Ontology(relations=[Relation(label="R", patterns=[("A", "B")])]))
+        pattern_writes = [
+            c for c in fake_graph.calls if "MERGE (s)<-[:SOURCE]-(r:Relation {label: $rel_label})" in c[0]
+        ]
+        # The first write creates the pattern with the stored description; any
+        # later MERGE of it passes None, which coalesce() leaves alone.
+        assert pattern_writes[0][1]["description"] == "how A relates to B"
+        assert all((c[1] or {}).get("description") in (None, "how A relates to B") for c in pattern_writes)
+
+    @pytest.mark.asyncio
+    async def test_a_relation_named_relates_is_not_every_relationship(
+        self, store_factory, fake_graph
+    ):
+        """Every SDK relationship is a RELATES edge; a declared relation named
+        RELATES holds data only where rel_type names it."""
+        store = store_factory()
+        fake_graph.set_load_response(patterned_relations=[["RELATES", None, "A", "B"]])
+
+        async def answer(cypher, params=None):
+            # Other relations' edges exist; none has rel_type 'RELATES'.
+            return _FakeQueryResult([] if "rel_type" in cypher else [[1]])
+
+        probe = self._data(store)
+        probe.side_effect = answer
+        await store.register(
+            Ontology(relations=[Relation(label="RELATES", patterns=[("A", "B"), ("B", "A")])])
+        )
+        assert probe.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_read_cut_short_by_a_schema_change_fails_the_registration(
+        self, store_factory, fake_graph
+    ):
+        """The driver raises SchemaVersionMismatchException when another writer
+        changed the graph during the read: no evidence of an empty store."""
+        from falkordb.exceptions import SchemaVersionMismatchException
+
+        store = store_factory()
+        fake_graph.set_load_response(
+            entities=[["Event", None]],
+            entity_properties=[["Event", "when", "DATE", None]],
+        )
+        answer = fake_graph.query
+
+        async def mismatch_once(cypher, params=None):
+            if cypher.startswith("MATCH (e:Entity) RETURN"):
+                fake_graph.query = answer
+                raise SchemaVersionMismatchException(7)
+            return await answer(cypher, params)
+
+        fake_graph.query = mismatch_once
+        with pytest.raises(SchemaVersionMismatchException):
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(label="Event", properties=[Attribute(name="when", type="STRING")])
+                    ]
+                )
+            )
+        assert not [c for c in fake_graph.calls if "MERGE" in c[0] or "SET p.type" in c[0]]
+
+    @pytest.mark.asyncio
+    async def test_no_data_check_runs_when_nothing_is_added(self, store_factory, fake_graph):
+        store = store_factory()
+        fake_graph.set_load_response(
+            entities=[["Event", None]],
+            entity_properties=[["Event", "when", "DATE", None]],
+        )
+        query = self._data(store, rows=[[1]])
+        await store.register(
+            Ontology(entities=[Entity(label="Event", properties=[Attribute(name="when", type="DATE")])])
+        )
+        query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_relation_with_no_edges_takes_a_new_pattern_and_attribute(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        fake_graph.set_load_response(
+            entities=[["Person", None], ["Company", None], ["Organization", None]],
+            patterned_relations=[["WORKS_AT", None, "Person", "Company"]],
+        )
+        query = self._data(store, rows=[])
+        await store.register(
+            Ontology(
+                relations=[
+                    Relation(
+                        label="WORKS_AT",
+                        patterns=[("Person", "Company"), ("Person", "Organization")],
+                        properties=[Attribute(name="role", type="STRING")],
+                    )
+                ]
+            )
+        )
+        relates, typed = [c.args[0] for c in query.await_args_list]
+        assert "[r:RELATES]" in relates and "rel_type" in relates
+        assert "[r:`WORKS_AT`]" in typed
+        assert " OR " not in typed + relates
+        assert query.await_args_list[0].kwargs["params"] == {"label": "WORKS_AT"}
+        new_pattern = [
+            c
+            for c in fake_graph.calls
+            if "MERGE (s)<-[:SOURCE]-(r:Relation {label: $rel_label})" in c[0]
+            and (c[1] or {}).get("tgt") == "Organization"
+        ]
+        role = [
+            c
+            for c in fake_graph.calls
+            if "MERGE (r)-[:HAS_PROPERTY]->(p:Property" in c[0]
+            and (c[1] or {}).get("rel_label") == "WORKS_AT"
+            and (c[1] or {}).get("name") == "role"
+        ]
+        assert new_pattern and role
+
+    @pytest.mark.asyncio
+    async def test_a_relation_with_edges_is_still_refused(self, store_factory, fake_graph):
+        store = store_factory()
+        fake_graph.set_load_response(
+            patterned_relations=[["WORKS_AT", None, "Person", "Company"]],
+        )
+        self._data(store, rows=[[1]])
+        with pytest.raises(OntologyModificationNotAllowedError):
+            await store.register(
+                Ontology(
+                    relations=[
+                        Relation(
+                            label="WORKS_AT",
+                            patterns=[("Person", "Company"), ("Person", "Organization")],
+                        )
+                    ]
+                )
+            )
+
+
+def test_a_missing_graph_is_recognised_however_the_error_reaches_us() -> None:
+    """One predicate for FalkorDB's "graph never written" reply, raw from the
+    driver or wrapped by the connection, whatever the case."""
+    from graphrag_sdk.core.connection import is_missing_graph_error
+    from graphrag_sdk.core.exceptions import DatabaseError
+
+    assert is_missing_graph_error(Exception("Invalid graph operation on empty key"))
+    assert is_missing_graph_error(
+        DatabaseError("FalkorDB query failed: Invalid graph operation on Empty Key")
+    )
+    assert not is_missing_graph_error(DatabaseError("FalkorDB query failed: Query timed out"))

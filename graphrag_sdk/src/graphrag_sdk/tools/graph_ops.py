@@ -7,20 +7,23 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from graphrag_sdk.core.connection import is_missing_graph_error
 from graphrag_sdk.storage import system_store
 from graphrag_sdk.storage.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
 
-#: Properties never returned to a caller: vectors and bulky bookkeeping.
-_BULKY_PROPS = frozenset({"source_chunk_ids", "spans"})
+#: Properties never returned to a caller: vectors and bulky bookkeeping —
+#: among it the description's piece count, and an earlier version's
+#: ``descriptions`` list, the same text as the ``description`` every card
+#: already shows.
+_BULKY_PROPS = frozenset({"source_chunk_ids", "spans", "descriptions", "description_piece_count"})
 #: An entity card's properties also leave out what the card already shows or
-#: what only the SDK reads: the description members (the card shows the
-#: joined ``description``), dedup and table bookkeeping, and the extracted
-#: ``type`` (the card's label). ``aliases`` stay: a question may use them.
-_CARD_HIDDEN_PROPS = frozenset(
+#: what only the SDK reads: the bulky properties above, description, dedup
+#: and table bookkeeping, and the extracted ``type`` (the card's label).
+#: ``aliases`` stay: a question may use them.
+_CARD_HIDDEN_PROPS = _BULKY_PROPS | frozenset(
     {
-        "descriptions",
         "description_summarised",
         "merged_labels",
         "is_stub",
@@ -59,12 +62,6 @@ class NoGraph:
     result_set: list[Any] = []
 
 
-def _is_missing_graph(exc: Exception) -> bool:
-    # FalkorDB answers any query on a graph key that was never written with
-    # "Invalid graph operation on empty key"; for a read that is just no rows.
-    return "empty key" in str(exc)
-
-
 async def graph_exists(store: Any) -> bool | None:
     """Whether the graph key exists: ``False`` only when FalkorDB says it was
     never written, ``None`` when another error leaves it unknown. Read-only,
@@ -72,7 +69,7 @@ async def graph_exists(store: Any) -> bool | None:
     try:
         await store.query_raw("RETURN 1", {}, read_only=True)
     except Exception as exc:
-        return False if _is_missing_graph(exc) else None
+        return False if is_missing_graph_error(exc) else None
     return True
 
 
@@ -80,7 +77,7 @@ async def _read(store: Any, cypher: str, params: dict[str, Any] | None = None) -
     try:
         return await store.query_raw(cypher, params or {}, read_only=True)
     except Exception as exc:
-        if _is_missing_graph(exc):
+        if is_missing_graph_error(exc):
             return NoGraph()
         raise
 

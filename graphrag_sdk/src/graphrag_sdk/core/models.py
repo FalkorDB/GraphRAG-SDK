@@ -252,8 +252,8 @@ class ChunkEntityRow(DataModel):
     ``label`` is the entity's concrete label (the non-``__Entity__`` one);
     ``None`` if the node somehow carries no usable label (tampered graph).
     ``description``, ``descriptions`` and ``spans`` are what this chunk's own
-    ``MENTIONED_IN`` edge holds — its description as written, the same as
-    separate members, and where the chunk names the entity: ``None``, ``[]``
+    ``MENTIONED_IN`` edge holds — its description as stored, the same split
+    into its pieces, and where the chunk names the entity: ``None``, ``[]``
     and ``[]`` for an edge written by an earlier version. ``recorded`` is
     whether that edge records everything its chunk put on the entity's
     description: written by this version (it has ``said_version``), or a
@@ -315,6 +315,10 @@ _RESERVED_ATTRIBUTE_NAMES: frozenset[str] = frozenset(
         "id",
         "label",
         "description_summarised",
+        # How the SDK stores an entity's description: the piece count, and an
+        # earlier version's list of the pieces.
+        "description_piece_count",
+        "descriptions",
     }
 )
 
@@ -534,7 +538,9 @@ class Ontology(DataModel):
         ``description``, ``source_chunk_ids``, ``spans``, ``rel_type``,
         ``fact``, ``src_name``, ``tgt_name``, ``id``, ``label``). Declaring
         a ``Attribute`` with one of these names will shadow the system
-        value on extracted nodes. Don't do that.
+        value on extracted nodes. Don't do that. The one exception is
+        ``description``: what the chunks said wins, and an attribute of
+        that name stands in only where they said nothing.
         """
         if not self.entities:
             return self
@@ -907,11 +913,11 @@ class EntityMention(DataModel):
     ``spans`` are where the chunk names the entity, flat
     (``[start, end, start, end, ...]``); ``descriptions`` are what that chunk
     says the entity is — one, or more when the chunk describes it twice or two
-    mentions land on it (a merge, a remap), each kept whole. Both are written
-    on the ``MENTIONED_IN`` edge, the descriptions as on a node
-    (``description`` joined with " | ", ``descriptions`` when more than one),
-    so they go when the chunk goes, and what a deleted document said can be
-    taken off the entity's description.
+    mentions land on it (a merge, a remap). Both are written on the
+    ``MENTIONED_IN`` edge, the descriptions as on a node (pieces of one
+    ``description`` string joined with " | "; each item is one piece, a "|"
+    inside it written as " ¦ "), so they go when the chunk goes, and
+    what a deleted document said can be taken off the entity's description.
     """
 
     chunk_id: str
@@ -1173,6 +1179,13 @@ class FinalizeResult(DataModel):
 
     entities_embedded: int = 0
     relationships_embedded: int = 0
+    chunks_named: int = 0
+    """Chunks that had no ``name`` and were given ``"<document id> · chunk <index>"``.
+
+    Zero on a second ``finalize()`` with nothing new, and when ``name_chunks`` is
+    ``False``.
+    """
+
     indexes: dict[str, bool] = Field(default_factory=dict)
     property_conflicts: list[str] = Field(default_factory=list)
     """One logical property supplied by more than one table, measured on the graph.

@@ -1633,36 +1633,58 @@ class GraphRAGToolkit:
                 else f"ingest(text=..., document_id={out.document_id!r}, reextract=true)"
             )
             pruned = out.pruned
-            if pruned.pattern_mismatches:
-                hints.append(_pattern_hint(pruned, redo))
-            if pruned.unknown_endpoints:
-                n = sum(pruned.unknown_endpoints.values())
+            unresolved = (
+                f"{pruned.unknown} entities have an unresolved type (stored as Unknown): "
+                "a type the ontology lacks, or a declared type the extractor classified "
+                "with low confidence; status shows the total. "
+                if pruned.unknown
+                else ""
+            )
+            if "set_ontology" not in {spec.name for spec in self.tool_specs()}:
+                if pruned.entities or pruned.relations or pruned.pattern_mismatches:
+                    hints.append(
+                        "Extraction found types or patterns the ontology does not declare "
+                        "(see pruned)."
+                    )
+                if pruned.unknown_endpoints:
+                    n = sum(pruned.unknown_endpoints.values())
+                    hints.append(
+                        f"{n} relation(s) ({_names_hint(sorted(pruned.unknown_endpoints))}) were "
+                        "dropped because an endpoint's type was not resolved (stored as Unknown)."
+                    )
                 hints.append(
-                    f"{n} relation(s) ({_names_hint(sorted(pruned.unknown_endpoints))}) were "
-                    "dropped because an endpoint's type was not resolved (stored as Unknown); "
-                    "a pattern cannot name Unknown. Unknown can also be a declared type the "
-                    "extractor classified with low confidence. Only if those entities are "
-                    "of a type the ontology lacks, declare it with "
-                    "set_ontology(entities=[...]) and add it to the relation's patterns, "
-                    f"then {redo}."
+                    f"{unresolved}If missing types matter, tell the user which; only the "
+                    "server operator can add them."
                 )
-            if pruned.entities or pruned.relations or pruned.unknown:
-                found = (
-                    "Extraction found types the ontology does not declare (see pruned). "
-                    if pruned.entities or pruned.relations
-                    else ""
-                )
-                unresolved = (
-                    f"{pruned.unknown} entities have an unresolved type (stored as Unknown): "
-                    "a type the ontology lacks, or a declared type the extractor classified "
-                    "with low confidence; status shows the total. "
-                    if pruned.unknown
-                    else ""
-                )
+            else:
                 hints.append(
-                    f"{found}{unresolved}If new types matter, add them with set_ontology, "
-                    f"then {redo}."
+                    "Unless you designed the ontology in this conversation, ask the user "
+                    "before calling set_ontology and add only what they approve; the rest "
+                    "stays out of the graph. If you designed it, tell the user what you added."
                 )
+                if pruned.pattern_mismatches:
+                    hints.append(_pattern_hint(pruned, redo))
+                if pruned.unknown_endpoints:
+                    n = sum(pruned.unknown_endpoints.values())
+                    hints.append(
+                        f"{n} relation(s) ({_names_hint(sorted(pruned.unknown_endpoints))}) were "
+                        "dropped because an endpoint's type was not resolved (stored as Unknown); "
+                        "a pattern cannot name Unknown. Unknown can also be a declared type the "
+                        "extractor classified with low confidence. Only if those entities are "
+                        "of a type the ontology lacks, declare it with "
+                        "set_ontology(entities=[...]) and add it to the relation's patterns, "
+                        f"then {redo}."
+                    )
+                if pruned.entities or pruned.relations or pruned.unknown:
+                    found = (
+                        "Extraction found types the ontology does not declare (see pruned). "
+                        if pruned.entities or pruned.relations
+                        else ""
+                    )
+                    hints.append(
+                        f"{found}{unresolved}If new types matter, add them with set_ontology, "
+                        f"then {redo}."
+                    )
         if out.documents and all(d.status == "unchanged" for d in out.documents):
             hints.append("Every file was unchanged; pass reextract=true to extract them again.")
         if out.status == "unchanged":

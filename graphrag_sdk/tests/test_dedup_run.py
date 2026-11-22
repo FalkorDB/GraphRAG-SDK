@@ -15,6 +15,7 @@ import os
 import pytest
 
 from graphrag_sdk.core.connection import MIN_SERVER_VERSION, FalkorDBConnection
+from graphrag_sdk.core.descriptions import join_description, split_description
 from graphrag_sdk.core.exceptions import FalkorDBVersionError
 from graphrag_sdk.core.models import Attribute, Entity, GraphNode, GraphRelationship, Ontology
 from graphrag_sdk.storage.dedup_judges import DedupJudge, LLMJudge
@@ -367,6 +368,23 @@ async def test_a_failed_check_stays_pending_and_three_make_it_unresolved(graph):
     assert dd.last_report.unresolved == {}, "dedup_all retries it"
 
 
+@pytest.mark.parametrize("emptied", ["p.reasons = []", "p.attempts = [], p.reasons = []"])
+async def test_a_pending_record_whose_lists_lost_their_entries_is_still_checked(graph, emptied):
+    """FalkorDB 4.22.2 was seen to change a stored pending record no query
+    wrote: ``ids`` kept 28 entries while ``reasons``, and later ``attempts``,
+    read back empty. Every later finalize() then crashed with IndexError, in
+    the claim (``reasons``) or in the move to unresolved (``attempts``). A list
+    that lost entries is reset instead — counts 0, reasons empty — and the
+    entity is checked."""
+    await checked_graph(graph)
+    await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([APPLE], fail={"Timothy Cook"})))
+    await graph.query_raw(f"MATCH (p:__GraphRAGProcessing__ {{kind: 'pending'}}) SET {emptied}")
+
+    dd = dedup(graph)
+    assert await dd.deduplicate(judge=LLMJudge(NameOracleLLM([TIM]))) == 1
+    assert dd.last_report.checked == 1 and await records(graph) == []
+
+
 async def test_a_retry_of_the_unresolved_cut_short_lists_them_once(graph):
     """dedup_all lists the unresolved entities as pending, then drops them
     from their record. A crash between the two left both, and the next
@@ -636,35 +654,40 @@ async def test_a_merged_mention_edge_is_this_versions_only_if_both_were(graph):
 
 async def test_a_merge_keeps_a_full_edges_and_the_merged_edges_text(graph):
     """A write stops adding to an edge holding the cap; a merge must not, or
-    the node keeps text no edge records and a delete cannot take it off."""
+    the node keeps text no edge records and a delete cannot take it off. The
+    full edge is an earlier version's, its pieces in a list: read, then
+    stored as one string."""
     await checked_graph(graph)
     full = [f"wording {i}" for i in range(20)]
     await graph.query_raw(
         "CREATE (c:Chunk {id: 'c1'}) WITH c "
         "MATCH (t:__Entity__ {id: 'tim'}), (u:__Entity__ {id: 'timothy'}) "
-        "CREATE (t)-[:MENTIONED_IN {description: 'x', descriptions: $full}]->(c), "
+        "CREATE (t)-[:MENTIONED_IN {description: $joined, descriptions: $full}]->(c), "
         "(u)-[:MENTIONED_IN {description: 'Dr. Cook'}]->(c)",
-        {"full": full},
+        {"full": full, "joined": " | ".join(full)},
     )
     await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([TIM, APPLE])))
-    ((descs,),) = await rows(
+    ((description, stored_list),) = await rows(
         graph,
-        "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(:Chunk {id: 'c1'}) RETURN m.descriptions",
+        "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(:Chunk {id: 'c1'}) "
+        "RETURN m.description, m.descriptions",
     )
-    assert sorted(descs) == sorted([*full, "Dr. Cook"])
+    assert sorted(split_description(description)) == sorted([*full, "Dr. Cook"])
+    assert stored_list is None
 
 
 async def test_a_merge_adds_each_description_of_a_shared_chunk_once_and_whole(graph):
-    """One duplicate's edge holds two descriptions, one of them with " | "
-    inside; the other's says one of them again. Whichever survives, each is
-    kept once and whole: merging "A | B" into "A" no longer gives "A | A | B"."""
+    """One duplicate's edge holds two pieces, one of them a source's " | "
+    (stored as "¦"); the other's says one of them again. Whichever survives,
+    each is kept once and whole: merging "A | B" into "A" no longer gives
+    "A | A | B"."""
     await checked_graph(graph)
     await graph.query_raw(
         "CREATE (c:Chunk {id: 'c1'}) WITH c "
         "MATCH (t:__Entity__ {id: 'tim'}), (u:__Entity__ {id: 'timothy'}) "
         "CREATE (t)-[:MENTIONED_IN {description: 'CEO of Apple', spans: [0, 8]}]->(c), "
-        "(u)-[:MENTIONED_IN {description: 'Dr. Cook | Apple | CEO of Apple', "
-        "descriptions: ['Dr. Cook | Apple', 'CEO of Apple'], spans: [0, 8]}]->(c)"
+        "(u)-[:MENTIONED_IN {description: $two, description_piece_count: 2, spans: [0, 8]}]->(c)",
+        {"two": join_description(["Dr. Cook | Apple", "CEO of Apple"])},
     )
     await dedup(graph).deduplicate(judge=LLMJudge(NameOracleLLM([TIM, APPLE])))
     edges = await rows(
@@ -672,7 +695,7 @@ async def test_a_merge_adds_each_description_of_a_shared_chunk_once_and_whole(gr
         "MATCH (e:__Entity__)-[m:MENTIONED_IN]->(:Chunk {id: 'c1'}) "
         "RETURN m.spans, m.description, m.descriptions",
     )
-    ((spans, description, descriptions),) = edges
+    ((spans, description, stored_list),) = edges
     assert spans == [0, 8]
-    assert sorted(descriptions) == ["CEO of Apple", "Dr. Cook | Apple"]
-    assert description == " | ".join(descriptions)
+    assert sorted(split_description(description)) == ["CEO of Apple", "Dr. Cook \u00a6 Apple"]
+    assert stored_list is None

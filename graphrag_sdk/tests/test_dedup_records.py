@@ -6,10 +6,12 @@ uses its own graph, dropped afterwards.
 
 from __future__ import annotations
 
+import logging
 import os
 
 import pytest
 
+from graphrag_sdk.core.models import GraphNode
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.merge_query import (
@@ -180,6 +182,50 @@ async def test_pending_records_are_paged_and_claimed(graph):
 
     await store.write_pending([PendingPage(0, [], [], [])])
     assert [p.page for p in await store.pending_pages()] == [1]
+
+
+@pytest.mark.parametrize(
+    "attempts, reasons, read",
+    [
+        # x's count lost: padding [3] gave x the 3 attempts of y, unjudged.
+        ([3], ["", "no usable verdict"], ([0, 0], ["", "no usable verdict"])),
+        ([0, 3], [], ([0, 3], ["", ""])),
+        ([0, 3, 1], ["", "held"], ([0, 0], ["", "held"])),
+    ],
+)
+async def test_a_pending_list_that_lost_or_gained_entries_is_reset_once(
+    graph, caplog, attempts, reasons, read
+):
+    """FalkorDB 4.22.2 was seen to empty a stored list of a pending record.
+    A list whose length no longer matches the ids cannot say which entries
+    changed, so it is reset whole, never padded; the reset is written back,
+    so it is reported once."""
+    store = await held(graph)
+    await store.add_pending(["x", "y"])
+    await graph.query_raw(
+        f"MATCH (p:{PROCESSING_LABEL} {{kind: '{PENDING}'}}) SET p.attempts = $a, p.reasons = $r",
+        {"a": attempts, "r": reasons},
+    )
+    with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.system_store"):
+        (page,) = await store.pending_pages()
+        assert (page.ids, page.attempts, page.reasons) == (["x", "y"], *read)
+        assert await store.pending_pages() == [page], "written back as read"
+    assert sum("Pending record" in r.getMessage() for r in caplog.records) == 1
+
+
+async def test_a_pending_record_that_lost_its_ids_is_deleted_not_read(graph):
+    """Written back without ids, the record is deleted: a hand-off put on it
+    would list nothing."""
+    store = await held(graph)
+    await store.add_pending(["x", "y"])
+    await store.add_pending(["z"])
+    await graph.query_raw(
+        f"MATCH (p:{PROCESSING_LABEL} {{kind: '{PENDING}', page: 1}}) SET p.ids = []"
+    )
+    assert [p.ids for p in await store.pending_pages()] == [["x", "y"]]
+    assert await rows(
+        graph, f"MATCH (p:{PROCESSING_LABEL} {{kind: '{PENDING}'}}) RETURN p.page"
+    ) == [[0]]
 
 
 async def test_a_delete_during_a_run_leaves_a_deleted_record_and_none_without_one(graph):
@@ -631,6 +677,77 @@ async def test_a_table_rekey_folds_into_the_taken_id_in_one_query(graph):
         "MATCH (n:__Entity__ {id: 'new'}) RETURN n.role, n.embedding IS NULL, n.source_chunk_ids",
     ) == [["supplier", True, ["c1"]]]
     assert await store.deleted_among(["old", "new"]) == {"old", "new"}
+
+
+@pytest.mark.parametrize("list_on", ["old", "new"])
+async def test_a_table_rekey_fold_never_leaves_an_earlier_versions_list(graph, list_on):
+    """An earlier version's ``descriptions`` list, on either node, is read
+    into the one description and dropped. Carried (or left on the survivor),
+    the next write read it first and lost the survivor's own text. The other
+    node is this version's: its two pieces have a count."""
+    form = {
+        side: f", descriptions: {items}" if list_on == side else ", description_piece_count: 2"
+        for side, items in (("old", "['Old A', 'Old B']"), ("new", "['Keep one', 'Keep two']"))
+    }
+    await graph.query_raw(
+        "CREATE (o:__Entity__:Organization {id: 'old', name: 'Globex', "
+        f"description: 'Old A | Old B'{form['old']}}}), "
+        "(n:__Entity__:Organization {id: 'new', name: 'Initech', "
+        f"description: 'Keep one | Keep two'{form['new']}}})"
+    )
+    assert await graph._move_entity("old", "new") == (0, 1)
+    assert await rows(
+        graph,
+        "MATCH (n:__Entity__ {id: 'new'}) "
+        "RETURN n.description, n.descriptions, n.description_piece_count",
+    ) == [["Keep one | Keep two | Old A | Old B", None, 4]]
+    await graph.upsert_nodes(
+        [GraphNode(id="new", label="Organization", properties={"description": "New fact"})]
+    )
+    assert await rows(graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description") == [
+        ["Keep one | Keep two | Old A | Old B | New fact"]
+    ]
+
+
+async def test_a_table_rekey_fold_keeps_text_only_the_survivors_string_holds(graph):
+    """An earlier version's list on the survivor, out of step with its string:
+    the fold keeps the string's extra piece instead of writing the list."""
+    await graph.query_raw(
+        "CREATE (o:__Entity__:Organization {id: 'old', name: 'Globex', description: 'Old A'}), "
+        "(n:__Entity__:Organization {id: 'new', name: 'Initech', "
+        "description: 'Keep one | Only in string', descriptions: ['Keep one']})"
+    )
+    assert await graph._move_entity("old", "new") == (0, 1)
+    assert await rows(
+        graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description, n.descriptions"
+    ) == [["Keep one | Only in string | Old A", None]]
+
+
+async def test_a_rekey_fold_reads_again_when_only_the_count_changed(graph, monkeypatch):
+    """"A | B" without a count is one piece, with one two: a write of the count
+    alone between the fold's read and the fold changes what the description
+    holds, so the fold reads again instead of writing what the first read saw."""
+    await graph.query_raw(
+        "CREATE (o:__Entity__:Organization {id: 'old', name: 'Globex', description: 'Old fact'}), "
+        "(n:__Entity__:Organization {id: 'new', name: 'Initech', description: 'A | B'})"
+    )
+    reads = []
+
+    async def read_then_count(g, survivor, dup):
+        read = await read_for_merge(g, survivor, dup)
+        reads.append(read)
+        if len(reads) == 1:
+            await graph.query_raw(
+                "MATCH (n:__Entity__ {id: 'new'}) SET n.description_piece_count = 2"
+            )
+        return read
+
+    monkeypatch.setattr("graphrag_sdk.storage.graph_store.read_for_merge", read_then_count)
+    assert await graph._move_entity("old", "new") == (0, 1)
+    assert len(reads) == 2
+    assert await rows(
+        graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description, n.description_piece_count"
+    ) == [["A | B | Old fact", 3]]
 
 
 async def _globex_and_initech(graph):

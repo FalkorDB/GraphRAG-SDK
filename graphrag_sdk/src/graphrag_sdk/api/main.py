@@ -18,8 +18,17 @@ from typing import Any, Literal, NoReturn, overload
 from uuid import uuid4
 
 from graphrag_sdk import __version__
-from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
+from graphrag_sdk.core.connection import (
+    ConnectionConfig,
+    FalkorDBConnection,
+    is_missing_graph_error,
+)
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.descriptions import (
+    DESCRIPTION_COUNT_KEY,
+    LEGACY_LIST_KEY,
+    description_piece,
+)
 from graphrag_sdk.core.exceptions import (
     ConfigError,
     DatabaseError,
@@ -818,8 +827,7 @@ class GraphRAG:
 
         Internal helper shared by every evolution method so the refresh
         path lives in one place. Updates ``self.ontology`` in lockstep so
-        a follow-up ``ingest()`` (which reads ``self.ontology.entities``
-        in ``_default_extractor``) sees the post-mutation label set.
+        callers reading it see the post-mutation label set.
         """
         self._global_ontology = await self._ontology_store.load()
         self.ontology = self._global_ontology
@@ -1825,15 +1833,29 @@ class GraphRAG:
                 # (name, type) -- the same id the extraction path assigns, so a
                 # backfilled entity merges with its extracted twin.
                 ent_id = compute_entity_id(ent_name, label)
-                said = str(ent.get("description") or "").strip()
-                props: dict[str, Any] = {"name": ent_name, "description": said}
+                # One piece, as extraction writes it: a "|" the model wrote
+                # must not split it on the node or its edge.
+                said = description_piece(ent.get("description"))
+                props: dict[str, Any] = {"name": ent_name}
                 for attr in entity.properties:
+                    # The SDK's own description bookkeeping is never an
+                    # attribute value (read as evidence, it would reach the
+                    # node with no edge recording it).
+                    if attr.name in (DESCRIPTION_COUNT_KEY, LEGACY_LIST_KEY):
+                        continue
                     raw = (ent.get("attributes") or {}).get(attr.name)
                     if raw is None:
                         continue
                     ok, coerced = _coerce_attribute_value(raw, attr.type)
                     if ok:
                         props[attr.name] = coerced
+                # After the attributes: one named "description" must not
+                # replace what the edge below records the chunk said. It
+                # stands in only where the model wrote no description, and
+                # then the edge records it too.
+                if not said:
+                    said = description_piece(props.get("description"))
+                props["description"] = said
                 new_nodes.append(GraphNode(id=ent_id, label=label, properties=props))
                 # What this chunk said goes on its mention edge too, as an
                 # extraction's does, so deleting the document takes it off.
@@ -2229,7 +2251,8 @@ class GraphRAG:
           if you need character-window chunking.
         - Extractor: GraphExtraction with configured LLM
         - Resolver: ExactMatchResolution — zero LLM cost; same name + same
-          label within the document, descriptions kept as a list, edges
+          label within the document, every description kept (as pieces of
+          one ``" | "``-joined string), edges
           re-pointed to the survivor. Cross-document duplicates are merged
           once, in :meth:`finalize` — by its exact-name and judged dedup
           phases. Pass ``resolver=LLMVerifiedResolution(...)`` to also
@@ -2561,11 +2584,12 @@ class GraphRAG:
         """Merge a mapping's ontology into the persisted one, additively.
 
         ``register()`` deliberately refuses to add properties or patterns to a
-        label that already exists, because for the extraction path that would
-        mean an ingest silently reshaping the schema. A structured source has to
-        do exactly that though: prose typically creates ``Organization`` first
-        with only a name and a description, and a CSV then contributes
-        ``employee_count`` as an INTEGER. That is additive, not a modification.
+        label that already holds data, because for the extraction path that
+        would mean an ingest silently reshaping the schema under existing nodes.
+        A structured source has to do exactly that though: prose typically
+        creates ``Organization`` first with only a name and a description, and
+        a CSV then contributes ``employee_count`` as an INTEGER. That is
+        additive, not a modification.
 
         So new labels and relations go through ``register()`` wholesale, and
         anything that already exists is extended through the ontology-evolution
@@ -3195,6 +3219,10 @@ class GraphRAG:
             document_id=document_id,
             strict=strict,
         )
+        # A table's rows are entities like any document's, and only finalize()
+        # resolves them against the rest of the graph. Arm the reminder the same
+        # way the prose path does; see _warn_if_finalize_missing.
+        self._docs_since_dedup += 1
         ctx_log = getattr(ctx, "log", lambda _m: None)
         ctx_log(
             f"Structured ingest complete for {result.document_id}. "
@@ -3599,8 +3627,10 @@ class GraphRAG:
             }
 
         # Cross-document duplicates can only be resolved by finalize(); see
-        # _warn_if_finalize_missing.
-        self._docs_since_dedup += 1
+        # _warn_if_finalize_missing. An unchanged-document short-circuit did
+        # not write anything and must not arm the reminder.
+        if not result.metadata.get("skipped_unchanged"):
+            self._docs_since_dedup += 1
 
         if not _skip_post:
             # Post-ingestion: create indices only.
@@ -3765,7 +3795,8 @@ class GraphRAG:
 
     def _ontology_entity_types(self) -> list[str] | None:
         """Entity labels the extractors are given (``None``: no ontology)."""
-        return [e.label for e in self.ontology.entities] if self.ontology.entities else None
+        ontology = self._global_ontology if self._global_ontology.entities else self.ontology
+        return [e.label for e in ontology.entities] or None
 
     def _default_extractor(self) -> ExtractionStrategy:
         """Return default GraphExtraction with ontology entity types if available."""
@@ -4016,7 +4047,7 @@ class GraphRAG:
         the entities added since the last run against their nearest names in
         the whole graph. Ingest stays zero-LLM-cost for resolution: no ``llm``
         is passed, so ``ExactMatchResolution`` neither summarises merged
-        descriptions (they are kept as a list and joined with ``" | "``) nor
+        descriptions (every piece is kept, joined with ``" | "``) nor
         merges same-name nodes of different labels — cross-label merges are
         left to finalize's judge and declared-label adoption.
         Pass a resolver to ``ingest()`` to change this per call.
@@ -4666,7 +4697,7 @@ class GraphRAG:
             if structured_result.identity_moved:
                 moved = structured_result.identity_moved
                 candidate_ids = list(dict.fromkeys(moved.get(eid, eid) for eid in candidate_ids))
-            return await self._finish_update(
+            structured_update = await self._finish_update(
                 resolved_id=resolved_id,
                 pending_id=pending_id,
                 doc_path=doc_path,
@@ -4680,6 +4711,10 @@ class GraphRAG:
                 result_metadata=structured_result.as_dict(),
                 ctx=ctx,
             )
+            # Same reason as the prose increment below: a re-synced table brings
+            # in rows the last finalize() never saw.
+            self._docs_since_dedup += 1
+            return structured_update
 
         active_extractor = extractor or self._default_extractor()
         cache_wrapper: CachedChunkExtraction | None = None
@@ -5646,7 +5681,7 @@ class GraphRAG:
                     read_only=True,
                 )
             except Exception as exc:
-                if "empty key" not in str(exc).lower():
+                if not is_missing_graph_error(exc):
                     raise
                 result = None  # no graph yet, so no stored config
             if result is not None and result.result_set:
@@ -5760,8 +5795,8 @@ class GraphRAG:
         label (an acronym joins its unique same-label long form), keeps the
         survivor the merge rules pick (a table row over a mention, then the
         best-connected and best-described), keeps every member's description
-        in the ``descriptions`` list (joined with ``" | "`` in
-        ``description``), moves every relationship of the duplicates to the
+        pieces in ``description`` (joined with ``" | "``), moves every
+        relationship of the duplicates to the
         survivor, deletes duplicates. A group of extracted mentions only is
         handed to the judge instead of merged on the name.
 
@@ -5771,7 +5806,7 @@ class GraphRAG:
         each set in one pass, seeing names, labels, aliases, descriptions and
         the values of the attributes the ontology declares. Agreed pairs are
         merged by the same rules as every other phase (survivor rank,
-        descriptions list, aliases, provenance), and the survivor additionally
+        description pieces, aliases, provenance), and the survivor additionally
         gains every member's label, the judge's name for the group and the
         values it picked to keep; pairs it did not agree are left alone. Two
         rows written from a declared key,
@@ -5903,6 +5938,7 @@ class GraphRAG:
         *,
         judge: DedupJudge | None = None,
         dedup_all: bool = False,
+        name_chunks: bool = True,
     ) -> FinalizeResult:
         """Run all post-ingestion steps after all documents are ingested.
 
@@ -5923,6 +5959,10 @@ class GraphRAG:
            dedup work.
         3. ``embed_relationships()`` — fact text embeddings on RELATES edges
         4. ``ensure_indices()`` — all indexes
+        5. Name the chunks — a ``Chunk`` without a ``name`` gets
+           ``"<document id> · chunk <index>"``, so it is readable in a graph
+           browser. A chunk that already has a name is left alone, which makes
+           the step idempotent. ``FinalizeResult.chunks_named`` counts them.
 
         Entity name embeddings are written only by dedup: an entity with a
         vector and no pending record counts as checked, so a vector written by
@@ -5936,6 +5976,8 @@ class GraphRAG:
                 only. Every run has a judge.
             dedup_all: check every entity instead of only the pending ones,
                 and retry the unresolved ones.
+            name_chunks: give every unnamed ``Chunk`` a readable name. Pass
+                ``False`` to leave chunks as they were written.
 
         Returns:
             ``FinalizeResult`` — typed counts from each step.
@@ -6007,6 +6049,34 @@ class GraphRAG:
         self._vector_store._indices_ensured = False  # force re-check
         index_results = await self._vector_store.ensure_indices()
         ctx_log(f"finalize: indexes = {index_results}")
+
+        # Step 5: Readable names for chunks. Cosmetic, so a failure is reported and
+        # does not undo the dedup and indexing above. A document being re-synced by
+        # update() is skipped — its id carries the pending marker, which a caller's
+        # own id cannot (see _check_no_pending_marker) — so no chunk is named after
+        # a transient id. Only unnamed chunks are touched, which is also what makes
+        # a second run a no-op. A record chunk (one table row) is left out: it keeps
+        # each cell under its column's name, so a column called "name" is c.name, and
+        # an empty cell would be filled with a value the source never had.
+        chunks_named = 0
+        if name_chunks:
+            try:
+                r = await self._graph_store.query_raw(
+                    "MATCH (d:Document)-[:PART_OF]->(c:Chunk) "
+                    "WHERE c.name IS NULL AND c.record_key IS NULL "
+                    "AND NOT d.id CONTAINS '__pending__' "
+                    "SET c.name = d.id + $separator + toString(c.index) "
+                    "RETURN count(c)",
+                    {"separator": " · chunk "},
+                )
+                chunks_named = r.result_set[0][0] if r.result_set else 0
+                ctx_log(f"finalize: named {chunks_named} chunks")
+            except Exception as exc:
+                logger.debug("Chunk naming failed", exc_info=True)
+                report(
+                    "finalize: could not give chunks readable names; the graph is unaffected "
+                    f"({type(exc).__name__}: {exc})"
+                )
 
         # Signed properties whose owning source no longer mentions the node. Runs
         # after dedup, because a merge moves properties onto the survivor and the
@@ -6163,6 +6233,7 @@ class GraphRAG:
             description_summary_failures=summary_failures,
             entities_embedded=entity_count,
             relationships_embedded=rel_count,
+            chunks_named=chunks_named,
             indexes=index_results,
         )
 
@@ -6310,12 +6381,13 @@ class GraphRAG:
         *,
         judge: DedupJudge | None = None,
         dedup_all: bool = False,
+        name_chunks: bool = True,
     ) -> FinalizeResult:
         """Synchronous finalize convenience method.
 
         Keep in sync with :meth:`finalize`.
         """
-        return asyncio.run(self.finalize(judge=judge, dedup_all=dedup_all))
+        return asyncio.run(self.finalize(judge=judge, dedup_all=dedup_all, name_chunks=name_chunks))
 
     def update_sync(
         self,

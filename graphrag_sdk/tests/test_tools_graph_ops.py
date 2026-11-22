@@ -252,6 +252,7 @@ async def test_enrich_entities_hides_bookkeeping_and_caps_the_description():
             "name": "Alice",
             "description": long_desc,
             "descriptions": ["a", "b"],
+            "description_piece_count": 40,
             "description_summarised": True,
             "merged_labels": "Person",
             "is_stub": False,

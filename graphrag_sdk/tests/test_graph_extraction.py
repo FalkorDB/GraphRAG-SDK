@@ -601,7 +601,38 @@ class TestSpansMerging:
         (alice,) = GraphExtraction._aggregate_entities([first, second])
         assert alice.chunk_descriptions == {"c0": ["CEO", "CEO and founder"]}
         (node,) = GraphExtraction._entities_to_nodes([alice])
-        assert node.properties["descriptions"] == ["CEO", "CEO and founder"]
+        assert node.properties["description"] == "CEO | CEO and founder"
+        assert "descriptions" not in node.properties
+
+    def test_an_attribute_named_description_does_not_replace_what_chunks_said(self):
+        """The chunks' pieces are the description (their edges record them);
+        an ontology attribute named "description" is applied first."""
+        ent = ExtractedEntity(
+            name="Alice",
+            type="Person",
+            description="CEO",
+            source_chunk_ids=["c0"],
+            attributes={"description": "an attribute value", "age": 52},
+        )
+        ent.chunk_descriptions = {"c0": ["CEO", "founder"]}  # type: ignore[attr-defined]
+        (node,) = GraphExtraction._entities_to_nodes([ent])
+        assert node.properties["description"] == "CEO | founder"
+        assert node.properties["age"] == 52
+
+    def test_a_pipe_in_a_description_never_splits_it(self):
+        """A piece never holds "|": one in what the model wrote (or in a table
+        row's evidence) becomes "¦", so the stored string splits back exactly."""
+        text = "Alice is CEO. alice also founded Acme."
+        first = ExtractedEntity(
+            name="Alice", type="Person", description="CEO | Acme", source_chunk_ids=["c0"]
+        )
+        second = ExtractedEntity(
+            name="alice", type="Person", description="founder", source_chunk_ids=["c0"]
+        )
+        GraphExtraction._record_mentions([first, second], text, "c0")
+        (alice,) = GraphExtraction._aggregate_entities([first, second])
+        (node,) = GraphExtraction._entities_to_nodes([alice])
+        assert node.properties["description"] == "CEO \u00a6 Acme | founder"
 
     def test_no_spans_not_in_node_properties(self):
         """Nodes without spans should not have spans key."""
@@ -1216,7 +1247,7 @@ class TestGraphExtractionSchemaAttributes:
             type="Person",
             description="",
             source_chunk_ids=["c2"],
-            attributes={"age": 58, "birth_year": 1867},
+            attributes={"age": 58, "country": None, "birth_year": 1867},
         )
         merged = GraphExtraction._aggregate_entities([e1, e2])
         assert len(merged) == 1
@@ -1235,13 +1266,54 @@ class TestGraphExtractionSchemaAttributes:
             type="Person",
             description="d",
             source_chunk_ids=["c1"],
-            attributes={"age": 56, "birth_date": "1867-11-07"},
+            attributes={"age": 56, "birth_date": "1867-11-07", "description": None},
         )
         nodes = GraphExtraction._entities_to_nodes([ent])
         assert nodes[0].properties["age"] == 56
         assert nodes[0].properties["birth_date"] == "1867-11-07"
-        # Reserved keys still present.
+        assert nodes[0].properties["description"] == "d"
         assert nodes[0].properties["name"] == "Marie Curie"
+
+    def test_aggregate_relation_attributes_ignore_missing_values(self):
+        from graphrag_sdk.core.models import ExtractedRelation
+
+        first = ExtractedRelation(
+            source="Alice",
+            target="Bob",
+            type="KNOWS",
+            description="",
+            source_chunk_ids=["c1"],
+            attributes={"status": "active"},
+        )
+        second = ExtractedRelation(
+            source="Alice",
+            target="Bob",
+            type="KNOWS",
+            description="",
+            source_chunk_ids=["c2"],
+            attributes={"status": None, "region": "EU"},
+        )
+
+        (merged,) = GraphExtraction._aggregate_relations([first, second])
+
+        assert merged.attributes == {"status": "active", "region": "EU"}
+
+    def test_none_relation_attribute_does_not_shadow_description(self):
+        from graphrag_sdk.core.models import ExtractedRelation
+
+        rel = ExtractedRelation(
+            source="Alice",
+            target="Bob",
+            type="KNOWS",
+            description="Alice knows Bob",
+            source_chunk_ids=["c1"],
+            attributes={"description": None, "confidence": None},
+        )
+
+        (relationship,) = GraphExtraction._relations_to_relationships([rel])
+
+        assert relationship.properties["description"] == "Alice knows Bob"
+        assert "confidence" not in relationship.properties
 
     def test_property_less_schema_keeps_attributes_empty(self):
         """Deterministic-extractor regression: ontology declares no
