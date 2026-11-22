@@ -134,15 +134,20 @@ async def test_later_rounds_exclude_edges_already_returned():
     store = MagicMock()
     store.query_raw = AsyncMock(
         side_effect=[
+            # Each round: the ranked query, then the unembedded-edge query.
             MagicMock(result_set=[["A", "KNOWS", "B", "", "", 0.1, "b", [], 7]]),
+            MagicMock(result_set=[]),
             MagicMock(result_set=[["B", "WORKS_AT", "C", "", "", 0.2, "c", [], 8]]),
+            MagicMock(result_set=[]),
+            MagicMock(result_set=[]),
             MagicMock(result_set=[]),
         ]
     )
     await expand_relationships(store, [("a", {"name": "A"})], 20, query_vector=[0.1])
     calls = store.query_raw.call_args_list
     assert all("NOT ID(r) IN $seen_edges" in c[0][0] for c in calls)
-    assert [c[0][1]["seen_edges"] for c in calls] == [[], [7], [7, 8]]
+    ranked = [c for c in calls if "AND r.embedding IS NULL" not in c[0][0]]
+    assert [c[0][1]["seen_edges"] for c in ranked] == [[], [7], [7, 8]]
 
 
 async def test_local_retrieval_leaves_out_inactive_chunks():

@@ -40,8 +40,23 @@ INTERNAL_ENTITY_PROPS = RESERVED_PROPERTY_NAMES | {
     "description_summarised",
 }
 DROPPED_SUFFIX = "__dropped"
+
 # Longest attribute list shown for one entity or relation line.
 _MAX_ATTRIBUTES_CHARS = 200
+
+
+def alias_list(var: str) -> str:
+    """Cypher: entity ``var``'s aliases as a list of strings.
+
+    Dedup writes ``aliases`` as a list, but it is not a reserved name: an
+    ontology can declare a STRING attribute called ``aliases``, and one such
+    node would make ``coalesce(e.aliases, [])`` fail the whole query with a
+    type mismatch. A string counts as one alias; any other value as none.
+    """
+    return (
+        f"[a IN CASE typeOf({var}.aliases) WHEN 'List' THEN {var}.aliases "
+        f"WHEN 'String' THEN [{var}.aliases] ELSE [] END | toString(a)]"
+    )
 
 
 def shown_attributes(props: dict[str, Any], hidden: frozenset[str] | set[str] = frozenset()):

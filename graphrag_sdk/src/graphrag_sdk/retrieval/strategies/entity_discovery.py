@@ -12,11 +12,14 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.retrieval.strategies.result_assembly import (
     INTERNAL_ENTITY_PROPS,
+    alias_list,
     format_relation_line,
     shown_attributes,
 )
 
 logger = logging.getLogger(__name__)
+
+_ALIASES = alias_list("e")
 
 _ENUMERATION_RE = re.compile(
     r"\b(every|each|complete list|full list|list all|list of all"
@@ -157,7 +160,7 @@ async def discover_entities(
                 "  MATCH (e:__Entity__) "
                 "  WHERE toLower(e.name) = toLower(kw) "
                 # A dedup merge keeps the names it folded away as aliases.
-                "     OR any(al IN coalesce(e.aliases, []) WHERE toLower(al) = toLower(kw)) "
+                f"     OR any(al IN {_ALIASES} WHERE toLower(al) = toLower(kw)) "
                 # A direct name match beats an alias match; id breaks ties.
                 # The rank is computed in a WITH: FalkorDB 6.0 rejects an
                 # outer variable (kw) referenced in a subquery's ORDER BY.
@@ -197,10 +200,10 @@ async def discover_entities(
                     "  WITH kw "
                     "  MATCH (e:__Entity__) "
                     "  WHERE (toLower(e.name) CONTAINS toLower(kw) "
-                    "         OR any(al IN coalesce(e.aliases, []) "
+                    f"         OR any(al IN {_ALIASES} "
                     "                WHERE toLower(al) CONTAINS toLower(kw))) "
                     "    AND toLower(e.name) <> toLower(kw) "
-                    "    AND none(al IN coalesce(e.aliases, []) WHERE toLower(al) = toLower(kw)) "
+                    f"    AND none(al IN {_ALIASES} WHERE toLower(al) = toLower(kw)) "
                     "  RETURN e.id AS id, e.name AS name, e.description AS desc "
                     "  ORDER BY size(e.name) ASC, toLower(e.name) ASC, e.id ASC "
                     "  LIMIT 5 "

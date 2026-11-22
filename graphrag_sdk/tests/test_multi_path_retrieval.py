@@ -1394,9 +1394,11 @@ class TestRelationshipExpansion:
         seen: list[tuple[str, dict]] = []
 
         async def query_raw(cypher, params=None):
-            seen.append((cypher, params or {}))
             result = MagicMock()
             result.result_set = []
+            if "AND r.embedding IS NULL" in cypher:
+                return result  # the unembedded-edge query: none here
+            seen.append((cypher, params or {}))
             if len(seen) == 1:
                 # src, rel, tgt, description, fact, distance, far end (unordered on purpose)
                 result.result_set = [
@@ -1430,7 +1432,8 @@ class TestRelationshipExpansion:
         calls: list[list[str]] = []
 
         async def query_raw(cypher, params=None):
-            calls.append(params["eids"])
+            if "AND r.embedding IS NULL" not in cypher:
+                calls.append(params["eids"])
             result = MagicMock()
             # Every entity points back at "a": nothing new to expand after round 1.
             result.result_set = [["A", "R", "B", "", "", 0.2, "a"]]

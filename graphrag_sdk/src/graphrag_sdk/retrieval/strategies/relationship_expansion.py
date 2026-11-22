@@ -28,6 +28,14 @@ _ROUNDS: tuple[tuple[int, int], ...] = ((15, 10), (8, 5), (5, 5))
 # largest cosine distance, so it never ties an embedded edge.
 _UNEMBEDDED_DISTANCE = 3.0
 
+# finalize() never embeds an edge only a relationship table owns, so with a
+# question vector such an edge would always rank last and lose to the
+# entity's document edges. With a vector, each entity keeps this many of its
+# unembedded edges beside its closest ones, and the returned lines keep up to
+# a fifth of their room for them (the chunk path reserves room for unembedded
+# table-row chunks the same way).
+_UNEMBEDDED_PER_ENTITY = 2
+
 # Columns of one relation row, given the edge as ``r``. Direction and names
 # come from the edge's endpoints: the walk matches edges in either direction,
 # and a dedup merge leaves the stored src_name/tgt_name behind. An endpoint
@@ -49,6 +57,25 @@ def _distance_expr(edge: str, has_vector: bool) -> str:
     return (
         f"CASE WHEN {edge}.embedding IS NULL THEN {_UNEMBEDDED_DISTANCE} "
         f"ELSE vec.cosineDistance({edge}.embedding, vecf32($qv)) END"
+    )
+
+
+def _round_query(distance: str, per_entity: int, where: str = "") -> str:
+    """One round of the walk: each entity's ``per_entity`` closest edges."""
+    extra = f" AND {where}" if where else ""
+    return (
+        "UNWIND $eids AS eid "
+        "CALL { "
+        "  WITH eid "
+        "  MATCH (a:__Entity__ {id: eid})-[r:RELATES]-(b:__Entity__) "
+        f"  WHERE NOT ID(r) IN $seen_edges{extra} "
+        f"  WITH r, b, {distance} AS dist "
+        "  RETURN r, b.id AS other, dist "
+        "  ORDER BY dist ASC, other ASC, r.rel_type ASC, ID(r) ASC "
+        f"  LIMIT {per_entity} "
+        "} "
+        f"RETURN {_RELATION_COLUMNS}, dist, other, {_EDGE_VALUES} AS edge_values, "
+        "ID(r) AS rid"
     )
 
 
@@ -78,7 +105,10 @@ async def expand_relationships(
     When there are more lines than ``max_relationships``, the lines found
     beyond the first link keep up to a third of the room, so the first-link
     lines cannot crowd them all out; room they do not use goes back to
-    first-link lines.
+    first-link lines. With ``query_vector``, edges without an embedding (a
+    relationship table's own edges) are also fetched apart, a few per
+    entity, and keep up to a fifth of the room, so a busy entity's document
+    edges cannot hide its table values.
 
     ``exclude`` holds lines already shown elsewhere (the facts section); they
     are left out before the cap is split between links. An edge returned by
@@ -106,32 +136,41 @@ async def expand_relationships(
         if not eids:
             break
         expanded.update(eids)
+        params = {"eids": eids, "seen_edges": sorted(seen_edges), **params_base}
         try:
             if ctx is not None:
                 ctx.ensure_budget("relationship expansion")
             result = await graph_store.query_raw(
-                "UNWIND $eids AS eid "
-                "CALL { "
-                "  WITH eid "
-                "  MATCH (a:__Entity__ {id: eid})-[r:RELATES]-(b:__Entity__) "
-                "  WHERE NOT ID(r) IN $seen_edges "
-                f"  WITH r, b, {_distance_expr('r', has_vector)} AS dist "
-                "  RETURN r, b.id AS other, dist "
-                "  ORDER BY dist ASC, other ASC, r.rel_type ASC, ID(r) ASC "
-                f"  LIMIT {per_entity} "
-                "} "
-                f"RETURN {_RELATION_COLUMNS}, dist, other, {_EDGE_VALUES} AS edge_values, "
-                "ID(r) AS rid",
-                {"eids": eids, "seen_edges": sorted(seen_edges), **params_base},
+                _round_query(_distance_expr("r", has_vector), per_entity), params
             )
         except LatencyBudgetExceededError:
             raise
         except Exception as exc:
             logger.debug("Relationship expansion round %d failed: %s", round_no, exc)
             break
+        rows = list(result.result_set)
+        if has_vector:
+            # The entity's unembedded (table-owned) edges, which the ranked
+            # query above puts after every embedded edge.
+            try:
+                if ctx is not None:
+                    ctx.ensure_budget("relationship expansion")
+                extra = await graph_store.query_raw(
+                    _round_query(
+                        str(_UNEMBEDDED_DISTANCE),
+                        _UNEMBEDDED_PER_ENTITY,
+                        where="r.embedding IS NULL",
+                    ),
+                    params,
+                )
+                rows += list(extra.result_set)
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:
+                logger.debug("Unembedded relationship round %d failed: %s", round_no, exc)
 
         reached: list[tuple[float, str]] = []
-        for row in result.result_set:
+        for row in rows:
             src = row[0] or ""
             rel_type = row[1] if len(row) > 1 and row[1] else ""
             tgt = row[2] if len(row) > 2 and row[2] else ""
@@ -141,6 +180,8 @@ async def expand_relationships(
             other = row[6] if len(row) > 6 and row[6] else ""
             edge_values = {str(k): v for k, v in (row[7] if len(row) > 7 and row[7] else [])}
             if len(row) > 8 and isinstance(row[8], int):
+                if row[8] in seen_edges:
+                    continue  # returned by both of this round's queries
                 seen_edges.add(row[8])
             if other:
                 reached.append((dist, other))
@@ -165,9 +206,19 @@ async def expand_relationships(
         scored.sort(key=lambda s: (s[0], s[2]))
     cap = max(0, max_relationships)
     if len(scored) > cap:
-        first = [s for s in scored if s[3] == 0]
-        deeper = [s for s in scored if s[3] > 0]
-        keep_deep = min(len(deeper), max(cap // 3, cap - len(first)))
-        kept = {s[1] for s in first[: cap - keep_deep] + deeper[:keep_deep]}
+        # Unembedded edges only exist apart with a vector (without one every
+        # distance is 0.0); they keep up to a fifth of the room, or what the
+        # embedded edges leave.
+        unembedded = [s for s in scored if s[0] >= _UNEMBEDDED_DISTANCE]
+        embedded = [s for s in scored if s[0] < _UNEMBEDDED_DISTANCE]
+        keep_unembedded = min(len(unembedded), max(cap // 5, cap - len(embedded)))
+        room = cap - keep_unembedded
+        first = [s for s in embedded if s[3] == 0]
+        deeper = [s for s in embedded if s[3] > 0]
+        keep_deep = min(len(deeper), max(room // 3, room - len(first)))
+        kept = {
+            s[1]
+            for s in first[: room - keep_deep] + deeper[:keep_deep] + unembedded[:keep_unembedded]
+        }
         scored = [s for s in scored if s[1] in kept]
     return [line for _, _, line, _ in scored]

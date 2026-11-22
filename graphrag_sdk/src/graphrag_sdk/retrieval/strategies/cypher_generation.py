@@ -15,6 +15,7 @@ from typing import Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import RESERVED_NODE_LABELS, Ontology
+from graphrag_sdk.retrieval.strategies.result_assembly import alias_list
 
 logger = logging.getLogger(__name__)
 
@@ -608,7 +609,7 @@ async def _resolve_entities(
             "WITH [n IN $names | toLower(n)] AS names "
             "MATCH (e:__Entity__) "
             "WHERE toLower(e.name) IN names "
-            "   OR any(a IN coalesce(e.aliases, []) WHERE toLower(a) IN names) "
+            f"   OR any(a IN {alias_list('e')} WHERE toLower(a) IN names) "
             "RETURN e.id, e.name, e.description "
             # Direct-name matches first, so alias matches cannot fill the cap.
             "ORDER BY CASE WHEN toLower(e.name) IN names THEN 0 ELSE 1 END, e.id LIMIT 50",

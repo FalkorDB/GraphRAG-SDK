@@ -284,6 +284,32 @@ def fact_body(fact: str, rel_type: str) -> str:
     return fact
 
 
+#: Distance of an edge without an embedding: after every cosine distance (at most 2.0).
+_UNEMBEDDED_DISTANCE = 3.0
+
+
+def _triples_query(distance: str, where: str = "") -> str:
+    """One hop of :func:`expand_triples`, closest ``$limit`` edges first."""
+    extra = f"AND {where} " if where else ""
+    return (
+        "MATCH (a:__Entity__)-[r:RELATES]-(b:__Entity__) "
+        "WHERE a.id IN $ids AND NOT ID(r) IN $seen_edges "
+        "AND (NOT b.id IN $ids OR a.id <= b.id) "
+        f"{extra}"
+        "WITH r, b, coalesce(startNode(r).name, r.src_name, startNode(r).id) AS src, "
+        "coalesce(endNode(r).name, r.tgt_name, endNode(r).id) AS tgt, "
+        f"{distance} AS dist "
+        # The edge's evidence, else its fact (whose "(src, TYPE, tgt): "
+        # prefix fact_body drops: it repeats extraction-time names).
+        "RETURN src, r.rel_type, tgt, "
+        "CASE WHEN trim(coalesce(r.description, '')) <> '' THEN r.description "
+        "ELSE coalesce(r.fact, '') END, b.id, ID(r), "
+        "[k IN keys(r) WHERE k CONTAINS '__' AND NOT k ENDS WITH '__dropped' | [k, r[k]]] "
+        "ORDER BY dist, src, r.rel_type, tgt, b.id "
+        "LIMIT $limit"
+    )
+
+
 async def expand_triples(
     store: Any,
     seed_ids: list[str],
@@ -313,7 +339,9 @@ async def expand_triples(
     With ``query_vector`` each hop keeps the edges closest to the question
     (by the edge embedding ``finalize()`` writes; an edge without one comes
     after every embedded edge), so the cap keeps what is relevant rather
-    than what sorts first. A relationship table's own values (its signed
+    than what sorts first. A relationship table's own edges have no
+    embedding, so a hop of 5 rows or more keeps up to a fifth of its rows
+    for those edges. A relationship table's own values (its signed
     columns) are shown in ``fact``; its stored fact is only a template.
     """
     triples: list[dict[str, str]] = []
@@ -329,35 +357,36 @@ async def expand_triples(
         limit = max(1, left // (hops - hop))
         if per_hop_limit is not None:
             limit = min(limit, per_hop_limit)
-        params: dict[str, Any] = {"ids": frontier, "seen_edges": list(seen_edges), "limit": limit}
+        params: dict[str, Any] = {"ids": frontier, "seen_edges": list(seen_edges)}
         if query_vector is not None:
             distance = (
-                "CASE WHEN r.embedding IS NULL THEN 3.0 "
+                f"CASE WHEN r.embedding IS NULL THEN {_UNEMBEDDED_DISTANCE} "
                 "ELSE vec.cosineDistance(r.embedding, vecf32($qv)) END"
             )
             params["qv"] = query_vector
         else:
             distance = "0.0"
-        result = await _read(
-            store,
-            "MATCH (a:__Entity__)-[r:RELATES]-(b:__Entity__) "
-            "WHERE a.id IN $ids AND NOT ID(r) IN $seen_edges "
-            "AND (NOT b.id IN $ids OR a.id <= b.id) "
-            "WITH r, b, coalesce(startNode(r).name, r.src_name, startNode(r).id) AS src, "
-            "coalesce(endNode(r).name, r.tgt_name, endNode(r).id) AS tgt, "
-            f"{distance} AS dist "
-            # The edge's evidence, else its fact (whose "(src, TYPE, tgt): "
-            # prefix fact_body drops: it repeats extraction-time names).
-            "RETURN src, r.rel_type, tgt, "
-            "CASE WHEN trim(coalesce(r.description, '')) <> '' THEN r.description "
-            "ELSE coalesce(r.fact, '') END, b.id, ID(r), "
-            "[k IN keys(r) WHERE k CONTAINS '__' AND NOT k ENDS WITH '__dropped' | [k, r[k]]] "
-            "ORDER BY dist, src, r.rel_type, tgt, b.id "
-            "LIMIT $limit",
-            params,
-        )
+        rows = _rows(await _read(store, _triples_query(distance), {**params, "limit": limit}))
+        if query_vector is not None and limit >= 5:
+            # finalize() never embeds a relationship table's own edges, so the
+            # ranked query puts them last; up to a fifth of the hop's rows
+            # are kept for them, so document edges cannot hide table values.
+            got = {row[5] for row in rows if len(row) > 5}
+            extra = [
+                row
+                for row in _rows(
+                    await _read(
+                        store,
+                        _triples_query(str(_UNEMBEDDED_DISTANCE), "r.embedding IS NULL"),
+                        {**params, "limit": limit // 5},
+                    )
+                )
+                if len(row) > 5 and row[5] not in got
+            ]
+            if extra:
+                rows = rows[: max(0, limit - len(extra))] + extra
         next_frontier: list[str] = []
-        for row in _rows(result):
+        for row in rows:
             src, rel_type, tgt = row[0] or "", row[1] or "", row[2] or ""
             fact = row[3] if len(row) > 3 else ""
             other = row[4] if len(row) > 4 else ""
