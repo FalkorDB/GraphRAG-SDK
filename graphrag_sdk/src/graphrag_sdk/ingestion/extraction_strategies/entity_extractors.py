@@ -1186,14 +1186,32 @@ class SpacyExtractor(EntityExtractor):
     def _load(cls, model_name: str) -> Any:
         try:
             import spacy
-        except ImportError as exc:
+        except Exception as exc:
             # A ModelLoadError, so extraction stops instead of warning on every
-            # chunk; still an ImportError for callers that caught one.
-            hint = (
-                "SpacyExtractor requires the 'spacy' extra. Install with: "
-                'pip install "graphrag-sdk[spacy]"'
-            )
-            raise ModelImportError(hint, hint=hint) from exc
+            # chunk; an import failure is still an ImportError for callers that
+            # caught one. Hints leave out the error's text (it is in the message).
+            module = getattr(exc, "name", None) or ""
+            if isinstance(exc, ModuleNotFoundError) and module == "spacy":
+                hint = (
+                    "SpacyExtractor requires the 'spacy' extra. Install with: "
+                    'pip install "graphrag-sdk[spacy]"'
+                )
+                raise ModelImportError(hint, hint=hint) from exc
+            if isinstance(exc, ModuleNotFoundError) and module:
+                what = f"the {module!r} module it needs is not installed"
+            elif isinstance(exc, ImportError) and module:
+                what = (
+                    f"importing from {module!r} failed though it is installed; the "
+                    "installed versions of spaCy and its dependencies may not work together"
+                )
+            else:
+                what = (
+                    "it could not be imported; the installed versions of spaCy and its "
+                    "dependencies (such as numpy) may not work together"
+                )
+            hint = f"spaCy is installed but {what} (details are in the server log)."
+            error = ModelImportError if isinstance(exc, ImportError) else ModelLoadError
+            raise error(f"{hint} ({exc})", hint=hint) from exc
         try:
             return spacy.load(model_name, disable=list(cls.DISABLED_COMPONENTS))
         except OSError as exc:

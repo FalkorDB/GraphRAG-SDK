@@ -460,3 +460,68 @@ async def test_any_spacy_load_failure_is_a_remembered_load_error_with_a_hint(mon
     assert "en_core_web_trf" in info.value.hint
     assert SECRET not in info.value.hint
     assert isinstance(info.value, ImportError) == isinstance(exc, ImportError)
+
+
+def _spacy_import_raises(monkeypatch, exc):
+    import builtins
+
+    real_import = builtins.__import__
+    imports = []
+
+    def fake_import(name, *args, **kwargs):
+        if name == "spacy":
+            imports.append(name)
+            raise exc
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(ee.SpacyExtractor, "_MODEL_CACHE", {})
+    monkeypatch.delitem(sys.modules, "spacy", raising=False)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    return imports
+
+
+@pytest.mark.parametrize(
+    ("exc", "is_import", "says", "not_says"),
+    [
+        (
+            ValueError(f"numpy.dtype size changed {SECRET}"),
+            False,
+            "could not be imported",
+            "graphrag-sdk[spacy]",
+        ),
+        (
+            ModuleNotFoundError(f"No module named 'thinc_x' {SECRET}", name="thinc_x"),
+            True,
+            "'thinc_x'",
+            "graphrag-sdk[spacy]",
+        ),
+        (
+            ImportError(f"cannot import name 'y' from 'thinc' {SECRET}", name="thinc"),
+            True,
+            "'thinc'",
+            "graphrag-sdk[spacy]",
+        ),
+        (
+            ModuleNotFoundError("No module named 'spacy'", name="spacy"),
+            True,
+            "graphrag-sdk[spacy]",
+            SECRET,
+        ),
+    ],
+    ids=["numpy mismatch", "missing dependency", "broken dependency", "spacy missing"],
+)
+async def test_a_failed_spacy_import_is_a_remembered_load_error_with_the_right_hint(
+    monkeypatch, exc, is_import, says, not_says
+):
+    """Install the extra only when spaCy itself is missing; a failure inside
+    an installed spaCy names what failed. Every one is remembered."""
+    imports = _spacy_import_raises(monkeypatch, exc)
+    extractor = ee.SpacyExtractor()
+    for _ in range(2):
+        with pytest.raises(ModelLoadError) as info:
+            await extractor.ensure_ready()
+    assert imports == ["spacy"]
+    assert isinstance(info.value, ImportError) is is_import
+    assert says in info.value.hint
+    assert not_says not in info.value.hint
+    assert SECRET not in info.value.hint
