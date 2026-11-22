@@ -61,7 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `ExtractionStrategy.prepare()` and `EntityExtractor.ensure_ready()`, both
     no-ops by default), so a broken model leaves no half-written document.
   - `SpacyExtractor` raises `ModelLoadError` for a missing package or model
-    (still an `ImportError` / `OSError`) and, like GLiNER, tries the load
+    (still an `ImportError` / `OSError`) or any other load failure, such as a
+    missing pipeline plugin, and, like GLiNER, tries the load
     again after 60 s, so a model downloaded later is picked up without a
     restart. Grounded discovery stops on a `ModelLoadError` instead of
     returning an empty ontology.

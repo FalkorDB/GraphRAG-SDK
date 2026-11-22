@@ -431,3 +431,32 @@ async def test_a_spacy_load_error_is_raised_fresh_and_retried_later(monkeypatch)
     now[0] += ee.SpacyExtractor._LOAD_RETRY_AFTER_S + 1
     await extractor.ensure_ready()
     assert extractor._nlp is nlp
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ValueError(f"[E002] Can't find factory for 'curated_transformer' {SECRET}"),
+        ImportError(f"cannot import name 'x' from 'spacy_curated_transformers' {SECRET}"),
+    ],
+    ids=["missing factory", "plugin import"],
+)
+async def test_any_spacy_load_failure_is_a_remembered_load_error_with_a_hint(monkeypatch, exc):
+    """Not only a missing model: a pipeline whose plugin or spaCy version is
+    wrong fails every document the same way, so it is hinted and remembered."""
+    monkeypatch.setattr(ee.SpacyExtractor, "_MODEL_CACHE", {})
+    loads = []
+
+    def load(name, disable=()):
+        loads.append(name)
+        raise exc
+
+    monkeypatch.setitem(sys.modules, "spacy", type("m", (), {"load": staticmethod(load)}))
+    extractor = ee.SpacyExtractor(model_name="en_core_web_trf")
+    for _ in range(2):
+        with pytest.raises(ModelLoadError) as info:
+            await extractor.ensure_ready()
+    assert loads == ["en_core_web_trf"]
+    assert "en_core_web_trf" in info.value.hint
+    assert SECRET not in info.value.hint
+    assert isinstance(info.value, ImportError) == isinstance(exc, ImportError)

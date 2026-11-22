@@ -1202,6 +1202,16 @@ class SpacyExtractor(EntityExtractor):
                 f"python -m spacy download {model_name}"
             )
             raise ModelMissingError(hint, hint=hint) from exc
+        except Exception as exc:
+            # Anything else (a pipeline whose plugin is missing, a config from
+            # another spaCy version) fails every document the same way. The
+            # hint leaves out the error's text, which is in the message.
+            hint = (
+                f"spaCy model '{model_name}' could not load: check that its plugins "
+                "and spaCy version match (details are in the server log)."
+            )
+            error = ModelImportError if isinstance(exc, ImportError) else ModelLoadError
+            raise error(f"{hint} ({exc})", hint=hint) from exc
 
     def _type_for(self, label: str, entity_types: list[str]) -> str | None:
         """Map a spaCy label onto an allowed type, or None if unrepresentable."""
