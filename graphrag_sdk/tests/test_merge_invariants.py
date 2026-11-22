@@ -1,7 +1,8 @@
 """Every merge, everywhere, obeys three rules:
 
-1. the survivor keeps EVERY member's description as a list (``descriptions``)
-   plus the ``" | "``-joined string (``description``) that search reads;
+1. the survivor keeps EVERY member's description piece in the one
+   ``" | "``-joined string (``description``) that search reads, with no list
+   beside it (an earlier version's ``descriptions`` list is read, then dropped);
 2. the survivor carries every member's label (``merged_labels`` at ingest →
    promoted to Cypher labels on write; at finalize the merge query sets the
    Cypher labels ``EntityDeduplicator._fold`` computed and records them in
@@ -27,6 +28,7 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
     set_merged_descriptions,
 )
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+from graphrag_sdk.storage.deduplicator import properties_to_carry
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
@@ -99,18 +101,27 @@ class TestHelpers:
     def test_description_list_from_single_string(self):
         assert description_list({"description": "a"}) == ["a"]
 
-    def test_description_list_keeps_a_lone_description_whole(self):
-        """A node holding only ``description`` contributes it as one member.
+    def test_a_description_with_a_count_splits_into_its_pieces(self):
+        """No piece holds "|" (every writer makes one " ¦ "), so a stored
+        string with a count splits back into exactly the pieces joined."""
+        assert description_list(
+            {"description": "CEO \u00a6 founder | born 1970", "description_piece_count": 2}
+        ) == ["CEO \u00a6 founder", "born 1970"]
 
-        Splitting on " | " would recover the members of a pre-``descriptions``
-        survivor, but it cannot tell that node from a fresh one whose single
-        description contains the separator — and inventing members there buys
-        LLM summary calls (they are counted against
-        ``force_summary_threshold``) that nothing asked for.
-        """
+    def test_a_description_without_a_count_is_one_piece(self):
+        """An earlier version's text, a custom extractor's, or one written
+        straight to the graph: a "|" in it can belong to the text (a table
+        row), so it is read whole, its "|" made " ¦ "."""
         assert description_list({"description": "CEO | founder of Acme"}) == [
-            "CEO | founder of Acme"
+            "CEO \u00a6 founder of Acme"
         ]
+        assert description_list({"description": "| Revenue | 10 | Profit | 10 |"}) == [
+            "\u00a6  Revenue \u00a6 10 \u00a6 Profit \u00a6 10  \u00a6"
+        ]
+
+    def test_an_earlier_versions_list_items_are_each_one_piece(self):
+        props = {"descriptions": ["CEO", "Founder | Acme"], "description": "CEO | Founder | Acme"}
+        assert description_list(props) == ["CEO", "Founder \u00a6 Acme"]
 
     def test_description_list_prefers_the_members_list(self):
         assert description_list({"descriptions": ["a", "b", "a"], "description": "a | b | a"}) == [
@@ -121,20 +132,54 @@ class TestHelpers:
     def test_description_list_prefers_the_list(self):
         assert description_list({"descriptions": ["x", "y"], "description": "x | y"}) == ["x", "y"]
 
-    def test_set_merged_descriptions_writes_both_forms(self):
+    def test_an_earlier_versions_list_does_not_hide_what_only_the_string_holds(self):
+        """A list left out of step with the string: its items first, then the
+        string's pieces it lacks."""
+        props = {"descriptions": ["Keep one"], "description": "Keep one | Only in string"}
+        assert description_list(props) == ["Keep one", "Only in string"]
+
+    def test_newlines_and_tabs_read_as_spaces(self):
+        """The same rule as the Cypher reader, whose trim is not strip()."""
+        assert description_list(
+            {"description": "CEO |\nFounded Acme\t", "description_piece_count": 2}
+        ) == ["CEO", "Founded Acme"]
+        assert description_list({"description": "CEO |\nFounded Acme\t"}) == [
+            "CEO \u00a6 Founded Acme"
+        ]
+
+    def test_set_merged_descriptions_writes_one_string(self):
         s = _n("s", "Person", "A", "d1")
         got = set_merged_descriptions(
             s, [_n("b", "Person", "a", "d2"), _n("c", "Person", "a", "d1")]
         )
         assert got == ["d1", "d2"]
-        assert s.properties["descriptions"] == ["d1", "d2"]
         assert s.properties["description"] == "d1 | d2"
+        assert "descriptions" not in s.properties
+
+    def test_set_merged_descriptions_drops_an_earlier_versions_list(self):
+        s = _n("s", "Person", "A", "d1 | d2", descriptions=["d1", "d2"])
+        set_merged_descriptions(s, [_n("b", "Person", "a", "d3")])
+        assert s.properties["description"] == "d1 | d2 | d3"
+        assert "descriptions" not in s.properties
 
     def test_chained_merges_flatten(self):
         s = _n("s", "Person", "A", "d1")
         set_merged_descriptions(s, [_n("b", "Person", "a", "d2")])
         set_merged_descriptions(s, [_n("c", "Person", "a", "d3")])
-        assert s.properties["descriptions"] == ["d1", "d2", "d3"]
+        assert s.properties["description"] == "d1 | d2 | d3"
+
+
+class TestPropertiesToCarry:
+    def test_an_earlier_versions_list_is_never_carried(self):
+        """Read before the string, a carried list hid the survivor's text."""
+        carry = properties_to_carry(
+            {"id": "keep", "description": "Keep one | Keep two", "description_piece_count": 2},
+            {"id": "dup", "description": "Old A | Old B", "descriptions": ["Old A", "Old B"]},
+            never=frozenset({"id"}),
+        )
+        assert "descriptions" not in carry
+        assert carry["description"] == "Keep one | Keep two | Old A | Old B"
+        assert carry["description_piece_count"] == 4
 
 
 class TestExactMatchAtIngest:
@@ -155,8 +200,8 @@ class TestExactMatchAtIngest:
         surv = next(n for n in res.nodes if n.label == "Person")
         assert res.merged_count == 2
         # rule 1
-        assert surv.properties["descriptions"] == ["engineer", "born 1970", "lives in Paris"]
         assert surv.properties["description"] == "engineer | born 1970 | lives in Paris"
+        assert "descriptions" not in surv.properties
         # rule 3: both edges now touch the survivor, none dropped
         ends = {(r.start_node_id, r.end_node_id) for r in res.relationships}
         assert ends == {(surv.id, "x"), ("x", surv.id)}
@@ -164,6 +209,19 @@ class TestExactMatchAtIngest:
             r.start_node_id in {surv.id, "x"} and r.end_node_id in {surv.id, "x"}
             for r in res.relationships
         )
+
+    async def test_text_held_only_in_an_earlier_versions_list_is_kept(self):
+        """No member has a description string; the duplicate holds its text in
+        an earlier version's list, which the property copy never takes. The
+        merge still reads it into the survivor's description."""
+        survivor = _n("a", "Person", "Alice", "")
+        dup = _n("b", "Person", "alice", "", descriptions=["engineer"])
+        res = await ExactMatchResolution(llm=None, cross_label_merge=False).resolve(
+            GraphData(nodes=[survivor, dup], relationships=[]), Context()
+        )
+        (node,) = res.nodes
+        assert node.properties["description"] == "engineer"
+        assert "descriptions" not in node.properties
 
     async def test_duplicate_value_replaces_survivor_none(self):
         nodes = [
@@ -215,8 +273,10 @@ class TestLLMVerifiedMergeSites:
     """
 
     async def test_unified_stage_keeps_the_survivors_own_description(self, ctx):
-        """Rule 1 across phases: a dup carrying a `descriptions` LIST must not
-        overwrite the survivor's single `description` before the merge reads it.
+        """Rule 1 across phases: a dup carrying an earlier version's
+        `descriptions` LIST must not overwrite the survivor's single
+        `description` before the merge reads it, nor be copied onto the
+        survivor after it (the store would read that stale list first).
         """
         gd, embedder = _cluster_with_a_merged_member()
         llm = _AlwaysYes()
@@ -225,7 +285,8 @@ class TestLLMVerifiedMergeSites:
         )
         surv = res.nodes[0]
         assert len(res.nodes) == 1
-        assert set(surv.properties["descriptions"]) == {"D1", "D2", "D3"}
+        assert set(description_list(surv.properties)) == {"D1", "D2", "D3"}
+        assert "descriptions" not in surv.properties
         for d in ("D1", "D2", "D3"):
             assert d in surv.properties["description"]
 
@@ -286,7 +347,8 @@ class TestLLMVerifiedMergeSites:
             cross_label_vote=False,
         ).resolve(gd, Context())
         assert len(res.nodes) == 1
-        assert set(res.nodes[0].properties["descriptions"]) == {"D1", "D2", "D3"}
+        assert set(description_list(res.nodes[0].properties)) == {"D1", "D2", "D3"}
+        assert "descriptions" not in res.nodes[0].properties
 
     async def test_cross_label_pass_copies_values_over_survivor_none(self, ctx):
         gd, embedder = _identical_pair(
@@ -318,66 +380,64 @@ class TestFinalizeMergeFold:
         ["e1", "Cape Morrow Light", "a lighthouse", "Location"],
         ["e2", "cape morrow light", "earlier | first lit 1871", "Location"],
     ]
-    # e2 is a survivor of an earlier merge: it holds the members list as well
-    # as the joined text, the shape every merge writes.
-    _STORED = {"e2": {"props": {"descriptions": ["earlier", "first lit 1871"]}}}
+    # e2 is a survivor of an earlier merge: its one description string holds
+    # two pieces, the shape every merge writes.
 
     @staticmethod
     def _description_writes(sim):
-        return [w for w in sim.writes if "s.descriptions = $descs" in w.sets]
+        return [w for w in sim.writes if "s.description = $desc" in w.sets]
 
     async def test_three_rules(self):
-        sim = await simulate(self._ROWS, stored=self._STORED, judge=AllSameJudge())
+        sim = await simulate(
+            self._ROWS,
+            stored={"e2": {"props": {"description_piece_count": 2}}},
+            judge=AllSameJudge(),
+        )
         assert sim.merged == 1
         (write,) = self._description_writes(sim)
-        # rule 1: list + joined string; survivor = longest description (e2), whose
-        # own earlier members are kept intact, then the loser's
+        # rule 1: one joined string; survivor = longest description (e2), whose
+        # own earlier pieces are kept intact, then the loser's
         assert write.op.survivor == "e2"
-        assert write.params["descs"] == ["earlier", "first lit 1871", "a lighthouse"]
         assert write.params["desc"] == "earlier | first lit 1871 | a lighthouse"
+        assert "s.descriptions = null" in write.sets
         # rule 3: the one merge query moves every edge before its delete
         q = absorb_query([("RELATES", "out"), ("RELATES", "in")], write.sets, write.labels)
         assert "MERGE (s)-[nr:`RELATES`" in q and "MERGE (b)-[nr:`RELATES`" in q
         assert q.rindex("MERGE ") < q.index("DETACH DELETE d")
 
-    async def test_a_lone_description_is_one_member_even_with_the_separator_in_it(self):
-        """Rule 1 by ``description_list``'s rule: a node holding only
-        ``description`` is ONE member, not split on ``" | "``. Nothing tells a
-        pre-``descriptions`` survivor from a fresh node whose single text
-        contains the separator, and splitting the fresh one invents members
-        that were never written — persisted, and counted toward
-        ``force_summary_threshold``."""
+    async def test_a_piece_with_the_stand_in_stays_one_piece(self):
+        """Rule 1 by ``description_list``'s rule: the string is split at "|"
+        only, which no piece holds; a "|" a source wrote was stored as "¦",
+        so that piece comes back whole."""
         rows = [
-            ["e1", "Maya Ellison", "CEO | founder of Acme", "Person"],
+            ["e1", "Maya Ellison", "CEO \u00a6 founder of Acme", "Person"],
             ["e2", "maya ellison", "born 1970", "Person"],
         ]
         sim = await simulate(rows, judge=AllSameJudge())
         assert sim.merged == 1
         (write,) = self._description_writes(sim)
         assert write.op.survivor == "e1"
-        assert write.params["descs"] == ["CEO | founder of Acme", "born 1970"]
-        assert write.params["desc"] == "CEO | founder of Acme | born 1970"
+        assert write.params["desc"] == "CEO \u00a6 founder of Acme | born 1970"
 
-    async def test_the_same_description_on_both_nodes_still_records_the_member(self):
+    async def test_the_same_description_on_both_nodes_writes_nothing(self):
         """Rule 1 when the text does not change: two nodes with the same
-        description and no list. The joined string is the survivor's own, so
-        a write gated on the text alone skipped the list — and the deleted
-        node's member was never recorded. The list is written whenever the
-        graph's list is not these members."""
+        description. The survivor's one string already holds the piece, so
+        there is nothing to record and no description write."""
         rows = [
             ["e1", "Alice", "an engineer", "Person"],
             ["e2", "alice", "an engineer", "Person"],
         ]
         sim = await simulate(rows, judge=AllSameJudge())
         assert sim.merged == 1
-        (write,) = self._description_writes(sim)
-        assert write.params["descs"] == ["an engineer"]
-        assert write.params["desc"] == "an engineer"
+        assert self._description_writes(sim) == []
+        (survivor,) = sim.nodes.values()
+        assert survivor["props"]["description"] == "an engineer"
 
-    async def test_a_list_left_short_by_an_earlier_writer_is_brought_up_to_date(self):
-        """The survivor's text already holds the duplicate's member, but the
-        stored list does not: joined text unchanged, list out of step. The
-        write is gated on the list as well, so the member lands in it."""
+    async def test_an_earlier_versions_short_list_is_replaced_by_the_string(self):
+        """An earlier version left the survivor a list out of step with its
+        text. The list is read (it is what that version counted), the
+        duplicate's piece is added, and the merge writes the one string and
+        drops the list."""
         rows = [
             ["e1", "Cape Morrow Light", "a lighthouse | first lit 1871", "Location"],
             ["e2", "cape morrow light", "first lit 1871", "Location"],
@@ -390,13 +450,15 @@ class TestFinalizeMergeFold:
         assert sim.merged == 1
         (write,) = self._description_writes(sim)
         assert write.op.survivor == "e1"
-        assert write.params["descs"] == ["a lighthouse", "first lit 1871"]
         assert write.params["desc"] == "a lighthouse | first lit 1871"
+        assert "s.descriptions = null" in write.sets
+        assert "descriptions" not in sim.nodes["e1"]["props"]
 
     async def test_an_empty_stored_list_does_not_hide_the_survivors_description(self):
-        """``description_list`` prefers the list wherever it is present; an
-        empty one would make the survivor's own text vanish from the merge.
-        The text is still a member — the duplicate's copy is about to go."""
+        """``description_list`` prefers an earlier version's list where it is
+        present; an empty one would make the survivor's own text vanish from
+        the merge. The text is still a piece — the duplicate's copy is about
+        to go."""
         rows = [
             ["e1", "Alice", "an engineer", "Person"],
             ["e2", "alice", "born 1970", "Person"],
@@ -406,7 +468,7 @@ class TestFinalizeMergeFold:
         )
         assert sim.merged == 1
         (write,) = self._description_writes(sim)
-        assert write.params["descs"] == ["an engineer", "born 1970"]
+        assert write.params["desc"] == "an engineer | born 1970"
 
     def test_a_fold_computed_from_a_stale_read_is_not_written(self):
         """The fold is built from what the graph held when the merge read it.
@@ -414,14 +476,15 @@ class TestFinalizeMergeFold:
         the query re-checks every field the fold was computed from, and writes
         nothing (the merge reads again) when one moved."""
         q = absorb_query([], ["s.description = $desc"], [])
-        for field in ("s_desc", "s_descs", "s_aliases", "s_merged", "d_desc", "d_aliases"):
+        fields = ("s_desc", "s_descs", "s_dcount", "s_aliases", "s_merged", "d_desc", "d_dcount")
+        for field in (*fields, "d_aliases"):
             assert f"${field}" in q
         assert "AS fresh" in q and "(present AND fresh AND unhandled = 0) AS ok" in q
 
 
 class TestJudgeMergeSite:
     """The judge decides identity only; the merge is ``EntityDeduplicator``'s
-    — one fold carrying the descriptions list, aliases and the loser's labels,
+    — one fold carrying the description pieces, aliases and the loser's labels,
     applied by the one query that moves every edge."""
 
     async def test_three_rules(self):
@@ -436,10 +499,11 @@ class TestJudgeMergeSite:
         )
         assert sim.merged == 1 and sim.dedup.last_judge_stats["merged"] == 1
         (write,) = sim.writes
-        # rule 1: list (survivor = longest description "Toulouse group" first) + join
+        # rule 1: one string (survivor = longest description "Toulouse group"
+        # first); the earlier version's list on "a" is read, not carried
         assert (write.op.survivor, write.op.dup) == ("b", "a")
-        assert write.params["descs"] == ["Toulouse group", "planemaker"]
-        assert write.params["desc"] == " | ".join(write.params["descs"])
+        assert write.params["desc"] == "Toulouse group | planemaker"
+        assert "descriptions" not in sim.nodes["b"]["props"]
         assert write.params["aliases"] == ["Airbus"]
         # rule 2: the loser's label lands on the survivor in the same query
         assert write.labels == ["Organization"]

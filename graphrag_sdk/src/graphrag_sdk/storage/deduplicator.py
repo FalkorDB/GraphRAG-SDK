@@ -26,6 +26,13 @@ from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
+from graphrag_sdk.core.descriptions import (
+    DESCRIPTION_COUNT_KEY,
+    LEGACY_LIST_KEY,
+    description_count,
+    description_piece,
+    join_description,
+)
 from graphrag_sdk.core.models import RESERVED_NODE_LABELS
 from graphrag_sdk.core.providers import Embedder
 from graphrag_sdk.core.tables import RESERVED_PROPERTY_NAMES
@@ -213,48 +220,19 @@ def _merge_description_members(current: list[str], absorbed: list[str]) -> list[
     finalize cycles that repetition compounds on hub entities.
     """
     segments: list[str] = []
-    for seg in (str(s or "").strip() for s in (*current, *absorbed)):
+    for seg in (description_piece(s) for s in (*current, *absorbed)):
         if seg and seg not in segments:
             segments.append(seg)
     return segments
 
 
 def _description_members(props: dict[str, Any]) -> list[str]:
-    """A node's member descriptions, by the rule every merge path shares.
-
-    :func:`description_list`: the stored ``descriptions`` list where the node
-    has one; otherwise its ``description`` as **one** member, deliberately not
-    split on ``" | "`` — a fresh node's single description may contain the
-    separator (``"CEO | founder of Acme"``), and splitting it would invent
-    members that were never written and count them toward
-    ``force_summary_threshold``. The one addition: an empty stored list does
-    not hide a description the node does hold — the text is still a member,
-    because a merge that misread it would delete the only other copy.
-    """
-    members = description_list(props)
-    if members:
-        return members
-    single = str(props.get("description") or "").strip()
-    return [single] if single else []
-
-
-def _merge_description_segments(current: str, absorbed: str) -> list[str]:
-    """:func:`_merge_description_members` over two bare description strings,
-    each split on ``" | "``.
-
-    For the callers that hold only the joined text (:func:`properties_to_carry`
-    reads whatever properties a node has, and a reconcile writes ``description``
-    alone); the merge that also writes the ``descriptions`` list goes through
-    :func:`_description_members` so it never invents a member.
-    """
-    return _merge_description_members(
-        str(current or "").split(" | "), str(absorbed or "").split(" | ")
-    )
-
-
-def _merge_description(current: str, absorbed: str) -> str:
-    """:func:`_merge_description_segments`, joined with ``" | "``."""
-    return " | ".join(_merge_description_segments(current, absorbed))
+    """A node's description pieces, by the rule every merge path shares
+    (:func:`description_list`): its ``description`` split at ``|``, which no
+    piece holds, or an earlier version's ``descriptions`` list where the node
+    still has one with text in it — an empty one does not hide the string,
+    because a merge that misread it would delete the only other copy."""
+    return description_list(props)
 
 
 def _string_list(value: Any) -> list[str]:
@@ -273,8 +251,11 @@ def properties_to_carry(
     ``never`` names what stays behind whatever the survivor lacks; ``id`` and
     ``embedding`` always do.
 
-    ``description`` is the exception to keep_existing: the two are joined with
-    ``" | "`` (:func:`_merge_description`), each segment kept once. The
+    ``description`` is the exception to keep_existing: the two nodes' pieces
+    (:func:`description_list`) are joined with ``" | "``, each kept once. An
+    earlier version's ``descriptions`` list is never carried: read before the
+    string, it would hide the survivor's own text (the caller drops one the
+    survivor holds). The
     survivor is chosen for the reproducibility of its identity — a table's key,
     then how much of the graph points at it — not for what it knows, and the
     node that lost on those grounds is often the one the PDF described.
@@ -285,18 +266,29 @@ def properties_to_carry(
         key: value
         for key, value in dup.items()
         if key not in never
-        and key != "source_chunk_ids"
+        and key not in ("source_chunk_ids", LEGACY_LIST_KEY, DESCRIPTION_COUNT_KEY)
         and value is not None
         and keep.get(key) in (None, "", [])
     }
-    description = _merge_description(
-        str(keep.get("description") or ""), str(dup.get("description") or "")
-    )
-    if description != str(keep.get("description") or ""):
-        carry["description"] = description
-    else:
-        carry.pop("description", None)
+    carry.pop("description", None)
+    pieces = _merge_description_members(description_list(keep), description_list(dup))
+    if _description_changes(keep, pieces):
+        carry["description"] = join_description(pieces)
+        count = description_count(pieces)
+        if count is not None:
+            carry[DESCRIPTION_COUNT_KEY] = count
     return carry
+
+
+def _description_changes(keep: dict[str, Any], pieces: list[str]) -> bool:
+    """Whether a merge leaving ``pieces`` must write the survivor's
+    description: its text changes, or it is not yet stored in this version's
+    form (an earlier version's list, or a count that does not match)."""
+    return (
+        join_description(pieces) != str(keep.get("description") or "")
+        or keep.get(LEGACY_LIST_KEY) is not None
+        or keep.get(DESCRIPTION_COUNT_KEY) != description_count(pieces)
+    )
 
 
 def _keep_declared_identities_apart(
@@ -448,7 +440,8 @@ _ENTITY_RETURN = (
     "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
     f"e.aliases AS aliases, e.is_stub AS is_stub, {_DEGREE_EXPR} AS degree, "
     "[l IN labels(e) WHERE l <> '__Entity__'] AS labels, "
-    f"e.{MERGED_LABELS_KEY} AS merged_labels, e.embedding IS NOT NULL AS has_vector"
+    f"e.{MERGED_LABELS_KEY} AS merged_labels, e.embedding IS NOT NULL AS has_vector, "
+    f"e.{DESCRIPTION_COUNT_KEY} AS desc_count, e.{LEGACY_LIST_KEY} AS legacy_descs"
 )
 
 
@@ -471,6 +464,10 @@ def _entity_from_row(row: list[Any]) -> dict[str, Any]:
         # for a placeholder), so its presence marks a keyed node.
         "is_stub": row[5] if len(row) > 5 else None,
         "degree": row[6] if len(row) > 6 else 0,
+        # How the description reads (description_list): its piece count, or
+        # an earlier version's list.
+        DESCRIPTION_COUNT_KEY: row[10] if len(row) > 10 else None,
+        LEGACY_LIST_KEY: row[11] if len(row) > 11 else None,
     }
 
 
@@ -552,9 +549,11 @@ def _fold_for_ranking(survivor: dict[str, Any], dup: dict[str, Any]) -> None:
     decision of the same run ranks on it: the connections, the description,
     the aliases and a declared key. The graph is written only by the plan."""
     survivor["degree"] = int(survivor.get("degree") or 0) + int(dup.get("degree") or 0)
-    survivor["description"] = _merge_description(
-        str(survivor.get("description") or ""), str(dup.get("description") or "")
-    )
+    # Read as the merge reads them, so the judge sees what will be stored.
+    pieces = _merge_description_members(description_list(survivor), description_list(dup))
+    survivor["description"] = join_description(pieces)
+    survivor[DESCRIPTION_COUNT_KEY] = description_count(pieces)
+    survivor[LEGACY_LIST_KEY] = None
     survivor["aliases"] = EntityDeduplicator._merged_aliases(survivor, dup)
     if survivor.get("is_stub") is None and dup.get("is_stub") is not None:
         survivor["is_stub"] = dup["is_stub"]
@@ -1750,17 +1749,19 @@ class EntityDeduplicator:
         params: dict[str, Any] = {}
         # Joined with " | ", matching LLMVerifiedResolution's survivor rule, so
         # both mechanisms leave the same shape behind — and counted by the same
-        # rule (``description_list``). Both forms are written together:
-        # ``description_list`` prefers the list wherever it is present, so a
-        # survivor updated without it would silently report fewer members than
-        # its own ``description`` holds.
+        # rule (``description_list``). One string and its piece count; an
+        # earlier version's ``descriptions`` list on the survivor goes with
+        # this write, since ``description_list`` would otherwise go on reading it.
         segments = _merge_description_members(_description_members(keep), _description_members(dup))
-        description = " | ".join(segments)
-        if description != str(keep.get("description") or "") or segments != _string_list(
-            keep.get("descriptions")
-        ):
-            sets += ["s.description = $desc", "s.descriptions = $descs"]
-            params.update(desc=description, descs=segments)
+        if _description_changes(keep, segments):
+            sets += [
+                "s.description = $desc",
+                f"s.{DESCRIPTION_COUNT_KEY} = $desc_count",
+                "s.descriptions = null",
+            ]
+            params.update(
+                desc=join_description(segments) or None, desc_count=description_count(segments)
+            )
 
         current = _string_list(keep.get("aliases"))
         aliases = self._merged_aliases(
@@ -2189,7 +2190,14 @@ class EntityDeduplicator:
 DROPPED_SUFFIX = "__dropped"
 # Properties a merge folds by a rule of its own, never by carry.
 _FOLDED_KEYS = frozenset(
-    {"description", "descriptions", "aliases", "source_chunk_ids", MERGED_LABELS_KEY}
+    {
+        "description",
+        "descriptions",
+        DESCRIPTION_COUNT_KEY,
+        "aliases",
+        "source_chunk_ids",
+        MERGED_LABELS_KEY,
+    }
 )
 # Properties the SDK owns; none collides — the survivor's stays, and one the
 # survivor lacks is carried (``is_stub``, ``entity_key``: it now holds the row).
