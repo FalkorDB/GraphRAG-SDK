@@ -241,3 +241,15 @@ def test_an_import_of_a_missing_name_is_a_version_problem_not_a_missing_package(
     hint = info.value.hint
     assert "'transformers'" in hint and "version" in hint
     assert "not installed" not in hint
+
+
+def test_a_plain_protobuf_import_error_is_a_version_problem(monkeypatch):
+    """protobuf installed but missing a name asked of it: not a missing package."""
+    exc = ImportError("cannot import name 'X' from 'google.protobuf'", name="google.protobuf")
+    _broken_gliner(monkeypatch, exc)
+    monkeypatch.setattr(ee, "_protobuf_installed", lambda: True)
+    with pytest.raises(ModelLoadError) as info:
+        ee.GLiNERExtractor()._load_model()
+    hint = info.value.hint
+    assert "'google.protobuf'" in hint and "version" in hint
+    assert "not installed" not in hint

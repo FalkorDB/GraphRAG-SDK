@@ -475,7 +475,7 @@ def _load_error(model_name: str, exc: Exception) -> tuple[str, str]:
         # ImportError (``from x import name`` failing) names a module that is
         # installed but does not have what was asked: a version mismatch.
         absent = isinstance(exc, ModuleNotFoundError)
-        if module.startswith("google.protobuf") or (
+        if (absent and module.startswith("google.protobuf")) or (
             module in ("", "google") and not _protobuf_installed()
         ):
             # protobuf is ``google.protobuf``; an unnamed or bare ``google``
