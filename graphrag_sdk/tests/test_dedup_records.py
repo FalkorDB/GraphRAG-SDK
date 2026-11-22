@@ -11,6 +11,7 @@ import os
 
 import pytest
 
+from graphrag_sdk.core.models import GraphNode
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.merge_query import (
@@ -676,6 +677,77 @@ async def test_a_table_rekey_folds_into_the_taken_id_in_one_query(graph):
         "MATCH (n:__Entity__ {id: 'new'}) RETURN n.role, n.embedding IS NULL, n.source_chunk_ids",
     ) == [["supplier", True, ["c1"]]]
     assert await store.deleted_among(["old", "new"]) == {"old", "new"}
+
+
+@pytest.mark.parametrize("list_on", ["old", "new"])
+async def test_a_table_rekey_fold_never_leaves_an_earlier_versions_list(graph, list_on):
+    """An earlier version's ``descriptions`` list, on either node, is read
+    into the one description and dropped. Carried (or left on the survivor),
+    the next write read it first and lost the survivor's own text. The other
+    node is this version's: its two pieces have a count."""
+    form = {
+        side: f", descriptions: {items}" if list_on == side else ", description_piece_count: 2"
+        for side, items in (("old", "['Old A', 'Old B']"), ("new", "['Keep one', 'Keep two']"))
+    }
+    await graph.query_raw(
+        "CREATE (o:__Entity__:Organization {id: 'old', name: 'Globex', "
+        f"description: 'Old A | Old B'{form['old']}}}), "
+        "(n:__Entity__:Organization {id: 'new', name: 'Initech', "
+        f"description: 'Keep one | Keep two'{form['new']}}})"
+    )
+    assert await graph._move_entity("old", "new") == (0, 1)
+    assert await rows(
+        graph,
+        "MATCH (n:__Entity__ {id: 'new'}) "
+        "RETURN n.description, n.descriptions, n.description_piece_count",
+    ) == [["Keep one | Keep two | Old A | Old B", None, 4]]
+    await graph.upsert_nodes(
+        [GraphNode(id="new", label="Organization", properties={"description": "New fact"})]
+    )
+    assert await rows(graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description") == [
+        ["Keep one | Keep two | Old A | Old B | New fact"]
+    ]
+
+
+async def test_a_table_rekey_fold_keeps_text_only_the_survivors_string_holds(graph):
+    """An earlier version's list on the survivor, out of step with its string:
+    the fold keeps the string's extra piece instead of writing the list."""
+    await graph.query_raw(
+        "CREATE (o:__Entity__:Organization {id: 'old', name: 'Globex', description: 'Old A'}), "
+        "(n:__Entity__:Organization {id: 'new', name: 'Initech', "
+        "description: 'Keep one | Only in string', descriptions: ['Keep one']})"
+    )
+    assert await graph._move_entity("old", "new") == (0, 1)
+    assert await rows(
+        graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description, n.descriptions"
+    ) == [["Keep one | Only in string | Old A", None]]
+
+
+async def test_a_rekey_fold_reads_again_when_only_the_count_changed(graph, monkeypatch):
+    """"A | B" without a count is one piece, with one two: a write of the count
+    alone between the fold's read and the fold changes what the description
+    holds, so the fold reads again instead of writing what the first read saw."""
+    await graph.query_raw(
+        "CREATE (o:__Entity__:Organization {id: 'old', name: 'Globex', description: 'Old fact'}), "
+        "(n:__Entity__:Organization {id: 'new', name: 'Initech', description: 'A | B'})"
+    )
+    reads = []
+
+    async def read_then_count(g, survivor, dup):
+        read = await read_for_merge(g, survivor, dup)
+        reads.append(read)
+        if len(reads) == 1:
+            await graph.query_raw(
+                "MATCH (n:__Entity__ {id: 'new'}) SET n.description_piece_count = 2"
+            )
+        return read
+
+    monkeypatch.setattr("graphrag_sdk.storage.graph_store.read_for_merge", read_then_count)
+    assert await graph._move_entity("old", "new") == (0, 1)
+    assert len(reads) == 2
+    assert await rows(
+        graph, "MATCH (n:__Entity__ {id: 'new'}) RETURN n.description, n.description_piece_count"
+    ) == [["A | B | Old fact", 3]]
 
 
 async def _globex_and_initech(graph):
