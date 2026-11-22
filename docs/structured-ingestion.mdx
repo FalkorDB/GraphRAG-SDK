@@ -563,7 +563,9 @@ silently rewritten, and so is a label containing `|`, the separator of the
 
 A *property* name you declare must be an identifier, as above. A *column* name is
 whatever the exporting system wrote, and three kinds cannot be used verbatim as a
-graph property: names the SDK owns (on an entity `id`, `name`, `description`, …;
+graph property: names the SDK owns (on an entity `id`, `name`, `type`,
+`description`, `description_piece_count`, `source_chunk_ids`, `spans`,
+`embedding`, `entity_key` and `is_stub`;
 on a record chunk `id`, `text`, `index`, `kind`, `record_key` and `embedding`),
 names that are not identifiers (`HQ Country`, `Revenue (M USD)`), and names
 containing `__`.
