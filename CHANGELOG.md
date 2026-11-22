@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-22
+
+An entity's description is stored once: the `descriptions` list is no longer
+written, and a count of the pieces stands in for the second copy. Graphs
+written by earlier versions read as before. `finalize()` gives chunks a
+readable name. Ontology discovery survives a temporary model error, a new graph
+accepts its first declared ontology, the dedup judge's one-member groups no
+longer leave entities pending, and the agent asks before adding types to an
+ontology the user supplied.
+
 ### Changed
 
 - **An entity's description is stored once.** A description of more than one
