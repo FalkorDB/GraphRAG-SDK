@@ -726,22 +726,20 @@ async def test_a_rekey_fold_reads_again_when_only_the_count_changed(graph, monke
     """"A | B" without a count is one piece, with one two: a write of the count
     alone between the fold's read and the fold changes what the description
     holds, so the fold reads again instead of writing what the first read saw."""
-    import graphrag_sdk.storage.graph_store as graph_store_module
-
     await graph.query_raw(
         "CREATE (o:__Entity__:Organization {id: 'old', name: 'Globex', description: 'Old fact'}), "
         "(n:__Entity__:Organization {id: 'new', name: 'Initech', description: 'A | B'})"
     )
-    real, reads = graph_store_module.read_for_merge, []
+    reads = []
 
     async def read_then_count(g, survivor, dup):
-        read = await real(g, survivor, dup)
+        read = await read_for_merge(g, survivor, dup)
         reads.append(read)
         if len(reads) == 1:
             await graph.query_raw("MATCH (n:__Entity__ {id: 'new'}) SET n.description_count = 2")
         return read
 
-    monkeypatch.setattr(graph_store_module, "read_for_merge", read_then_count)
+    monkeypatch.setattr("graphrag_sdk.storage.graph_store.read_for_merge", read_then_count)
     assert await graph._move_entity("old", "new") == (0, 1)
     assert len(reads) == 2
     assert await rows(
