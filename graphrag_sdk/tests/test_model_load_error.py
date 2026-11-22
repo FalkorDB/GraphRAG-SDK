@@ -253,3 +253,20 @@ def test_a_plain_protobuf_import_error_is_a_version_problem(monkeypatch):
     hint = info.value.hint
     assert "'google.protobuf'" in hint and "version" in hint
     assert "not installed" not in hint
+
+
+def test_an_import_failure_is_still_an_import_error_when_remembered(monkeypatch):
+    """Callers that caught ImportError for a missing gliner still do, on the
+    first failure and on the remembered one."""
+    _broken_gliner(monkeypatch, ModuleNotFoundError("No module named 'gliner'", name="gliner"))
+    for _ in range(2):
+        with pytest.raises(ImportError) as info:
+            ee.GLiNERExtractor()._load_model()
+        assert isinstance(info.value, ModelLoadError)
+
+
+def test_a_failure_that_is_not_an_import_is_not_an_import_error(monkeypatch):
+    _broken_gliner(monkeypatch, OSError("offline"))
+    with pytest.raises(ModelLoadError) as info:
+        ee.GLiNERExtractor()._load_model()
+    assert not isinstance(info.value, ImportError)

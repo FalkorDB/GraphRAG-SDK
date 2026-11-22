@@ -155,15 +155,14 @@ class TestLLMExtractor:
 
 
 class TestGLiNERExtractor:
-    async def test_import_error_when_gliner_missing(self):
-        try:
-            import gliner  # noqa: F401
-
-            pytest.skip("gliner is installed")
-        except ImportError:
-            extractor = GLiNERExtractor()
-            with pytest.raises(ImportError, match="GLiNER"):
-                await extractor.extract_entities("text", ["Person"], "c0")
+    async def test_import_error_when_gliner_missing(self, monkeypatch):
+        """Runs whether or not gliner is installed: the import is made to fail."""
+        monkeypatch.setitem(sys.modules, "gliner", None)
+        monkeypatch.setattr(GLiNERExtractor, "_MODEL_CACHE", {})
+        monkeypatch.setattr(GLiNERExtractor, "_LOAD_ERRORS", {})
+        extractor = GLiNERExtractor()
+        with pytest.raises(ImportError, match="GLiNER"):
+            await extractor.extract_entities("text", ["Person"], "c0")
 
 
 # ── Shared parser tests ──────────────────────────────────────

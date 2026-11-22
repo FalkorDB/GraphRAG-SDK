@@ -89,6 +89,16 @@ class ModelLoadError(ExtractionError):
         self.hint = hint or self.DEFAULT_HINT
 
 
+class ModelImportError(ModelLoadError, ImportError):
+    """A :class:`ModelLoadError` caused by an import failure (the model's
+    package or one it needs is missing or broken).
+
+    It is also an :class:`ImportError`, as a missing extractor package was
+    before ``ModelLoadError`` existed, so ``except ImportError`` still
+    catches it.
+    """
+
+
 class ResolutionError(IngestionError):
     """Raised when entity resolution fails."""
 

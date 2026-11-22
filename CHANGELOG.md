@@ -53,8 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ingestion fails once with a clear `ModelLoadError` (an `ExtractionError`)
   naming the model and, when `protobuf` is missing, the package to install. The
   failure is remembered for 60 seconds rather than retried for every chunk, then
-  a later ingest tries the load again. A plain `ExtractionError` from a custom
-  extractor still fails only its own chunk.
+  a later ingest tries the load again. A missing or broken package raises
+  `ModelImportError`, which is also an `ImportError`, so `except ImportError`
+  still catches a missing `gliner` as before. A plain `ExtractionError` from a
+  custom extractor still fails only its own chunk.
 
 - **The agent asks before adding types to the user's ontology.** When
   ingestion drops types the ontology lacks, the MCP guide and the ingest hint

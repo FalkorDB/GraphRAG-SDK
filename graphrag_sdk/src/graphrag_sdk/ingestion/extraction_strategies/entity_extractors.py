@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar
 
-from graphrag_sdk.core.exceptions import ModelLoadError
+from graphrag_sdk.core.exceptions import ModelImportError, ModelLoadError
 from graphrag_sdk.core.models import ExtractedEntity
 from graphrag_sdk.core.providers import LLMInterface
 
@@ -714,7 +714,7 @@ class GLiNERExtractor(EntityExtractor):
     # exception would hold its traceback, and the chunk text in its frames, for
     # the life of the process. After the window a new load is tried, so a
     # download that failed while offline can recover.
-    _LOAD_ERRORS: ClassVar[dict[str, tuple[float, str, str]]] = {}
+    _LOAD_ERRORS: ClassVar[dict[str, tuple[float, str, str, type[ModelLoadError]]]] = {}
     _LOAD_RETRY_AFTER_S: ClassVar[float] = 60.0
 
     @classmethod
@@ -727,9 +727,9 @@ class GLiNERExtractor(EntityExtractor):
             cached = cls._MODEL_CACHE.get(model_name)
             failed = cls._LOAD_ERRORS.get(model_name)
             if cached is None and failed is not None:
-                failed_at, message, hint = failed
+                failed_at, message, hint, error = failed
                 if time.monotonic() - failed_at < cls._LOAD_RETRY_AFTER_S:
-                    raise ModelLoadError(message, hint=hint)
+                    raise error(message, hint=hint)
                 del cls._LOAD_ERRORS[model_name]
             if cached is None:
                 try:
@@ -740,8 +740,10 @@ class GLiNERExtractor(EntityExtractor):
                     cached = GLiNER.from_pretrained(model_name)
                 except Exception as exc:
                     message, hint = _load_error(model_name, exc)
-                    cls._LOAD_ERRORS[model_name] = (time.monotonic(), message, hint)
-                    raise ModelLoadError(message, hint=hint) from exc
+                    # An import failure stays an ImportError for callers.
+                    error = ModelImportError if isinstance(exc, ImportError) else ModelLoadError
+                    cls._LOAD_ERRORS[model_name] = (time.monotonic(), message, hint, error)
+                    raise error(message, hint=hint) from exc
                 cls._MODEL_CACHE[model_name] = cached
         return cached
 
