@@ -537,9 +537,9 @@ extractor = GraphExtraction(llm=my_llm, max_concurrency=6)
 
 | Parameter            | Type  | Default | Description                                           |
 |----------------------|-------|---------|-------------------------------------------------------|
-| `chunk_top_k`        | `int` | `15`    | Final passages kept after cosine reranking.           |
+| `chunk_top_k`        | `int` | `20`    | Final passages kept after cosine reranking; the chunk vector search fetches at least this many candidates. |
 | `max_entities`       | `int` | `30`    | Maximum entities carried into relationship expansion. |
-| `max_relationships`  | `int` | `20`    | Maximum relationships in context (after 1-hop + 2-hop expansion). |
+| `max_relationships`  | `int` | `20`    | Maximum relationships in context, from an expansion up to three links deep. |
 | `rel_top_k`          | `int` | `15`    | RELATES edge vector search results to retrieve.       |
 | `keyword_limit`      | `int` | `10`    | Accepted but not read: the keyword caps are fixed (8 LLM keywords plus 12 question words). |
 | `enable_cypher`      | `bool` | `False` | Add the text-to-Cypher path.                         |
@@ -569,7 +569,7 @@ retriever = MultiPathRetrieval(
     vector_store=VectorStore(conn, embedder=embedder, embedding_dimension=256),
     embedder=embedder,
     llm=llm,
-    chunk_top_k=10,           # fewer, more focused passages (the passages section holds at most 15)
+    chunk_top_k=10,           # fewer, more focused passages (the passages section shows chunk_top_k)
     max_entities=40,          # wider entity coverage
     max_relationships=30,     # more graph context
     rel_top_k=20,             # more RELATES edge hits
@@ -589,9 +589,9 @@ A strategy passed as `GraphRAG(retrieval_strategy=...)` receives every ontology 
 1. **Keyword extraction** -- stopword filtering + LLM proper-noun extraction.
 2. **Embed question** -- single embedding API call for the query.
 3. **RELATES edge vector search** -- finds fact strings and entity entry points via edge embeddings. Text-to-Cypher runs in parallel when enabled.
-4. **Entity discovery** -- exact name match, then name `CONTAINS`, then fulltext search on the `__Entity__` index (name matches first). Merged with entities from step 3. Enumeration questions add sibling entities.
-5. **Relationship expansion** -- 1-hop (top 15 entities, limit 150) + 2-hop (top 5 entities, limit 25) traversal of RELATES edges.
-6. **Chunk retrieval** (4 paths) -- fulltext search, vector search, MENTIONED_IN traversal, and 2-hop entity-to-neighbor-to-chunk traversal.
+4. **Entity discovery** -- exact name or alias match (names first), then name or alias `CONTAINS` (skipped for short acronyms), then fulltext search on the `__Entity__` index (name matches first). Merged with entities from step 3. Enumeration questions add sibling entities.
+5. **Relationship expansion** -- a walk over RELATES edges in both directions, in up to three rounds (15 entities with 10 edges each, then 8 and 5 far ends with 5 edges each), ranked by closeness to the question. Deeper links keep up to a third of `max_relationships`, a relationship table's unembedded edges up to a fifth; lines the facts section shows are left out.
+6. **Chunk retrieval** (4 paths) -- fulltext search, vector search, MENTIONED_IN traversal, and 2-hop entity-to-neighbor-to-chunk traversal. Table-row chunks (not embedded) keep slots of their own; chunks of a document being updated or deleted are skipped.
 7. **Source document names** -- batch-fetch document paths via PART_OF edges.
 8. **Cosine reranking** -- rerank candidate chunks against the question using their stored embeddings.
 9. **Context assembly** -- structured sections: hint, Cypher results, entities, relationships, facts, passages.

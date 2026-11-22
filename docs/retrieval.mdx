@@ -32,6 +32,7 @@ This document explains how each path works, what it contributes, and how they pe
                     (name matching + entities from 3a/3b)
                              |
                     5. Relationship Expansion
+                    (both directions, up to 3 links)
                              |
                     6. Chunk Retrieval (4 paths)
                     ┌────┬────┬────┬────┐
@@ -93,12 +94,14 @@ The simple filter keeps words longer than two characters, up to 12. Of the LLM k
 
 **What it does:** Searches the relationship edges in the graph by meaning similarity. `finalize()` embeds the `fact` text of every relationship between entities except those only a relationship-only table owns (like "Alice WORKS_AT Acme Corp"); an edge ingested since the last `finalize()` has no vector yet and cannot be found here, and an existing edge whose `fact` a later ingest changed keeps its earlier vector (`finalize()` embeds only edges that have none). This step finds the relationships most relevant to the question.
 
-**Returns:** Fact strings like the following, where the text after the arrow is the edge's stored `fact`:
+**Returns:** Fact strings in the one format every relation line uses, `source —[TYPE]→ target: text [key: value; ...]`:
 ```
-Alice —[WORKS_AT]→ Acme Corp: (Alice, WORKS_AT, Acme Corp): Alice is a senior engineer at Acme Corp
+Alice —[WORKS_AT]→ Acme Corp: Alice is a senior engineer at Acme Corp
 ```
 
-The edge endpoints' names are also merged into the entity list in step 4. A hit becomes a fact line only when the edge stores `src_name`, `rel_type` and `tgt_name`; edges written from a [table mapping](/structured-ingestion) store no `src_name` or `tgt_name`, so they can take `rel_top_k` slots without producing a fact line (an edge only a [relationship-only table](/structured-ingestion#relationship-only-tables) owns is not embedded, so it never comes back here). Their endpoints are still added by their stored ids, with an empty name, so they seed relationship expansion.
+The text after the colon is the edge's `description`. An edge with no description (an older graph) shows its `fact` instead, without the leading `(Alice, WORKS_AT, Acme Corp):` triple. The edge's own values, the signed columns a [table](/structured-ingestion) wrote on it, follow in brackets, cut near 200 characters.
+
+The names are the endpoints' current names, read from the edge's endpoint nodes: a dedup merge moves an edge onto the surviving entity but leaves the extraction-time `src_name` and `tgt_name` stored on the edge, so those are used only when an endpoint has no name. A hit becomes a fact line only when it has both names and a `rel_type` (an edge only a [relationship-only table](/structured-ingestion#relationship-only-tables) owns is not embedded, so it never comes back here). The endpoints of every hit are also merged into the entity list in step 4, by their stored ids; an endpoint without a name gets an empty name, so it seeds relationship expansion without showing its raw id among the Key Entities.
 
 **Important:** Facts are **scored** by their vector similarity to the question. Low-scoring facts are filtered out (see Step 8b) to reduce noise.
 
@@ -118,14 +121,14 @@ The edge endpoints' names are also merged into the entity list in step 4. A hit 
 - "List all locations mentioned" → needs `MATCH (l:Location) RETURN l.name`
 
 **How it works:**
-1. The LLM receives the ontology as a schema block: every entity label with its properties and their types, the `RELATES` edge with its `rel_type` values, and the provenance edges.
+1. The LLM receives the ontology as a schema block: every entity label with its properties and their types, including `aliases` (the other names a dedup merge folded into the entity); a note that a merged entity can carry more than one type label; an `Unknown` label for entities extraction could not type; the `RELATES` edge with its `rel_type` values (when the ontology declares no relations, the first 31 default extraction types, as hints); and the provenance edges, where `MENTIONED_IN` carries what that chunk says about the entity. The edge's stored `src_name` and `tgt_name` are marked as possibly outdated, with `startNode(r).name` and `endNode(r).name` named as the current names. The prompt asks for case-insensitive name matching that also checks `aliases`.
 2. It generates a Cypher query tailored to the question.
-3. The query is validated (it must be read-only and use known labels) and sanitized (a `LIMIT 25` is added when missing, unsupported FalkorDB patterns removed). A query that fails validation is regenerated, up to 3 attempts.
+3. The query is validated (it must be read-only and use known labels, `Unknown` included) and sanitized (a `LIMIT 25` is added when missing, unsupported FalkorDB patterns removed). A query that fails validation is regenerated, up to 3 attempts.
 4. If the query executes successfully, up to 20 rows go **directly** to the final LLM context in their own section — they are NOT filtered by the reranker. If generation or execution fails, the path returns nothing and the other paths still produce results.
 
 **Typed columns from tables.** A [table mapping](/structured-ingestion) declares each column's type, and those types reach the ontology as signed properties (`employees__age` as an `INTEGER`). That is what lets a generated query aggregate over a column instead of treating it as text, and it is the main reason to turn this path on.
 
-**Rows carry their column names.** Each row reaches the answering model as `column: value` pairs (`average_age: 39.5`), not bare values, with the columns of one row joined by ` | `; a node, list or map value is passed through without its column name. The section names the question the query was generated from, so an aggregate is attributable to what was asked:
+**Rows carry their column names.** Each row reaches the answering model as `column: value` pairs (`average_age: 39.5`), not bare values, with the columns of one row joined by ` | `. A node reads as `name: description` (the description cut near 300 characters), never as its full property map with the embedding and bookkeeping; a whole `Chunk` node reads as its passage (`original_chunk` for a contextual chunk), even when it has a name; lists and maps are rendered element by element, so nodes inside them read the same way, and carry no column name. The section names the question the query was generated from, so an aggregate is attributable to what was asked:
 
 ```
 ## Graph Query Results
@@ -147,13 +150,17 @@ Rows a graph query returned for the question: 'What is the average age at Acme?'
 
 **Two paths:**
 - **Path A — Name matching**, as two batched database queries over the first 8 LLM keywords (case-insensitively deduplicated):
-  1. **Exact name** (case-insensitive), up to 3 entities per keyword. These are added first, so an exact match survives the later caps.
-  2. **Name `CONTAINS`** (e.g., "lighthouse" matches "The Old Lighthouse"), up to 5 per keyword, shortest names first, then alphabetical, then by id. A broad keyword cannot crowd out a rare one.
+  1. **Exact name or alias** (case-insensitive), up to 3 entities per keyword, direct name matches before alias matches, then by id. These are added first, so an exact match survives the later caps.
+  2. **Name or alias `CONTAINS`** (e.g., "lighthouse" matches "The Old Lighthouse"), up to 5 per keyword, leaving out the exact matches of pass 1, shortest names first, then alphabetical, then by id. A broad keyword cannot crowd out a rare one. A short acronym (an LLM keyword of three characters or fewer in capitals, such as "US") only matches exactly or by fulltext, under any spelling of it among the keywords ("us" too), since as a substring it hits unrelated names ("Austria", "Museum").
+
+  `aliases` are the names a dedup merge folded into the entity; a list and a single string (one alias) both count.
 - **Path B — Fulltext search:** Uses the `__Entity__` fulltext index on names and descriptions, up to 3 entities for each of the first 6 keywords. **Name matches come first:** results are ordered by exact name match, then a name containing the keyword (both case-insensitive, ignoring surrounding spaces), then fulltext score, then id. Without that order, a common term scores every hit alike, and a search for "Northwind Robotics" could return dates whose descriptions mention the company instead of the company itself.
 
-Entities found in steps 3a and 3b are also merged in here, after the two paths above. Step 3a's are keyed by the edge's stored endpoint ids, so they match nodes in steps 5 and 6. Step 3b's are every short string value in the returned rows, whatever its column, keyed by its lowercased text (`acme_corp`) rather than the stored entity id, so they appear in the Key Entities section but usually match no node in the id-based graph queries of steps 5 and 6 (extracted entities carry their type in the id, as in `acme_corp__organization`).
+Entities found in steps 3a and 3b are also merged in here, after the two paths above. Step 3a's are keyed by the edge's stored endpoint ids, so they match nodes in steps 5 and 6. Step 3b's are looked up in the graph: the candidate names are the string values in the returned rows (longer than one character and shorter than 100, not numbers, outside columns named for a relation, type or label) and the `name` of every node a row returns, lists and maps included. The first 50 distinct names (case-insensitive) are matched case-insensitively against entity names and aliases, direct name matches first, then by id, up to 50 entities. Each comes back with its stored id and current name, so it matches nodes in steps 5 and 6; a value that names no entity stays only in the row text.
 
-**Enumeration questions** (containing phrases such as "list all", "every", "each", "name all" or "all the") also add up to 20 *siblings*: the other neighbours of a hub entity that is connected to two or more of the entities already found, ordered by name.
+**Enumeration questions** (containing phrases such as "list all", "every", "each", "name all" or "all the") also add up to 20 *siblings*: the other neighbours of a hub entity that is connected to two or more of the entities already found, ordered by name, then id.
+
+**The entities' own data.** For the first `max_entities` entities (30 by default), the entity's own scalar properties are fetched too: the typed columns a table wrote (`employees__age`) and the declared attributes extraction filled. The SDK's bookkeeping is left out (`id`, `name`, `type`, `description`, `description_piece_count`, `source_chunk_ids`, `spans`, `embedding`, `entity_key`, `is_stub`, `descriptions`, `aliases`, `merged_labels`, `mention_edge_count`, `description_summarised`), and so are values a merge set aside (`<key>__dropped`). They are shown in the Key Entities section (step 9).
 
 **Code:** `discover_entities()` in [`entity_discovery.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py)
 
@@ -161,18 +168,28 @@ Entities found in steps 3a and 3b are also merged in here, after the two paths a
 
 ### Step 5 — Relationship Expansion
 
-**What it does:** Starting from the discovered entities, traverses the graph to find their relationships.
+**What it does:** Starting from the discovered entities, walks the graph's `RELATES` edges, ranked by how close each edge is to the question.
 
-**Two depths**, both following `RELATES` edges in their stored direction only (outgoing from the discovered entity):
-- **1-hop:** Direct relationships (Alice → WORKS_AT → Acme Corp), from the first 15 discovered entities, up to 150 rows
-- **2-hop:** Indirect connections through an intermediate entity (Alice → WORKS_AT → Acme → LOCATED_IN → New York), from the first 5 discovered entities, up to 25 paths
+**Both directions.** Edges are followed whichever way they are stored, so an entity that is only ever the object of a relation ("X founded Acme") still has edges to walk.
 
-Neither query orders its rows before its `LIMIT`. Duplicate lines are dropped, 1-hop lines come before 2-hop lines, and the list is cut to `max_relationships` (20 by default). When there are more lines than that, 2-hop lines keep at least a third of the room when there are that many (6 at the default), so 1-hop lines cannot crowd them all out; room either kind does not use goes to the other.
+**Up to three rounds**, one link further each round, so a chain question ("their student, then that student's child") is followed one link per round:
 
-**Returns:** Formatted relationship strings. A 1-hop line carries the edge's `fact`; a 2-hop line is the path alone:
+| Round | Starts from | Edges kept per entity |
+|---|---|---|
+| 1 | The first 15 discovered entities | 10 |
+| 2 | Up to 8 far ends of round 1's closest edges | 5 |
+| 3 | Up to 5 far ends of round 2's closest edges | 5 |
+
+An entity already expanded is not expanded again, and an edge returned by one round is not matched again by a later one, so a back-edge does not take a slot of its far end.
+
+**Ranked by the question.** Each entity's edges are ordered by the cosine distance between the question vector and the edge's embedding (written by `finalize()`), then by neighbour id, relation type and edge id. An edge with no embedding ranks after every embedded one. Since a relationship table's own edges are never embedded, each round also fetches up to 2 such edges per entity in a second query, so a busy entity's document edges cannot hide its table values.
+
+**Cut to `max_relationships`** (20 by default). Lines that say the same thing collapse into one, while two edges between same-name entities with different evidence or values both stay. Lines already in the facts section (step 3a) are left out before the cap is applied. The rest are ordered closest first (equal distances by the line's text). When there are more lines than the cap, unembedded edges keep up to a fifth of the room (4 at the default), more when the embedded edges leave room. Within each part, lines found beyond the first link (rounds 2 and 3) keep at least a third of the room when there are that many, so first-link lines cannot crowd them all out; room they do not use goes back to first-link lines.
+
+**Returns:** Formatted relationship strings, one edge per line, in the same format as the facts of step 3a: the endpoints' current names (an endpoint with no name, such as a table row without a name column, is shown by its id), the edge's `description` (its `fact` without the leading triple when it has none), and the edge's own table values in brackets:
 ```
-Alice —[WORKS_AT]→ Acme Corp: (Alice, WORKS_AT, Acme Corp): Alice joined Acme as a senior engineer in 2019
-Alice —[WORKS_AT]→ Acme Corp —[LOCATED_IN]→ New York
+Alice —[WORKS_AT]→ Acme Corp: Alice joined Acme as a senior engineer in 2019
+Acme Corp —[LOCATED_IN]→ New York: Acme Corp is headquartered in New York
 ```
 
 **Code:** `expand_relationships()` in [`relationship_expansion.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/relationship_expansion.py)
@@ -188,11 +205,17 @@ Alice —[WORKS_AT]→ Acme Corp —[LOCATED_IN]→ New York
 | Path | Method | What it finds |
 |------|--------|---------------|
 | **A — Fulltext** | Keyword search on chunk text: the whole question, the first 6 LLM keywords and the first 4 simple keywords, 5 chunks each | Passages containing exact keyword matches |
-| **B — Vector** | Embedding similarity search, top 15 | Passages with similar meaning (even without shared keywords) |
-| **C — MENTIONED_IN** | Graph traversal from the first 15 entities to their source chunks, the 3 closest to the question per entity | Passages where discovered entities were originally extracted |
-| **D — 2-hop** | Entity → related entity (`RELATES`, either direction) → chunk, from the first 10 entities, up to 20 chunks | Passages containing entities that are connected to the question's entities |
+| **B — Vector** | Embedding similarity search, top 15 or `chunk_top_k` if larger (20 by default) | Passages with similar meaning (even without shared keywords) |
+| **C — MENTIONED_IN** | Graph traversal from the first 15 entities to their source chunks: per entity, the 3 embedded chunks closest to the question plus 1 chunk without an embedding | Passages where discovered entities were originally extracted |
+| **D — 2-hop** | Entity → related entity (`RELATES`, either direction) → chunk, from the first 10 entities: the 20 embedded chunks closest to the question, plus up to 5 chunks without an embedding | Passages containing entities that are connected to the question's entities |
 
 All four paths contribute to a single pool of candidate chunks.
+
+**Table rows.** A chunk written from a table row has no embedding and is reached only through its entities, so paths C and D keep it slots of its own instead of ranking it after every embedded chunk.
+
+**Documents being updated or deleted.** Chunks of a document that is not live are left out: the `<id>__pending__<hex>` copy an `update()` writes before cutover, and a document marked `pending_delete`. Paths C and D skip them before their caps, so they cannot take a slot and leave it empty; the fulltext and vector hits are filtered afterwards, and the vector slots they took are refilled by searching wider (doubling, up to 1024 hits) until filled or the index runs out. A chunk with no document is kept.
+
+**Contextual chunks.** For a chunk that [contextual chunking](/strategies#built-in-contextualchunking) wrote, the passage is the document's own text (`original_chunk`), not the model-written context sentence that opens its indexed `text`.
 
 **Code:** `retrieve_chunks()` in [`chunk_retrieval.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/chunk_retrieval.py)
 
@@ -212,9 +235,9 @@ Facts and passages are ranked by **different criteria** because they have differ
 
 #### 8a — Passage Reranking (Stored Embeddings)
 
-**What it does:** Ranks the candidate chunks by how similar their meaning is to the question, keeping the top `chunk_top_k` (15 by default).
+**What it does:** Ranks the candidate chunks by how similar their meaning is to the question, keeping the top `chunk_top_k` (20 by default).
 
-**How:** Each chunk already has an embedding vector stored in the graph from ingestion. Instead of re-computing embeddings (which would require an expensive API call), we fetch the stored vectors and compute cosine similarity locally. This makes reranking **instant** instead of taking 2-3 seconds. When fewer than 90 % of the candidates have a stored vector, the candidates are re-embedded instead.
+**How:** Each chunk already has an embedding vector stored in the graph from ingestion. Instead of re-computing embeddings (which would require an expensive API call), we fetch the stored vectors and compute cosine similarity locally. This makes reranking **instant** instead of taking 2-3 seconds. The few candidates without a stored vector, mostly table-row chunks, which ingestion never embeds, are embedded in one call and ranked with the rest, so a table row that answers the question is not ranked last. When fewer than 90 % of the candidates have a stored vector, all the candidates are re-embedded instead. Candidates with equal similarity keep the order the paths of step 6 found them in.
 
 **Code:** `rerank_chunks()` in [`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)
 
@@ -238,10 +261,12 @@ Facts and passages are ranked by **different criteria** because they have differ
 |---|---|---|
 | `hint` | Answer format hint, e.g. "This is a yes/no question" | -- |
 | `cypher_results` | Graph Query Results from text-to-Cypher, rows labelled with column names (bypasses reranking) | 20 rows |
-| `entities` | Key Entities: names and descriptions | 25 |
+| `entities` | Key Entities: names, descriptions and the entities' own values | 25 |
 | `relationships` | Entity Relationships: how entities connect | 20 |
 | `facts` | Knowledge Graph Facts from relationship embeddings | 12 after filtering |
-| `passages` | Source Document Passages, each prefixed with `[Source: <document path>]` when the document resolves | `chunk_top_k`, at most 15 |
+| `passages` | Source Document Passages, each prefixed with `[Source: <document path>]` when the document resolves | `chunk_top_k` (20 by default) |
+
+An entity line reads `- Name: description (key: value; key: value)`. The description is cut at a word near 400 characters; the values are the entity's own data from step 4, in key order, cut at a pair boundary near 200 characters (a single longer value is cut too). Two entities that share a name stay two lines when their description or values differ; a name with neither is listed once, and a described entity of the same name takes its place.
 
 `retrieve()` returns one `RetrieverResultItem` per section. The final LLM receives this structured context and generates a natural language answer.
 
@@ -253,14 +278,23 @@ Facts and passages are ranked by **different criteria** because they have differ
 
 **Scores are similarities: higher means closer.** Chunk, entity and relationship vector searches return `1 - cosine distance` and order by it descending. A threshold such as the fact filter's `min_score=0.25` is a floor on similarity.
 
-**Most searches do not depend on the engine's row order.** FalkorDB 4.x and 6.0.x list unordered rows differently, so these searches order their rows before the `LIMIT` or cap:
-- chunk and entity vector search break ties between equally close nodes by id, fetching more rows while the cut is still a tie;
+**Almost no search depends on the engine's row order.** FalkorDB 4.x and 6.0.x list unordered rows differently, so these searches order their rows before their `LIMIT` or cap:
+- chunk and entity vector search break ties between equally close nodes by id, fetching more rows (up to 1024) while the cut is still a tie;
+- the `RELATES` vector search (step 3a) does the same, breaking ties by source id, target id, relation type, description and fact;
 - chunk fulltext search orders by score, then id;
 - entity fulltext search orders by name match, then score, then id;
+- the exact-name match orders direct name matches before alias matches, then by id;
 - the name `CONTAINS` match orders by name length, then name, then id;
+- text-to-Cypher entity lookup orders direct name matches before alias matches, then by id;
+- the sibling expansion orders by name, then id;
+- relationship expansion orders each entity's edges before its per-entity limit by distance, neighbour id, relation type and edge id, and its lines by distance, then text;
+- the MENTIONED_IN chunk path orders by distance, then chunk id; the 2-hop chunk path orders embedded chunks by distance, then id, and chunks without an embedding by id;
+- reranking and fact filtering keep candidates with equal scores in the order the searches above returned them;
 - `GraphStore.get_connected_entities()` (used by `LocalRetrieval`) orders before its cap for 1-hop traversals.
 
-Some cuts still take the engine's order: the relationship expansion queries in step 5, the exact-name match in step 4 (3 per keyword), the 2-hop chunk path in step 6 (20 chunks), ties between equally close chunks on the MENTIONED_IN path in step 6 (ordered by distance only), the sibling expansion in step 4 (ordered by name only), and ties between equally close edges in the `RELATES` vector search (ordered by score only). Where one of those limits is reached, the same question can retrieve different rows on FalkorDB 4.x and 6.0.x.
+Two cuts still take the engine's order: `GraphStore.get_connected_entities()` with more than one hop, and the rows of a generated Cypher query, which are ordered only if the query the LLM wrote says so.
+
+Every retrieval query also runs on FalkorDB 6.0, which rejects some forms 4.x accepts, such as an outer variable referenced in a subquery's `ORDER BY`.
 
 ---
 
@@ -356,7 +390,7 @@ rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, retrieval_strategy=s
 
 | Parameter | Default | What it controls |
 |---|---|---|
-| `chunk_top_k` | 15 | Maximum passages after reranking |
+| `chunk_top_k` | 20 | Maximum passages after reranking; the chunk vector search fetches at least this many candidates |
 | `max_entities` | 30 | Maximum entities to keep from discovery |
 | `max_relationships` | 20 | Maximum relationships to include |
 | `rel_top_k` | 15 | RELATES edge vector search results |
@@ -413,7 +447,7 @@ result = await rag.completion("Your question", reranker=reranker)
 | [`multi_path.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/multi_path.py) | Main orchestrator — coordinates all 9 steps |
 | [`entity_discovery.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py) | RELATES vector search + 2-path entity discovery |
 | [`chunk_retrieval.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/chunk_retrieval.py) | 4-path chunk retrieval + document mapping |
-| [`relationship_expansion.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/relationship_expansion.py) | 1-hop and 2-hop relationship traversal |
+| [`relationship_expansion.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/relationship_expansion.py) | Relationship walk in both directions, up to three links deep, ranked by the question |
 | [`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py) | Reranking, fact filtering, question hints, context assembly |
 | [`cypher_generation.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/cypher_generation.py) | Text-to-Cypher: ontology prompt, generation, validation, execution, column-labelled rows |
 | [`base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/base.py) | RetrievalStrategy abstract base class |

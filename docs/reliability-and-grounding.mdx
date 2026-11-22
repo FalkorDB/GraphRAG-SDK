@@ -30,7 +30,7 @@ leaves to you.
 | Grounded retrieval | `GraphRAG.completion()` answers only from the assembled `<context>` block, under a system prompt that forbids outside knowledge |
 | Source provenance | `Document` → `PART_OF` → `Chunk` ← `MENTIONED_IN` ← `__Entity__` chain, plus the `[Source: <path>]` tag on each retrieved passage whose document resolves |
 | Evidence trail | `RagResult.retriever_result.items` → `passages` section → `[Source: <path>]` → `Document.path`; chunk ids in `retriever_result.metadata["provenance"]["chunks"]` (`id`, `text`, `document_path`) under `MultiPathRetrieval`, or per item from `LocalRetrieval` |
-| Relationship-aware retrieval | `MultiPathRetrieval` — RELATES edge vector search, entity discovery, 1-hop and 2-hop expansion, `MENTIONED_IN` chunk traversal, and opt-in text-to-Cypher (`GraphRAG(enable_cypher=True)`) |
+| Relationship-aware retrieval | `MultiPathRetrieval` — RELATES edge vector search, entity discovery, relationship expansion up to three links deep, `MENTIONED_IN` chunk traversal, and opt-in text-to-Cypher (`GraphRAG(enable_cypher=True)`) |
 | Metadata filtering | Loader-supplied metadata persisted as `Document` / `Chunk` properties, filtered with Cypher or by graph scoping (no `filter=` parameter) |
 | Confidence thresholds | `filter_facts_by_relevance(min_score=0.25, ...)`, `chunk_top_k`, `rel_top_k`, `top_k` on vector search, `CosineReranker(top_k=...)` |
 | Abstention behavior | Prompt-level only (system prompt rule 6); enforce programmatically with `retrieve()` + a score gate — see [Reducing LLM Hallucinations](/reducing-llm-hallucinations#defining-an-abstention-path) |
@@ -222,12 +222,14 @@ close to the question:
 
 | Path | Mechanism |
 | --- | --- |
-| RELATES vector search | Embedded relationship facts searched directly, returning `src —[type]→ tgt: fact` strings and entry-point entities |
-| Entity discovery | Exact name and name `CONTAINS` matching, plus fulltext search over entity names and descriptions with name matches ranked first |
-| Relationship expansion | 1-hop and 2-hop traversal from discovered entities |
-| `MENTIONED_IN` chunks | Entity → the chunks it was extracted from |
-| 2-hop chunks | Entity → related entity → that neighbour's chunks |
-| Text-to-Cypher | Opt-in ontology-guided graph query; scalar values reach the model labelled with their column names (node, list and map values pass through unlabelled), bypassing reranking |
+| RELATES vector search | Embedded relationship facts searched directly, returning `src —[TYPE]→ tgt: description [key: value]` lines (the endpoints' current names; the edge's `fact` only when it has no description; a relationship table's values in brackets) and entry-point entities |
+| Entity discovery | Exact name and name `CONTAINS` matching, on names and on `aliases` (a direct name match before an alias match), plus fulltext search over entity names and descriptions with name matches ranked first. A short acronym (3 characters or fewer, in capitals) is matched exactly or by fulltext, never as a substring |
+| Relationship expansion | Walks RELATES edges in both directions from discovered entities, up to three links deep, keeping the edges closest to the question. Deeper links keep up to a third of the cap, a relationship table's unembedded edges up to a fifth, and a line the facts section already shows is left out |
+| `MENTIONED_IN` chunks | Entity → the chunks it was extracted from, with a slot of its own for its table-row chunk (table rows are not embedded) |
+| 2-hop chunks | Entity → related entity → that neighbour's chunks, and up to 5 of their table-row chunks |
+| Text-to-Cypher | Opt-in ontology-guided graph query; values reach the model as text labelled with their column names (a node reads as its name and description, a whole chunk as its passage; a list or map is rendered element by element and passes through unlabelled), bypassing reranking |
+
+Passages from a document that `update()` is replacing or `delete_document()` is removing are skipped: the graph paths leave them out before their caps, and the fulltext and vector hits are dropped afterwards, with the vector search widened to refill its slots. A chunk written by `ContextualChunking` is shown as its original text (`original_chunk`), without the model-written context prefix.
 
 Text-to-Cypher is off by default because it costs an extra LLM call per question (up to 3 when a generated query fails validation and is regenerated). Turn it on for the default strategy with a single flag:
 
@@ -251,7 +253,7 @@ strategy = MultiPathRetrieval(
     vector_store=VectorStore(connection, embedder=embedder, embedding_dimension=256),
     embedder=embedder,
     llm=llm,
-    chunk_top_k=15,        # passages kept after reranking
+    chunk_top_k=20,        # passages kept after reranking
     max_entities=30,       # entities carried into relationship expansion
     max_relationships=20,  # cap on expanded RELATES edges
     rel_top_k=15,          # RELATES edge vector search results
@@ -350,8 +352,8 @@ rag = GraphRAG(
 Every similarity score returned by the storage layer is a **similarity, not a
 distance — higher means closer.** Chunk, entity and relationship vector searches
 all return `1 - distance` from the FalkorDB cosine index and order by that value
-descending. Chunk and entity search also break ties by id, so they return the
-same rows on FalkorDB 4.x and 6.0.x, as long as a tie at the cutoff fits within the 1,024 rows they fetch at most; relationship search orders by score only.
+descending. Chunk and entity search break ties by id, and relationship search by the endpoint ids, type and text, so they return the
+same rows on FalkorDB 4.x and 6.0.x, as long as a tie at the cutoff fits within the 1,024 rows they fetch at most.
 
 <Note>
   A threshold is a floor on similarity. If you calibrated one against cosine
@@ -363,7 +365,7 @@ same rows on FalkorDB 4.x and 6.0.x, as long as a tie at the cutoff fits within 
 | `min_score` | `filter_facts_by_relevance()` — RELATES facts below this similarity are dropped | `0.25` |
 | `max_facts` | `filter_facts_by_relevance()` — cap on facts in context | `12` |
 | `min_keep` | `filter_facts_by_relevance()` — top facts always kept, threshold or not | `3` |
-| `chunk_top_k` | `MultiPathRetrieval` — passages after cosine reranking | `15` |
+| `chunk_top_k` | `MultiPathRetrieval` — passages after cosine reranking | `20` |
 | `rel_top_k` | `MultiPathRetrieval` — RELATES edge vector hits | `15` |
 | `max_entities` / `max_relationships` | `MultiPathRetrieval` graph expansion caps | `30` / `20` |
 | `top_k` | `VectorStore.search_chunks()` / `search_entities()` | `5` |

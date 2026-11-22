@@ -135,15 +135,15 @@ Embed Question (single API call)
   |
   v
 Entity Discovery
-  1. Exact name match
-  2. Name CONTAINS match
+  1. Exact name or alias match
+  2. Name or alias CONTAINS match (not for short acronyms)
   3. Fulltext search on entity index (name matches first)
   + merge entities from RELATES vector search and Text-to-Cypher
   + sibling entities (enumeration questions only)
   -> Top entities (deduped, max_entities)
   |
   v
-Relationship Expansion (1-hop + 2-hop from top entities)
+Relationship Expansion (both directions, up to 3 links, ranked by the question)
   |
   v
 4-Path Chunk Retrieval
@@ -151,6 +151,7 @@ Relationship Expansion (1-hop + 2-hop from top entities)
   2. Vector search in chunks
   3. MENTIONED_IN traversal (entity -> chunk)
   4. 2-hop: entity -> neighbor -> chunk
+  (table-row chunks keep their own slots; documents mid-update or mid-delete skipped)
   -> Candidate chunks (cosine reranked)
   |
   v
@@ -168,7 +169,7 @@ Answer
 
 | Parameter | Default | Purpose |
 |-----------|---------|---------|
-| `chunk_top_k` | 15 | Final chunks after reranking |
+| `chunk_top_k` | 20 | Final chunks after reranking |
 | `max_entities` | 30 | Total entity cap across all paths |
 | `max_relationships` | 20 | Max relationships in context |
 | `rel_top_k` | 15 | RELATES edge vector search results |
@@ -193,7 +194,7 @@ All graph writes go through `GraphStore`, which provides:
 Vector operations go through `VectorStore`:
 - **Index creation** -- vector indexes on Chunk, `__Entity__` and RELATES edge embeddings, and fulltext indexes on chunk text and entity name and description; `ensure_indices()` waits up to 10 minutes for them to be built, then returns anyway
 - **Batched embedding** -- embeds texts in bulk, stores via UNWIND
-- **Search** -- similarity scores, higher is closer; chunk and entity searches break ties by id so results do not depend on the engine's row order
+- **Search** -- similarity scores, higher is closer; chunk and entity searches break ties by id, and relationship search by endpoint ids, type and text, so results do not depend on the engine's row order
 
 ### Connection
 

@@ -251,8 +251,8 @@ question never reaches the generation call. A few details matter in practice:
   to populate `item.score` before setting `min_score`. See
   [Strategies](/strategies).
 - **A count-only gate barely gates.** No passage path applies a similarity
-  floor: chunk vector search takes its top 15 hits and reranking takes the
-  top *k* of those, neither with a threshold, and the fact filter keeps its
+  floor: chunk vector search takes its top 15 hits (or `chunk_top_k`, 20 by
+  default, when larger) and reranking takes the top *k* of those, neither with a threshold, and the fact filter keeps its
   top 3 facts whatever their score. A populated graph therefore
   returns *something* for almost any question, however unrelated, so
   `min_items` alone fires only on an empty graph, a failed ingestion or a

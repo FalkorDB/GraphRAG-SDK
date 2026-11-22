@@ -213,18 +213,24 @@ Equally close nodes are cut by id, not by the order the engine lists them (Falko
 **Vector search on RELATES edges (with fallback):**
 ```cypher
 -- Primary (edge vector index):
-CALL db.idx.vector.queryRelationships('RELATES', 'embedding', $top_k, vecf32($vector))
+CALL db.idx.vector.queryRelationships('RELATES', 'embedding', $fetch_k, vecf32($vector))
 YIELD relationship AS r, score
-RETURN r.src_name AS src, r.rel_type AS type, r.tgt_name AS tgt, r.fact AS fact, (1-score) AS score
-ORDER BY score DESC
+WITH r, score, startNode(r) AS a, endNode(r) AS b
+RETURN COALESCE(a.name, r.src_name) AS src, r.rel_type AS type,
+       COALESCE(b.name, r.tgt_name) AS tgt, r.fact AS fact, r.description AS description,
+       a.id AS src_id, b.id AS tgt_id, (1-score) AS score, ...
+ORDER BY score DESC, src_id, tgt_id, type, description, fact
 
 -- Fallback (Cypher-based cosine distance scan):
 MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__)
 WHERE r.embedding IS NOT NULL
 WITH a, r, b, vec.cosineDistance(r.embedding, vecf32($vector)) AS dist
-RETURN r.src_name AS src, r.rel_type AS type, r.tgt_name AS tgt, r.fact AS fact, (1-dist) AS score
-ORDER BY dist ASC LIMIT $top_k
+RETURN COALESCE(a.name, r.src_name) AS src, r.rel_type AS type,
+       COALESCE(b.name, r.tgt_name) AS tgt, ..., (1-dist) AS score, ...
+ORDER BY dist ASC, src_id, tgt_id, type, description, fact LIMIT $top_k
 ```
+
+Names come from the edge's endpoints: a dedup merge moves an edge onto the surviving entity but leaves the extraction-time `src_name` / `tgt_name` on it, so those are only the fallback. Each hit also carries the endpoints' descriptions and `edge_values`, the edge's signed columns (a relationship table's values). Like node search, the primary query fetches 2×`top_k` edges and widens (up to 1024) while the score at the cut is still a tie.
 
 The scan runs when the server rejects the primary query (FalkorDB 4.x does when there is no `RELATES` vector index, or while it is still being built), or when it returns no rows and `db.indexes()` shows no built vector index on `RELATES.embedding` (FalkorDB 6.0.x answers a missing index with no rows). With the index in place, an empty answer is returned as is. If FalkorDB is unreachable, or the primary query runs past its timeout, the search returns no results without scanning: the scan would fail the same way or take longer still. The scan reads every embedded edge, so the SDK logs a warning the first time a store falls back to it.
 
@@ -392,7 +398,8 @@ except FalkorDBVersionError as e:
 
 FalkorDB 4.x and 6.0.x list unordered rows differently, so any result cut by a `LIMIT` or a cap would change after a server upgrade. The SDK orders before it cuts:
 
-- `search_chunks()` and `search_entities()` break ties by id (see [Search Methods](#search-methods)); fulltext search orders by score, then id.
+- `search_chunks()` and `search_entities()` break ties by id, and `search_relationships()` by endpoint ids, type, description and fact (see [Search Methods](#search-methods)); fulltext search orders by score, then id.
+- Retrieval orders every capped list before it cuts it, ties included: entity name matches by name and then id, the relation walk by distance to the question with ties broken the same way on every run, and the chunk graph paths by distance and then id.
 - `get_connected_entities()` keeps the 50 entities with the lowest ids at `max_hops=1`. Beyond one hop the engine's order is kept, because ordering would need every path before the `LIMIT`.
 - The relation-pattern backfill orders the chunk pairs its cap shows the LLM; `GraphVisualizer.sample_nodes()` and a new relation pattern's copied properties are ordered too.
 - A dedup merge's survivor is ranked down to the id, so a tie settles the same way on every run.

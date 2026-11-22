@@ -192,6 +192,8 @@ chunker = ContextualChunking(
 
 > **Cost note:** generates one LLM call per chunk at ingestion time.
 
+The prefix is embedded and indexed with the chunk, and the chunk's own text is kept in `original_chunk`. `MultiPathRetrieval` (and a text-to-Cypher row that returns a whole chunk) shows `original_chunk` as the passage, so the answer reads what the document says rather than the model-written prefix.
+
 ### Built-in: CallableChunking (bring your own framework)
 
 Adapts any `text -> list[str]` function into a chunking strategy. Use this to plug in **any** chunking library -- LlamaIndex, LangChain, Unstructured, spaCy, or your own logic -- without the SDK carrying those dependencies.
@@ -592,7 +594,7 @@ vector_store = VectorStore(conn, embedder=embedder, embedding_dimension=256)
 
 ### Built-in: LocalRetrieval
 
-Simple retrieval: vector search on chunks + 1-hop entity traversal. Items carry the chunk's similarity in `score` and its id in `metadata["chunk_id"]`.
+Simple retrieval: vector search on chunks + 1-hop entity traversal. Items carry the chunk's similarity in `score` and its id in `metadata["chunk_id"]`. Connected entities read `name (Type): description [key: value]`. Chunks of a document that `update()` is replacing or `delete_document()` is removing are skipped, and the vector search is widened to fill `top_k` with live chunks.
 
 ```python
 from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
@@ -620,7 +622,7 @@ retriever = MultiPathRetrieval(
     vector_store=vector_store,
     embedder=embedder,
     llm=llm,
-    chunk_top_k=15,         # final chunks after reranking (default: 15)
+    chunk_top_k=20,         # final chunks after reranking (default: 20)
     max_entities=30,        # total entity cap (default: 30)
     max_relationships=20,   # max relationships in context (default: 20)
     rel_top_k=15,           # RELATES edge vector search results (default: 15)

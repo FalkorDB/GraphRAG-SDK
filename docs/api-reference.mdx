@@ -1269,7 +1269,7 @@ from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
 LocalRetrieval(graph_store, vector_store, embedder, top_k=5, include_entities=True)
 ```
 
-Chunk vector search plus 1-hop entities. Items carry `score` and `metadata["chunk_id"]`.
+Chunk vector search plus 1-hop entities. Items carry `score` and `metadata["chunk_id"]`. Chunks of a document being updated or deleted are skipped.
 
 ### MultiPathRetrieval
 
@@ -1277,7 +1277,7 @@ Chunk vector search plus 1-hop entities. Items carry `score` and `metadata["chun
 MultiPathRetrieval(
     graph_store, vector_store, embedder, llm,
     *,
-    chunk_top_k=15,
+    chunk_top_k=20,
     max_entities=30,
     max_relationships=20,
     rel_top_k=15,
@@ -1356,11 +1356,11 @@ VectorStore(connection, embedder=None, embedding_dimension=256)
 | `backfill_entity_embeddings` | `(batch_size=500) -> int` | Embed entities missing vectors. Not a dedup step: an entity it embeds counts as checked unless a `pending` record lists it; run `finalize(dedup_all=True)` once after it |
 | `search_chunks` | `(query_vector, top_k=5) -> list[dict]` | Chunk vector search |
 | `search_entities` | `(query_vector, top_k=5) -> list[dict]` | Entity vector search |
-| `search_relationships` | `(query_vector, top_k=15) -> list[dict]` | `RELATES` edge vector search, with a cosine-scan fallback when the index query fails or no `RELATES` vector index exists |
+| `search_relationships` | `(query_vector, top_k=15) -> list[dict]` | `RELATES` edge vector search, with a cosine-scan fallback when the index query fails or no `RELATES` vector index exists. `src_name` / `tgt_name` are the endpoints' current names; each hit also carries `src_id`, `tgt_id`, the edge's `description` and `edge_values` (a relationship table's signed columns) |
 | `fulltext_search_chunks` | `(query_text, top_k=5) -> list[dict]` | Chunk fulltext search |
 | `fulltext_search_entities` | `(query_text, top_k=5) -> list[dict]` | Entity fulltext search: exact name matches first, then names containing the query, then score, then id |
 
-Vector search scores are similarities (`1 - cosine distance`): **higher means closer**. Chunk and entity results are ordered by score, with ties broken by id, so the same query returns the same rows on every FalkorDB version; `search_relationships()` orders by score alone.
+Vector search scores are similarities (`1 - cosine distance`): **higher means closer**. Chunk and entity results are ordered by score, with ties broken by id, and `search_relationships()` results by score, then endpoint ids, type, description and fact, so the same query returns the same rows on every FalkorDB version.
 
 ### OntologyStore
 
