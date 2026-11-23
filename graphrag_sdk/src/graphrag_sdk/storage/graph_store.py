@@ -1223,6 +1223,17 @@ class GraphStore:
                 for incoming in ("item.properties", "$properties")
             )
 
+        # A dedup merge that collapses two RELATES edges stores their joined
+        # description with a piece count. A write that replaces the
+        # description replaces the count with its own (none for one piece);
+        # kept, the count would split text it was not written for at ``|``.
+        # A write without a description leaves both as they were.
+        batch_piece_count, item_piece_count = (
+            f", r.{DESCRIPTION_COUNT_KEY} = CASE WHEN {incoming}.description IS NOT NULL "
+            f"THEN {incoming}.{DESCRIPTION_COUNT_KEY} ELSE r.{DESCRIPTION_COUNT_KEY} END"
+            for incoming in ("item.properties", "props")
+        )
+
         count = 0
         for rel_type, group in by_type.items():
             safe_rel_type = sanitize_cypher_label(rel_type)
@@ -1341,6 +1352,7 @@ class GraphStore:
                         f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old], "
                         f"    r.structured_sources = old_sources + "
                         f"[s IN sources WHERE NOT s IN old_sources]"
+                        f"{batch_piece_count}"
                         f"{batch_snapshot}"
                     )
                 elif rel_type == "MENTIONED_IN":
@@ -1401,6 +1413,7 @@ class GraphStore:
                                 f"[c IN contrib WHERE NOT c IN old], "
                                 f"    r.structured_sources = old_sources + "
                                 f"[s IN sources WHERE NOT s IN old_sources]"
+                                f"{item_piece_count}"
                                 f"{item_snapshot}"
                             )
                         elif rel.type == "MENTIONED_IN":

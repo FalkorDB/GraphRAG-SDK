@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from graphrag_sdk.core.models import GraphNode
+from graphrag_sdk.core.models import GraphNode, GraphRelationship
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.merge_query import (
@@ -402,6 +402,64 @@ async def test_relates_collapse_combines_descriptions_and_fact(graph):
             False,
         ],
     ]
+
+
+async def test_a_relates_upsert_after_a_collapse_replaces_the_piece_count(graph):
+    """A collapse stores a joined description with its piece count. An upsert
+    that replaces the description replaces the count too; one without a
+    description leaves both. Kept, the count split the new text at ``|`` on
+    the next collapse."""
+    await graph.query_raw(
+        "CREATE (s:__Entity__:Person {id: 's', name: 'Tim Cook'}), "
+        "(d1:__Entity__:Person {id: 'd1', name: 'Timothy Cook'}), "
+        "(d2:__Entity__:Person {id: 'd2', name: 'Tim D. Cook'}), "
+        "(apple:__Entity__:Organization {id: 'apple', name: 'Apple'}), "
+        "(s)-[:RELATES {rel_type: 'LEADS', description: 'CEO of Apple since 2011', "
+        "  source_chunk_ids: ['c1']}]->(apple), "
+        "(d1)-[:RELATES {rel_type: 'LEADS', description: 'succeeded Steve Jobs', "
+        "  source_chunk_ids: ['c2']}]->(apple), "
+        "(d2)-[:RELATES {rel_type: 'LEADS', description: 'runs Apple', "
+        "  source_chunk_ids: ['c5']}]->(apple)"
+    )
+    store = await held(graph)
+    plan_run = await store.write_plan(
+        [
+            PlanOp(ABSORB, 0, "s", "Tim Cook", dup="d1", dup_name="Timothy Cook"),
+            PlanOp(ABSORB, 0, "s", "Tim Cook", dup="d2", dup_name="Tim D. Cook"),
+        ],
+        Decisions(),
+    )
+    leads = (
+        "MATCH (:__Entity__ {id: 's'})-[r:RELATES {rel_type: 'LEADS'}]->() "
+        "RETURN r.description, r.description_piece_count"
+    )
+
+    def upsert(**props):
+        return graph.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="s",
+                    end_node_id="apple",
+                    type="RELATES",
+                    properties={"rel_type": "LEADS", **props},
+                )
+            ]
+        )
+
+    assert await absorb(store, graph, plan_run, dup="d1", dup_name="Timothy Cook") == APPLIED
+    assert await rows(graph, leads) == [["CEO of Apple since 2011 | succeeded Steve Jobs", 2]]
+
+    # No description in the write: the description and its count stay.
+    await upsert(source_chunk_ids=["c3"])
+    assert await rows(graph, leads) == [["CEO of Apple since 2011 | succeeded Steve Jobs", 2]]
+
+    # A description in the write: one piece, so no count.
+    await upsert(description="CEO | founder", source_chunk_ids=["c4"])
+    assert await rows(graph, leads) == [["CEO | founder", None]]
+
+    # The next collapse reads the replaced text as one piece, not two.
+    assert await absorb(store, graph, plan_run, op=1, dup="d2", dup_name="Tim D. Cook") == APPLIED
+    assert await rows(graph, leads) == [["CEO ¦ founder | runs Apple", 2]]
 
 
 async def test_an_edge_type_the_query_was_not_built_for_stops_the_merge(graph):
