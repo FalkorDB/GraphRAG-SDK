@@ -1786,6 +1786,61 @@ class TestDiscoverGrounded:
         assert "BORN_IN" not in rel_labels
 
     @pytest.mark.asyncio
+    async def test_a_model_load_error_cancels_the_other_chunks_and_sources(
+        self, tiny_catalog
+    ) -> None:
+        """A model that cannot load ends discovery at once: the other chunks of
+        its source and the other sources still loading are cancelled, not left
+        running after the caller has the error."""
+        import asyncio
+
+        from graphrag_sdk.core.exceptions import ModelLoadError
+        from graphrag_sdk.core.models import DocumentInfo, DocumentOutput
+        from graphrag_sdk.discovery.pipeline import discover_grounded
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            EntityExtractor,
+        )
+        from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+
+        cancelled: list[str] = []
+
+        async def hang(what: str) -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.append(what)
+                raise
+
+        class Loader(LoaderStrategy):
+            async def load(self, source, ctx):
+                if source == "slow":
+                    await hang("source")
+                return DocumentOutput(text="x", document_info=DocumentInfo(path=source))
+
+        class Broken(EntityExtractor):
+            async def extract_entities(self, text, entity_types, source_chunk_id):
+                if text == "fail":
+                    raise ModelLoadError("no model", hint="could not load")
+                await hang("chunk")
+                return []
+
+        with pytest.raises(ModelLoadError):
+            await asyncio.wait_for(
+                discover_grounded(
+                    ["fast", "slow"],
+                    catalog=tiny_catalog,
+                    entity_extractor=Broken(),
+                    sample_chunks_per_doc=2,
+                    concurrency=4,
+                    chunker=FixedChunker(["hang", "fail"]),
+                    loader=Loader(),
+                    seed=1,
+                ),
+                timeout=5,
+            )
+        assert sorted(cancelled) == ["chunk", "source"]
+
+    @pytest.mark.asyncio
     async def test_bridge_relations_to_existing_labels_are_surfaced(
         self, tmp_path: Path, tiny_catalog
     ) -> None:

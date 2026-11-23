@@ -45,6 +45,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **GLiNER no longer fails silently on a clean install.** The default GLiNER
+  model needs `protobuf` to load its tokenizer, and a clean install did not
+  include it. The load failed with "Error parsing line ... spm.model", every
+  chunk logged "Step 1 NER failed", and extraction quietly continued with the
+  LLM only. `protobuf` is now a dependency. If a GLiNER model still cannot load,
+  ingestion fails once with a clear `ModelLoadError` (an `ExtractionError`)
+  naming the model and, when `protobuf` is missing, the package to install. The
+  failure is remembered for 60 seconds rather than retried for every chunk, then
+  a later ingest tries the load again. A missing or broken package raises
+  `ModelImportError`, which is also an `ImportError`, so `except ImportError`
+  still catches a missing `gliner` as before. A plain `ExtractionError` from a
+  custom extractor still fails only its own chunk.
+  - The model loads before a document's chunks are written (a new
+    `ExtractionStrategy.prepare()` and `EntityExtractor.ensure_ready()`, both
+    no-ops by default), so a broken model leaves no half-written document.
+  - `SpacyExtractor` raises `ModelLoadError` for a missing package or model
+    (still an `ImportError` / `OSError`) or any other load or import failure,
+    such as a missing pipeline plugin or a numpy version mismatch (the hint says
+    to install the extra only when spaCy itself is missing), and, like GLiNER, tries the load
+    again after 60 s, so a model downloaded later is picked up without a
+    restart. Grounded discovery stops on a `ModelLoadError` instead of
+    returning an empty ontology.
+  - `CompositeExtractor` lets every member finish the chunk before raising, so
+    a member in a worker thread (GLiNER, spaCy) is not abandoned mid-inference
+    and its load error is the one reported. A `TimeoutError` or
+    `ConnectionError` now fails only its member, on every Python version. A
+    member without `ensure_ready()` counts as ready.
+
 - **The dedup judge accepts a one-member group.** The model sometimes answered
   a set with a group of one entity carrying a name (`SET 1 GROUP: 5 | NAME:
   ...`). The run rejected the whole set, asked again, got the same answer all
