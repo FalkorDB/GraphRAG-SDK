@@ -7,15 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.7.0] - 2026-11-22
+## [1.7.0] - 2026-11-23
 
-An entity's description is stored once: the `descriptions` list is no longer
-written, and a count of the pieces stands in for the second copy. Graphs
-written by earlier versions read as before. `finalize()` gives chunks a
-readable name. Ontology discovery survives a temporary model error, a new graph
-accepts its first declared ontology, the dedup judge's one-member groups no
-longer leave entities pending, and the agent asks before adding types to an
-ontology the user supplied.
+Retrieval context reads the same in every strategy, one edge per relation
+line, with a few more passages by default; prompts or token budgets tuned to
+the old output may need a look. Any reasoning model works without a setting,
+and `graphrag-mcp` defaults to `gpt-6-luna` before gpt-4o-mini leaves OpenAI's
+API. An entity's description is stored once: the `descriptions` list is no
+longer written, and a count of the pieces stands in for the second copy.
+Graphs written by earlier versions read as before. `finalize()` gives chunks a
+readable name. GLiNER fails loudly when its model cannot load, ontology
+discovery survives a temporary model error, a new graph accepts its first
+declared ontology, the dedup judge's one-member groups no longer leave
+entities pending, and the agent asks before adding types to an ontology the
+user supplied.
 
 ### Changed
 
@@ -63,7 +68,11 @@ ontology the user supplied.
   reasoning model it used to fall back to the LLM's own `max_tokens`. The
   LLM's `max_tokens` no longer overwrites a `max_completion_tokens` passed
   with a call.
-
+- **`graphrag-mcp` defaults to `openai/gpt-6-luna`.** Without
+  `GRAPHRAG_MODEL`, the MCP server used `gpt-4o-mini`, which leaves OpenAI's
+  API on 14 January 2027. It now uses `openai/gpt-6-luna` with reasoning off
+  (`reasoning_effort="none"`). A model set in `GRAPHRAG_MODEL`, including an
+  Azure deployment, is used as before.
 - **An entity's description is stored once.** A description of more than one
   piece (what several chunks said, or a merge) was stored twice: as the
   `descriptions` list and as `description`, the same text joined with `" | "`.
