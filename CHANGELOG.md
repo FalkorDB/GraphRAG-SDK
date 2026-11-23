@@ -109,6 +109,13 @@ user supplied.
 
 ### Fixed
 
+- **`ConnectionConfig.from_url()` keyword arguments override the URL.** Only
+  `ssl` could be overridden: passing `host`, `port`, `username` or `password`
+  raised `TypeError: got multiple values for keyword argument`, as in
+  `from_url("rediss://user:pw@host:6380", port=7000)`. Every keyword argument
+  now wins over the value parsed from the URL, and an explicit `None` clears
+  one, such as the URL's credentials (#405).
+
 - **GLiNER no longer fails silently on a clean install.** The default GLiNER
   model needs `protobuf` to load its tokenizer, and a clean install did not
   include it. The load failed with "Error parsing line ... spm.model", every
