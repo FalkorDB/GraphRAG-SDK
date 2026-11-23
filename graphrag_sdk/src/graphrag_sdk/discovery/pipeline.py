@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import ModelLoadError
 from graphrag_sdk.core.models import (
     _PROPERTY_TYPES,
     _RESERVED_ATTRIBUTE_NAMES,
@@ -652,6 +653,10 @@ async def _extract_mentions_from_chunk(
     """
     try:
         entities = await extractor.extract_entities(chunk.text, _NER_ANCHOR_LABELS, chunk.uid)
+    except ModelLoadError:
+        # The same on every chunk: an empty ontology with a warning per chunk
+        # would hide it.
+        raise
     except Exception as exc:
         logger.warning(
             "grounded discovery: NER failed on chunk %s (skipping): %s",
@@ -880,14 +885,14 @@ async def discover_grounded(
                 names = await _extract_mentions_from_chunk(entity_extractor, chunk)
                 return chunk, names
 
-        per_chunk = await asyncio.gather(*[_bounded(c) for c in sampled])
+        per_chunk = await _gather_or_cancel(*[_bounded(c) for c in sampled])
         chunks_per_mention: dict[str, list[TextChunk]] = {}
         for chunk, names in per_chunk:
             for name in names:
                 chunks_per_mention.setdefault(name, []).append(chunk)
         return chunks_per_mention
 
-    per_source = await asyncio.gather(*[_process(s) for s in sources_list])
+    per_source = await _gather_or_cancel(*[_process(s) for s in sources_list])
 
     # Merge per-source maps into one ``mention_name → [chunks across corpus]``.
     chunks_by_mention: dict[str, list[TextChunk]] = {}

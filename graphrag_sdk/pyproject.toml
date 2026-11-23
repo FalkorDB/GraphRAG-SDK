@@ -40,6 +40,10 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "tiktoken>=0.5,<1.0",
     "gliner>=0.2,<1",
+    # transformers needs protobuf to read the DeBERTa tokenizer (spm.model) of the
+    # default GLiNER model; gliner does not declare it, and without it the model
+    # fails to load.
+    "protobuf>=4.21",
     "hnswlib>=0.8",
     "scipy>=1.11,<2",
 ]

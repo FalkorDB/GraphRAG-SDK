@@ -30,6 +30,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reranking embeds only the candidates without a stored vector however many
   there are, instead of re-embedding them all when more than a tenth lack one.
   Prompts or token budgets tuned to the old output may need a look.
+- **Any reasoning model works without a setting.** `LiteLLM` and
+  `OpenRouterLLM` decided how to send `temperature` and the token cap by the
+  model's name, and knew only names starting `o1`, `o3` and `gpt-5`. A model
+  outside that list, such as `gpt-6-luna` (OpenAI's suggested replacement for
+  gpt-4.1 and gpt-4o-mini, which leave its API on 14 January 2027), `o4-mini`,
+  or any model behind an Azure deployment name, got `temperature=0.0` and
+  `max_tokens`, and a model that rejects them failed every call. The name is now
+  only a first guess (`o4` and `gpt-6` added): when a model rejects
+  `temperature` or `max_tokens`, the request is sent again at once without the
+  temperature, or with `max_completion_tokens`, and the LLM keeps that for its
+  later requests. These re-sends do not count against `max_retries` and wait
+  for no backoff. LiteLLM raises the rejection itself, before any network call,
+  for the models it knows, so they cost nothing; any other model costs at most
+  one rejected request per parameter. With `reasoning_effort="none"`, on the
+  LLM or on a call, the temperature is sent, since a gpt-5.x model with
+  reasoning off takes one; a temperature rejected at one `reasoning_effort` is
+  dropped at that effort only. A re-sent request gets its own `timeout`.
+  LiteLLM's own `supports_reasoning` flag was not used: it is also true for
+  Claude and Gemini, which take a temperature.
+- A call's `max_tokens=None` now means no output limit on every model; on a
+  reasoning model it used to fall back to the LLM's own `max_tokens`. The
+  LLM's `max_tokens` no longer overwrites a `max_completion_tokens` passed
+  with a call.
+
 - **An entity's description is stored once.** A description of more than one
   piece (what several chunks said, or a merge) was stored twice: as the
   `descriptions` list and as `description`, the same text joined with `" | "`.
@@ -65,6 +89,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `FinalizeResult.chunks_named` counts what was named (#226).
 
 ### Fixed
+
+- **GLiNER no longer fails silently on a clean install.** The default GLiNER
+  model needs `protobuf` to load its tokenizer, and a clean install did not
+  include it. The load failed with "Error parsing line ... spm.model", every
+  chunk logged "Step 1 NER failed", and extraction quietly continued with the
+  LLM only. `protobuf` is now a dependency. If a GLiNER model still cannot load,
+  ingestion fails once with a clear `ModelLoadError` (an `ExtractionError`)
+  naming the model and, when `protobuf` is missing, the package to install. The
+  failure is remembered for 60 seconds rather than retried for every chunk, then
+  a later ingest tries the load again. A missing or broken package raises
+  `ModelImportError`, which is also an `ImportError`, so `except ImportError`
+  still catches a missing `gliner` as before. A plain `ExtractionError` from a
+  custom extractor still fails only its own chunk.
+  - The model loads before a document's chunks are written (a new
+    `ExtractionStrategy.prepare()` and `EntityExtractor.ensure_ready()`, both
+    no-ops by default), so a broken model leaves no half-written document.
+  - `SpacyExtractor` raises `ModelLoadError` for a missing package or model
+    (still an `ImportError` / `OSError`) or any other load or import failure,
+    such as a missing pipeline plugin or a numpy version mismatch (the hint says
+    to install the extra only when spaCy itself is missing), and, like GLiNER, tries the load
+    again after 60 s, so a model downloaded later is picked up without a
+    restart. Grounded discovery stops on a `ModelLoadError` instead of
+    returning an empty ontology.
+  - `CompositeExtractor` lets every member finish the chunk before raising, so
+    a member in a worker thread (GLiNER, spaCy) is not abandoned mid-inference
+    and its load error is the one reported. A `TimeoutError` or
+    `ConnectionError` now fails only its member, on every Python version. A
+    member without `ensure_ready()` counts as ready.
 
 - **The dedup judge accepts a one-member group.** The model sometimes answered
   a set with a group of one entity carrying a name (`SET 1 GROUP: 5 | NAME:

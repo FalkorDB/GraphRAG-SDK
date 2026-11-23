@@ -28,6 +28,7 @@ from graphrag_sdk.core.exceptions import (
     ChunkingError,
     ConfigError,
     LoaderError,
+    ModelLoadError,
     ReadOnlyViolation,
 )
 from graphrag_sdk.core.models import (
@@ -371,6 +372,11 @@ def _file_error(exc: BaseException) -> str:
 
     if isinstance(exc, (ToolError, LoaderError, ChunkBudgetExceededError)):
         return _short(redact(str(exc)), 300)
+    if isinstance(exc, ModelLoadError):
+        # Its hint is SDK-written (the model, what to install); the message
+        # may quote the underlying error, so it stays in the log only.
+        logger.warning("A file failed: %s Cause: %s", redact(exc.hint), redact(str(exc)))
+        return _short(redact(exc.hint), 300)
     logger.warning("A file failed (%s); details withheld.", type(exc).__name__)
     return (
         f"Failed with {type(exc).__name__}; the message is withheld "
