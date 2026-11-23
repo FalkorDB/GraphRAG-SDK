@@ -57,7 +57,11 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.descriptions import description_pieces, set_description
+from graphrag_sdk.core.descriptions import (
+    DESCRIPTION_COUNT_KEY,
+    description_pieces,
+    set_description,
+)
 from graphrag_sdk.core.exceptions import DatabaseUnavailableError, LatencyBudgetExceededError
 from graphrag_sdk.core.models import (
     EntityMention,
@@ -325,6 +329,11 @@ class CachedChunkExtraction(ExtractionStrategy):
                         rel_props["rel_type"] = rel.rel_type
                     if rel.description:
                         rel_props["description"] = rel.description
+                        # A description a dedup merge joined keeps its piece
+                        # count: written without it, the edge write would
+                        # clear it and the next merge read the text whole.
+                        if rel.description_piece_count is not None:
+                            rel_props[DESCRIPTION_COUNT_KEY] = rel.description_piece_count
                     if rel.fact:
                         rel_props["fact"] = rel.fact
                     if rel.src_name:
@@ -415,6 +424,13 @@ class CachedChunkExtraction(ExtractionStrategy):
                     rels_by_key[key] = rel
                 else:
                     merged = _union_sources(current.properties or {}, rel.properties or {})
+                    # A later part's description brings its own piece count
+                    # (none for one piece): the earlier part's, kept, would
+                    # split the later text at ``|``.
+                    if "description" in (rel.properties or {}):
+                        merged.pop(DESCRIPTION_COUNT_KEY, None)
+                        if (rel.properties or {}).get(DESCRIPTION_COUNT_KEY) is not None:
+                            merged[DESCRIPTION_COUNT_KEY] = rel.properties[DESCRIPTION_COUNT_KEY]
                     rels_by_key[key] = GraphRelationship(
                         start_node_id=rel.start_node_id,
                         end_node_id=rel.end_node_id,

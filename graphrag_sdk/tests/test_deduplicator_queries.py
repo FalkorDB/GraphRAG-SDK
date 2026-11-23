@@ -431,9 +431,10 @@ class TestMergePreservesDescriptions:
         assert "nr.descriptions = CASE WHEN no_ex THEN e.descriptions ELSE null END" in q
         assert "nr.fact = new_fact" in q
         assert (
-            "nr.embedding = CASE WHEN coalesce(new_fact, '') = coalesce(e.fact, '') "
-            "THEN e.embedding WHEN NOT no_ex AND coalesce(new_fact, '') = "
-            "coalesce(old_fact, '') THEN old_emb ELSE null END"
+            "nr.embedding = CASE WHEN e.embedding IS NOT NULL "
+            "AND coalesce(new_fact, '') = coalesce(e.fact, '') THEN e.embedding "
+            "WHEN NOT no_ex AND old_emb IS NOT NULL "
+            "AND coalesce(new_fact, '') = coalesce(old_fact, '') THEN old_emb ELSE null END"
         ) in q
 
     def test_node_provenance_is_unioned_before_deletion(self):

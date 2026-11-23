@@ -2241,11 +2241,11 @@ class GraphStore:
                 "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
                 "WHERE any(c IN r.source_chunk_ids WHERE c IN $cids) "
                 "RETURN a.id, b.id, r.rel_type, r.description, r.fact, "
-                "r.src_name, r.tgt_name, r.source_chunk_ids",
+                f"r.src_name, r.tgt_name, r.source_chunk_ids, r.{DESCRIPTION_COUNT_KEY}",
                 {"cids": batch},
             )
             for row in result.result_set or []:
-                start_id, end_id, rel_type, description, fact, src_name, tgt_name, srcs = row
+                start_id, end_id, rel_type, description, fact, src_name, tgt_name, srcs, count = row
                 if not start_id or not end_id:
                     continue
                 # Same scalar-vs-list guard as the entity accessor: a
@@ -2262,6 +2262,11 @@ class GraphStore:
                             end_entity_id=end_id,
                             rel_type=rel_type if isinstance(rel_type, str) else None,
                             description=description if isinstance(description, str) else None,
+                            description_piece_count=(
+                                count
+                                if isinstance(count, int) and not isinstance(count, bool)
+                                else None
+                            ),
                             fact=fact if isinstance(fact, str) else None,
                             src_name=src_name if isinstance(src_name, str) else None,
                             tgt_name=tgt_name if isinstance(tgt_name, str) else None,

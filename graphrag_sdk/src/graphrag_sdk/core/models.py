@@ -285,6 +285,10 @@ class ChunkRelationshipRow(DataModel):
     end_entity_id: str
     rel_type: str | None = None
     description: str | None = None
+    #: The edge's ``description_piece_count``: set when its description joins
+    #: two or more pieces (a dedup merge collapsed two edges). Written back
+    #: with the description, or the replay would read the joined text whole.
+    description_piece_count: int | None = None
     fact: str | None = None
     src_name: str | None = None
     tgt_name: str | None = None

@@ -613,10 +613,12 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
             "nr.descriptions = CASE WHEN no_ex THEN e.descriptions ELSE null END, "
             "nr.fact = new_fact, "
             # The embedding is of ``fact``: the duplicate's, or the survivor's
-            # edge's, still matches when the fact is still that edge's.
-            "nr.embedding = CASE WHEN coalesce(new_fact, '') = coalesce(e.fact, '') "
-            "THEN e.embedding WHEN NOT no_ex AND coalesce(new_fact, '') = "
-            "coalesce(old_fact, '') THEN old_emb ELSE null END"
+            # edge's, still matches when the fact is still that edge's. One
+            # not embedded yet gives way to the other's.
+            "nr.embedding = CASE WHEN e.embedding IS NOT NULL "
+            "AND coalesce(new_fact, '') = coalesce(e.fact, '') THEN e.embedding "
+            "WHEN NOT no_ex AND old_emb IS NOT NULL "
+            "AND coalesce(new_fact, '') = coalesce(old_fact, '') THEN old_emb ELSE null END"
         )
     elif safe == "MENTIONED_IN":
         # Both entities mention the chunk: the survivor's edge keeps what each

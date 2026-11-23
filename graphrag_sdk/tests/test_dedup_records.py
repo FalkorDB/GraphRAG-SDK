@@ -366,6 +366,14 @@ async def test_relates_collapse_combines_descriptions_and_fact(graph):
         "(d)-[:RELATES {rel_type: 'BOARD_MEMBER', description: 'sits on the board', "
         "  fact: '(Timothy Cook, BOARD_MEMBER, Nike): sits on the board', "
         "  source_chunk_ids: ['c2'], embedding: [0.875, 0.875]}]->(nike), "
+        # One fact on both, the duplicate's not embedded yet: the survivor's
+        # embedding of that fact is kept.
+        "(s)-[:RELATES {rel_type: 'MENTORS', description: 'mentor', "
+        "  fact: '(Tim Cook, MENTORS, Apple): mentor', "
+        "  source_chunk_ids: ['c1'], embedding: [0.0625, 0.0625]}]->(apple), "
+        "(d)-[:RELATES {rel_type: 'MENTORS', description: 'mentor', "
+        "  fact: '(Tim Cook, MENTORS, Apple): mentor', "
+        "  source_chunk_ids: ['c2']}]->(apple), "
         # Into the duplicate: combined like an outgoing edge.
         "(jobs)-[:RELATES {rel_type: 'HIRED', description: 'hired as COO', "
         "  fact: '(Steve Jobs, HIRED, Tim Cook): hired as COO', "
@@ -437,6 +445,16 @@ async def test_relates_collapse_combines_descriptions_and_fact(graph):
             "Null",
         ],
         [
+            "MENTORS",
+            "s",
+            "mentor",
+            None,
+            "(Tim Cook, MENTORS, Apple): mentor",
+            ["c1", "c2"],
+            [0.0625, 0.0625],
+            "List",
+        ],
+        [
             "WORKS_AT",
             "s",
             "employee",
@@ -495,6 +513,18 @@ async def test_a_relates_upsert_after_a_collapse_replaces_the_piece_count(graph)
 
     joined = "CEO of Apple since 2011 | succeeded Steve Jobs"
     assert await absorb(store, graph, plan_run, dup="d1", dup_name="Timothy Cook") == APPLIED
+    assert await rows(graph, leads) == [[joined, 2]]
+
+    # A cached document update reads the edge back and writes it again, as
+    # CachedChunkExtraction does: the count comes back with the text.
+    (cached,) = await graph.get_relationships_for_chunks(["c1"])
+    assert (cached.description, cached.description_piece_count) == (joined, 2)
+    await upsert(
+        {
+            "description": cached.description,
+            "description_piece_count": cached.description_piece_count,
+        }
+    )
     assert await rows(graph, leads) == [[joined, 2]]
 
     # No description in the write: the description and its count stay.
