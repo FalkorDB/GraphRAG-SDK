@@ -21,8 +21,9 @@ class DedupJudge(ABC):
     The rest stays with the run, whatever the judge:
 
     - every answer is checked: members the set has, each in one group at
-      most, a name or ``keep`` pick only on a group of two or more. An answer
-      that fails is no answer;
+      most and listed once. An answer that fails is no answer. A one-member
+      group means that member stands alone; a name or ``keep`` pick on it is
+      not used;
     - a set without an answer is asked again, up to 2 more times, then stays
       pending for the next run; after 3 runs it is reported unresolved;
     - the merge — survivor, labels, properties, relationships — follows the
