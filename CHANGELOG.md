@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Retrieval context is a little larger and reads the same everywhere.**
+  `MultiPathRetrieval`'s `chunk_top_k` default goes from 15 to 20, and the
+  passages shown follow it. Every relation line is now one edge,
+  `src —[TYPE]→ tgt: description [key: value]` (the edge's description first,
+  its `fact` only when it has none), in place of the old two-hop chain lines.
+  `LocalRetrieval`'s related entities read `name (Type): description [key:
+  value]` instead of a raw dict. Entity lines carry their table values, cut
+  near 200 characters even when one value alone is longer, and two entities
+  that share a name but hold different values stay two lines. Relation lines
+  from vector search carry a relationship table's values too, the walk does
+  not return an edge twice, and two edges between same-name entities with
+  different evidence both stay. `LocalRetrieval` leaves out chunks of a
+  document mid-update, and text-to-Cypher rows that return lists, maps or
+  whole chunks read as text. A relationship table's edges have no embedding,
+  so the question-ranked walk keeps a share of its room for them, and an
+  `aliases` value stored as a single string counts as one alias instead of
+  failing name search. `LocalRetrieval`, like `MultiPathRetrieval`, shows a
+  contextual chunk's own text without the model-written context, and
+  reranking embeds only the candidates without a stored vector however many
+  there are, instead of re-embedding them all when more than a tenth lack one.
+  Prompts or token budgets tuned to the old output may need a look.
 - **Any reasoning model works without a setting.** `LiteLLM` and
   `OpenRouterLLM` decided how to send `temperature` and the token cap by the
   model's name, and knew only names starting `o1`, `o3` and `gpt-5`. A model
