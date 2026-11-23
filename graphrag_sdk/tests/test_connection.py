@@ -68,6 +68,33 @@ class TestConnectionConfigFromURL:
         cfg = ConnectionConfig.from_url("rediss://host", ssl=False)
         assert cfg.ssl is False
 
+    def test_explicit_kwargs_override_parsed_fields(self):
+        # Every field the URL sets can be overridden, not only ``ssl``:
+        # passing one used to raise "got multiple values for keyword argument".
+        cfg = ConnectionConfig.from_url(
+            "rediss://user:pw@host:6380/0",
+            host="other",
+            port=7000,
+            username="admin",
+            password="secret",
+        )
+        assert cfg.host == "other"
+        assert cfg.port == 7000
+        assert cfg.username == "admin"
+        assert cfg.password == "secret"
+        assert cfg.ssl is True
+
+    def test_explicit_none_clears_parsed_credentials(self):
+        cfg = ConnectionConfig.from_url("redis://user:pw@host", username=None, password=None)
+        assert cfg.username is None
+        assert cfg.password is None
+
+    def test_kwargs_for_fields_the_url_does_not_set(self):
+        cfg = ConnectionConfig.from_url("redis://host", graph_name="g", query_timeout_ms=None)
+        assert cfg.host == "host"
+        assert cfg.graph_name == "g"
+        assert cfg.query_timeout_ms is None
+
     def test_unknown_scheme_raises(self):
         with pytest.raises(ValueError, match="Unsupported URL scheme"):
             ConnectionConfig.from_url("https://host")
