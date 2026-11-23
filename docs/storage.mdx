@@ -248,7 +248,7 @@ Special characters in fulltext queries are escaped for RediSearch compatibility 
 
 ### Stored Embedding Optimization
 
-During retrieval, the `rerank_chunks()` function uses **stored embeddings** when possible. Instead of re-embedding all candidate chunks (which would require an expensive API call), it fetches the vectors already stored on Chunk nodes and computes cosine similarity locally. This makes reranking instant when stored embedding coverage is >= 90%.
+During retrieval, the `rerank_chunks()` function uses **stored embeddings** when possible. Instead of re-embedding all candidate chunks (which would require an expensive API call), it fetches the vectors already stored on Chunk nodes and computes cosine similarity locally. Only the candidates without a stored vector (table-row chunks, which ingestion never embeds) are embedded, in one call; every candidate is re-embedded only when none has a stored vector.
 
 ### ensure_indices()
 

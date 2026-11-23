@@ -192,7 +192,7 @@ chunker = ContextualChunking(
 
 > **Cost note:** generates one LLM call per chunk at ingestion time.
 
-The prefix is embedded and indexed with the chunk, and the chunk's own text is kept in `original_chunk`. `MultiPathRetrieval` (and a text-to-Cypher row that returns a whole chunk) shows `original_chunk` as the passage, so the answer reads what the document says rather than the model-written prefix.
+The prefix is embedded and indexed with the chunk, and the chunk's own text is kept in `original_chunk`. `MultiPathRetrieval`, `LocalRetrieval` and a text-to-Cypher row that returns a whole chunk show `original_chunk` as the passage, so the answer reads what the document says rather than the model-written prefix.
 
 ### Built-in: CallableChunking (bring your own framework)
 

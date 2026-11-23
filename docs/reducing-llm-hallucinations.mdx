@@ -135,9 +135,10 @@ is lent the current ontology for that call, unless you construct it with
 
 Passage candidates gathered from every path are pooled, then reranked by
 cosine similarity against the question using the embeddings already stored on
-each `Chunk` node at ingestion time. The few candidates without one (mostly
-table rows, which ingestion does not embed) are embedded in one call; when
-fewer than 90% have a stored vector, all the candidates are re-embedded (`rerank_chunks()` in
+each `Chunk` node at ingestion time. The candidates without one (mostly
+table rows, which ingestion does not embed) are embedded in one call, however
+many there are; only when none has a stored vector are all the candidates
+embedded (`rerank_chunks()` in
 [`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)).
 Knowledge-graph facts go through a separate similarity-floor filter
 (`filter_facts_by_relevance()`) instead, since short fact strings have higher

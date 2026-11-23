@@ -74,7 +74,7 @@ The layers are connected by `MENTIONED_IN` edges, which link entities to the chu
 | `index` | `integer` | Position within the document (0-based) |
 | `name` | `string` | Readable name set by `finalize()`: `<document id> · chunk <index>`. Not set on record chunks; `finalize(name_chunks=False)` skips it |
 | `embedding` | `vecf32` | Vector embedding for semantic search (added in Step 9) |
-| Chunker metadata | varies | Written by the chunking strategy. The default `SentenceTokenCapChunking` writes `strategy`, `max_tokens`, `overlap_sentences`, `token_count`, `sentence_count` and `char_count`; `FixedSizeChunking` writes `start_char`, `end_char`, `chunk_size` and `chunk_overlap`; `ContextualChunking` writes `context_prefix` and `original_chunk`, the chunk's text without the prefix, which `MultiPathRetrieval` shows as the passage |
+| Chunker metadata | varies | Written by the chunking strategy. The default `SentenceTokenCapChunking` writes `strategy`, `max_tokens`, `overlap_sentences`, `token_count`, `sentence_count` and `char_count`; `FixedSizeChunking` writes `start_char`, `end_char`, `chunk_size` and `chunk_overlap`; `ContextualChunking` writes `context_prefix` and `original_chunk`, the chunk's text without the prefix, which `MultiPathRetrieval` and `LocalRetrieval` show as the passage |
 | `extracted_ops` | `list[string]` | Ids of the ontology-evolution backfills that have already processed this chunk, so an interrupted backfill resumes where it stopped |
 
 **Created in:** Step 3 (Lexical Graph). Embedding added in Step 9.
