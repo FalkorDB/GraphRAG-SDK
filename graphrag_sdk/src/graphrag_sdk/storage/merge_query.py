@@ -528,6 +528,18 @@ def _fact_head(edge: str) -> str:
     )
 
 
+def _whole_text(edge: str) -> str:
+    """Cypher: ``edge``'s description as stored when it is read whole as one
+    piece — no piece count, no earlier version's ``descriptions`` list, not
+    blank; else null."""
+    text = f"coalesce({edge}.description, '')"
+    return (
+        f"CASE WHEN {edge}.{DESCRIPTION_COUNT_KEY} IS NULL "
+        f"AND size(coalesce({edge}.descriptions, [])) = 0 "
+        f"AND {_tidy(text)} <> '' THEN {edge}.description ELSE null END"
+    )
+
+
 def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
     """Move the duplicate's ``rel_type`` edges of one direction to the survivor.
     ``carried`` are the variables in scope, ``d``, ``s`` and ``ok`` among them."""
@@ -560,19 +572,28 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
         # fact stays. Left to ``+=`` it kept only the duplicate's tables,
         # description and fact, so evidence text was lost and dropping one
         # table deleted an edge another still lists.
+        # When both edges say one thing, the text stays as either stored it
+        # (the duplicate's first): one piece read whole needs no rewrite of
+        # its ``|``, so the fact, and the embedding of it, stay too.
         # Read before the MERGE, which inside FOREACH cannot be followed by WITH.
         head = f"coalesce({_described_fact_head('e')}, old_dhead, {_fact_head('e')}, old_head)"
+        all_text = (
+            f"CASE WHEN size(all_ds) = 1 THEN coalesce({_whole_text('e')}, old_whole, "
+            f"{joined_description('all_ds')}) ELSE {joined_description('all_ds')} END"
+        )
         read_old = (
             f"OPTIONAL MATCH {existing} "
             f"WITH {carried}, e, b, coalesce(ex.source_chunk_ids, []) AS old, "
             f"coalesce(ex.structured_sources, []) AS old_sources, "
             f"{description_members('ex')} AS old_ds, ex IS NULL AS no_ex, "
-            f"{_described_fact_head('ex')} AS old_dhead, {_fact_head('ex')} AS old_head "
+            f"{_described_fact_head('ex')} AS old_dhead, {_fact_head('ex')} AS old_head, "
+            f"{_whole_text('ex')} AS old_whole, ex.fact AS old_fact, ex.embedding AS old_emb "
             f"WITH {carried}, e, b, old, old_sources, no_ex, old_dhead, old_head, "
+            "old_whole, old_fact, old_emb, "
             f"{combined_descriptions('old_ds', 'e', cap=False)} AS all_ds "
-            f"WITH {carried}, e, b, old, old_sources, no_ex, all_ds, "
-            f"{joined_description('all_ds')} AS all_text, {head} AS fact_head "
-            f"WITH {carried}, e, b, old, old_sources, no_ex, all_ds, all_text, "
+            f"WITH {carried}, e, b, old, old_sources, no_ex, all_ds, old_fact, old_emb, "
+            f"{all_text} AS all_text, {head} AS fact_head "
+            f"WITH {carried}, e, b, old, old_sources, no_ex, all_ds, all_text, old_fact, old_emb, "
             "CASE WHEN no_ex OR fact_head IS NULL THEN e.fact "
             "WHEN all_text IS NULL THEN fact_head "
             "ELSE fact_head + ': ' + all_text END AS new_fact "
@@ -591,10 +612,11 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
             f"ELSE {description_count_of('all_ds')} END, "
             "nr.descriptions = CASE WHEN no_ex THEN e.descriptions ELSE null END, "
             "nr.fact = new_fact, "
-            # The embedding is of ``fact``: the duplicate's still matches when
-            # the fact did not change.
+            # The embedding is of ``fact``: the duplicate's, or the survivor's
+            # edge's, still matches when the fact is still that edge's.
             "nr.embedding = CASE WHEN coalesce(new_fact, '') = coalesce(e.fact, '') "
-            "THEN e.embedding ELSE null END"
+            "THEN e.embedding WHEN NOT no_ex AND coalesce(new_fact, '') = "
+            "coalesce(old_fact, '') THEN old_emb ELSE null END"
         )
     elif safe == "MENTIONED_IN":
         # Both entities mention the chunk: the survivor's edge keeps what each

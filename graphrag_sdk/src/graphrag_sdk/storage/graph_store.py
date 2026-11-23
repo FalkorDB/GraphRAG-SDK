@@ -3162,6 +3162,13 @@ class GraphStore:
         new_owners = props.get("structured_sources")
         if union_provenance and isinstance(owners, list) and isinstance(new_owners, list):
             merged["structured_sources"] = owners + [x for x in new_owners if x not in owners]
+        # A RELATES write that replaces the description replaces its piece
+        # count too, as the edge write does: the earlier write's count, kept,
+        # would split the later text at ``|``.
+        if union_provenance and "description" in props:
+            merged.pop(DESCRIPTION_COUNT_KEY, None)
+            if props.get(DESCRIPTION_COUNT_KEY) is not None:
+                merged[DESCRIPTION_COUNT_KEY] = props[DESCRIPTION_COUNT_KEY]
         if join_descriptions:
             members = description_pieces(acc)
             members += [d for d in description_pieces(props) if d not in members]

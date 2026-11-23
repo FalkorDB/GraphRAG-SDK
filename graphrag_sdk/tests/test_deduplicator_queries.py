@@ -395,10 +395,12 @@ class TestMergePreservesDescriptions:
         survivor already has an edge of the same rel_type to the same entity,
         both descriptions are kept (joined and deduplicated, as on nodes), the
         ``fact`` is rebuilt around them, and the embedding — of the fact — is
-        kept only while the fact is the duplicate's, so finalize() re-embeds a
-        changed one."""
+        kept only while the fact is the duplicate's or the survivor's edge's,
+        so finalize() re-embeds a changed one. One piece on both is kept as
+        either edge stored it."""
         from graphrag_sdk.core.descriptions import DESCRIPTION_COUNT_KEY
         from graphrag_sdk.storage.merge_query import (
+            _whole_text,
             combined_descriptions,
             description_count_of,
             description_members,
@@ -408,8 +410,13 @@ class TestMergePreservesDescriptions:
         q = absorb_query([("RELATES", direction)], [], [])
         assert f"{description_members('ex')} AS old_ds" in q
         assert "ex IS NULL AS no_ex" in q
+        assert f"{_whole_text('ex')} AS old_whole" in q
+        assert "ex.fact AS old_fact, ex.embedding AS old_emb" in q
         assert f"{combined_descriptions('old_ds', 'e', cap=False)} AS all_ds" in q
-        assert f"{joined_description('all_ds')} AS all_text" in q
+        assert (
+            f"CASE WHEN size(all_ds) = 1 THEN coalesce({_whole_text('e')}, old_whole, "
+            f"{joined_description('all_ds')}) ELSE {joined_description('all_ds')} END AS all_text"
+        ) in q
         assert "AS old_dhead" in q and "AS old_head" in q and "AS fact_head" in q
         assert (
             "CASE WHEN no_ex OR fact_head IS NULL THEN e.fact "
@@ -425,7 +432,8 @@ class TestMergePreservesDescriptions:
         assert "nr.fact = new_fact" in q
         assert (
             "nr.embedding = CASE WHEN coalesce(new_fact, '') = coalesce(e.fact, '') "
-            "THEN e.embedding ELSE null END"
+            "THEN e.embedding WHEN NOT no_ex AND coalesce(new_fact, '') = "
+            "coalesce(old_fact, '') THEN old_emb ELSE null END"
         ) in q
 
     def test_node_provenance_is_unioned_before_deletion(self):
