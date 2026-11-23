@@ -502,6 +502,32 @@ def mention_update(edge: str, new: str) -> str:
     )
 
 
+def _described_fact_head(edge: str) -> str:
+    """Cypher: the ``(source, TYPE, target)`` head of ``edge``'s ``fact`` when
+    the fact is that head plus ``": "`` plus the edge's description, as
+    extraction writes it; else null. Null-safe in every branch (the C engine
+    evaluates CASE branches it does not take)."""
+    fact = f"coalesce({edge}.fact, '')"
+    desc = f"coalesce({edge}.description, '')"
+    return (
+        f"CASE WHEN {desc} <> '' AND size({fact}) > size({desc}) + 2 "
+        f"AND {fact} ENDS WITH (': ' + {desc}) "
+        f"THEN left({fact}, CASE WHEN size({fact}) > size({desc}) + 2 "
+        f"THEN size({fact}) - size({desc}) - 2 ELSE 0 END) ELSE null END"
+    )
+
+
+def _fact_head(edge: str) -> str:
+    """Cypher: :func:`_described_fact_head`, or, for an edge with no
+    description, its whole ``fact`` (a relationship table's template); else
+    null."""
+    return (
+        f"CASE WHEN {edge}.fact IS NULL THEN null "
+        f"WHEN coalesce({edge}.description, '') = '' THEN {edge}.fact "
+        f"ELSE {_described_fact_head(edge)} END"
+    )
+
+
 def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
     """Move the duplicate's ``rel_type`` edges of one direction to the survivor.
     ``carried`` are the variables in scope, ``d``, ``s`` and ``ok`` among them."""
@@ -520,16 +546,36 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
             f"(b)-[ex:`{safe}`{key}]->(s)",
         )
     if key:
-        # Provenance is unioned, not overwritten: the survivor's edge keeps the
-        # chunks that already vouched for it (``delete_stale_relationships``),
-        # and the relationship tables that own it (``structured_sources``) —
-        # left to ``+=`` it kept only the duplicate's tables, so dropping one
-        # of those deleted an edge another, now forgotten, table still lists.
+        # Provenance and evidence are combined, not overwritten: the survivor's
+        # edge keeps the chunks that already vouched for it
+        # (``delete_stale_relationships``), the relationship tables that own it
+        # (``structured_sources``), and both edges' description pieces (joined
+        # and deduplicated, as on nodes). When both edges collapse into one,
+        # ``fact`` (the text an edge is embedded from) is rebuilt as
+        # ``(source, TYPE, target): <combined description>`` and, when that
+        # changes it, the embedding is cleared so finalize() re-embeds it.
+        # The head is taken from an edge whose fact carries its description
+        # (the duplicate's first, as ``+=`` keeps its names), before a
+        # relationship table's template; with no usable head the duplicate's
+        # fact stays. Left to ``+=`` it kept only the duplicate's tables,
+        # description and fact, so evidence text was lost and dropping one
+        # table deleted an edge another still lists.
         # Read before the MERGE, which inside FOREACH cannot be followed by WITH.
+        head = f"coalesce({_described_fact_head('e')}, old_dhead, {_fact_head('e')}, old_head)"
         read_old = (
             f"OPTIONAL MATCH {existing} "
             f"WITH {carried}, e, b, coalesce(ex.source_chunk_ids, []) AS old, "
-            "coalesce(ex.structured_sources, []) AS old_sources "
+            f"coalesce(ex.structured_sources, []) AS old_sources, "
+            f"{description_members('ex')} AS old_ds, ex IS NULL AS no_ex, "
+            f"{_described_fact_head('ex')} AS old_dhead, {_fact_head('ex')} AS old_head "
+            f"WITH {carried}, e, b, old, old_sources, no_ex, old_dhead, old_head, "
+            f"{combined_descriptions('old_ds', 'e', cap=False)} AS all_ds "
+            f"WITH {carried}, e, b, old, old_sources, no_ex, all_ds, "
+            f"{joined_description('all_ds')} AS all_text, {head} AS fact_head "
+            f"WITH {carried}, e, b, old, old_sources, no_ex, all_ds, all_text, "
+            "CASE WHEN no_ex OR fact_head IS NULL THEN e.fact "
+            "WHEN all_text IS NULL THEN fact_head "
+            "ELSE fact_head + ': ' + all_text END AS new_fact "
         )
         update = (
             "SET nr += properties(e) "
@@ -539,7 +585,16 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
             "nr.structured_sources = CASE WHEN size(old_sources) = 0 "
             "AND size(coalesce(e.structured_sources, [])) = 0 THEN null "
             "ELSE old_sources + [x IN coalesce(e.structured_sources, []) "
-            "WHERE NOT x IN old_sources] END"
+            "WHERE NOT x IN old_sources] END, "
+            "nr.description = CASE WHEN no_ex THEN e.description ELSE all_text END, "
+            f"nr.{DESCRIPTION_COUNT_KEY} = CASE WHEN no_ex THEN e.{DESCRIPTION_COUNT_KEY} "
+            f"ELSE {description_count_of('all_ds')} END, "
+            "nr.descriptions = CASE WHEN no_ex THEN e.descriptions ELSE null END, "
+            "nr.fact = new_fact, "
+            # The embedding is of ``fact``: the duplicate's still matches when
+            # the fact did not change.
+            "nr.embedding = CASE WHEN coalesce(new_fact, '') = coalesce(e.fact, '') "
+            "THEN e.embedding ELSE null END"
         )
     elif safe == "MENTIONED_IN":
         # Both entities mention the chunk: the survivor's edge keeps what each

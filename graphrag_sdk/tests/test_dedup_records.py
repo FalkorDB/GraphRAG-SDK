@@ -319,6 +319,91 @@ async def test_an_absorb_moves_every_edge_once_and_deletes_the_duplicate(graph):
     assert await absorb(store, graph, plan_run, read=read) == ALREADY_APPLIED
 
 
+async def test_relates_collapse_combines_descriptions_and_fact(graph):
+    """When a dedup absorb moves a RELATES edge onto the survivor and the
+    survivor already has an edge of the same rel_type to the same entity,
+    both descriptions are kept joined and deduplicated, the fact is rebuilt
+    around them, and the embedding is cleared only when the fact changed. An
+    edge with nothing to collapse into moves as it was."""
+    await graph.query_raw(
+        "CREATE (s:__Entity__:Person {id: 's', name: 'Tim Cook', source_chunk_ids: ['c1']}), "
+        "(d:__Entity__:Person {id: 'd', name: 'Timothy Cook', source_chunk_ids: ['c2']}), "
+        "(apple:__Entity__:Organization {id: 'apple', name: 'Apple'}), "
+        "(nike:__Entity__:Organization {id: 'nike', name: 'Nike'}), "
+        # Two descriptions: combined, fact rebuilt, embedding cleared.
+        "(s)-[:RELATES {rel_type: 'LEADS', description: 'CEO of Apple since 2011', "
+        "  fact: '(Tim Cook, LEADS, Apple): CEO of Apple since 2011', "
+        "  source_chunk_ids: ['c1'], embedding: [1.0, 0.0]}]->(apple), "
+        "(d)-[:RELATES {rel_type: 'LEADS', description: 'succeeded Steve Jobs as chief executive', "
+        "  fact: '(Timothy Cook, LEADS, Apple): succeeded Steve Jobs as chief executive', "
+        "  source_chunk_ids: ['c2'], embedding: [0.0, 1.0]}]->(apple), "
+        # One description on both: the duplicate's fact and embedding stand.
+        "(s)-[:RELATES {rel_type: 'WORKS_AT', description: 'employee', "
+        "  fact: '(Tim Cook, WORKS_AT, Apple): employee', "
+        "  source_chunk_ids: ['c1'], embedding: [0.1, 0.1]}]->(apple), "
+        "(d)-[:RELATES {rel_type: 'WORKS_AT', description: 'employee', "
+        "  fact: '(Timothy Cook, WORKS_AT, Apple): employee', "
+        "  source_chunk_ids: ['c2'], embedding: [0.2, 0.2]}]->(apple), "
+        # A relationship table's template collapsing into a document's fact:
+        # the document's head is kept, not the template.
+        "(s)-[:RELATES {rel_type: 'INVESTED_IN', description: 'holds shares', "
+        "  fact: '(Tim Cook, INVESTED_IN, Apple): holds shares', "
+        "  source_chunk_ids: ['c1'], embedding: [0.3, 0.3]}]->(apple), "
+        "(d)-[:RELATES {rel_type: 'INVESTED_IN', "
+        "  fact: '(Person, INVESTED_IN, Organization)', "
+        "  structured_sources: ['t1'], embedding: [0.4, 0.4]}]->(apple), "
+        # Nothing to collapse into: moved unchanged.
+        "(d)-[:RELATES {rel_type: 'BOARD_MEMBER', description: 'sits on the board', "
+        "  fact: '(Timothy Cook, BOARD_MEMBER, Nike): sits on the board', "
+        "  source_chunk_ids: ['c2'], embedding: [0.5, 0.5]}]->(nike)"
+    )
+    store = await held(graph)
+    plan_run = await one_absorb_plan(store)
+    assert await absorb(store, graph, plan_run) == APPLIED
+
+    res = await rows(
+        graph,
+        "MATCH (s:__Entity__ {id: 's'})-[r:RELATES]->(b:__Entity__) "
+        "RETURN r.rel_type, r.description, r.description_piece_count, r.fact, "
+        "r.source_chunk_ids, r.embedding IS NULL ORDER BY r.rel_type",
+    )
+    assert res == [
+        [
+            "BOARD_MEMBER",
+            "sits on the board",
+            None,
+            "(Timothy Cook, BOARD_MEMBER, Nike): sits on the board",
+            ["c2"],
+            False,
+        ],
+        [
+            "INVESTED_IN",
+            "holds shares",
+            None,
+            "(Tim Cook, INVESTED_IN, Apple): holds shares",
+            ["c1"],
+            True,
+        ],
+        [
+            "LEADS",
+            "CEO of Apple since 2011 | succeeded Steve Jobs as chief executive",
+            2,
+            "(Timothy Cook, LEADS, Apple): "
+            "CEO of Apple since 2011 | succeeded Steve Jobs as chief executive",
+            ["c1", "c2"],
+            True,
+        ],
+        [
+            "WORKS_AT",
+            "employee",
+            None,
+            "(Timothy Cook, WORKS_AT, Apple): employee",
+            ["c1", "c2"],
+            False,
+        ],
+    ]
+
+
 async def test_an_edge_type_the_query_was_not_built_for_stops_the_merge(graph):
     await tim_cook(graph)
     store = await held(graph)
