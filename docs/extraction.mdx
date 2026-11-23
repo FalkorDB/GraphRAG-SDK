@@ -360,7 +360,8 @@ extractor = GraphExtraction(llm=llm, relation_types=[])
 
 <Note>
 A table mapping's `Link` (for example `Link("WORKS_AT", to="Organization",
-by="org_id")`) registers a relation in the ontology. From then on
+by="org_id")`) registers a relation in the ontology, and so does a
+relationship-only table (`RelationshipMapping`). From then on
 `Ontology.relations` is non-empty, so prose extraction switches to the strict
 *Allowed Relationships* list for that graph. If your documents need other
 relations, declare them in the ontology too.

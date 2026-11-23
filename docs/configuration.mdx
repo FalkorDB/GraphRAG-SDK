@@ -69,7 +69,7 @@ config = ConnectionConfig.from_url(
 )
 ```
 
-The URL format is `redis://[user:pass@]host[:port]` (plaintext) or `rediss://...` (TLS); a `/db` path is ignored. A URL with no scheme is accepted too; any other scheme raises `ValueError`. Keyword arguments override the values parsed from the URL.
+The URL format is `redis://[user:pass@]host[:port]` (plaintext) or `rediss://...` (TLS); a `/db` path is ignored. Always include the scheme: without one, `"host:6380"` raises `ValueError` (the host is read as the scheme) and a bare `"host"` falls back to `localhost:6379`. Any other scheme raises `ValueError`. Keyword arguments override the values parsed from the URL.
 
 ### Passing to GraphRAG
 
@@ -302,6 +302,7 @@ Other keyword arguments (such as `dimensions`) are forwarded to LiteLLM. For Azu
 ```python
 from graphrag_sdk import OpenRouterEmbedder
 
+# ada-002 returns 1536-dimension vectors: pass GraphRAG(embedding_dimension=1536)
 embedder = OpenRouterEmbedder(
     model="openai/text-embedding-ada-002",
     api_key="sk-or-...",

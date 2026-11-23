@@ -335,8 +335,8 @@ Change the ontology of a populated graph. Full semantics in [Ontology Evolution]
 | `drop_relation(label)` | `Ontology` | Deletes every `[:label]`-typed edge. `RELATES` edges with that `rel_type` are kept. Raises `ValueError` while a relationship table writes this type |
 | `drop_relation_pattern(rel_label, source, target)` | `Ontology` | Deletes `[:rel_label]`-typed edges between the two labels. `RELATES` edges are kept |
 | `drop_table(source)` | `Ontology` | See below |
-| `add_attribute(owner_label, attribute, *, concurrency=4, dry_run=False)` | `EvolutionResult` | Declare an attribute and fill it from stored chunks with the LLM |
-| `drop_attribute(owner_label, name)` | `Ontology` | Remove an attribute from every instance |
+| `add_attribute(owner_label, attribute, *, concurrency=4, dry_run=False)` | `EvolutionResult` | Declare an attribute and fill it from stored chunks with the LLM. Entity owners only |
+| `drop_attribute(owner_label, name)` | `Ontology` | Remove an attribute from every instance. Entity owners only |
 | `backfill_entity(label, *, scope="all", concurrency=4, dry_run=False)` | `BackfillResult` | Re-scan chunks for instances of a label |
 | `backfill_relation_pattern(rel_label, source, target, *, scope="candidate-pairs", concurrency=4, dry_run=False)` | `BackfillResult` | Re-scan co-mention chunks for edges of a pattern |
 
@@ -487,7 +487,7 @@ class ConnectionConfig:
     def from_url(cls, url: str, **kwargs) -> ConnectionConfig
 ```
 
-`from_url()` accepts `redis://`, `rediss://` (TLS on) or no scheme; any other scheme raises `ValueError`. A `/db` path is ignored. Keyword arguments override parsed values. Field-by-field descriptions, timeouts and retry behaviour are in [Configuration](/configuration#1-connectionconfig).
+`from_url()` accepts `redis://` or `rediss://` (TLS on); any other scheme raises `ValueError`. Always include the scheme: `"host:6380"` raises `ValueError` and a bare `"host"` falls back to `localhost:6379`. A `/db` path is ignored. Keyword arguments override parsed values. Field-by-field descriptions, timeouts and retry behaviour are in [Configuration](/configuration#1-connectionconfig).
 
 ### FalkorDBConnection
 
@@ -1089,7 +1089,7 @@ class Column:
     description: str | None = None
 ```
 
-Types are declared, never sniffed. Numbers may use either grouping convention (`1,234.56` and `1.234,56` both read as `1234.56`); a lone `1,234` is read as `1234` by `INTEGER` and refused as ambiguous by `FLOAT`; `INTEGER` refuses a fractional number; `FLOAT` refuses `nan` and `inf`; `BOOLEAN` reads `true/false`, `yes/no`, `1/0` and similar; `DATE` is stored as an ISO date string; `LIST` is parsed as a CSV row. A blank cell writes no property; a cell holding `0` is a value, not a blank.
+Types are declared, never sniffed. Numbers with a decimal part may use either grouping convention (`1,234.56` and `1.234,56` both read as `1234.56`); without one, only comma grouping is read (`1,234,567`), and dot grouping such as `1.234.567` is refused; a lone `1,234` is read as `1234` by `INTEGER` and refused as ambiguous by `FLOAT`; `INTEGER` refuses a fractional number; `FLOAT` refuses `nan` and `inf`; `BOOLEAN` reads `true/false`, `yes/no`, `1/0` and similar; `DATE` is stored as an ISO date string; `LIST` is parsed as a CSV row. A blank cell writes no property; a cell holding `0` is a value, not a blank.
 
 ### Link
 

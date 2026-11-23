@@ -135,7 +135,7 @@ from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
 rag = GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
     llm=LiteLLM(model="azure/gpt-4.1"),
-    embedder=LiteLLMEmbedder(model="azure/text-embedding-ada-002"),
+    embedder=LiteLLMEmbedder(model="azure/text-embedding-3-large", dimensions=256),
 )
 await rag.ingest("document.txt", extractor=MyCustomExtraction())
 ```

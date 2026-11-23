@@ -595,7 +595,7 @@ vector_store = VectorStore(conn, embedder=embedder, embedding_dimension=256)
 
 ### Built-in: LocalRetrieval
 
-Simple retrieval: vector search on chunks + 1-hop entity traversal. Items carry the chunk's similarity in `score` and its id in `metadata["chunk_id"]`. Connected entities read `name (Type): description [key: value]`. Chunks of a document that `update()` is replacing or `delete_document()` is removing are skipped, and the vector search is widened to fill `top_k` with live chunks.
+Simple retrieval: vector search on chunks + 1-hop entity traversal. Items carry the chunk's similarity in `score` and its id in `metadata["chunk_id"]`. Connected entities read `name (Type): description [key: value]`. Chunks of the new version an `update()` is still writing (the `<id>__pending__<hex>` copy; the old version stays retrievable until cutover) and of a document `delete_document()` is removing are skipped, and the vector search is widened to fill `top_k` with live chunks.
 
 ```python
 from graphrag_sdk.retrieval.strategies.local import LocalRetrieval

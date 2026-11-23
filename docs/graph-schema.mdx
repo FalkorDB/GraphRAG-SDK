@@ -171,7 +171,7 @@ Deduplicated by `(entity_id, chunk_id)`. Written once and deleted with its chunk
 | Property | Type | Description |
 |----------|------|-------------|
 | `rel_type` | `string` | Original relationship type (e.g., `"WORKS_AT"`, `"LOCATED_IN"`) |
-| `fact` | `string` | Human-readable fact: `"(Alice, WORKS_AT, Acme Corp): Alice is a senior engineer"`. A table edge's fact names the labels: `"(Person, WORKS_AT, Organization)"` |
+| `fact` | `string` | Human-readable fact: `"(Alice, WORKS_AT, Acme Corp): Alice is a senior engineer"`. A `Link` edge's fact names the mapping's handles, which are the labels: `"(Person, WORKS_AT, Organization)"`, except that a link back to the table's own label, or a second link to the same label, is named after its column: `"(Person, REPORTS_TO, Person__manager_id)"` |
 | `description` | `string` | Relationship description from LLM (extracted edges only) |
 | `src_name` | `string` | Source entity name at extraction time (extracted edges only). A dedup merge leaves it as it was, so retrieval and the agent tools name an edge's ends from its endpoint nodes |
 | `tgt_name` | `string` | Target entity name at extraction time (extracted edges only); see `src_name` |
@@ -245,7 +245,7 @@ Every write is a `MERGE` on `id`, and a `MERGE` can only use an index on the lab
 
 | Target | Property |
 |--------|----------|
-| `Document`, `Chunk`, `__Entity__` | `id` |
+| `Document`, `Chunk`, `__Entity__` | `id` and `entity_key` |
 | Every entity label a write touches (`Person`, `Organization`, …) | `id` and `entity_key` |
 | A table's own label, which every table write looks its rows up on by key | the table's signed key column (e.g. `employees__employee_id`) |
 
@@ -325,7 +325,7 @@ A relationship with an empty `patterns` list is allowed between any entity types
 
 ### Typed Attributes
 
-`Attribute(name, type, description)` declares a typed property on an entity or relation (`STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`). The extractor asks the LLM for declared attributes and coerces each value to its type:
+`Attribute(name=..., type=..., description=...)` (keyword arguments only; it is a pydantic model) declares a typed property on an entity or relation (`STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`). The extractor asks the LLM for declared attributes and coerces each value to its type:
 
 ```python
 from graphrag_sdk import Attribute, Entity

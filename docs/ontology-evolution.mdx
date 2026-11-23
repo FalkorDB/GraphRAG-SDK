@@ -206,7 +206,7 @@ Because the mapping lives in the ontology you pass to `GraphRAG(ontology=...)`, 
 
 ### Relation Patterns and Descriptions
 
-A relation with several `(source, target)` patterns keeps its first description: when the patterns carry different descriptions, the oldest one is reported, so a description a table derived never replaces the one you declared. A new pattern added with `add_relation_pattern` copies its properties, including the `structured` flag, from the oldest sibling pattern.
+A relation with several `(source, target)` patterns keeps its first description: when the patterns carry different descriptions, the oldest one is reported, so a description a table derived never replaces the one you declared. A new pattern added with `add_relation_pattern` copies its properties' type and description from the oldest sibling pattern, and marks a property `structured` when any sibling has it so.
 
 ---
 

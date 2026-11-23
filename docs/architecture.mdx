@@ -83,7 +83,7 @@ Ingest resolves duplicates only within one document; it never sees two documents
    - Then every entity whose description holds more than 5 pieces gets one LLM summary (`FinalizeResult.descriptions_summarised`).
 3. Embed `RELATES` facts.
 4. Ensure every index exists, waiting up to 10 minutes for builds to finish.
-5. Give unnamed chunks a readable name, `"<document id> · chunk <index>"` (table-row chunks and documents `update()` is still replacing are skipped; `finalize(name_chunks=False)` turns it off; counted in `FinalizeResult.chunks_named`).
+5. Give unnamed chunks a readable name, `"<document id> · chunk <index>"` (table-row chunks and the `<id>__pending__<hex>` copy an unfinished `update()` is writing are skipped; `finalize(name_chunks=False)` turns it off; counted in `FinalizeResult.chunks_named`).
 6. Report findings (probable duplicates, property conflicts, proposed table mappings) at WARNING and on `FinalizeResult`.
 
 Dedup bookkeeping lives in SDK system nodes (`__GraphRAGProcessing__`) beside the `__GraphRAGConfig__` node, with no edges; `get_statistics()` does not count them. See [Storage](/storage).
@@ -113,7 +113,7 @@ The ontology itself is stored in a separate graph, `<graph_name>__ontology`.
 | `MENTIONED_IN` | Entity -> Chunk | Which chunks mention an entity |
 | `RELATES` | Entity -> Entity | All extracted relationships and table links (single edge type) |
 
-All extracted and table relationships use the single `RELATES` edge type. The original relationship type (e.g. `WORKS_AT`, `LOCATED_IN`) is preserved as the `rel_type` property on the edge, and a `fact` property stores a human-readable fact string for embedding. Edge identity includes `rel_type`, so two different facts between the same pair of entities are two edges. The one exception is `backfill_relation_pattern()` (see [Ontology Evolution](/ontology-evolution)): it writes edges typed with the relation label itself (for example `[:WORKS_AT]`), with a `description` but no `fact`, `embedding` or `source_chunk_ids`, so RELATES vector search and relationship expansion do not see them.
+All extracted and table relationships use the single `RELATES` edge type. The original relationship type (e.g. `WORKS_AT`, `LOCATED_IN`) is preserved as the `rel_type` property on the edge, and a `fact` property stores a human-readable fact string for embedding. An edge is identified by its source, `rel_type` and target, so two relationships of different types between the same pair of entities are two edges, while two facts of the same type in the same direction merge into one. The one exception is `backfill_relation_pattern()` (see [Ontology Evolution](/ontology-evolution)): it writes edges typed with the relation label itself (for example `[:WORKS_AT]`), with a `description` but no `fact`, `embedding` or `source_chunk_ids`, so RELATES vector search and relationship expansion do not see them.
 
 `MENTIONED_IN` edges are what let retrieval trace an entity mentioned in an answer back to its source chunk -- see [Reducing LLM Hallucinations](/reducing-llm-hallucinations) for how to surface that provenance trail and define an abstention path when it's missing. Full property reference: [Graph Schema](/graph-schema).
 
@@ -153,7 +153,8 @@ Relationship Expansion (both directions, up to 3 links, ranked by the question)
   2. Vector search in chunks
   3. MENTIONED_IN traversal (entity -> chunk)
   4. 2-hop: entity -> neighbor -> chunk
-  (table-row chunks keep their own slots; documents mid-update or mid-delete skipped)
+  (table-row chunks keep their own slots; an update's unfinished
+   new version and documents mid-delete are skipped)
   -> Candidate chunks (cosine reranked)
   |
   v

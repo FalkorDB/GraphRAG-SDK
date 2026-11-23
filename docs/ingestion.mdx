@@ -216,8 +216,8 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 **Open ontology:** When the ontology declares neither entities nor relations, this step is skipped and everything passes through. Note that a `GraphRAG` created with no ontology on an empty graph seeds the 11 default entity types into its ontology, so entity pruning applies to those labels; with no declared relations, relationships are not pruned by type.
 
 <Note>
-A table mapping's `Link` declares a relation in the ontology. Once a graph holds
-one, `Ontology.relations` is non-empty, so prose extraction is restricted to the
+A table mapping's `Link` and a relationship-only table each declare a relation in
+the ontology. Once a graph holds one, `Ontology.relations` is non-empty, so prose extraction is restricted to the
 declared relations and this step prunes everything else. Declare the relations
 your documents need alongside the ones your tables add.
 </Note>
