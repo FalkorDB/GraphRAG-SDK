@@ -45,7 +45,16 @@ def _build_rag() -> object:
         password=os.getenv("FALKOR_PASSWORD") or None,
         graph_name=os.getenv("GRAPHRAG_GRAPH", "graphrag"),
     )
-    llm = LiteLLM(model=os.getenv("GRAPHRAG_MODEL", "gpt-4o-mini"))
+    model = os.getenv("GRAPHRAG_MODEL")
+    if model is None:
+        llm = LiteLLM(
+            model="openai/gpt-6-luna",
+            reasoning_effort="none",
+            # Older supported LiteLLM versions do not list this option for Luna.
+            allowed_openai_params=["reasoning_effort"],
+        )
+    else:
+        llm = LiteLLM(model=model)
     # The dimension must match the embedding model (1536 for
     # text-embedding-3-small, 3072 for -large); the facade's default (256)
     # would not. A set GRAPHRAG_EMBED_DIM is also asked of text-embedding-3

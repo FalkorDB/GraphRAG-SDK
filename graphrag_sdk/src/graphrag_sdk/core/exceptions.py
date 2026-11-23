@@ -70,6 +70,44 @@ class ExtractionError(IngestionError):
     pass
 
 
+class ModelLoadError(ExtractionError):
+    """Raised when an extractor's model cannot be loaded.
+
+    Unlike a plain :class:`ExtractionError` about one chunk, it fails every
+    chunk the same way, so extraction stops with it instead of going on
+    without the model.
+
+    ``hint`` is a message the SDK writes itself (the model and what to
+    install), safe to show where the exception's own text is withheld
+    because the underlying error could quote a secret.
+    """
+
+    DEFAULT_HINT = "The entity-extraction model could not load (details are in the server log)."
+
+    def __init__(self, message: str, *, hint: str | None = None) -> None:
+        super().__init__(message)
+        self.hint = hint or self.DEFAULT_HINT
+
+
+class ModelImportError(ModelLoadError, ImportError):
+    """A :class:`ModelLoadError` caused by an import failure (the model's
+    package or one it needs is missing or broken).
+
+    It is also an :class:`ImportError`, as a missing extractor package was
+    before ``ModelLoadError`` existed, so ``except ImportError`` still
+    catches it.
+    """
+
+
+class ModelMissingError(ModelLoadError, OSError):
+    """A :class:`ModelLoadError` for a model that is not installed (a spaCy
+    pipeline not downloaded, say).
+
+    It is also an :class:`OSError`, as a missing model was before
+    ``ModelLoadError`` existed, so ``except OSError`` still catches it.
+    """
+
+
 class ResolutionError(IngestionError):
     """Raised when entity resolution fails."""
 

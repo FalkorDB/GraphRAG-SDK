@@ -29,6 +29,7 @@ from graphrag_sdk.core.exceptions import (
     LatencyBudgetExceededError,
     LLMError,
     LLMTimeoutError,
+    ModelLoadError,
     ReadOnlyViolation,
     RetrieverError,
     SchemaValidationError,
@@ -308,6 +309,8 @@ def fit_json(data: dict[str, Any], max_chars: int = MAX_RESULT_CHARS) -> str:
 _SECRET_NAME = r"[A-Za-z0-9_]*(?:api[_-]?key|token|secret|password|_key)"
 _SECRET_PATTERNS = (
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}"), "sk-***"),
+    # Hugging Face access token
+    (re.compile(r"\bhf_[A-Za-z0-9]{20,}"), "hf_***"),
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=\-]+"), "Bearer ***"),
     # Credentials in a URL: redis://user:pw@host
     # The scheme is at most 32 characters, so a long run like "a-a-a-..."
@@ -383,6 +386,11 @@ def describe_error(name: str, exc: BaseException) -> str:
     elif isinstance(exc, RetrieverError):
         message = f"{name} failed during retrieval ({kind})."
         hint = "Retry with fewer paths."
+    elif isinstance(exc, ModelLoadError):
+        # ``hint`` is SDK-written (the model, what to install), not the
+        # underlying error's text.
+        message = f"{name} failed: the entity-extraction model could not load ({kind})."
+        hint = redact(exc.hint)
     elif isinstance(exc, (ConfigError, SchemaValidationError)):
         message = f"{name} failed: the server is misconfigured ({kind})."
         hint = (

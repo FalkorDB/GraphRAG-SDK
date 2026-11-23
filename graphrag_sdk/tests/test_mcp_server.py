@@ -563,9 +563,30 @@ class TestCLI:
         assert rag == "RAG"
         assert isinstance(seen["llm"], providers.LiteLLM)
         assert seen["llm"].model_name == "openai/gpt-4o"
+        assert "reasoning_effort" not in seen["llm"]._extra
+        assert "allowed_openai_params" not in seen["llm"]._extra
         assert seen["embedder"].model_name == "text-embedding-3-small"
         assert seen["embedding_dimension"] == 3072
         assert seen["embedder"]._extra["dimensions"] == 3072
+
+    def test_build_rag_uses_luna_for_an_unconfigured_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import graphrag_sdk.api.main as api_main
+        from graphrag_sdk.mcp import __main__ as cli
+
+        seen: dict[str, Any] = {}
+        monkeypatch.delenv("GRAPHRAG_MODEL", raising=False)
+        monkeypatch.setattr(api_main, "GraphRAG", lambda **kw: seen.update(kw) or "RAG")
+
+        cli._build_rag()
+
+        llm = seen["llm"]
+        assert llm.model_name == "openai/gpt-6-luna"
+        params = llm._completion_kwargs("Return the grounded answer as JSON")
+        assert params["reasoning_effort"] == "none"
+        assert params["allowed_openai_params"] == ["reasoning_effort"]
+        assert params["temperature"] == 0.0
 
     def test_embedder_dimensions_are_left_to_the_model_by_default(self, monkeypatch):
         import graphrag_sdk.api.main as api_main
