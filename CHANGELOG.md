@@ -25,8 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whole chunks read as text. A relationship table's edges have no embedding,
   so the question-ranked walk keeps a share of its room for them, and an
   `aliases` value stored as a single string counts as one alias instead of
-  failing name search. Prompts or token budgets tuned to the old output
-  may need a look.
+  failing name search. `LocalRetrieval`, like `MultiPathRetrieval`, shows a
+  contextual chunk's own text without the model-written context, and
+  reranking embeds only the candidates without a stored vector however many
+  there are, instead of re-embedding them all when more than a tenth lack one.
+  Prompts or token budgets tuned to the old output may need a look.
 - **An entity's description is stored once.** A description of more than one
   piece (what several chunks said, or a merge) was stored twice: as the
   `descriptions` list and as `description`, the same text joined with `" | "`.

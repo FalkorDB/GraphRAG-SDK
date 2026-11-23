@@ -144,10 +144,9 @@ async def rerank_chunks(
 ) -> list[str]:
     """Rank candidates by cosine similarity, take top_k.
 
-    When ``stored_embeddings`` covers >=90% of candidates, uses
-    pre-computed vectors from the graph and embeds only the candidates
-    without one (one call, or none when every candidate has a vector).
-    Falls back to re-embedding all candidates when coverage is insufficient.
+    When ``stored_embeddings`` holds any vectors, uses them and embeds only
+    the candidates without one (one call, or none when every candidate has a
+    vector). Re-embeds every candidate only when there are no stored vectors.
 
     Returns:
         Top-k chunk texts ranked by cosine similarity to query.
@@ -173,12 +172,13 @@ async def _rerank_chunk_ids(
     chunk_ids = list(candidate_chunks.keys())
     chunk_texts = list(candidate_chunks.values())
 
-    # Fast path: use stored embeddings when coverage is near-complete, and
-    # embed only the few candidates without one. Those are mostly
-    # structured-record chunks, which ingestion never embeds; ranking them
-    # last regardless of the question would drop a table row even when it
-    # is the answer.
-    if stored_embeddings and len(stored_embeddings) >= len(chunk_ids) * 0.9:
+    # Fast path: use the stored embeddings and embed only the candidates
+    # without one. Those are mostly structured-record chunks, which ingestion
+    # never embeds; ranking them last regardless of the question would drop a
+    # table row even when it is the answer. No coverage threshold: on a graph
+    # with tables the unembedded share can be large, and re-embedding every
+    # candidate for it would cost far more than embedding the missing ones.
+    if stored_embeddings:
         missing = [i for i, cid in enumerate(chunk_ids) if not stored_embeddings.get(cid)]
         fresh: dict[int, list[float]] = {}
         if missing:
@@ -206,7 +206,7 @@ async def _rerank_chunk_ids(
         scored.sort(key=lambda x: x[1], reverse=True)
         return [chunk_ids[i] for i, _ in scored[:chunk_top_k]]
 
-    # Fallback: re-embed all candidates (coverage too low for fast path)
+    # Fallback: no stored vectors at all, so embed every candidate.
     try:
         if ctx is not None:
             ctx.ensure_budget("chunk reranking embedding")

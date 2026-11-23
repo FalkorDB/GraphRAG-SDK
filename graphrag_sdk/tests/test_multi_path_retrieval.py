@@ -1689,6 +1689,19 @@ class TestChunksAlignedWithIngestion:
         assert embedder.aembed_documents.call_args[0][0] == ["text 9"]
         assert ranked[0] == "text 9"  # closest to the question, not ranked last
 
+    async def test_rerank_embeds_only_the_missing_ones_even_when_many_are_missing(self):
+        # A graph with tables can leave well over 10% of candidates without a
+        # vector; that must not re-embed the ones that have one.
+        embedder = MagicMock()
+        embedder.aembed_documents = AsyncMock(return_value=[[1.0, 0.0]] * 5)
+        candidates = {f"c{i}": f"text {i}" for i in range(10)}
+        stored = {f"c{i}": [0.0, 1.0] for i in range(5)}
+
+        await rerank_chunks(embedder, [1.0, 0.0], candidates, 3, stored_embeddings=stored)
+
+        embedder.aembed_documents.assert_awaited_once()
+        assert embedder.aembed_documents.call_args[0][0] == [f"text {i}" for i in range(5, 10)]
+
 
 class TestEntityLookupDetails:
     async def test_short_acronyms_skip_the_contains_pass(self, mp_graph_store, mp_vector_store):
@@ -1735,7 +1748,9 @@ class TestCypherPromptKnowsTheGraph:
         assert "Common `rel_type` values" in block and "LOCATED_IN" in block
         assert "startNode(r).name" in block  # src_name is marked as possibly outdated
         prompt = build_ontology_prompt(None, "Who?")
-        assert "coalesce(e.aliases, [])" in prompt
+        # A string ``aliases`` would fail ``coalesce(e.aliases, [])``.
+        assert "CASE typeOf(e.aliases) WHEN 'List'" in prompt
+        assert "IN coalesce(" not in prompt
 
 
 class TestValuesAndSourceText:

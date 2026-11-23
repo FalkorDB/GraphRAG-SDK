@@ -476,23 +476,28 @@ class VectorStore:
 
         Returns:
             List of dicts with id, text, and similarity score (higher is closer).
+            A chunk ContextualChunking wrote also carries ``original_chunk``:
+            the document's own text, without the model-written context.
         """
         query = (
             "CALL db.idx.vector.queryNodes('Chunk', 'embedding', $fetch_k, vecf32($vector)) "
             "YIELD node, score "
-            "RETURN node.id AS id, node.text AS text, (1-score) AS score "
+            "RETURN node.id AS id, node.text AS text, (1-score) AS score, "
+            "node.original_chunk AS original_chunk "
             "ORDER BY score DESC, id"
         )
         try:
             results: list[dict[str, Any]] = []
             for row in await self._nearest_rows(query, query_vector, top_k, score_col=2):
-                results.append(
-                    {
-                        "id": row[0],
-                        "text": row[1] if len(row) > 1 else "",
-                        "score": row[2] if len(row) > 2 else 0.0,
-                    }
-                )
+                hit = {
+                    "id": row[0],
+                    "text": row[1] if len(row) > 1 else "",
+                    "score": row[2] if len(row) > 2 else 0.0,
+                }
+                original = row[3] if len(row) > 3 else None
+                if isinstance(original, str) and original.strip():
+                    hit["original_chunk"] = original
+                results.append(hit)
             return results
         except Exception as exc:
             logger.warning(f"Vector search failed: {exc}")

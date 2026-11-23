@@ -218,7 +218,9 @@ class MultiPathRetrieval(RetrievalStrategy):
         self._enable_cypher = enable_cypher
         self._router = router
         # The last question vector, for a caller that walks the graph after
-        # the search (the tools' relation walk ranks edges by it).
+        # the search (the tools' relation walk ranks edges by it). Only
+        # meaningful on a strategy that is not shared: with concurrent
+        # retrieve() calls on one object, it may hold another request's vector.
         self.last_query_vector: list[float] | None = None
         self._ontology = ontology
 

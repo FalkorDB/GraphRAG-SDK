@@ -83,6 +83,21 @@ async def test_a_string_aliases_value_does_not_break_name_search(seeded):
     assert {"alice", "bob"} <= set(found)
 
 
+async def test_the_prompt_alias_pattern_reads_a_string_aliases(seeded):
+    # The pattern the text-to-Cypher prompt teaches, on a keyword that misses
+    # every name, so the alias side is evaluated for Bob's string aliases.
+    aliases = (
+        "CASE typeOf(e.aliases) WHEN 'List' THEN e.aliases "
+        "WHEN 'String' THEN [e.aliases] ELSE [] END"
+    )
+    found = await rows(
+        seeded,
+        "MATCH (e:__Entity__) WHERE toLower(e.name) CONTAINS 'bobb' "
+        f"OR any(a IN {aliases} WHERE toLower(a) CONTAINS 'bobb') RETURN e.id",
+    )
+    assert [r[0] for r in found] == ["bob"]
+
+
 async def test_text_to_cypher_resolves_names_and_both_alias_shapes(seeded):
     from graphrag_sdk.retrieval.strategies.cypher_generation import _resolve_entities
 

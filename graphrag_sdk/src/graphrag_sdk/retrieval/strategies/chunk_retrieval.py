@@ -25,13 +25,13 @@ _CHUNK_DISTANCE = (
 # take a slot and then be dropped, leaving the slot empty. A chunk with no
 # Document is kept.
 # Projected, then tested: FalkorDB rejects a pattern comprehension inside WHERE.
-# Most vector hits one refill search asks for, past chunks of inactive documents.
-MAX_REFILL_FETCH = 1024
-
 _INACTIVE_DOCS = (
     "[(d:Document)-[:PART_OF]->(c) "
     "WHERE d.id CONTAINS '__pending__' OR d.pending_delete = true | d.id] AS inactive"
 )
+
+# Most vector hits one refill search asks for, past chunks of inactive documents.
+MAX_REFILL_FETCH = 1024
 
 
 async def retrieve_chunks(

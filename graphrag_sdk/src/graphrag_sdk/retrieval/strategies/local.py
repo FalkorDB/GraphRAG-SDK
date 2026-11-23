@@ -138,7 +138,9 @@ class LocalRetrieval(RetrievalStrategy):
         records: list[dict[str, Any]] = []
         for chunk in chunk_results:
             record: dict[str, Any] = {
-                "chunk_text": chunk.get("text", ""),
+                # The document's own text for a contextual chunk, not the
+                # model-written context its ``text`` starts with.
+                "chunk_text": chunk.get("original_chunk") or chunk.get("text", ""),
                 "chunk_id": chunk.get("id", ""),
                 "score": chunk.get("score", 0.0),
             }

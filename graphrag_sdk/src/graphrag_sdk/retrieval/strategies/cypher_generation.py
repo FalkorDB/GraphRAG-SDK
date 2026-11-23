@@ -226,9 +226,12 @@ You are a Cypher query generator for a FalkorDB graph database.
 3. Do NOT use the `path =` variable syntax. Instead use explicit node/edge variables.
 4. Keep queries simple: 1-2 MATCH clauses maximum. Add LIMIT 25 to prevent huge result sets.
 5. Use CONTAINS for fuzzy name matching, and check aliases too, since a merged
-   entity keeps its other names there:
+   entity keeps its other names there. `aliases` may be a list or a single
+   string, so read it through the CASE below, never `coalesce(e.aliases, [])`:
    `WHERE toLower(e.name) CONTAINS 'keyword'
-      OR any(a IN coalesce(e.aliases, []) WHERE toLower(a) CONTAINS 'keyword')`
+      OR any(a IN CASE typeOf(e.aliases) WHEN 'List' THEN e.aliases
+                  WHEN 'String' THEN [e.aliases] ELSE [] END
+                WHERE toLower(a) CONTAINS 'keyword')`
 6. Generate READ-ONLY queries only — no CREATE, DELETE, SET, MERGE, REMOVE.
 7. Always include a RETURN clause.
 8. Give the first node pattern a label (`__Entity__`, an entity type, `Chunk`
@@ -249,7 +252,9 @@ Question: "Who is connected to the old lighthouse?"
 ```cypher
 MATCH (e:__Entity__)-[r:RELATES]-(other:__Entity__)
 WHERE toLower(e.name) CONTAINS 'lighthouse'
-   OR any(a IN coalesce(e.aliases, []) WHERE toLower(a) CONTAINS 'lighthouse')
+   OR any(a IN CASE typeOf(e.aliases) WHEN 'List' THEN e.aliases
+               WHEN 'String' THEN [e.aliases] ELSE [] END
+             WHERE toLower(a) CONTAINS 'lighthouse')
 RETURN other.name AS name, labels(other) AS type, r.rel_type AS relation, r.fact AS evidence
 LIMIT 25
 ```
@@ -265,9 +270,13 @@ Question: "How are Alice and the castle connected?"
 ```cypher
 MATCH (a:__Entity__)-[r1:RELATES]-(mid:__Entity__)-[r2:RELATES]-(b:__Entity__)
 WHERE (toLower(a.name) CONTAINS 'alice'
-       OR any(x IN coalesce(a.aliases, []) WHERE toLower(x) CONTAINS 'alice'))
+       OR any(x IN CASE typeOf(a.aliases) WHEN 'List' THEN a.aliases
+                   WHEN 'String' THEN [a.aliases] ELSE [] END
+                 WHERE toLower(x) CONTAINS 'alice'))
   AND (toLower(b.name) CONTAINS 'castle'
-       OR any(x IN coalesce(b.aliases, []) WHERE toLower(x) CONTAINS 'castle'))
+       OR any(x IN CASE typeOf(b.aliases) WHEN 'List' THEN b.aliases
+                   WHEN 'String' THEN [b.aliases] ELSE [] END
+                 WHERE toLower(x) CONTAINS 'castle'))
 RETURN a.name AS from_entity, r1.rel_type AS rel1,
   mid.name AS via_entity, r2.rel_type AS rel2, b.name AS to_entity
 LIMIT 15
@@ -283,7 +292,9 @@ Question: "What did the professor discover?"
 ```cypher
 MATCH (p:Person)-[r:RELATES]->(thing:__Entity__)
 WHERE toLower(p.name) CONTAINS 'professor'
-   OR any(a IN coalesce(p.aliases, []) WHERE toLower(a) CONTAINS 'professor')
+   OR any(a IN CASE typeOf(p.aliases) WHEN 'List' THEN p.aliases
+               WHEN 'String' THEN [p.aliases] ELSE [] END
+             WHERE toLower(a) CONTAINS 'professor')
 RETURN p.name AS person, thing.name AS discovery, r.rel_type AS relationship, r.fact AS evidence
 LIMIT 20
 ```
@@ -610,7 +621,8 @@ async def _resolve_entities(
             "WITH [n IN $names | toLower(n)] AS names "
             "MATCH (e:__Entity__) "
             "WHERE toLower(e.name) IN names "
-            f"   OR any(a IN {alias_list('e')} WHERE toLower(a) IN names) "
+            "   OR (e.aliases IS NOT NULL "
+            f"       AND any(a IN {alias_list('e')} WHERE toLower(a) IN names)) "
             "RETURN e.id, e.name, e.description "
             # Direct-name matches first, so alias matches cannot fill the cap.
             "ORDER BY CASE WHEN toLower(e.name) IN names THEN 0 ELSE 1 END, e.id LIMIT 50",

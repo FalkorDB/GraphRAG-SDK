@@ -305,7 +305,7 @@ def _triples_query(distance: str, where: str = "") -> str:
         "CASE WHEN trim(coalesce(r.description, '')) <> '' THEN r.description "
         "ELSE coalesce(r.fact, '') END, b.id, ID(r), "
         "[k IN keys(r) WHERE k CONTAINS '__' AND NOT k ENDS WITH '__dropped' | [k, r[k]]] "
-        "ORDER BY dist, src, r.rel_type, tgt, b.id "
+        "ORDER BY dist, src, r.rel_type, tgt, b.id, ID(r) "
         "LIMIT $limit"
     )
 

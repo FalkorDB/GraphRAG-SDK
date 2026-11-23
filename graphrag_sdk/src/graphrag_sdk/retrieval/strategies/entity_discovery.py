@@ -160,7 +160,10 @@ async def discover_entities(
                 "  MATCH (e:__Entity__) "
                 "  WHERE toLower(e.name) = toLower(kw) "
                 # A dedup merge keeps the names it folded away as aliases.
-                f"     OR any(al IN {_ALIASES} WHERE toLower(al) = toLower(kw)) "
+                # The null check first: building the list for every entity without
+                # aliases would triple the cost of the search.
+                "     OR (e.aliases IS NOT NULL "
+                f"         AND any(al IN {_ALIASES} WHERE toLower(al) = toLower(kw))) "
                 # A direct name match beats an alias match; id breaks ties.
                 # The rank is computed in a WITH: FalkorDB 6.0 rejects an
                 # outer variable (kw) referenced in a subquery's ORDER BY.
@@ -200,10 +203,12 @@ async def discover_entities(
                     "  WITH kw "
                     "  MATCH (e:__Entity__) "
                     "  WHERE (toLower(e.name) CONTAINS toLower(kw) "
-                    f"         OR any(al IN {_ALIASES} "
-                    "                WHERE toLower(al) CONTAINS toLower(kw))) "
+                    "         OR (e.aliases IS NOT NULL "
+                    f"             AND any(al IN {_ALIASES} "
+                    "                     WHERE toLower(al) CONTAINS toLower(kw)))) "
                     "    AND toLower(e.name) <> toLower(kw) "
-                    f"    AND none(al IN {_ALIASES} WHERE toLower(al) = toLower(kw)) "
+                    "    AND (e.aliases IS NULL "
+                    f"         OR none(al IN {_ALIASES} WHERE toLower(al) = toLower(kw))) "
                     "  RETURN e.id AS id, e.name AS name, e.description AS desc "
                     "  ORDER BY size(e.name) ASC, toLower(e.name) ASC, e.id ASC "
                     "  LIMIT 5 "

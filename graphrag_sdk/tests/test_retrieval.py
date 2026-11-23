@@ -201,6 +201,28 @@ class TestLocalRetrieval:
         result = await strategy.search("test", ctx)
         assert len(result.items) == 1
 
+    async def test_local_serves_the_original_text_of_a_contextual_chunk(
+        self, ctx, mock_graph_store, mock_vector_store, embedder
+    ):
+        mock_vector_store.search_chunks = AsyncMock(
+            return_value=[
+                {
+                    "id": "c1",
+                    "text": "Context sentence. Chunk text",
+                    "original_chunk": "Chunk text",
+                    "score": 0.9,
+                }
+            ]
+        )
+        strategy = LocalRetrieval(
+            graph_store=mock_graph_store,
+            vector_store=mock_vector_store,
+            embedder=embedder,
+            include_entities=False,
+        )
+        result = await strategy.search("test", ctx)
+        assert result.items[0].content == "Chunk text"
+
     async def test_local_empty_results(self, ctx, mock_graph_store, mock_vector_store, embedder):
         mock_vector_store.search_chunks = AsyncMock(return_value=[])
         strategy = LocalRetrieval(
