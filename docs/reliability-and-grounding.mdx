@@ -234,7 +234,7 @@ strategy = MultiPathRetrieval(
     vector_store=VectorStore(connection, embedder=embedder, embedding_dimension=256),
     embedder=embedder,
     llm=llm,
-    chunk_top_k=15,        # passages kept after reranking
+    chunk_top_k=20,        # passages kept after reranking
     max_entities=30,       # entities carried into relationship expansion
     max_relationships=20,  # cap on expanded RELATES edges
     rel_top_k=15,          # RELATES edge vector search results
@@ -348,7 +348,7 @@ descending.
 | `min_score` | `filter_facts_by_relevance()` — RELATES facts below this similarity are dropped | `0.25` |
 | `max_facts` | `filter_facts_by_relevance()` — cap on facts in context | `12` |
 | `min_keep` | `filter_facts_by_relevance()` — top facts always kept, threshold or not | `3` |
-| `chunk_top_k` | `MultiPathRetrieval` — passages after cosine reranking | `15` |
+| `chunk_top_k` | `MultiPathRetrieval` — passages after cosine reranking | `20` |
 | `rel_top_k` | `MultiPathRetrieval` — RELATES edge vector hits | `15` |
 | `max_entities` / `max_relationships` | `MultiPathRetrieval` graph expansion caps | `30` / `20` |
 | `top_k` | `VectorStore.search_chunks()` / `search_entities()` | `5` |

@@ -7,14 +7,18 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import inspect
 import json
 import logging
 import re
 import threading
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar
 
+from graphrag_sdk.core.exceptions import ModelImportError, ModelLoadError, ModelMissingError
 from graphrag_sdk.core.models import ExtractedEntity
 from graphrag_sdk.core.providers import LLMInterface
 
@@ -452,8 +456,63 @@ class EntityExtractor(ABC):
         """
         ...
 
+    async def ensure_ready(self) -> None:
+        """Load whatever the extractor needs before any chunk is extracted.
+
+        Ingestion calls it before writing a document, so a model that cannot
+        load fails the document before anything is written. The default does
+        nothing; a local model's extractor loads it and raises
+        :class:`~graphrag_sdk.core.exceptions.ModelLoadError` if it cannot.
+        """
+
 
 # ── GLiNER Extractor (default) ───────────────────────────────────
+
+
+def _protobuf_installed() -> bool:
+    try:
+        return importlib.util.find_spec("google.protobuf") is not None
+    except ModuleNotFoundError:  # no ``google`` namespace package at all
+        return False
+
+
+def _load_error(model_name: str, exc: Exception) -> tuple[str, str]:
+    """A clear message for a GLiNER model that failed to load, and a hint
+    without the underlying error's text (safe to show a tool's caller)."""
+    if isinstance(exc, ImportError):
+        module = getattr(exc, "name", None) or ""
+        # Only ModuleNotFoundError means the module is absent; a plain
+        # ImportError (``from x import name`` failing) names a module that is
+        # installed but does not have what was asked: a version mismatch.
+        absent = isinstance(exc, ModuleNotFoundError)
+        if (absent and module.startswith("google.protobuf")) or (
+            module in ("", "google") and not _protobuf_installed()
+        ):
+            # protobuf is ``google.protobuf``; an unnamed or bare ``google``
+            # import error is blamed on it only when it really is missing.
+            what = "the protobuf package is not installed; install it with: pip install protobuf"
+        elif absent and (module == "gliner" or module.startswith("gliner.")):
+            what = "the gliner package is not installed. Install with: pip install gliner"
+        elif absent and module:
+            what = f"the {module!r} module it needs is not installed"
+        elif module:
+            what = (
+                f"importing from {module!r} failed though it is installed; the installed "
+                "versions of gliner and its dependencies may not work together"
+            )
+        else:
+            what = "a module it needs could not be imported"
+        hint = f"GLiNER model {model_name!r} could not load: {what}"
+        return f"{hint} ({exc})", hint
+    msg = f"GLiNER model {model_name!r} could not be loaded: {exc}"
+    hint = f"GLiNER model {model_name!r} could not load (details are in the server log)."
+    if not _protobuf_installed():
+        # transformers needs protobuf to read the DeBERTa ``spm.model``
+        # tokenizer; without it the load fails with "Error parsing line ...".
+        fix = "The protobuf package is not installed; install it with: pip install protobuf"
+        msg += f". {fix}"
+        hint = f"GLiNER model {model_name!r} could not load. {fix}"
+    return msg, hint
 
 
 class GLiNERExtractor(EntityExtractor):
@@ -641,6 +700,9 @@ class GLiNERExtractor(EntityExtractor):
             self._model = self._get_shared_model(self._model_name)
         return self._model
 
+    async def ensure_ready(self) -> None:
+        await asyncio.to_thread(self._load_model)
+
     # Process-wide cache of loaded GLiNER models, keyed on model name.
     #
     # Bug #11: nothing cached the model, so every ``GLiNERExtractor`` instance
@@ -659,6 +721,15 @@ class GLiNERExtractor(EntityExtractor):
     _MODEL_CACHE: ClassVar[dict[str, Any]] = {}
     _CACHE_LOCK: ClassVar[threading.Lock] = threading.Lock()
 
+    # A load that failed fails the same way for the other chunks of the same
+    # ingest, so its message is kept for a short while and raised again rather
+    # than reloading the model per chunk. Only the message is kept: a cached
+    # exception would hold its traceback, and the chunk text in its frames, for
+    # the life of the process. After the window a new load is tried, so a
+    # download that failed while offline can recover.
+    _LOAD_ERRORS: ClassVar[dict[str, tuple[float, str, str, type[ModelLoadError]]]] = {}
+    _LOAD_RETRY_AFTER_S: ClassVar[float] = 60.0
+
     @classmethod
     def _get_shared_model(cls, model_name: str) -> Any:
         cached = cls._MODEL_CACHE.get(model_name)
@@ -667,14 +738,25 @@ class GLiNERExtractor(EntityExtractor):
         with cls._CACHE_LOCK:
             # Double-checked: another thread may have loaded it while we waited.
             cached = cls._MODEL_CACHE.get(model_name)
+            failed = cls._LOAD_ERRORS.get(model_name)
+            if cached is None and failed is not None:
+                failed_at, message, hint, error = failed
+                if time.monotonic() - failed_at < cls._LOAD_RETRY_AFTER_S:
+                    raise error(message, hint=hint)
+                del cls._LOAD_ERRORS[model_name]
             if cached is None:
                 try:
+                    # Inside the try: gliner, or a package it imports, missing
+                    # is the same install problem as a model that cannot load.
                     from gliner import GLiNER
-                except ImportError:
-                    raise ImportError(
-                        "GLiNER is required for GLiNERExtractor. Install with: pip install gliner"
-                    )
-                cached = GLiNER.from_pretrained(model_name)
+
+                    cached = GLiNER.from_pretrained(model_name)
+                except Exception as exc:
+                    message, hint = _load_error(model_name, exc)
+                    # An import failure stays an ImportError for callers.
+                    error = ModelImportError if isinstance(exc, ImportError) else ModelLoadError
+                    cls._LOAD_ERRORS[model_name] = (time.monotonic(), message, hint, error)
+                    raise error(message, hint=hint) from exc
                 cls._MODEL_CACHE[model_name] = cached
         return cached
 
@@ -1051,21 +1133,30 @@ class SpacyExtractor(EntityExtractor):
         self._labels = frozenset(labels) if labels is not None else self.DEFAULT_LABELS
         self._confidence = self.DEFAULT_CONFIDENCE if confidence is None else confidence
         self._nlp: Any = None
-        self._load_error: Exception | None = None
+        # (failed_at, message, hint, error class) of the last failed load.
+        self._load_error: tuple[float, str, str, type[ModelLoadError]] | None = None
 
     async def _get_nlp(self) -> Any:
         if self._nlp is not None:
             return self._nlp
-        # A missing package or model is permanent for the life of this process;
-        # remember it so every chunk does not re-attempt the load in a thread.
+        # Remember a failed load for a while, so every chunk does not retry it
+        # in a thread, then try again: a model downloaded meanwhile is picked
+        # up without a restart. Each raise is a fresh error, so traceback
+        # frames (and the chunk text they hold) do not pile up on one object.
         if self._load_error is not None:
-            raise self._load_error
+            failed_at, message, hint, error = self._load_error
+            if time.monotonic() - failed_at < self._LOAD_RETRY_AFTER_S:
+                raise error(message, hint=hint)
+            self._load_error = None
         try:
             self._nlp = await asyncio.to_thread(self._get_shared_nlp, self._model_name)
-        except (ImportError, OSError) as exc:
-            self._load_error = exc
+        except ModelLoadError as exc:
+            self._load_error = (time.monotonic(), str(exc), exc.hint, type(exc))
             raise
         return self._nlp
+
+    async def ensure_ready(self) -> None:
+        await self._get_nlp()
 
     # Process-wide cache of loaded spaCy pipelines, keyed on model name.
     #
@@ -1076,6 +1167,7 @@ class SpacyExtractor(EntityExtractor):
     # document pays that per document.
     _MODEL_CACHE: ClassVar[dict[str, Any]] = {}
     _CACHE_LOCK: ClassVar[threading.Lock] = threading.Lock()
+    _LOAD_RETRY_AFTER_S: ClassVar[float] = 60.0
 
     @classmethod
     def _get_shared_nlp(cls, model_name: str) -> Any:
@@ -1094,18 +1186,50 @@ class SpacyExtractor(EntityExtractor):
     def _load(cls, model_name: str) -> Any:
         try:
             import spacy
-        except ImportError as exc:  # pragma: no cover - depends on env
-            raise ImportError(
-                "SpacyExtractor requires the 'spacy' extra. Install with: "
-                'pip install "graphrag-sdk[spacy]"'
-            ) from exc
+        except Exception as exc:
+            # A ModelLoadError, so extraction stops instead of warning on every
+            # chunk; an import failure is still an ImportError for callers that
+            # caught one. Hints leave out the error's text (it is in the message).
+            module = getattr(exc, "name", None) or ""
+            if isinstance(exc, ModuleNotFoundError) and module == "spacy":
+                hint = (
+                    "SpacyExtractor requires the 'spacy' extra. Install with: "
+                    'pip install "graphrag-sdk[spacy]"'
+                )
+                raise ModelImportError(hint, hint=hint) from exc
+            if isinstance(exc, ModuleNotFoundError) and module:
+                what = f"the {module!r} module it needs is not installed"
+            elif isinstance(exc, ImportError) and module:
+                what = (
+                    f"importing from {module!r} failed though it is installed; the "
+                    "installed versions of spaCy and its dependencies may not work together"
+                )
+            else:
+                what = (
+                    "it could not be imported; the installed versions of spaCy and its "
+                    "dependencies (such as numpy) may not work together"
+                )
+            hint = f"spaCy is installed but {what} (details are in the server log)."
+            error = ModelImportError if isinstance(exc, ImportError) else ModelLoadError
+            raise error(f"{hint} ({exc})", hint=hint) from exc
         try:
             return spacy.load(model_name, disable=list(cls.DISABLED_COMPONENTS))
-        except OSError as exc:  # pragma: no cover - depends on env
-            raise OSError(
+        except OSError as exc:
+            hint = (
                 f"spaCy model '{model_name}' is not installed. Run: "
                 f"python -m spacy download {model_name}"
-            ) from exc
+            )
+            raise ModelMissingError(hint, hint=hint) from exc
+        except Exception as exc:
+            # Anything else (a pipeline whose plugin is missing, a config from
+            # another spaCy version) fails every document the same way. The
+            # hint leaves out the error's text, which is in the message.
+            hint = (
+                f"spaCy model '{model_name}' could not load: check that its plugins "
+                "and spaCy version match (details are in the server log)."
+            )
+            error = ModelImportError if isinstance(exc, ImportError) else ModelLoadError
+            raise error(f"{hint} ({exc})", hint=hint) from exc
 
     def _type_for(self, label: str, entity_types: list[str]) -> str | None:
         """Map a spaCy label onto an allowed type, or None if unrepresentable."""
@@ -1180,8 +1304,11 @@ class CompositeExtractor(EntityExtractor):
     a failed ingest. If *every* extractor fails the error is re-raised. Two
     kinds of failure are never demoted to a per-chunk warning, because they
     are configuration faults rather than bad input and would otherwise repeat
-    silently on every chunk: ``ImportError`` (a missing optional dependency)
-    and ``OSError`` (a model that is not installed). Cancellation and other
+    silently on every chunk: ``ImportError`` (a missing optional dependency),
+    ``OSError`` (a model that is not installed) and ``ModelLoadError`` (a model
+    that could not load), raised once every member has finished the chunk. A
+    ``TimeoutError`` or ``ConnectionError`` is one failed call, not a fault,
+    and fails only its member. Cancellation and other
     process-level ``BaseException`` subclasses propagate as well.
 
     ``LLMExtractor`` members are rejected. ``GraphExtraction`` dispatches on
@@ -1315,16 +1442,49 @@ class CompositeExtractor(EntityExtractor):
                 if sp not in bucket:
                     bucket.append(sp)
 
+    @staticmethod
+    def _is_fault(exc: BaseException) -> bool:
+        """A configuration fault, which would repeat on every chunk.
+
+        ``TimeoutError`` and ``ConnectionError`` are ``OSError`` subclasses
+        (and ``asyncio.TimeoutError`` is ``TimeoutError`` from Python 3.11),
+        but they are one slow or dropped call, so they fail only that member.
+        """
+        if isinstance(exc, (TimeoutError, ConnectionError, asyncio.TimeoutError)):
+            return False
+        return isinstance(exc, (ImportError, OSError, ModelLoadError))
+
+    async def ensure_ready(self) -> None:
+        # A member need not subclass EntityExtractor; one without the hook is
+        # ready, as GraphExtraction.prepare() and the pipeline assume.
+        for extractor in self._extractors:
+            ready = getattr(extractor, "ensure_ready", lambda: None)()
+            if inspect.isawaitable(ready):
+                await ready
+
     async def extract_entities(
         self,
         text: str,
         entity_types: list[str],
         source_chunk_id: str,
     ) -> list[ExtractedEntity]:
+        # Every member finishes the chunk, even after another has failed: a
+        # member running in a worker thread (GLiNER, spaCy) cannot be
+        # cancelled, and returning early would let the caller start the next
+        # chunk while that thread still works.
         results = await asyncio.gather(
             *(e.extract_entities(text, entity_types, source_chunk_id) for e in self._extractors),
             return_exceptions=True,
         )
+        # Cancellation or interpreter exit comes first, then a member's model
+        # that could not load: the error to report even when another member
+        # also failed.
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(result, Exception):
+                raise result
+        for result in results:
+            if isinstance(result, ModelLoadError):
+                raise result
 
         merged: dict[str, ExtractedEntity] = {}
         # Spans claimed by earlier extractors -> the merged key that owns each.
@@ -1332,7 +1492,7 @@ class CompositeExtractor(EntityExtractor):
         failures: list[Exception] = []
         for extractor, result in zip(self._extractors, results, strict=True):
             if isinstance(result, BaseException):
-                if not isinstance(result, Exception) or isinstance(result, (ImportError, OSError)):
+                if not isinstance(result, Exception) or self._is_fault(result):
                     # Cancellation / interpreter exit, or a configuration
                     # fault that would otherwise repeat on every chunk.
                     raise result

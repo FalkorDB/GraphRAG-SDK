@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import logging
 from typing import Any
 
@@ -392,6 +393,13 @@ class IngestionPipeline(LexicalGraphWriter):
             # faithful copy of this document, so the content hash is *not*
             # recorded and the next ingest repairs it by re-running.
             incomplete_writes: list[str] = []
+
+            # A model that cannot load fails here, before step 3 writes the
+            # document's chunks, rather than at step 4 with them half-written.
+            # A strategy that does not subclass ExtractionStrategy may lack it.
+            prepared = getattr(self.extractor, "prepare", lambda: None)()
+            if inspect.isawaitable(prepared):
+                await prepared
 
             # Step 3: Build lexical graph (MANDATORY — not a strategy).
             ctx.log("Step 3/9: Building lexical graph (provenance chain)")
