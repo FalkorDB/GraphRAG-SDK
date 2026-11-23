@@ -9,7 +9,7 @@ the citations.
 The same tools are served to MCP clients by ``graphrag-mcp``.
 
 Prerequisites:
-    docker run -p 6379:6379 falkordb/falkordb
+    docker run -p 6379:6379 falkordb/falkordb:v4.22.2
     pip install graphrag-sdk[litellm]
     export OPENAI_API_KEY="sk-..."
 
