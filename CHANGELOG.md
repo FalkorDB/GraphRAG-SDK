@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-11-24
+
+### Fixed
+
+- **The SDK imports on Python 3.10 under macOS 27.** scipy 1.15 is the last
+  series for Python 3.10, and its macOS wheels include gfortran-built modules
+  (PROPACK, three ODE solvers and COBYLA) that the macOS 27 loader refuses: "section
+  '__DATA/__thread_bss' has a zero-fill section type, but offset field is not
+  zero". `import graphrag_sdk` reaches one of them through
+  `scipy.cluster.hierarchy`, and so does the default GLiNER model's load, so
+  both failed. On Python 3.10 under macOS, scipy is now held below 1.15
+  (1.14.1 loads). Other platforms and Python 3.11+ keep `scipy>=1.11,<2`;
+  Python 3.11+ gets scipy 1.16 or later, whose PROPACK is built in C and
+  loads. Earlier SDK versions were affected too; on one of them, installing
+  `scipy<1.15` fixes it.
+
 ## [1.7.0] - 2026-11-23
 
 Retrieval context reads the same in every strategy, one edge per relation
