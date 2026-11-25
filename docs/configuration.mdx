@@ -69,7 +69,7 @@ config = ConnectionConfig.from_url(
 )
 ```
 
-The URL format is `redis://[user:pass@]host[:port]` (plaintext) or `rediss://...` (TLS); a `/db` path is ignored. Always include the scheme: without one, `"host:6380"` raises `ValueError` (the host is read as the scheme) and a bare `"host"` falls back to `localhost:6379`. Any other scheme raises `ValueError`. Keyword arguments override the values parsed from the URL.
+The URL format is `redis://[user:pass@]host[:port]` (plaintext) or `rediss://...` (TLS); a `/db` path is ignored. Always include the scheme: without one, `"host:6380"` raises `ValueError` (the host is read as the scheme) and a bare `"host"` falls back to `localhost:6379`. Any other scheme raises `ValueError`. Every keyword argument (`host`, `port`, `username`, `password`, `ssl`, ...) overrides the value parsed from the URL, and an explicit `None` clears one, such as the URL's credentials.
 
 ### Passing to GraphRAG
 
@@ -128,7 +128,7 @@ The `LLMInterface` base class accepts:
 
 | Parameter         | Type                    | Default | Description                                    |
 |-------------------|-------------------------|---------|------------------------------------------------|
-| `model_name`      | `str`                   | --      | Model identifier (e.g. `"gpt-4.1"`).          |
+| `model_name`      | `str`                   | --      | Model identifier (e.g. `"openai/gpt-5.5"`).   |
 | `model_params`    | `dict[str, Any] \| None`| `None` (stored as `{}`) | Provider-specific parameters.  |
 | `max_concurrency` | `int`                   | `12`    | Concurrency limit for `abatch_invoke()`.       |
 
@@ -140,7 +140,7 @@ LiteLLM supports 100+ LLM providers through a unified interface. Install with `p
 from graphrag_sdk import LiteLLM
 
 # OpenAI
-llm = LiteLLM(model="gpt-4.1", api_key="sk-...")
+llm = LiteLLM(model="openai/gpt-5.5", api_key="sk-...")
 
 # Azure OpenAI
 llm = LiteLLM(
@@ -167,7 +167,7 @@ llm = LiteLLM(model="anthropic/claude-sonnet-4-20250514", api_key="sk-ant-...")
 | `temperature` | `float`         | `0.0`   | Sampling temperature.                    |
 | `max_tokens`  | `int \| None`   | `None`  | Maximum tokens in response.              |
 
-Other keyword arguments are forwarded to LiteLLM.
+Other keyword arguments are forwarded to LiteLLM and sent with every request, for example `reasoning_effort="low"`. Reasoning models need no setting: when a model rejects `temperature` or `max_tokens`, the request is sent again without the temperature, or with `max_completion_tokens`, and so are that LLM's later requests. See [Providers](/providers).
 
 ### OpenRouter
 
@@ -193,6 +193,8 @@ llm = OpenRouterLLM(
 | `temperature`   | `float`                  | `0.0`                                         | Sampling temperature.                |
 | `max_tokens`    | `int \| None`            | `None`                                        | Maximum tokens in response.          |
 | `extra_headers` | `dict[str, str] \| None` | `None`                                        | Additional HTTP headers.             |
+
+`OpenRouterLLM` takes no other keyword arguments. It handles reasoning models the same way as `LiteLLM`.
 
 ### Azure OpenAI via Environment Variables
 
@@ -246,7 +248,7 @@ One `llm` serves every LLM call the SDK makes, unless you pass another for a spe
 | Keyword extraction | every `retrieve()` / `completion()` | Cheap calls; uses the instance's `llm` |
 | Text-to-Cypher | every question, when `enable_cypher=True` | Uses the instance's `llm` |
 | Answer generation | `completion()` | Uses the instance's `llm` |
-| Dedup judge | `finalize()` / `deduplicate_entities()` | A gpt-4.1-class model: `finalize(judge=LLMJudge(gpt41))`. See [Post-Ingestion](#7-post-ingestion) |
+| Dedup judge | `finalize()` / `deduplicate_entities()` | A gpt-4.1-class model: `finalize(judge=LLMJudge(judge_llm))`. See [Post-Ingestion](#7-post-ingestion) |
 | Mapping proposal for an undeclared table | `ingest()` of a `.csv` with no mapping | One call per table (up to 3 when a proposal does not fit the data) |
 | Description summary | `finalize()` | One call per entity holding more than 5 description pieces; uses the instance's `llm` |
 | Ingestion planning | `ingest(auto=True)` | `LLMIngestionPlanner` with the instance's `llm` |
@@ -379,7 +381,7 @@ An `Ontology` defines the structure of your knowledge graph. It constrains LLM e
 | `description` | `str \| None`   | `None`      | Human-readable description.                                  |
 | `structured`  | `bool`          | `False`     | Set by the SDK on a column a table mapping declared.         |
 
-**tables** -- `Ontology(tables=[TableMapping(...)])` declares how CSV/TSV files become nodes. See [Structured Ingestion](/structured-ingestion).
+**tables** -- `Ontology(tables=[TableMapping(...)])` declares how CSV/TSV files become nodes, and `Ontology(relationship_tables=[RelationshipMapping(...)])` how a file whose every row is an edge between existing entities becomes edges. See [Structured Ingestion](/structured-ingestion).
 
 ### Example Ontology
 
@@ -424,7 +426,7 @@ rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)
 
 With no entity types, relation types or tables (and no ontology stored for the graph yet), the first use seeds the 11 default entity types (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method). No relation is enforced: the extraction prompt lists `DEFAULT_RELATION_TYPES` (31 labels) as preferred relationships and accepts any other UPPER_SNAKE_CASE label. See [Pipeline Tuning](#5-pipeline-tuning).
 
-`GraphSchema`, `EntityType`, `RelationType` and `PropertyType` are deprecated aliases of `Ontology`, `Entity`, `Relation` and `Attribute`, and `GraphRAG(schema=...)` of `ontology=`; each use emits a `DeprecationWarning`.
+`GraphSchema`, `EntityType`, `RelationType` and `PropertyType` are deprecated aliases of `Ontology`, `Entity`, `Relation` and `Attribute`, and `GraphRAG(schema=...)` and `MultiPathRetrieval(schema=...)` of `ontology=`; each use emits a `DeprecationWarning`.
 
 ---
 
@@ -439,6 +441,7 @@ The default chunker is `SentenceTokenCapChunking`: it splits at sentence boundar
 | `max_tokens`        | `int` | `384`           | Maximum tokens per chunk.                             |
 | `overlap_sentences` | `int` | `2`             | Sentences shared between consecutive chunks.          |
 | `encoding_name`     | `str` | `"cl100k_base"` | tiktoken encoding used to count tokens.               |
+| `max_overlap_fraction` | `float \| None` | `None` | Most of a chunk's tokens the next chunk may repeat (`0.5`: each chunk advances by at least half its tokens). `None`: only `overlap_sentences` limits the overlap. |
 
 `StructuralChunking` and `ContextualChunking` also default to 384 tokens.
 
@@ -476,7 +479,7 @@ To re-chunk documents already in the graph after changing the chunker, use `upda
 
 | Class | Description | Parameters |
 |-------|-------------|------------|
-| `GLiNERExtractor` | Local GLiNER model (default) | `threshold=None` (0.75 for the default model), `model_name=None` (`urchade/gliner_medium-v2.1`), `window_tokens=None`, `window_overlap=48`, `candidate_threshold` |
+| `GLiNERExtractor` | Local GLiNER model (default) | `threshold=None` (0.75 for the default model), `model_name=None` (`urchade/gliner_medium-v2.1`), `window_tokens=None`, `window_overlap=48`, `candidate_threshold` (default 25 % below `threshold`; `None` turns the `"Unknown"` band off) |
 | `LLMExtractor` | LLM-based NER via prompt | `llm` (required), `threshold=0.75` |
 | `SpacyExtractor` | spaCy NER (`spacy` extra) | `model_name=None`, `labels=None`, `confidence=None` |
 | `CompositeExtractor` | Several extractors in priority order | `extractors`, `suppress_overlaps=True` |
@@ -649,7 +652,7 @@ All `FinalizeResult` fields are listed in the [API Reference](/api-reference#fin
 ```python
 from graphrag_sdk import LiteLLM, LLMJudge
 
-judge_llm = LiteLLM(model="openai/gpt-4.1")
+judge_llm = LiteLLM(model="openai/gpt-5.5")
 stats = await rag.finalize(judge=LLMJudge(judge_llm))
 ```
 

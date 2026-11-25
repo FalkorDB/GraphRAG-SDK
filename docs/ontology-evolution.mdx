@@ -184,7 +184,7 @@ The evolution methods are the way to change a label that already exists. The oth
 - **A new label or relation** is registered with its properties and patterns.
 - **An existing label** may be re-declared with the same or fewer properties, which means "use what is stored".
 - **A stored label with no data yet** (no node of that label, or no edge of that relation type, in the data graph, including a data graph that does not exist yet) may gain attributes and patterns this way. So the eleven default labels a new graph is seeded with can take a first declared ontology's attributes. A pattern or attribute added to a stored relation is written the way `add_relation_pattern` writes one, so every pattern of the relation keeps the same properties.
-- **A stored label that holds data** cannot: adding a property or a relation pattern to it this way raises `OntologyModificationNotAllowedError`, whose message says to declare it without the additions and add them with `add_attribute` or `add_relation_pattern`. The data check ignores the SDK's own structure edges (`PART_OF`, `NEXT_CHUNK`, `MENTIONED_IN`). When a declaration adds to a stored label and the data graph cannot be read (a timeout, an unreachable server), registration fails with that error and writes nothing.
+- **A stored label that holds data** cannot: adding a property or a relation pattern to it this way raises `OntologyModificationNotAllowedError`, whose message says to declare it without the additions and add them with `add_attribute` (an entity attribute) or `add_relation_pattern` (a relation pattern); a new relation attribute needs `delete_all()`, which drops the whole data graph and the ontology graph, and a re-ingest of every source. The data check ignores the SDK's own structure edges (`PART_OF`, `NEXT_CHUNK`, `MENTIONED_IN`). When a declaration adds to a stored label and the data graph cannot be read (a timeout, an unreachable server), registration fails with that error and writes nothing.
 - **A different type** for a property that is already declared raises `OntologyContradictionError`.
 - `Document` and `Chunk` are reserved for the graph's own nodes and refused as entity labels.
 
@@ -256,8 +256,8 @@ async def main():
 
     async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="evolve_demo"),
-        llm=LiteLLM(model="openai/gpt-4o-mini"),
-        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
+        llm=LiteLLM(model="openai/gpt-5.5"),
+        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small", dimensions=256),
         ontology=starter,
     ) as rag:
         # 1. Ingest with the starter ontology.

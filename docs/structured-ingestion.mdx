@@ -473,6 +473,7 @@ Link("WORKS_AT", to="Organization", by="org_id",
 | `properties`| `{property_name: Column}`, or a bare string for `STRING`. Declared types are enforced at ingest, so a bad cell fails the ingest instead of writing a wrong type. |
 | `links`     | Columns that point at other entities. Each becomes a reference node plus an edge. A pointer creates the target if it is missing and only **adds its key** if it is there, so it can never overwrite real data. That is what makes the order of two files irrelevant. Two links to the same label are kept apart automatically. |
 | `standalone`| Says out loud that a new label genuinely relates to nothing, so an unconnected island is something you declared rather than something a typo produced. Only meaningful when the label is new and there are no links. |
+| `derived`   | Set by the SDK on a mapping it proposed for a table nobody declared (see [A table with no declared mapping](#a-table-with-no-declared-mapping)); `finalize()` reports those under `proposed_mappings`. Leave it `False` in a declaration. |
 | `description` | **Optional.** Prose carried into the ontology entry the mapping generates. `Column` and `Link` take a `description` too. |
 
 A mapping needs `name=` or `key=`; with neither it raises `MappingError`. A table

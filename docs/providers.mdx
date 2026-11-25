@@ -249,7 +249,7 @@ See the [LiteLLM documentation](https://docs.litellm.ai/) for the full list of s
 
 ## One LLM, Several Jobs
 
-`GraphRAG(llm=...)` is used for extraction, keyword extraction at query time, text-to-Cypher (when enabled), answer generation, and by default the dedup judge in `finalize()`. Give the judge a stronger model if your main one is small: `finalize(judge=LLMJudge(LiteLLM(model="openai/gpt-4.1")))`. On the benchmark corpus a gpt-4.1-class judge made 9 wrong merges where gpt-4o-mini made 51. See [Configuration](/configuration#which-model-does-what).
+`GraphRAG(llm=...)` is used for extraction, keyword extraction at query time, text-to-Cypher (when enabled), answer generation, and by default the dedup judge in `finalize()`. Give the judge a stronger model if your main one is small: `finalize(judge=LLMJudge(LiteLLM(model="openai/gpt-5.5")))`. On the benchmark corpus a gpt-4.1-class judge made 9 wrong merges where gpt-4o-mini made 51. See [Configuration](/configuration#which-model-does-what).
 
 ## Choosing a Provider
 

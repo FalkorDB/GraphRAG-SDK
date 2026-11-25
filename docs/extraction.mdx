@@ -75,7 +75,12 @@ class EntityExtractor(ABC):
         entity_types: list[str],
         source_chunk_id: str,
     ) -> list[ExtractedEntity]
+
+    async def ensure_ready(self) -> None:
+        """Load what the extractor needs. Optional; the default does nothing."""
 ```
+
+`GraphExtraction.prepare()` calls `ensure_ready()` before the document's chunks are written, so a local model that cannot load fails the document before anything of it is in the graph. `GLiNERExtractor`, `SpacyExtractor` and `CompositeExtractor` (each of its members) load their models there; a custom extractor that needs no loading can leave it out.
 
 Each extracted entity has:
 - **name** — the entity's name as it appears in the text (e.g., "Professor Harmon")
@@ -107,6 +112,10 @@ extractor = GLiNERExtractor(
 3. Text longer than the model's input limit (`config.max_len`, 384 words for the default model) is processed as overlapping windows and merged back into non-overlapping spans, so the tail of a long chunk is not silently truncated. The window defaults to `max_len` minus a safety margin; short text takes a single-pass fast path
 4. Returns predictions with character-level spans — more precise than LLM spans
 5. Spans scoring at or above `threshold` are typed. Spans in the band just below it — from `candidate_threshold` up to `threshold` — are kept but labeled `"Unknown"` (see [The Unknown band](#the-unknown-band)); anything below the band is discarded
+
+#### When the model cannot load
+
+The model is loaded by `ensure_ready()` before the document's chunks are written. If it cannot load, ingestion fails with `ModelLoadError` (from `graphrag_sdk.core.exceptions`, a subclass of `ExtractionError`) naming the model and, when `protobuf` is missing, the package to install; nothing of the document is written, and extraction never carries on with the LLM alone. A missing or broken package (`gliner` itself, or a module it imports) raises `ModelImportError`, which is a `ModelLoadError` and also an `ImportError`, so `except ImportError` still catches a missing `gliner`. `protobuf`, which the default model needs to load its tokenizer, is a dependency of `graphrag-sdk`. A failed load is remembered for 60 seconds and raised again without retrying, so the other chunks of the same ingest do not each reload the model; after that the next use tries the load again, so a model that failed to download while offline can recover without a restart. The exception's `hint` attribute holds the same advice without the underlying error's text.
 
 #### Thresholds are model-specific
 
@@ -176,7 +185,7 @@ extractor = SpacyExtractor(
 - Each spaCy label is mapped onto the first matching type your schema allows: `PERSON` → `Person`; `ORG` → `Organization`, `Institution` or `Company`; `GPE` → `Location`, `Place` or `GeographicLocation`; `FAC` → `Building`, `Facility`, `Location` or `Place`. A label your schema has no home for is dropped rather than guessed
 - spaCy gives no per-span probability, so `confidence` is a fixed value recorded on every entity; it does not change which entities are emitted
 - `labels` must be an iterable of labels; a bare string raises `TypeError`. Widening the label set buys recall at the cost of precision: on the 11-document benchmark, adding every usable label dropped F1 from 0.550 to 0.458
-- The model is loaded once per process and shared, like GLiNER's. A missing package raises `ImportError` and a missing model `OSError`, naming the install command
+- The model is loaded once per process and shared, like GLiNER's, by `ensure_ready()` before the document's chunks are written. A load failure raises a `ModelLoadError` naming the fix: a missing `spacy` package raises `ModelImportError` (also an `ImportError`) with the `pip install "graphrag-sdk[spacy]"` command, a model that is not downloaded raises `ModelMissingError` (also an `OSError`) with the `python -m spacy download` command, and any other import or load failure (a missing pipeline plugin, a numpy version mismatch) raises `ModelImportError` or `ModelLoadError`. Like GLiNER, a failed load is raised again for 60 seconds and then tried again, so a model downloaded meanwhile is picked up without a restart
 
 ### CompositeExtractor
 
@@ -195,7 +204,8 @@ Measured on the 11-document benchmark (157 chunks), GLiNER plus `SpacyExtractor`
 
 - **Order matters.** Duplicates are merged by normalised name, and the **earliest** extractor in the list decides the type, unless it typed the entity `Unknown` and a later one gives a specific type. Put your most trusted, most schema-aware extractor first. Chunk provenance and spans are unioned
 - **Overlapping spans** (`suppress_overlaps=True`, the default): when one extractor's span strictly contains another's and adds a content word, the longer one wins — `Paris Observatory` replaces an earlier `Paris` at the same position. An extension that only adds an article (`The Paris Observatory` over `Paris Observatory`), a partial overlap, or an identical span leaves the earlier extractor's entity in place
-- **Failures:** one extractor raising does not stop the others; its results are skipped with a warning, and the error is re-raised only if every extractor fails. `ImportError` and `OSError` (a missing dependency or model) always propagate, since they would otherwise repeat on every chunk
+- **Failures:** one extractor raising does not stop the others; its results are skipped with a warning, and the error is re-raised only if every extractor fails. `ModelLoadError`, `ImportError` and `OSError` (a model that could not load, a missing dependency or model) always propagate, since they would otherwise repeat on every chunk; a `ModelLoadError` is the one reported when another member also failed. A `TimeoutError` or `ConnectionError` is one failed call and fails only its member. Every member finishes the chunk before anything is raised, so a member running in a worker thread (GLiNER, spaCy) is not abandoned mid-inference
+- `ensure_ready()` readies every member in turn; a member without `ensure_ready()` counts as ready
 - An empty list raises `ValueError`. `LLMExtractor` members are refused with `TypeError`: inside a composite, it would lose the batching, `max_concurrency` and type descriptions `GraphExtraction` gives it directly
 
 ### Custom Extractors
@@ -273,6 +283,8 @@ When the ontology declares attributes, each entity and relationship also carries
 After step 2, GLiNER spans from step 1 are **carried forward** into the verified entities. GLiNER character offsets are more precise than LLM-generated offsets, so step 1 spans take priority. If the LLM found a new entity that GLiNER missed, its span is found by searching the chunk text for the name.
 
 ### Fallback Behavior
+
+A step 1 error fails only its chunk, which is listed in `failed_chunks`, except `ModelLoadError`: a model that cannot load fails every chunk the same way, so it stops extraction and fails the ingest instead of carrying on without the model.
 
 If step 2 fails for a chunk (an API error), the pipeline falls back to using step 1 entities without relationships — you still get entities, just no relationships for that chunk. An API error is not silent: `result.metadata["extraction"]` lists `failed_chunks` (step 1 failed, no entities) and `relation_failed_chunks` (entities kept, relationships lost), both are logged at WARNING, and the document's content hash is withheld so the next `ingest()` retries it. A reply that arrives but is not valid JSON also falls back to the step 1 entities, but is only logged at WARNING: it is not listed in `relation_failed_chunks` and does not withhold the hash.
 
@@ -414,6 +426,7 @@ Relationships are similarly deduplicated by `(source.lower(), type.lower(), targ
 - Longer descriptions win
 - `source_chunk_ids` are merged
 - Spans are merged across chunks
+- Declared attribute values are merged per attribute, as for entities: a chunk that does not state an attribute, or states a value that does not fit its type, leaves the earlier value in place
 
 ---
 

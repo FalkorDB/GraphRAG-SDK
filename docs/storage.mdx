@@ -294,7 +294,7 @@ Ingest resolves per document, so `Airbus` in one file and `Airbus SE` in another
 5. **Same → merge**, by the Phase 1 rules and the same single query: survivor by the Phase 1 rank; every member's description kept; other names kept in `aliases`; provenance and missing properties carried; every edge moved. The survivor gains every member's label, as Cypher labels and on record in `merged_labels`, and takes the judge's name for the group when it is one of the members' own names or aliases (its old name moves to `aliases`, and its name vector is replaced; the id does not change; a table row keeps its declared name). The rename is the group's last operation in the plan
 6. **Different → nothing** is written to the entities: the pending entity's check is complete, and the pair is put to the judge again only if a later pending entity brings it into a set
 
-gpt-4.1 made 9 wrong merges where gpt-4o-mini made 51 on the benchmark corpus, so give `LLMJudge` a gpt-4.1-class model: `finalize(judge=LLMJudge(gpt41))`. There is no run without a judge — `judge=False` raises `TypeError` — so nothing waits for a judged run that may never come. A run with nothing pending asks the judge nothing.
+gpt-4.1 made 9 wrong merges where gpt-4o-mini made 51 on the benchmark corpus, so give `LLMJudge` a gpt-4.1-class model or stronger: `finalize(judge=LLMJudge(LiteLLM(model="openai/gpt-5.5")))`. There is no run without a judge — `judge=False` raises `TypeError` — so nothing waits for a judged run that may never come. A run with nothing pending asks the judge nothing.
 
 #### The judge component
 
@@ -353,7 +353,7 @@ Every merge, by rule or by the judge, keeps what the duplicate carried:
 The fuzzy name-embedding phase is removed: finalize-time dedup is the exact phase plus the judge. `deduplicate_entities()` still accepts `fuzzy=False` and `similarity_threshold=` for now, ignored, with a `DeprecationWarning`; `fuzzy=True` raises `ValueError`. Ingest-time resolvers (`ingest(resolver=...)`) are unchanged.
 
 <Note>
-`finalize()` and `deduplicate_entities()` call the LLM through the default `LLMJudge`. To keep dedup LLM-free, pass a `DedupJudge` of your own, such as the `SpellingJudge` above. `finalize()` still sends entities holding more than five descriptions to `rag.llm` for a summary.
+`finalize()` and `deduplicate_entities()` call the LLM through the default `LLMJudge`. To keep dedup LLM-free, pass a `DedupJudge` of your own, such as the `SpellingJudge` above. `finalize()` still sends entities holding more than five description pieces to `rag.llm` for a summary.
 </Note>
 
 ### Running alongside `update()` and deletes

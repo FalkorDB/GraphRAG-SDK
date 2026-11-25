@@ -32,10 +32,12 @@ Optional extras add the rest:
 | Extra | Adds |
 |-------|------|
 | `pdf` | PDF ingestion (`pip install graphrag-sdk[litellm,pdf]`) |
+| `pdf-fast` | PyMuPDF, which `PdfLoader` prefers when installed (faster, keeps table layout; AGPL-3.0) |
 | `markdown` | `MarkdownLoader` |
 | `openrouter` | `OpenRouterLLM`, `OpenRouterEmbedder` |
 | `fastcoref` | `FastCorefResolver` |
 | `spacy` | `SpacyExtractor` |
+| `mcp` | The `graphrag-mcp` server (see [Agentic Retrieval](/agentic-retrieval)) |
 | `all` | The common provider and PDF extras, and the MCP server |
 
 For a local editable install from a cloned repo:
@@ -115,7 +117,7 @@ from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
 
 rag = GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
-    llm=LiteLLM(model="openai/gpt-4.1"),
+    llm=LiteLLM(model="openai/gpt-5.5"),
     embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
     ontology=ontology,
     embedding_dimension=256,  # must match your embedding model's output dimension
@@ -193,7 +195,7 @@ ontology = Ontology(
 )
 rag = GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
-    llm=LiteLLM(model="openai/gpt-4.1"),
+    llm=LiteLLM(model="openai/gpt-5.5"),
     embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
     ontology=ontology,
     enable_cypher=True,   # lets questions aggregate over the typed columns
@@ -219,12 +221,12 @@ print(f"Embedded: {results.entities_embedded} entities, {results.relationships_e
 
 Dedup merges duplicates such as a table row and a mention of its name (by rule), and spelling variants such as "Acme Ltd" and "Acme Limited", or "J. Doe" and "Jane Doe", when an LLM judge decides they are one entity. Without `finalize()`, a multi-document graph keeps its duplicates and entity- and relationship-level vector search returns nothing.
 
-`finalize()` is incremental: it checks only the entities added since the last call, so call it once after each batch of ingests, not once per file. It calls the LLM for the judge; a gpt-4.1-class judge model is recommended:
+`finalize()` is incremental: it checks only the entities added since the last call (and any left pending by an earlier run), so call it once after each batch of ingests, not once per file. It calls the LLM for the judge; a gpt-4.1-class judge model is recommended:
 
 ```python
 from graphrag_sdk import LLMJudge
 
-results = await rag.finalize(judge=LLMJudge(LiteLLM(model="openai/gpt-4.1")))
+results = await rag.finalize(judge=LLMJudge(LiteLLM(model="openai/gpt-5.5")))
 ```
 
 It also reports what it found, such as probable duplicates it did not merge, at WARNING and on the result. See [Configuration](/configuration#7-post-ingestion).
