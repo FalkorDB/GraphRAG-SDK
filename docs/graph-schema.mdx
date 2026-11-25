@@ -333,7 +333,7 @@ from graphrag_sdk import Attribute, Entity
 Entity(label="Person", properties=[Attribute(name="born", type="INTEGER")])
 ```
 
-Avoid the names the SDK writes itself (`name`, `description`, `source_chunk_ids`, `spans`, `id`, and on edges `rel_type`, `fact`, `src_name`, `tgt_name`). An attribute a table declared is marked `Attribute(structured=True)` and carries the table's signature in its name (`employees__age`); it is never asked of the LLM.
+Avoid the names the SDK writes itself (`name`, `description`, `description_piece_count`, `description_summarised`, `source_chunk_ids`, `spans`, `id`, and on edges `rel_type`, `fact`, `src_name`, `tgt_name`). An attribute a table declared is marked `Attribute(structured=True)` and carries the table's signature in its name (`employees__age`); it is never asked of the LLM.
 
 ### Tables in the Ontology
 
