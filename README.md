@@ -180,7 +180,8 @@ The three primitives behind the wrapper:
 | `delete_document(document_id)` | Document removed. Cleans up entities orphaned by the deletion; preserves entities still referenced by other documents. |
 | `apply_changes(added=..., modified=..., deleted=...)` | Heterogeneous batch. Per-file errors are collected, not raised. Does not call `finalize()` — caller drives that cadence. |
 
-In file mode, `document_id` defaults to `os.path.normpath(source)` so
+In file mode, `document_id` defaults to `os.path.normpath(source)` (a URI
+such as `s3://...` is kept verbatim) so
 `update("docs/x.md")` matches the original `ingest("docs/x.md")` with
 no extra plumbing. See [`examples/07_incremental_updates.py`](graphrag_sdk/examples/07_incremental_updates.py).
 
