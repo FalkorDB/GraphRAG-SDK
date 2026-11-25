@@ -1450,7 +1450,7 @@ from graphrag_sdk.core.exceptions import DatabaseError, DatabaseUnavailableError
 | `OntologyDiscoveryError` | `RuntimeError` | Ontology discovery exhausted `max_retries`; carries `chunk_id`, `attempts`, `last_error` |
 | `RetrieverError` | `GraphRAGError` | Retrieval execution failures (empty query, or an error inside a strategy) |
 | `IngestionError` | `GraphRAGError` | Pipeline orchestration failures; base of `LoaderError`, `ChunkingError`, `ExtractionError`, `ResolutionError` |
-| `ModelLoadError` | `ExtractionError` | An extractor's model (GLiNER, spaCy) cannot load. Fails the ingest instead of one chunk; a plain `ExtractionError` from a custom extractor still fails only its own chunk. Carries `hint`, naming the model and what to install |
+| `ModelLoadError` | `ExtractionError` | An extractor's model (GLiNER, spaCy) cannot load. Fails the ingest instead of one chunk; a plain `ExtractionError` from a custom extractor still fails only its own chunk. Carries `hint`, a short remediation for that model: what to install when a package is missing, otherwise what to check (such as versions that may not work together) |
 | `ModelImportError` | `ModelLoadError`, `ImportError` | The model's package, or one it needs, is missing or broken. `except ImportError` still catches it |
 | `ModelMissingError` | `ModelLoadError`, `OSError` | The model is not installed (a spaCy pipeline not downloaded). `except OSError` still catches it |
 | `ToolError` | `GraphRAGError` | A `GraphRAGToolkit` tool declined or could not run the call. Carries `hint`. Exported at the top level and from `graphrag_sdk.tools` |

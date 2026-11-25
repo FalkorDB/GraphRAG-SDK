@@ -221,7 +221,7 @@ print(f"Embedded: {results.entities_embedded} entities, {results.relationships_e
 
 Dedup merges duplicates such as a table row and a mention of its name (by rule), and spelling variants such as "Acme Ltd" and "Acme Limited", or "J. Doe" and "Jane Doe", when an LLM judge decides they are one entity. Without `finalize()`, a multi-document graph keeps its duplicates and entity- and relationship-level vector search returns nothing.
 
-`finalize()` is incremental: it checks only the entities added since the last call (and any an earlier run left pending), so call it once after each batch of ingests, not once per file. It calls the LLM for the judge; a gpt-4.1-class judge model is recommended:
+`finalize()` is incremental: it checks only the entities added since the last call (and any left pending by an earlier run), so call it once after each batch of ingests, not once per file. It calls the LLM for the judge; a gpt-4.1-class judge model is recommended:
 
 ```python
 from graphrag_sdk import LLMJudge

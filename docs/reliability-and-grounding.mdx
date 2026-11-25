@@ -98,7 +98,7 @@ Document ──PART_OF──▶ Chunk ──NEXT_CHUNK──▶ Chunk
 | Element | Key fields |
 | --- | --- |
 | `Document` | `id` (the `document_id` you passed to `ingest()`, the normalized source path, `text-<hash>` for raw text, or a table's name), `path`, `content_hash`, plus any loader metadata |
-| `Chunk` | `id` (derived from the document id, position and text), `text`, `index`, `embedding`, and `name` (`"<document id> · chunk <index>"`, set by `finalize()` unless `finalize(name_chunks=False)`); a table row is a chunk with `kind: "record"` and its cells |
+| `Chunk` | `id` (derived from the document id, position and text), `text`, `index`, `embedding`, and `name` (`"<document id> · chunk <index>"`, set by `finalize()` unless `finalize(name_chunks=False)`; a table-row chunk is not named, so its `name` is a `name` column's value or absent); a table row is a chunk with `kind: "record"` and its cells |
 | `__Entity__` | `id`, `name`, `description` (several pieces are joined with `" \| "`, and `description_piece_count` says how many), `aliases` (names it was merged under), `embedding`; which chunks mention it is its `MENTIONED_IN` edges |
 | `RELATES` | `src_name`, `rel_type`, `tgt_name`, `fact`, `description`, `source_chunk_ids`, `embedding` |
 
