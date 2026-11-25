@@ -39,7 +39,7 @@ Run the full test suite with:
 python -m pytest graphrag_sdk/tests/ -q
 ```
 
-There are 558 tests covering the ingestion pipeline, the GraphRAG facade, extraction strategies, resolution strategies, retrieval strategies, storage layers, and utilities. All tests use mock providers, so no live LLM or database connection is needed to run them.
+There are over 3,000 tests covering the ingestion pipeline, the GraphRAG facade, extraction strategies, resolution strategies, retrieval strategies, storage layers, and utilities. All tests use mock providers, so no live LLM or database connection is needed to run them.
 
 The real-FalkorDB integration tests create and drop `test_*` graphs, so run them against a disposable server. Start one on a free port and point the tests at it with `FALKOR_PORT` (and `FALKOR_HOST`, `FALKOR_USERNAME` and `FALKOR_PASSWORD` if needed):
 
@@ -73,7 +73,11 @@ graphrag_sdk/
     core/                    -- connection, models, providers, context, exceptions
     ingestion/               -- pipeline, loaders, chunking, extraction strategies, resolution strategies
     retrieval/               -- retrieval and reranking strategies
-    storage/                 -- graph_store.py, vector_store.py
+    storage/                 -- graph, vector, ontology and system stores; deduplication and dedup judges
+    discovery/               -- ontology discovery
+    tools/                   -- agent toolkit (retrieve, ingest, finalize tools)
+    mcp/                     -- MCP server over the toolkit
+    telemetry/               -- telemetry
     utils/                   -- utilities (Cypher helpers, graph visualization, etc.)
   tests/                     -- all tests (mock-based, no external services required)
 docs/                        -- documentation
@@ -98,7 +102,7 @@ Key entry points:
 
 ## 6. Adding Strategies
 
-The SDK is designed to be extended via an Abstract Base Class (ABC) pattern. There are three main extension points: extraction strategies, resolution strategies, and retrieval strategies.
+The SDK is designed to be extended via an Abstract Base Class (ABC) pattern. The main extension points are loaders and chunking, extraction, resolution, retrieval, reranking and dedup-judge strategies.
 
 ### General Pattern
 
@@ -110,13 +114,13 @@ The SDK is designed to be extended via an Abstract Base Class (ABC) pattern. The
 ### Example: Custom Extraction Strategy
 
 ```python
-from graphrag_sdk import ExtractionStrategy, GraphData, GraphSchema, TextChunks, Context
+from graphrag_sdk import ExtractionStrategy, GraphData, Ontology, TextChunks, Context
 
 
 class MyCustomExtraction(ExtractionStrategy):
     """A custom extraction strategy that implements domain-specific entity/relation extraction."""
 
-    async def extract(self, chunks: TextChunks, schema: GraphSchema, ctx: Context) -> GraphData:
+    async def extract(self, chunks: TextChunks, ontology: Ontology, ctx: Context) -> GraphData:
         # Your extraction logic here.
         # Process the input chunks and return a GraphData containing
         # GraphNode and GraphRelationship objects.
@@ -131,7 +135,7 @@ from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
 rag = GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
     llm=LiteLLM(model="azure/gpt-4.1"),
-    embedder=LiteLLMEmbedder(model="azure/text-embedding-ada-002"),
+    embedder=LiteLLMEmbedder(model="azure/text-embedding-3-large", dimensions=256),
 )
 await rag.ingest("document.txt", extractor=MyCustomExtraction())
 ```

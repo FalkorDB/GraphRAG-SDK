@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "graphrag-sdk"
-version = "1.6.0"
+version = "1.7.1"
 description = "The most accurate Graph RAG framework. Build knowledge graphs and query them with natural language. Built on FalkorDB."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -45,7 +45,12 @@ dependencies = [
     # fails to load.
     "protobuf>=4.21",
     "hnswlib>=0.8",
-    "scipy>=1.11,<2",
+    # scipy 1.15 is the last series for Python 3.10, and its macOS wheels have
+    # gfortran-built modules (PROPACK, reached through scipy.sparse) that macOS 27
+    # refuses to load, so `import graphrag_sdk` and the GLiNER model load fail.
+    # 1.14.1 loads; other environments retain the existing scipy range.
+    "scipy>=1.11,<1.15; python_version < '3.11' and sys_platform == 'darwin'",
+    "scipy>=1.11,<2; python_version >= '3.11' or sys_platform != 'darwin'",
 ]
 
 [project.optional-dependencies]

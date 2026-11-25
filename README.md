@@ -115,20 +115,20 @@ async def main():
 asyncio.run(main())
 ```
 
-### 3. Define a schema (optional)
+### 3. Define an ontology (optional)
 
 ```python
-from graphrag_sdk import GraphSchema, EntityType, RelationType
+from graphrag_sdk import Ontology, Entity, Relation
 
-schema = GraphSchema(
+ontology = Ontology(
     entities=[
-        EntityType(label="Person", description="A human being"),
-        EntityType(label="Organization", description="A company or institution"),
-        EntityType(label="Location", description="A geographic location"),
+        Entity(label="Person", description="A human being"),
+        Entity(label="Organization", description="A company or institution"),
+        Entity(label="Location", description="A geographic location"),
     ],
     relations=[
-        RelationType(label="WORKS_AT", description="Is employed by", patterns=[("Person", "Organization")]),
-        RelationType(label="LOCATED_IN", description="Is situated in", patterns=[("Organization", "Location")]),
+        Relation(label="WORKS_AT", description="Is employed by", patterns=[("Person", "Organization")]),
+        Relation(label="LOCATED_IN", description="Is situated in", patterns=[("Organization", "Location")]),
     ],
 )
 
@@ -136,7 +136,7 @@ async with GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
     llm=LiteLLM(model="openai/gpt-5.5"),
     embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
-    schema=schema,
+    ontology=ontology,
 ) as rag:
     ...  # ingest / completion as above
 ```
@@ -185,7 +185,7 @@ In file mode, `document_id` defaults to `os.path.normpath(source)` so
 no extra plumbing. See [`examples/07_incremental_updates.py`](graphrag_sdk/examples/07_incremental_updates.py).
 
 **Cost model.** `finalize()` deduplicates only the entities ingested
-since the last `finalize()` (they have no name vector yet) and any an
+since the last `finalize()` (they have no name vector yet) and any entities an
 earlier run left pending, reaching
 the rest of the graph through the vector index — its LLM calls,
 embeddings and merges follow the **change size**, not the graph size.
@@ -222,7 +222,7 @@ guards the default.
 | Ingestion | Extract entities & relations | LLM |
 | Ingestion | Resolve entities within a document (exact match) | — |
 | Finalize | Deduplicate new entities across documents (LLM judge) | LLM |
-| Ingestion | Embed & index | LLM |
+| Ingestion | Embed & index | Embedding model |
 | Retrieval | Vector search | DB |
 | Retrieval | Full-text search | DB |
 | Retrieval | Text-to-Cypher *(experimental)* | LLM |

@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-11-24
+
+### Fixed
+
+- **The SDK imports on Python 3.10 under macOS 27.** scipy 1.15 is the last
+  series for Python 3.10, and its macOS wheels include gfortran-built modules
+  (PROPACK, three ODE solvers and COBYLA) that the macOS 27 loader refuses: "section
+  '__DATA/__thread_bss' has a zero-fill section type, but offset field is not
+  zero". `import graphrag_sdk` reaches one of them through
+  `scipy.cluster.hierarchy`, and so does the default GLiNER model's load, so
+  both failed. On Python 3.10 under macOS, scipy is now held below 1.15
+  (1.14.1 loads). Other platforms and Python 3.11+ keep `scipy>=1.11,<2`.
+  Earlier SDK versions were affected too; on one of them, installing
+  `scipy<1.15` fixes it.
+
+## [1.7.0] - 2026-11-23
+
+Retrieval context reads the same in every strategy, one edge per relation
+line, with a few more passages by default; prompts or token budgets tuned to
+the old output may need a look. Any reasoning model works without a setting,
+and `graphrag-mcp` defaults to `gpt-6-luna` before gpt-4o-mini leaves OpenAI's
+API. An entity's description is stored once: the `descriptions` list is no
+longer written, and a count of the pieces stands in for the second copy.
+Graphs written by earlier versions read as before. `finalize()` gives chunks a
+readable name. GLiNER fails loudly when its model cannot load, ontology
+discovery survives a temporary model error, a new graph accepts its first
+declared ontology, the dedup judge's one-member groups no longer leave
+entities pending, and the agent asks before adding types to an ontology the
+user supplied.
+
 ### Changed
 
 - **Retrieval context is a little larger and reads the same everywhere.**
@@ -53,7 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reasoning model it used to fall back to the LLM's own `max_tokens`. The
   LLM's `max_tokens` no longer overwrites a `max_completion_tokens` passed
   with a call.
-
+- **`graphrag-mcp` defaults to `openai/gpt-6-luna`.** Without
+  `GRAPHRAG_MODEL`, the MCP server used `gpt-4o-mini`, which leaves OpenAI's
+  API on 14 January 2027. It now uses `openai/gpt-6-luna` with reasoning off
+  (`reasoning_effort="none"`). A model set in `GRAPHRAG_MODEL`, including an
+  Azure deployment, is used as before.
 - **An entity's description is stored once.** A description of more than one
   piece (what several chunks said, or a merge) was stored twice: as the
   `descriptions` list and as `description`, the same text joined with `" | "`.
@@ -89,6 +123,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `FinalizeResult.chunks_named` counts what was named (#226).
 
 ### Fixed
+
+- **`ConnectionConfig.from_url()` keyword arguments override the URL.** Only
+  `ssl` could be overridden: passing `host`, `port`, `username` or `password`
+  raised `TypeError: got multiple values for keyword argument`, as in
+  `from_url("rediss://user:pw@host:6380", port=7000)`. Every keyword argument
+  now wins over the value parsed from the URL, and an explicit `None` clears
+  one, such as the URL's credentials (#405).
 
 - **GLiNER no longer fails silently on a clean install.** The default GLiNER
   model needs `protobuf` to load its tokenizer, and a clean install did not

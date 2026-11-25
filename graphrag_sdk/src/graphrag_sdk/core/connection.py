@@ -93,15 +93,16 @@ class ConnectionConfig:
                 f"Unsupported URL scheme: {parsed.scheme!r} "
                 "(use 'redis://' for plaintext or 'rediss://' for TLS)"
             )
+        values: dict[str, Any] = {
+            "host": parsed.hostname or "localhost",
+            "port": parsed.port or 6379,
+            "username": parsed.username or None,
+            "password": parsed.password or None,
+        }
         if parsed.scheme == "rediss":
-            kwargs.setdefault("ssl", True)
-        return cls(
-            host=parsed.hostname or "localhost",
-            port=parsed.port or 6379,
-            username=parsed.username or None,
-            password=parsed.password or None,
-            **kwargs,
-        )
+            values["ssl"] = True
+        values.update(kwargs)
+        return cls(**values)
 
 
 def _changes_topology(result: Any) -> bool:
