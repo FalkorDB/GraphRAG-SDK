@@ -53,6 +53,7 @@ Semantics to be aware of (documented on ``GraphRAG.update()``):
 from __future__ import annotations
 
 import hashlib
+import inspect
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -125,6 +126,15 @@ class CachedChunkExtraction(ExtractionStrategy):
         # Filled during extract() so the caller can report cache stats.
         self.cached_chunk_count = 0
         self.extracted_chunk_count = 0
+
+    async def prepare(self) -> None:
+        # The pipeline prepares only its own extractor, this wrapper; without
+        # passing it on, the inner strategy's model would first load inside
+        # extract(), after the document's chunks are written.
+        # An inner strategy that does not subclass ExtractionStrategy may lack it.
+        prepared = getattr(self._inner, "prepare", lambda: None)()
+        if inspect.isawaitable(prepared):
+            await prepared
 
     async def _old_chunks_by_hash(self, exclude: set[str]) -> tuple[dict[str, str], set[str]]:
         """Return (sha256(chunk text) -> old chunk id, all old chunk ids).
