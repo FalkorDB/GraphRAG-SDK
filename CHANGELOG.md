@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`update(cache_unchanged_chunks=True)` loads the model before writing,
+  too.** 1.7.0 loads a GLiNER or spaCy model before a document's chunks are
+  written, so a model that cannot load leaves no half-written document. On
+  this path the extractor is wrapped in `CachedChunkExtraction`, which did not
+  pass `prepare()` on: the model first loaded during extraction, after the
+  chunks were written, and the `ModelLoadError` left them in the graph without
+  entities. The wrapper now prepares the strategy it wraps.
+
 ## [1.7.0] - 2026-11-23
 
 Retrieval context reads the same in every strategy, one edge per relation

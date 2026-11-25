@@ -13,6 +13,9 @@ from graphrag_sdk.core.models import ExtractedEntity, Ontology, TextChunk, TextC
 from graphrag_sdk.discovery.pipeline import _extract_mentions_from_chunk
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.extraction_strategies import entity_extractors as ee
+from graphrag_sdk.ingestion.extraction_strategies.cached_chunk_extraction import (
+    CachedChunkExtraction,
+)
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import EntityExtractor
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -371,6 +374,45 @@ async def test_a_model_that_cannot_load_fails_before_the_document_is_written(
         await pipeline.run("doc", ctx, text="Alice works at Acme.")
     assert "could not" in str(info.value), repr(info.value)
     assert not mock_graph_store.upsert_nodes.called
+
+
+async def test_update_with_the_chunk_cache_also_loads_the_model_before_writing(
+    monkeypatch, ctx, mock_graph_store, mock_vector_store
+):
+    """``update(cache_unchanged_chunks=True)`` wraps the extractor in
+    ``CachedChunkExtraction``; the wrapper must pass ``prepare()`` on, or a
+    broken model fails only after the chunks are written."""
+    _broken_gliner(monkeypatch, OSError("offline"))
+    pipeline = IngestionPipeline(
+        loader=None,
+        chunker=_OneChunk(),
+        extractor=CachedChunkExtraction(
+            inner=GraphExtraction(llm=MockLLMWithGraphExtraction()),
+            graph_store=mock_graph_store,
+            document_id="doc",
+        ),
+        resolver=None,
+        graph_store=mock_graph_store,
+        vector_store=mock_vector_store,
+        ontology=Ontology(),
+    )
+    with pytest.raises((ModelLoadError, IngestionError)) as info:
+        await pipeline.run("doc", ctx, text="Alice works at Acme.")
+    assert "could not" in str(info.value), repr(info.value)
+    assert not mock_graph_store.upsert_nodes.called
+
+
+async def test_the_chunk_cache_prepares_an_inner_strategy_without_prepare(mock_graph_store):
+    """An inner strategy that does not subclass ExtractionStrategy may have
+    no ``prepare()``; the wrapper must not fail on it."""
+
+    class Duck:
+        async def extract(self, chunks, ontology, ctx):
+            raise AssertionError("not called")
+
+    await CachedChunkExtraction(
+        inner=Duck(), graph_store=mock_graph_store, document_id="doc"
+    ).prepare()
 
 
 async def test_a_composite_is_ready_only_when_every_member_is(monkeypatch):
