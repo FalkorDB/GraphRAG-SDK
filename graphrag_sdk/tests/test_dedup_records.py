@@ -467,6 +467,39 @@ async def test_relates_collapse_combines_descriptions_and_fact(graph):
     ]
 
 
+async def test_relates_collapse_keeps_survivor_fact_when_duplicate_has_none(graph):
+    await graph.query_raw(
+        "CREATE (s:__Entity__:Person {id: 's', name: 'Tim Cook'}), "
+        "(d:__Entity__:Person {id: 'd', name: 'Timothy Cook'}), "
+        "(apple:__Entity__:Organization {id: 'apple', name: 'Apple'}), "
+        "(s)-[:RELATES {rel_type: 'LEADS', description: 'new text', "
+        "  fact: '(Tim Cook, LEADS, Apple): old text', embedding: vecf32([1.0, 0.0])}]->(apple), "
+        "(d)-[:RELATES {rel_type: 'LEADS', description: 'dup text'}]->(apple), "
+        "(s)-[:RELATES {rel_type: 'SUPPORTS', description: 'new text', "
+        "  fact: 'survivor fact', embedding: vecf32([1.0, 0.0])}]->(apple), "
+        "(d)-[:RELATES {rel_type: 'SUPPORTS', description: 'dup text', "
+        "  fact: 'duplicate fact', embedding: vecf32([0.0, 1.0])}]->(apple), "
+        "(apple)-[:RELATES {rel_type: 'HIRES', description: 'new text', "
+        "  fact: '(Apple, HIRES, Tim Cook): old text', embedding: vecf32([0.0, 1.0])}]->(s), "
+        "(apple)-[:RELATES {rel_type: 'HIRES', description: 'dup text'}]->(d)"
+    )
+    store = await held(graph)
+    plan_run = await one_absorb_plan(store)
+    assert await absorb(store, graph, plan_run) == APPLIED
+
+    res = await rows(
+        graph,
+        "MATCH (:__Entity__ {id: 's'})-[r:RELATES]-(:__Entity__ {id: 'apple'}) "
+        "RETURN r.rel_type, r.description, r.description_piece_count, r.fact, r.embedding "
+        "ORDER BY r.rel_type",
+    )
+    assert res == [
+        ["HIRES", "new text | dup text", 2, "(Apple, HIRES, Tim Cook): old text", [0.0, 1.0]],
+        ["LEADS", "new text | dup text", 2, "(Tim Cook, LEADS, Apple): old text", [1.0, 0.0]],
+        ["SUPPORTS", "new text | dup text", 2, "duplicate fact", [0.0, 1.0]],
+    ]
+
+
 async def test_a_relates_upsert_after_a_collapse_replaces_the_piece_count(graph):
     """A collapse stores a joined description with its piece count. An upsert
     that replaces the description replaces the count too; one without a

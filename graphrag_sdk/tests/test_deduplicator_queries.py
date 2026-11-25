@@ -419,7 +419,8 @@ class TestMergePreservesDescriptions:
         ) in q
         assert "AS old_dhead" in q and "AS old_head" in q and "AS fact_head" in q
         assert (
-            "CASE WHEN no_ex OR fact_head IS NULL THEN e.fact "
+            "CASE WHEN no_ex THEN e.fact "
+            "WHEN fact_head IS NULL THEN coalesce(e.fact, old_fact) "
             "WHEN all_text IS NULL THEN fact_head "
             "ELSE fact_head + ': ' + all_text END AS new_fact"
         ) in q

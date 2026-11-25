@@ -569,7 +569,8 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
         # The head is taken from an edge whose fact carries its description
         # (the duplicate's first, as ``+=`` keeps its names), before a
         # relationship table's template; with no usable head the duplicate's
-        # fact stays. Left to ``+=`` it kept only the duplicate's tables,
+        # fact stays, or the survivor's if the duplicate has none. Left to
+        # ``+=`` it kept only the duplicate's tables,
         # description and fact, so evidence text was lost and dropping one
         # table deleted an edge another still lists.
         # When both edges say one thing, the text stays as either stored it
@@ -594,7 +595,8 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
             f"WITH {carried}, e, b, old, old_sources, no_ex, all_ds, old_fact, old_emb, "
             f"{all_text} AS all_text, {head} AS fact_head "
             f"WITH {carried}, e, b, old, old_sources, no_ex, all_ds, all_text, old_fact, old_emb, "
-            "CASE WHEN no_ex OR fact_head IS NULL THEN e.fact "
+            "CASE WHEN no_ex THEN e.fact "
+            "WHEN fact_head IS NULL THEN coalesce(e.fact, old_fact) "
             "WHEN all_text IS NULL THEN fact_head "
             "ELSE fact_head + ': ' + all_text END AS new_fact "
         )
