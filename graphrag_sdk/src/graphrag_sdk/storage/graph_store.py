@@ -1223,6 +1223,17 @@ class GraphStore:
                 for incoming in ("item.properties", "$properties")
             )
 
+        # A dedup merge that collapses two RELATES edges stores their joined
+        # description with a piece count. A write that replaces the
+        # description replaces the count with its own (none for one piece);
+        # kept, the count would split text it was not written for at ``|``.
+        # A write without a description leaves both as they were.
+        batch_piece_count, item_piece_count = (
+            f", r.{DESCRIPTION_COUNT_KEY} = CASE WHEN {incoming}.description IS NOT NULL "
+            f"THEN {incoming}.{DESCRIPTION_COUNT_KEY} ELSE r.{DESCRIPTION_COUNT_KEY} END"
+            for incoming in ("item.properties", "props")
+        )
+
         count = 0
         for rel_type, group in by_type.items():
             safe_rel_type = sanitize_cypher_label(rel_type)
@@ -1341,6 +1352,7 @@ class GraphStore:
                         f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old], "
                         f"    r.structured_sources = old_sources + "
                         f"[s IN sources WHERE NOT s IN old_sources]"
+                        f"{batch_piece_count}"
                         f"{batch_snapshot}"
                     )
                 elif rel_type == "MENTIONED_IN":
@@ -1401,6 +1413,7 @@ class GraphStore:
                                 f"[c IN contrib WHERE NOT c IN old], "
                                 f"    r.structured_sources = old_sources + "
                                 f"[s IN sources WHERE NOT s IN old_sources]"
+                                f"{item_piece_count}"
                                 f"{item_snapshot}"
                             )
                         elif rel.type == "MENTIONED_IN":
@@ -2228,11 +2241,11 @@ class GraphStore:
                 "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
                 "WHERE any(c IN r.source_chunk_ids WHERE c IN $cids) "
                 "RETURN a.id, b.id, r.rel_type, r.description, r.fact, "
-                "r.src_name, r.tgt_name, r.source_chunk_ids",
+                f"r.src_name, r.tgt_name, r.source_chunk_ids, r.{DESCRIPTION_COUNT_KEY}",
                 {"cids": batch},
             )
             for row in result.result_set or []:
-                start_id, end_id, rel_type, description, fact, src_name, tgt_name, srcs = row
+                start_id, end_id, rel_type, description, fact, src_name, tgt_name, srcs, count = row
                 if not start_id or not end_id:
                     continue
                 # Same scalar-vs-list guard as the entity accessor: a
@@ -2249,6 +2262,11 @@ class GraphStore:
                             end_entity_id=end_id,
                             rel_type=rel_type if isinstance(rel_type, str) else None,
                             description=description if isinstance(description, str) else None,
+                            description_piece_count=(
+                                count
+                                if isinstance(count, int) and not isinstance(count, bool)
+                                else None
+                            ),
                             fact=fact if isinstance(fact, str) else None,
                             src_name=src_name if isinstance(src_name, str) else None,
                             tgt_name=tgt_name if isinstance(tgt_name, str) else None,
@@ -3149,6 +3167,13 @@ class GraphStore:
         new_owners = props.get("structured_sources")
         if union_provenance and isinstance(owners, list) and isinstance(new_owners, list):
             merged["structured_sources"] = owners + [x for x in new_owners if x not in owners]
+        # A RELATES write that replaces the description replaces its piece
+        # count too, as the edge write does: the earlier write's count, kept,
+        # would split the later text at ``|``.
+        if union_provenance and "description" in props:
+            merged.pop(DESCRIPTION_COUNT_KEY, None)
+            if props.get(DESCRIPTION_COUNT_KEY) is not None:
+                merged[DESCRIPTION_COUNT_KEY] = props[DESCRIPTION_COUNT_KEY]
         if join_descriptions:
             members = description_pieces(acc)
             members += [d for d in description_pieces(props) if d not in members]

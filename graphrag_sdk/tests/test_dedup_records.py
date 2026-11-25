@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from graphrag_sdk.core.models import GraphNode
+from graphrag_sdk.core.models import GraphNode, GraphRelationship
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.merge_query import (
@@ -317,6 +317,276 @@ async def test_an_absorb_moves_every_edge_once_and_deletes_the_duplicate(graph):
     # earlier attempt applied it.
     read = await read_for_merge(graph, "s", "jobs")  # any read: the turn is checked first
     assert await absorb(store, graph, plan_run, read=read) == ALREADY_APPLIED
+
+
+async def test_relates_collapse_combines_descriptions_and_fact(graph):
+    """When a dedup absorb moves a RELATES edge onto the survivor and the
+    survivor already has an edge of the same rel_type to the same entity,
+    both descriptions are kept joined and deduplicated, the fact is rebuilt
+    around them, and the embedding is cleared only when the fact is neither
+    edge's. One description on both is kept as stored. Edges into the
+    duplicate collapse the same way. An edge with nothing to collapse into
+    moves as it was."""
+    await graph.query_raw(
+        "CREATE (s:__Entity__:Person {id: 's', name: 'Tim Cook', source_chunk_ids: ['c1']}), "
+        "(d:__Entity__:Person {id: 'd', name: 'Timothy Cook', source_chunk_ids: ['c2']}), "
+        "(apple:__Entity__:Organization {id: 'apple', name: 'Apple'}), "
+        "(nike:__Entity__:Organization {id: 'nike', name: 'Nike'}), "
+        "(jobs:__Entity__:Person {id: 'jobs', name: 'Steve Jobs'}), "
+        # Two descriptions: combined, fact rebuilt, embedding cleared.
+        "(s)-[:RELATES {rel_type: 'LEADS', description: 'CEO of Apple since 2011', "
+        "  fact: '(Tim Cook, LEADS, Apple): CEO of Apple since 2011', "
+        "  source_chunk_ids: ['c1'], embedding: [1.0, 0.0]}]->(apple), "
+        "(d)-[:RELATES {rel_type: 'LEADS', description: 'succeeded Steve Jobs as chief executive', "
+        "  fact: '(Timothy Cook, LEADS, Apple): succeeded Steve Jobs as chief executive', "
+        "  source_chunk_ids: ['c2'], embedding: [0.0, 1.0]}]->(apple), "
+        # One description on both: the duplicate's fact and embedding stand.
+        "(s)-[:RELATES {rel_type: 'WORKS_AT', description: 'employee', "
+        "  fact: '(Tim Cook, WORKS_AT, Apple): employee', "
+        "  source_chunk_ids: ['c1'], embedding: [0.125, 0.125]}]->(apple), "
+        "(d)-[:RELATES {rel_type: 'WORKS_AT', description: 'employee', "
+        "  fact: '(Timothy Cook, WORKS_AT, Apple): employee', "
+        "  source_chunk_ids: ['c2'], embedding: [0.25, 0.25]}]->(apple), "
+        # The same, with a '|' in it: kept as stored, not rewritten to '¦'.
+        "(s)-[:RELATES {rel_type: 'ADVISES', description: 'chair | adviser', "
+        "  fact: '(Tim Cook, ADVISES, Apple): chair | adviser', "
+        "  source_chunk_ids: ['c1'], embedding: [0.375, 0.375]}]->(apple), "
+        "(d)-[:RELATES {rel_type: 'ADVISES', description: 'chair | adviser', "
+        "  fact: '(Timothy Cook, ADVISES, Apple): chair | adviser', "
+        "  source_chunk_ids: ['c2'], embedding: [0.5, 0.5]}]->(apple), "
+        # A relationship table's template collapsing into a document's fact:
+        # the document's head, fact and embedding (a vector) are kept.
+        "(s)-[:RELATES {rel_type: 'INVESTED_IN', description: 'holds shares', "
+        "  fact: '(Tim Cook, INVESTED_IN, Apple): holds shares', "
+        "  source_chunk_ids: ['c1'], embedding: vecf32([0.625, 0.625])}]->(apple), "
+        "(d)-[:RELATES {rel_type: 'INVESTED_IN', "
+        "  fact: '(Person, INVESTED_IN, Organization)', "
+        "  structured_sources: ['t1'], embedding: [0.75, 0.75]}]->(apple), "
+        # Nothing to collapse into: moved unchanged.
+        "(d)-[:RELATES {rel_type: 'BOARD_MEMBER', description: 'sits on the board', "
+        "  fact: '(Timothy Cook, BOARD_MEMBER, Nike): sits on the board', "
+        "  source_chunk_ids: ['c2'], embedding: [0.875, 0.875]}]->(nike), "
+        # One fact on both, the duplicate's not embedded yet: the survivor's
+        # embedding of that fact is kept.
+        "(s)-[:RELATES {rel_type: 'MENTORS', description: 'mentor', "
+        "  fact: '(Tim Cook, MENTORS, Apple): mentor', "
+        "  source_chunk_ids: ['c1'], embedding: [0.0625, 0.0625]}]->(apple), "
+        "(d)-[:RELATES {rel_type: 'MENTORS', description: 'mentor', "
+        "  fact: '(Tim Cook, MENTORS, Apple): mentor', "
+        "  source_chunk_ids: ['c2']}]->(apple), "
+        # Into the duplicate: combined like an outgoing edge.
+        "(jobs)-[:RELATES {rel_type: 'HIRED', description: 'hired as COO', "
+        "  fact: '(Steve Jobs, HIRED, Tim Cook): hired as COO', "
+        "  source_chunk_ids: ['c1'], embedding: [0.0, 0.5]}]->(s), "
+        "(jobs)-[:RELATES {rel_type: 'HIRED', description: 'recruited from Compaq', "
+        "  fact: '(Steve Jobs, HIRED, Timothy Cook): recruited from Compaq', "
+        "  source_chunk_ids: ['c2'], embedding: [0.5, 0.0]}]->(d)"
+    )
+    store = await held(graph)
+    plan_run = await one_absorb_plan(store)
+    assert await absorb(store, graph, plan_run) == APPLIED
+
+    res = await rows(
+        graph,
+        "MATCH (s:__Entity__ {id: 's'})-[r:RELATES]-(b:__Entity__) "
+        "RETURN r.rel_type, startNode(r).id, r.description, r.description_piece_count, "
+        "r.fact, r.source_chunk_ids, r.embedding, typeOf(r.embedding) ORDER BY r.rel_type",
+    )
+    assert res == [
+        [
+            "ADVISES",
+            "s",
+            "chair | adviser",
+            None,
+            "(Timothy Cook, ADVISES, Apple): chair | adviser",
+            ["c1", "c2"],
+            [0.5, 0.5],
+            "List",
+        ],
+        [
+            "BOARD_MEMBER",
+            "s",
+            "sits on the board",
+            None,
+            "(Timothy Cook, BOARD_MEMBER, Nike): sits on the board",
+            ["c2"],
+            [0.875, 0.875],
+            "List",
+        ],
+        [
+            "HIRED",
+            "jobs",
+            "hired as COO | recruited from Compaq",
+            2,
+            "(Steve Jobs, HIRED, Timothy Cook): hired as COO | recruited from Compaq",
+            ["c1", "c2"],
+            None,
+            "Null",
+        ],
+        [
+            "INVESTED_IN",
+            "s",
+            "holds shares",
+            None,
+            "(Tim Cook, INVESTED_IN, Apple): holds shares",
+            ["c1"],
+            [0.625, 0.625],
+            "Vectorf32",
+        ],
+        [
+            "LEADS",
+            "s",
+            "CEO of Apple since 2011 | succeeded Steve Jobs as chief executive",
+            2,
+            "(Timothy Cook, LEADS, Apple): "
+            "CEO of Apple since 2011 | succeeded Steve Jobs as chief executive",
+            ["c1", "c2"],
+            None,
+            "Null",
+        ],
+        [
+            "MENTORS",
+            "s",
+            "mentor",
+            None,
+            "(Tim Cook, MENTORS, Apple): mentor",
+            ["c1", "c2"],
+            [0.0625, 0.0625],
+            "List",
+        ],
+        [
+            "WORKS_AT",
+            "s",
+            "employee",
+            None,
+            "(Timothy Cook, WORKS_AT, Apple): employee",
+            ["c1", "c2"],
+            [0.25, 0.25],
+            "List",
+        ],
+    ]
+
+
+async def test_relates_collapse_keeps_survivor_fact_when_duplicate_has_none(graph):
+    await graph.query_raw(
+        "CREATE (s:__Entity__:Person {id: 's', name: 'Tim Cook'}), "
+        "(d:__Entity__:Person {id: 'd', name: 'Timothy Cook'}), "
+        "(apple:__Entity__:Organization {id: 'apple', name: 'Apple'}), "
+        "(s)-[:RELATES {rel_type: 'LEADS', description: 'new text', "
+        "  fact: '(Tim Cook, LEADS, Apple): old text', embedding: vecf32([1.0, 0.0])}]->(apple), "
+        "(d)-[:RELATES {rel_type: 'LEADS', description: 'dup text'}]->(apple), "
+        "(s)-[:RELATES {rel_type: 'SUPPORTS', description: 'new text', "
+        "  fact: 'survivor fact', embedding: vecf32([1.0, 0.0])}]->(apple), "
+        "(d)-[:RELATES {rel_type: 'SUPPORTS', description: 'dup text', "
+        "  fact: 'duplicate fact', embedding: vecf32([0.0, 1.0])}]->(apple), "
+        "(apple)-[:RELATES {rel_type: 'HIRES', description: 'new text', "
+        "  fact: '(Apple, HIRES, Tim Cook): old text', embedding: vecf32([0.0, 1.0])}]->(s), "
+        "(apple)-[:RELATES {rel_type: 'HIRES', description: 'dup text'}]->(d)"
+    )
+    store = await held(graph)
+    plan_run = await one_absorb_plan(store)
+    assert await absorb(store, graph, plan_run) == APPLIED
+
+    res = await rows(
+        graph,
+        "MATCH (:__Entity__ {id: 's'})-[r:RELATES]-(:__Entity__ {id: 'apple'}) "
+        "RETURN r.rel_type, r.description, r.description_piece_count, r.fact, r.embedding "
+        "ORDER BY r.rel_type",
+    )
+    assert res == [
+        ["HIRES", "new text | dup text", 2, "(Apple, HIRES, Tim Cook): old text", [0.0, 1.0]],
+        ["LEADS", "new text | dup text", 2, "(Tim Cook, LEADS, Apple): old text", [1.0, 0.0]],
+        ["SUPPORTS", "new text | dup text", 2, "duplicate fact", [0.0, 1.0]],
+    ]
+
+
+async def test_a_relates_upsert_after_a_collapse_replaces_the_piece_count(graph):
+    """A collapse stores a joined description with its piece count. An upsert
+    that replaces the description replaces the count too; one without a
+    description leaves both, also when both writes of the edge come in one
+    call. Kept, the count split the new text at ``|`` on the next collapse."""
+    await graph.query_raw(
+        "CREATE (s:__Entity__:Person {id: 's', name: 'Tim Cook'}), "
+        "(d1:__Entity__:Person {id: 'd1', name: 'Timothy Cook'}), "
+        "(d2:__Entity__:Person {id: 'd2', name: 'Tim D. Cook'}), "
+        "(apple:__Entity__:Organization {id: 'apple', name: 'Apple'}), "
+        "(s)-[:RELATES {rel_type: 'LEADS', description: 'CEO of Apple since 2011', "
+        "  source_chunk_ids: ['c1']}]->(apple), "
+        "(d1)-[:RELATES {rel_type: 'LEADS', description: 'succeeded Steve Jobs', "
+        "  source_chunk_ids: ['c2']}]->(apple), "
+        "(d2)-[:RELATES {rel_type: 'LEADS', description: 'runs Apple', "
+        "  source_chunk_ids: ['c5']}]->(apple)"
+    )
+    store = await held(graph)
+    plan_run = await store.write_plan(
+        [
+            PlanOp(ABSORB, 0, "s", "Tim Cook", dup="d1", dup_name="Timothy Cook"),
+            PlanOp(ABSORB, 0, "s", "Tim Cook", dup="d2", dup_name="Tim D. Cook"),
+        ],
+        Decisions(),
+    )
+    leads = (
+        "MATCH (:__Entity__ {id: 's'})-[r:RELATES {rel_type: 'LEADS'}]->() "
+        "RETURN r.description, r.description_piece_count"
+    )
+
+    def upsert(*writes):
+        """One call writing the edge once per property map in ``writes``."""
+        return graph.upsert_relationships(
+            [
+                GraphRelationship(
+                    start_node_id="s",
+                    end_node_id="apple",
+                    type="RELATES",
+                    properties={"rel_type": "LEADS", **props},
+                )
+                for props in writes
+            ]
+        )
+
+    joined = "CEO of Apple since 2011 | succeeded Steve Jobs"
+    assert await absorb(store, graph, plan_run, dup="d1", dup_name="Timothy Cook") == APPLIED
+    assert await rows(graph, leads) == [[joined, 2]]
+
+    # A cached document update reads the edge back and writes it again, as
+    # CachedChunkExtraction does: the count comes back with the text.
+    (cached,) = await graph.get_relationships_for_chunks(["c1"])
+    assert (cached.description, cached.description_piece_count) == (joined, 2)
+    await upsert(
+        {
+            "description": cached.description,
+            "description_piece_count": cached.description_piece_count,
+        }
+    )
+    assert await rows(graph, leads) == [[joined, 2]]
+
+    # No description in the write: the description and its count stay.
+    await upsert({"source_chunk_ids": ["c3"]})
+    assert await rows(graph, leads) == [[joined, 2]]
+
+    # Two writes of the edge in one call, the later without a description:
+    # the earlier's description and count stand.
+    await upsert(
+        {"description": joined, "description_piece_count": 2},
+        {"source_chunk_ids": ["c6"]},
+    )
+    assert await rows(graph, leads) == [[joined, 2]]
+
+    # Two writes in one call, the later replacing the description without a
+    # count: the earlier write's count goes with its text.
+    await upsert(
+        {"description": "A | B", "description_piece_count": 2},
+        {"description": "CEO | founder", "source_chunk_ids": ["c4"]},
+    )
+    assert await rows(graph, leads) == [["CEO | founder", None]]
+
+    # A description in a single write: one piece, so no count.
+    await upsert({"description": "CEO | founder", "source_chunk_ids": ["c7"]})
+    assert await rows(graph, leads) == [["CEO | founder", None]]
+
+    # The next collapse reads the replaced text as one piece, not two.
+    assert await absorb(store, graph, plan_run, op=1, dup="d2", dup_name="Tim D. Cook") == APPLIED
+    assert await rows(graph, leads) == [["CEO ¦ founder | runs Apple", 2]]
 
 
 async def test_an_edge_type_the_query_was_not_built_for_stops_the_merge(graph):

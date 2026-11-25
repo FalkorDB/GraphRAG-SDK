@@ -318,6 +318,44 @@ class TestRelationshipRebuild:
         assert rel.properties["rel_type"] == "KNOWS"
         assert rel.properties["fact"] == "(A, KNOWS, B)"
         assert rel.properties["source_chunk_ids"] == ["new-1"]
+        assert "description_piece_count" not in rel.properties
+
+    async def test_joined_description_keeps_its_piece_count(self, ontology, ctx):
+        """A description a dedup merge joined is replayed with its piece
+        count. Written without it, the edge write clears the count, and the
+        next merge reads "A | B" as one piece and adds "B" again."""
+        store = FakeGraphStore(
+            chunk_texts=[("old-1", "alpha")],
+            entity_rows=[
+                ChunkEntityRow(
+                    chunk_id="old-1",
+                    entity_id=eid,
+                    label="Person",
+                    name=eid,
+                    source_chunk_ids=["old-1"],
+                )
+                for eid in ("a", "b")
+            ],
+            rel_rows=[
+                ChunkRelationshipRow(
+                    chunk_id="old-1",
+                    start_entity_id="a",
+                    end_entity_id="b",
+                    rel_type="KNOWS",
+                    description="met at work | old friends",
+                    description_piece_count=2,
+                )
+            ],
+        )
+        strategy = CachedChunkExtraction(RecordingExtractor(), store, "doc-1")
+
+        result = await strategy.extract(
+            TextChunks(chunks=[_chunk("alpha", 0, "new-1")]), ontology, ctx
+        )
+
+        (rel,) = result.relationships
+        assert rel.properties["description"] == "met at work | old friends"
+        assert rel.properties["description_piece_count"] == 2
 
     async def test_relationship_between_same_pair_deduped(self, ontology, ctx):
         """Two cached chunks supporting the same (a, b) edge produce ONE
@@ -779,8 +817,8 @@ class TestGraphStoreCacheAccessors:
                 result_set=[
                     # Edge supported by c1 and an out-of-batch chunk: one row
                     # per matching cid, foreign provenance ignored.
-                    ["a", "b", "KNOWS", "desc", "fact", "A", "B", ["c1", "other"]],
-                    [None, "b", "KNOWS", None, None, None, None, ["c1"]],  # skipped
+                    ["a", "b", "KNOWS", "desc | more", "fact", "A", "B", ["c1", "other"], 2],
+                    [None, "b", "KNOWS", None, None, None, None, ["c1"], None],  # skipped
                 ]
             )
         )
@@ -789,8 +827,10 @@ class TestGraphStoreCacheAccessors:
         assert rows[0].chunk_id == "c1"
         assert rows[0].start_entity_id == "a"
         assert rows[0].rel_type == "KNOWS"
+        assert rows[0].description_piece_count == 2
         cypher = mock_connection.query.call_args[0][0]
         assert "RELATES" in cypher and "source_chunk_ids" in cypher
+        assert "r.description_piece_count" in cypher
         # Single edge scan per batch — no per-chunk UNWIND re-scan.
         assert "UNWIND" not in cypher
 
@@ -800,7 +840,8 @@ class TestGraphStoreCacheAccessors:
         mock_connection.query = AsyncMock(
             return_value=MagicMock(
                 result_set=[
-                    ["a", "b", "KNOWS", None, None, None, None, ["c1", "c2", "foreign"]],
+                    # A count that is not a number is not trusted.
+                    ["a", "b", "KNOWS", None, None, None, None, ["c1", "c2", "foreign"], "2"],
                 ]
             )
         )
@@ -809,6 +850,7 @@ class TestGraphStoreCacheAccessors:
             ("c1", "a", "b"),
             ("c2", "a", "b"),
         }
+        assert {r.description_piece_count for r in rows} == {None}
 
     async def test_scalar_where_list_expected_treated_as_empty(self, graph_store, mock_connection):
         """Tampered graphs may hold a scalar where a list is expected —
@@ -832,8 +874,8 @@ class TestGraphStoreCacheAccessors:
         mock_connection.query = AsyncMock(
             return_value=MagicMock(
                 result_set=[
-                    ["a", "b", "KNOWS", None, None, None, None, "c1"],  # scalar → skipped
-                    ["a", "b", "KNOWS", None, None, None, None, ["c1"]],
+                    ["a", "b", "KNOWS", None, None, None, None, "c1", None],  # scalar → skipped
+                    ["a", "b", "KNOWS", None, None, None, None, ["c1"], None],
                 ]
             )
         )
@@ -1440,6 +1482,37 @@ class TestRelationshipMergeUnion:
         props = merged.relationships[0].properties
         assert props["fact"] == "corrected fact", "fresh extraction must win on properties"
         assert props["source_chunk_ids"] == ["newA", "newB"], "both provenances must survive"
+
+    def test_fresh_description_brings_its_own_piece_count(self):
+        """A cached joined description carries its piece count. A fresh
+        description replacing it brings its own (none for one piece); kept,
+        the cached count would split the fresh text at ``|``. A fresh part
+        without a description leaves the cached text and count."""
+
+        def rel(**props):
+            return GraphData(
+                nodes=[],
+                relationships=[
+                    GraphRelationship(
+                        start_node_id="alice",
+                        end_node_id="acme",
+                        type="RELATES",
+                        properties={"rel_type": "LEADS", **props},
+                    )
+                ],
+            )
+
+        cached = rel(description="A | B", description_piece_count=2, source_chunk_ids=["n1"])
+
+        (replaced,) = CachedChunkExtraction._merge(
+            [cached, rel(description="CEO | founder", source_chunk_ids=["n2"])]
+        ).relationships
+        assert replaced.properties["description"] == "CEO | founder"
+        assert "description_piece_count" not in replaced.properties
+
+        (kept,) = CachedChunkExtraction._merge([cached, rel(source_chunk_ids=["n2"])]).relationships
+        assert kept.properties["description"] == "A | B"
+        assert kept.properties["description_piece_count"] == 2
 
     def test_different_edge_types_stay_separate(self):
         a = GraphData(
