@@ -285,6 +285,11 @@ the LLM provider, and FalkorDB deployment have capacity. A higher value
 increases simultaneous document pipelines and their memory use; it does not
 make one document's pipeline run in parallel.
 
+To find a bottleneck, ingest one representative document on its own and enable
+`INFO` logs with timestamps for `graphrag_sdk.core.context`. Compare the time
+between consecutive `Step N/9` start messages for sequential steps; for example,
+the gap from `Step 4/9` to `Step 5/9` covers extraction and quality filtering.
+
 This document-level limit is separate from extraction concurrency.
 `ingest(max_concurrency)` controls how many document pipelines run at once.
 Within each document, `GraphExtraction.max_concurrency` is the cap for chunk-level
