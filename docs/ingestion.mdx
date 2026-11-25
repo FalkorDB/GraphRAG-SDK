@@ -172,6 +172,8 @@ Chunk 0 ──NEXT_CHUNK──> Chunk 1 ──NEXT_CHUNK──> Chunk 2
 
 The Document is written here without its `content_hash`; the hash is added only at the end of a complete run (see [Step 1](#unchanged-content-is-skipped)).
 
+Just before this step, the pipeline calls the extractor's `prepare()` (`ExtractionStrategy.prepare()`, a no-op by default). `GraphExtraction` loads its local NER model there (`EntityExtractor.ensure_ready()`), so a GLiNER or spaCy model that cannot load fails the ingest with `ModelLoadError` before any of the document is written.
+
 **Code:** `LexicalGraphWriter._build_lexical_graph()` in [`ingestion/lexical_graph.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/lexical_graph.py)
 
 ---
@@ -188,7 +190,7 @@ The Document is written here without its `content_hash`; the hash is added only 
 
 For a detailed explanation of the extraction process, see [Extraction](/extraction).
 
-**Output:** `GraphData` containing nodes (entities), relationships, mention records, and a per-chunk report. A chunk whose extraction call fails does not fail the ingest: the report lands in `result.metadata["extraction"]` (`chunks_attempted`, `chunks_skipped`, `failed_chunks`, `relation_failed_chunks`, `extraction_failed`), and the content hash is withheld so the next ingest retries the document.
+**Output:** `GraphData` containing nodes (entities), relationships, mention records, and a per-chunk report. A chunk whose extraction call fails does not fail the ingest: the report lands in `result.metadata["extraction"]` (`chunks_attempted`, `chunks_skipped`, `failed_chunks`, `relation_failed_chunks`, `extraction_failed`), and the content hash is withheld so the next ingest retries the document. The exception is `ModelLoadError` (`graphrag_sdk.core.exceptions`, an `ExtractionError`): a local NER model that cannot load would fail every chunk the same way, so it fails the ingest instead of letting extraction go on with the LLM alone. See [When the model cannot load](/extraction#when-the-model-cannot-load).
 
 **Code:** `ExtractionStrategy.extract()` in [`ingestion/extraction_strategies/base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/base.py)
 
@@ -212,6 +214,7 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 - If the ontology declares entity types, only entities with those labels pass through, plus `Unknown` (the NER model's low-confidence band, which the step-2 LLM had the chance to re-type)
 - If the ontology declares relations, only edges whose `rel_type` is declared pass through, and a relation with `patterns` also keeps only edges whose `(source label, target label)` matches one. A pattern mismatch is logged as a WARNING naming the declared patterns and a sample of what was observed — usually an inverted direction
 - Relationships whose endpoints were pruned are also removed
+- Mentions of the entities dropped by this step or by the quality filter are dropped too, so no `MENTIONED_IN` write is attempted for them (one would fail and be counted in `incomplete_writes`)
 
 **Open ontology:** When the ontology declares neither entities nor relations, this step is skipped and everything passes through. Note that a `GraphRAG` created with no ontology on an empty graph seeds the 11 default entity types into its ontology, so entity pruning applies to those labels; with no declared relations, relationships are not pruned by type.
 
@@ -301,7 +304,7 @@ These two steps run simultaneously since they're independent. Both finish before
 
 **What it does:** Creates `MENTIONED_IN` edges linking every entity to every chunk it was extracted from. These edges are critical for retrieval — they let the system find text passages for any entity.
 
-**Details:** Uncapped — every entity-chunk pair gets an edge. Duplicates are deduplicated by `(entity_id, chunk_id)`. Mentions are rewritten through the resolver's merges first, so an entity merged in step 6 keeps its mentions on the survivor.
+**Details:** Uncapped — every entity-chunk pair of an entity that survived steps 4b and 5 gets an edge, holding the spans where that chunk names the entity and what it says about it (`description`, with `description_piece_count` when there are two or more pieces). Duplicates are deduplicated by `(entity_id, chunk_id)`. Mentions are rewritten through the resolver's merges first, so an entity merged in step 6 keeps its mentions on the survivor.
 
 #### Step 9 — Index Chunks
 
