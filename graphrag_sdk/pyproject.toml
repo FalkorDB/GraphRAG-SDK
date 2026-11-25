@@ -48,7 +48,7 @@ dependencies = [
     # scipy 1.15 is the last series for Python 3.10, and its macOS wheels have
     # gfortran-built modules (PROPACK, reached through scipy.sparse) that macOS 27
     # refuses to load, so `import graphrag_sdk` and the GLiNER model load fail.
-    # 1.14 loads; Python 3.11+ gets 1.16+, which builds PROPACK in C.
+    # 1.14.1 loads; other environments retain the existing scipy range.
     "scipy>=1.11,<1.15; python_version < '3.11' and sys_platform == 'darwin'",
     "scipy>=1.11,<2; python_version >= '3.11' or sys_platform != 'darwin'",
 ]

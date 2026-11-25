@@ -18,9 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   zero". `import graphrag_sdk` reaches one of them through
   `scipy.cluster.hierarchy`, and so does the default GLiNER model's load, so
   both failed. On Python 3.10 under macOS, scipy is now held below 1.15
-  (1.14.1 loads). Other platforms and Python 3.11+ keep `scipy>=1.11,<2`;
-  Python 3.11+ gets scipy 1.16 or later, whose PROPACK is built in C and
-  loads. Earlier SDK versions were affected too; on one of them, installing
+  (1.14.1 loads). Other platforms and Python 3.11+ keep `scipy>=1.11,<2`.
+  Earlier SDK versions were affected too; on one of them, installing
   `scipy<1.15` fixes it.
 
 ## [1.7.0] - 2026-11-23
