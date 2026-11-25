@@ -273,6 +273,87 @@ class TestStructuredIngest:
         assert len(works_at) == 2
         assert all(r.type == "RELATES" for r in works_at)
 
+    async def test_each_row_edge_has_its_own_fact(self, tmp_path, ctx: Context):
+        """finalize() embeds ``fact``; alias-built text gave every edge of a link
+        one vector, so a question about one row could not rank its edge first."""
+        path = tmp_path / "e.csv"
+        path.write_text(
+            "employee_id,full_name,org_id,org_name\n"
+            "E-1,Alice Smith,ORG-42,Acme Corp\n"
+            "E-2,Bob Jones,ORG-42,Acme Corp\n"
+            "E-3,Carol White,ORG-7,Globex\n",
+            encoding="utf-8",
+        )
+        mapping = record_mapping_for(
+            TableMapping(
+                source="e.csv",
+                label="Person",
+                key="employee_id",
+                name="full_name",
+                links=[Link("WORKS_AT", to="Organization", by="org_id", name="org_name")],
+            )
+        )
+        store = RecordingGraphStore()
+        pipe = StructuredIngestionPipeline(loader=CsvRecordLoader(), graph_store=store)
+        await pipe.run(str(path), mapping, ctx)
+        facts = [
+            r.properties["fact"]
+            for r in store.relationships
+            if r.properties.get("rel_type") == "WORKS_AT"
+        ]
+        assert sorted(facts) == [
+            "(Alice Smith, WORKS_AT, Acme Corp)",
+            "(Bob Jones, WORKS_AT, Acme Corp)",
+            "(Carol White, WORKS_AT, Globex)",
+        ]
+
+    async def test_same_named_entities_get_distinct_facts(self, tmp_path, ctx: Context):
+        """Two rows sharing a name keep distinct ids; their facts must differ too."""
+        path = tmp_path / "e.csv"
+        path.write_text(
+            "employee_id,full_name,org_id,org_name\n"
+            "E-1,John Smith,ORG-42,Acme Corp\n"
+            "E-2,John Smith,ORG-42,Acme Corp\n",
+            encoding="utf-8",
+        )
+        mapping = record_mapping_for(
+            TableMapping(
+                source="e.csv",
+                label="Person",
+                key="employee_id",
+                name="full_name",
+                links=[Link("WORKS_AT", to="Organization", by="org_id", name="org_name")],
+            )
+        )
+        store = RecordingGraphStore()
+        pipe = StructuredIngestionPipeline(loader=CsvRecordLoader(), graph_store=store)
+        await pipe.run(str(path), mapping, ctx)
+        facts = sorted(
+            r.properties["fact"]
+            for r in store.relationships
+            if r.properties.get("rel_type") == "WORKS_AT"
+        )
+        assert facts == [
+            "(John Smith (E-1), WORKS_AT, Acme Corp)",
+            "(John Smith (E-2), WORKS_AT, Acme Corp)",
+        ]
+
+    async def test_a_fact_falls_back_to_the_key_when_a_name_is_missing(
+        self, pipeline, employees_csv, ctx: Context
+    ):
+        """The org has no name column, so its key stands in rather than the alias."""
+        pipe, store = pipeline
+        await pipe.run(str(employees_csv), EMPLOYEES, ctx)
+        facts = sorted(
+            r.properties["fact"]
+            for r in store.relationships
+            if r.properties.get("rel_type") == "WORKS_AT"
+        )
+        assert facts == [
+            "(Alice Smith, WORKS_AT, ORG-42)",
+            "(Bob Jones, WORKS_AT, ORG-42)",
+        ]
+
     async def test_every_entity_is_linked_to_its_record(
         self, pipeline, employees_csv, ctx: Context
     ):

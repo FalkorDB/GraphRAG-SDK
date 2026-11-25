@@ -1174,6 +1174,9 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
 
         for _index, record, _record_key, chunk_uid in _walk_records(batch, mapping, doc_info.uid):
             ids: dict[str, str] = {}
+            # What each endpoint is called in an edge's `fact`, so the text
+            # (and the vector built from it) differs row to row.
+            fact_names: dict[str, str] = {}
 
             for node in mapping.nodes:
                 # Stripped, as the row key already is in _walk_records: the id
@@ -1185,11 +1188,20 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                     continue
                 display = cell_text(record, node.name)
                 node_id = compute_entity_id(display, node.label) if display else ""
-                if not node_id or node_id in ambiguous:
+                shared_name = node_id in ambiguous
+                if not node_id or shared_name:
                     node_id = compute_entity_id(raw_key, node.label)
                 if not node_id:
                     continue
                 ids[node.handle] = node_id
+                # An ambiguous name is shared by several rows, so the key is
+                # what tells them apart.
+                if not display:
+                    fact_names[node.handle] = raw_key
+                elif shared_name:
+                    fact_names[node.handle] = f"{display} ({raw_key})"
+                else:
+                    fact_names[node.handle] = display
                 if node.reference:
                     # A record that denormalises the referenced entity's name
                     # ("org_id" plus "org_name") can label the stub properly.
@@ -1245,7 +1257,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                     continue
                 properties: dict[str, Any] = {
                     "rel_type": edge.type,
-                    "fact": f"({edge.source}, {edge.type}, {edge.target})",
+                    "fact": f"({fact_names[edge.source]}, {edge.type}, {fact_names[edge.target]})",
                     "source_chunk_ids": [chunk_uid],
                 }
                 for prop, column in edge_columns[(edge.type, edge.source, edge.target)].items():
