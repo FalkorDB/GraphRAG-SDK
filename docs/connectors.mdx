@@ -1,0 +1,188 @@
+---
+title: "Connectors"
+description: "Sync databases, file stores and apps into the graph through dlt and LlamaIndex readers, and keep them in step."
+---
+
+`graphrag_sdk.connectors` keeps the graph in step with sources outside your machine: a database table, an S3 bucket, a Google Drive folder, Notion pages. The SDK writes no API clients of its own. The fetching comes from existing frameworks:
+
+- **[dlt](https://dlthub.com/docs)** for databases (`sql_database`), file stores (`filesystem`: S3, GCS, Azure, SFTP, Google Drive) and REST APIs (`rest_api`).
+- **[LlamaIndex readers](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/)** for apps dlt has no document source for, such as Notion, Confluence and SharePoint.
+
+What the SDK adds is the sync: a stable id for every document, skipping what has not changed, and removing what the source no longer has.
+
+```bash
+pip install "graphrag-sdk[dlt]"
+pip install "dlt[sql_database,filesystem]" psycopg2-binary   # PostgreSQL and S3, as below
+pip install llama-index-readers-notion                       # only for a LlamaIndex reader
+```
+
+---
+
+## Initial source targets
+
+The initial targets from [issue #359](https://github.com/FalkorDB/GraphRAG-SDK/issues/359) are **PostgreSQL, S3 and Notion**. No source is enabled automatically: callers supply credentials and select tables, folders or pages.
+
+| Source | Configuration | Validation in this change |
+| --- | --- | --- |
+| PostgreSQL | `sql_database(credentials=...).with_resources("table")`, plus a `TableMapping` | Tested with SQLite; synced by hand against PostgreSQL 16 in Docker. No automated PostgreSQL test |
+| S3 | `file_documents(filesystem(bucket_url="s3://bucket/path", file_glob="**/*.md"), name="handbook")` | Tested with local folders; synced by hand against an S3-compatible server in Docker, including a re-sync that downloaded nothing. AWS itself has not been tested |
+| Notion | Install `llama-index-readers-notion`, supply a token and page IDs, and pass an explicit stable-ID callback | Reader adaptation is tested with a fake reader; live Notion access has not been tested |
+
+The generic adapters also accept Google Drive, GCS, Azure, SFTP, REST resources and other LlamaIndex readers with the appropriate dependencies and configuration. These are framework capabilities, not separately validated cloud integrations. Google Drive is the alternative file-store target suggested by the issue. Adding a reader does not automatically add a UI form or OAuth flow.
+
+Every run lists the complete source, which is how deletions are found. File sources download only files whose modification date changed since the last sync; app readers such as Notion's still download every page, though unchanged ones cost no model calls. This version does not use a dlt destination or persist dlt pipeline cursors.
+
+---
+
+## Sync a database and a folder
+
+```python
+from dlt.sources.filesystem import filesystem
+from dlt.sources.sql_database import sql_database
+
+from graphrag_sdk import Ontology, Entity, TableMapping
+from graphrag_sdk.connectors import file_documents, sync
+
+ontology = Ontology(
+    entities=[Entity(label="Person")],
+    tables=[TableMapping(source="employees", label="Person", key="id", name="name")],
+)
+# ... build rag = GraphRAG(..., ontology=ontology)
+
+result = await sync(rag, [
+    sql_database(credentials="postgresql://...").with_resources("employees"),
+    file_documents(
+        filesystem(bucket_url="s3://acme-wiki/handbook", file_glob="**/*.md"),
+        name="handbook",
+    ),
+])
+for report in result.documents.values():
+    print(report.summary())   # handbook: 2 added, 1 updated, 40 unchanged, 1 deleted, 0 failed
+await rag.finalize()
+```
+
+`sync()` takes any dlt source or resource, or a list of them, and reads each resource in full:
+
+| A resource that yields | Is written with | Its name is |
+| --- | --- | --- |
+| `SourceDocument` items | `sync_documents()`: extracted like any document | The source name; document ids are `<name>:<id>` |
+| Row dicts | `sync_table()`: structured ingestion, no model calls | The table name its `TableMapping` is found by |
+
+Call `finalize()` once after syncing, as after any ingest.
+
+---
+
+## Documents from an app: LlamaIndex readers
+
+```python
+from llama_index.readers.notion import NotionPageReader
+from graphrag_sdk.connectors import llamaindex_documents, sync
+
+notion = llamaindex_documents(
+    NotionPageReader(integration_token=token),
+    name="notion",
+    id_from=lambda doc: doc.id_,
+    page_ids=["<page id>", "<page id>"],
+)
+await sync(rag, notion)
+```
+
+Any object with LlamaIndex's `load_data()` works. The required `id_from` callback must return a non-empty, stable source ID, and the graph ID is `<name>:<source id>` (`notion:<page id>` here, which is what `delete_document()` takes). Use `doc.id_` only for readers that set it to a stable source ID, such as Notion's page ID. Readers may generate random IDs by default; for those, use `id_from=lambda doc: doc.metadata["..."]` to select the original source ID instead.
+
+The reader's metadata (URL, author, modified time) is stored on the `Document` node, so an answer can link back to its source. Metadata keys must be ASCII identifiers (`source_url`, for example); keys containing spaces or punctuation, reserved bookkeeping names and unsupported values are dropped.
+
+---
+
+## Documents from files: dlt filesystem
+
+`file_documents()` reads text out of the files a dlt `filesystem` resource lists. Markdown and plain text are decoded as UTF-8; PDFs are read with the SDK's PDF loader (`graphrag-sdk[pdf]`). Other files are skipped.
+
+A file is only downloaded when its modification date differs from the one stored with the graph's copy. A re-sync of an unchanged folder lists the files and reads none of them; a deleted file is still found, since the listing covers the whole folder. dlt's `filesystem` resource lists a modification date for every file; a custom listing without `modification_date` downloads every file and compares content hashes instead.
+
+| Store | `bucket_url` |
+| --- | --- |
+| Amazon S3 | `s3://bucket/path` |
+| Google Cloud Storage | `gs://bucket/path` |
+| Azure Blob | `az://container/path` |
+| Google Drive | `gdrive://<folder id>` |
+| Local folder | `file:///path` |
+
+Credentials are dlt's: arguments, environment variables or `.dlt/secrets.toml`. The SDK never stores them. For Google Drive, a service account the folder is shared with is the simplest.
+
+---
+
+## What a sync does
+
+| The source | The graph |
+| --- | --- |
+| A new document | Ingested |
+| A changed document | Updated; only its changed chunks are re-extracted |
+| An unchanged document | Skipped with no model calls. When its source version matches the stored one, it is not downloaded and only changed metadata is written; otherwise it is downloaded and compared by content hash, so a new version with the same text is still unchanged |
+| A document the source no longer has | Deleted with `delete_document()` |
+| A table | Written as a snapshot: new and changed rows written, removed rows removed, an unchanged table skipped |
+
+**Pruning assumes a full read.** A sync compares everything the source returned with the source's documents in the graph. When you hand `sync_documents()` only part of a source, pass `prune=False`. `sync()` refuses a resource given a dlt incremental cursor with `apply_hints(incremental=...)`: it keeps no dlt state, and a partial read would delete the documents or rows it skipped. A cursor declared as a resource function's default argument is not detected, so don't pass one.
+
+**Most problems are caught before anything is written.** `sync()` reads every resource and checks cursors, item types, table mappings and the columns each mapping reads, and only then writes. A resource that fails those checks fails the whole call. A value that does not parse as its declared type is only found while its table is written, after earlier resources were applied.
+
+**An empty document source deletes nothing.** If a document source returns nothing, its documents are kept, and its report's `prune_skipped` says why. An empty answer is more often a revoked token or a wrong folder than a source whose every document was deleted. An empty table is different: a resource whose name has a `TableMapping` is written as an empty snapshot, and its rows are removed.
+
+**A source name is a namespace.** `notion:` documents are only ever pruned by a sync named `notion`. Two folders need two names, and a name may not contain `:`.
+
+**Run one sync of a source at a time.** Syncs on the same `GraphRAG` instance and event loop are serialized per source or table name, from the first read of the source through the last write, so overlapping calls apply their snapshots in the order they were made. Across SDK instances, event loops or server processes, the job runner must serialize them: conflicting syncs can prune valid documents or rows from each other's snapshots.
+
+**Failed writes are reported, not hidden.** A document whose extraction failed for some chunks is listed in `failed` with the reason. Its content hash is not recorded, so the next sync retries it.
+
+**Metadata stays current.** When a document's text is unchanged but its metadata changed (a new URL or author), the metadata is updated without re-extracting, and keys the source no longer sends are removed.
+
+---
+
+## Preview before you spend
+
+```python
+preview = await sync(rag, data, dry_run=True)
+for report in preview.documents.values():
+    print(report.summary())   # notion: 3 added, 1 updated, 200 unchanged, 2 deleted, 0 failed (dry run)
+print(preview.table_rows)     # {'employees': 1204}
+```
+
+Documents cost model calls; tables do not. A dry run reads every source and compares content hashes without writing, so `added` plus `updated` is how many documents a real run will extract.
+
+Mapping discovery uses `get_ontology(initialize=False)`, which reads persisted mappings and previews supplied table mappings without registering schema or reconciling existing data. The real write initializes the ontology as usual.
+
+---
+
+## Without dlt
+
+`sync_documents()` and `sync_table()` take plain iterables, for sources you fetch yourself:
+
+```python
+from graphrag_sdk.connectors import SourceDocument, sync_documents, sync_table
+
+await sync_documents(
+    rag,
+    (SourceDocument(id=page["id"], text=page["body"], metadata={"url": page["url"]}) for page in pages),
+    source="wiki",
+)
+await sync_table(rag, rows, table="employees")
+```
+
+To skip downloading unchanged documents, give each one a `version` (a modified time or ETag from the source's listing) and pass `text` as a function. The function is called when the version differs from the one stored in the graph, or when the document's last write did not complete:
+
+```python
+SourceDocument(
+    id=page["id"],
+    text=lambda page=page: fetch_body(page["id"]),
+    version=page["last_edited_time"],
+)
+```
+
+---
+
+## Limits
+
+- **Every run lists the whole source.** File sources and documents with a `version` download only what changed; LlamaIndex readers download every document, though unchanged ones cost no model calls. dlt's incremental cursors are refused, because deletions are found by comparing a full listing with the graph.
+- **Every resource in a call is held in memory** until it is written, since all of them are checked first.
+- **No scheduling and no OAuth.** Run a sync from cron or your own job. Sources that need a user to sign in take a token or a service account instead.
+
+See [`examples/12_connectors.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/12_connectors.py) for a runnable version.
