@@ -1,0 +1,165 @@
+# GraphRAG SDK — Retrieval: Path Router (agentic path selection)
+#
+# A lightweight planner that decides *which* of MultiPathRetrieval's
+# retrieval paths to run for a given question, instead of always running
+# all of them. One cheap LLM call (or a heuristic) returns a subset; the
+# strategy skips the rest. Falls back to "all paths" whenever the plan is
+# empty or the router errors, so recall is never silently lost.
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import Any
+
+from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+
+logger = logging.getLogger(__name__)
+
+# The five gateable retrieval paths of MultiPathRetrieval.
+RETRIEVAL_PATHS: tuple[str, ...] = (
+    "relates",  # RELATES edge vector search (facts + seed entities)
+    "entity_cypher",  # entity discovery via Cypher exact/CONTAINS name match
+    "entity_fulltext",  # entity discovery via fulltext index
+    "expansion",  # 1-hop/2-hop relationship expansion
+    "chunks",  # chunk retrieval (fulltext + vector + MENTIONED_IN + 2-hop)
+)
+_PATH_SET: frozenset[str] = frozenset(RETRIEVAL_PATHS)
+
+_PATH_GUIDE = (
+    "- relates: semantic/fact questions, paraphrases, 'what is', 'tell me about'.\n"
+    "- entity_cypher: the question names a specific entity / proper noun exactly.\n"
+    "- entity_fulltext: fuzzy or partial entity names, typos, multi-word names.\n"
+    "- expansion: 'how are X and Y connected', relationships, neighbors, paths.\n"
+    "  (needs entity seeds — pick it together with an entity path or relates)\n"
+    "- chunks: needs supporting passages / quotes / detailed source text."
+)
+
+
+#: Sentence-initial words that are capitalized only because they start the
+#: question; a capitalized first word outside this list is taken as a name
+#: ("Microsoft acquired which companies?").
+_LEADING_WORDS = frozenset(
+    {
+        "what", "who", "whom", "whose", "which", "when", "where", "why", "how", "is",
+        "are", "was", "were", "do", "does", "did", "can", "could", "should", "would",
+        "will", "may", "might", "must", "has", "have", "had", "the", "a", "an", "in",
+        "on", "at", "of", "for", "to", "from", "by", "with", "about", "list", "name",
+        "give", "tell", "show", "find", "describe", "explain", "compare", "summarize",
+        "summarise", "please", "and", "but", "or", "if", "according", "between",
+        "among", "after", "before", "during", "since", "i", "we", "you", "they",
+        "it", "this", "that", "these", "those", "there", "any", "all", "each",
+        "every", "some", "count", "identify", "provide", "return", "get", "rank",
+    }
+)  # fmt: skip
+#: A quoted phrase: double or typographic quotes anywhere, or single quotes
+#: that open and close at word boundaries (not an apostrophe in "what's").
+_QUOTED_RE = re.compile(r"[\"“”]|(?<!\w)'[^'\n]+'(?!\w)")
+#: A name after the first word: Capitalized, ALL-CAPS (2+ chars) or mixed
+#: case (iPhone, eBay).
+_NAME_RE = re.compile(r"\b(?:[A-Z][a-z]+[A-Z]\w*|[A-Z][a-z]+|[A-Z][A-Z0-9]+|[a-z]+[A-Z]\w*)\b")
+#: A trailing possessive: Amazon's, Amazon’s, the Smiths'.
+_POSSESSIVE_RE = re.compile(r"(?:['’]s|s['’])$")
+
+
+def _names_an_entity(text: str) -> bool:
+    """Whether the question appears to name a specific entity."""
+    if _QUOTED_RE.search(text):
+        return True
+    parts = text.split(maxsplit=1)
+    if not parts:
+        return False
+    first = _POSSESSIVE_RE.sub("", re.sub(r"\W+$", "", parts[0]))
+    # The first word is capitalized by grammar: a question or command word
+    # (Capitalized or ALL-CAPS) is not a name; any other name-shaped first
+    # word is.
+    if len(first) > 1 and _NAME_RE.fullmatch(first) and first.lower() not in _LEADING_WORDS:
+        return True
+    rest = parts[1] if len(parts) > 1 else ""
+    return bool(_NAME_RE.search(rest))
+
+
+def all_paths() -> set[str]:
+    """Return the full path set (the default, unrouted behavior)."""
+    return set(RETRIEVAL_PATHS)
+
+
+def parse_paths(text: str) -> set[str]:
+    """Parse a model/heuristic response into a validated set of path ids.
+
+    Accepts tokens separated by whitespace or punctuation; ignores anything
+    that is not a known path. Returns an empty set when nothing valid is
+    found (the caller is expected to fall back to ``all_paths()``).
+    """
+    tokens = re.findall(r"[a-z_]+", (text or "").lower())
+    return {t for t in tokens if t in _PATH_SET}
+
+
+class HeuristicPathRouter:
+    """Zero-cost router: picks paths from cheap question features.
+
+    Useful when you want path pruning without an extra LLM call. Always
+    keeps at least ``relates`` + ``chunks`` so open-ended questions still
+    get semantic recall.
+    """
+
+    async def plan(self, query: str, ctx: Context | None = None) -> set[str]:
+        text = query or ""
+        q = text.lower()
+        plan: set[str] = {"relates", "chunks"}
+        # Relationship / connection questions → traversal.
+        # Word stems, so "connected", "relationships", "linked", "neighbours"
+        # and "paths" count as well as the base words.
+        rel_pattern = (
+            r"\b(connect\w*|relat\w*|between|link\w*|neighbo\w*"
+            r"|paths?|how (?:are|is|do))\b"
+        )
+        if re.search(rel_pattern, q):
+            plan |= {"expansion", "entity_cypher"}
+        # A quoted phrase or a proper noun (Capitalized, ALL-CAPS, mixed case)
+        # → name match. A capitalized first word counts only when it is not a
+        # question/command word ("What", "Who", "List"...), otherwise the
+        # entity paths fire on virtually every question and the router never
+        # prunes; an apostrophe ("what's") is not a quote.
+        if _names_an_entity(text):
+            plan |= {"entity_cypher", "entity_fulltext"}
+        return plan & _PATH_SET or all_paths()
+
+
+class LLMPathRouter:
+    """LLM-backed router: one small call selects the paths to run.
+
+    Args:
+        llm: provider exposing ``ainvoke(prompt, timeout=...)``.
+    """
+
+    def __init__(self, llm: Any) -> None:
+        self._llm = llm
+
+    async def plan(self, query: str, ctx: Context | None = None) -> set[str]:
+        ctx = ctx or Context()
+        prompt = (
+            "You are a retrieval planner for a knowledge-graph RAG system. "
+            "Given a question, choose ONLY the retrieval paths needed to answer "
+            "it well — usually 1 to 3, not all. Return a comma-separated list of "
+            "path ids from this set, nothing else.\n\n"
+            f"Paths:\n{_PATH_GUIDE}\n\n"
+            f"Question: {query}\n\nPaths:"
+        )
+        try:
+            ctx.ensure_budget("path router LLM call")
+            response = await self._llm.ainvoke(
+                prompt,
+                timeout=ctx.provider_timeout_seconds("path router LLM call"),
+            )
+            plan = parse_paths(getattr(response, "content", "") or "")
+            if plan:
+                ctx.log(f"PathRouter: selected {sorted(plan)}")
+                return plan
+            logger.debug("PathRouter: empty/unparseable plan, using all paths")
+        except LatencyBudgetExceededError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("PathRouter LLM call failed (%s); using all paths", exc)
+        return all_paths()

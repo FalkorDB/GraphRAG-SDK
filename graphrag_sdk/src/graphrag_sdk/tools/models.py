@@ -1,0 +1,712 @@
+# GraphRAG SDK — Tools: result models + LLM-text rendering
+# Typed results of the toolkit tools. Every model is pydantic v2, carries the
+# evidence numbers [n] to cite, and renders bounded text via to_llm_text().
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from graphrag_sdk.storage.graph_store import GraphStore
+
+_ELLIPSIS = "…"
+_SNIPPET_CHARS = 240
+#: A passage is shown up to about a whole chunk: its figures are often far
+#: from its start.
+_PASSAGE_CHARS = 1200
+
+
+def _clean(value: Any) -> str:
+    """Sanitize a value for LLM output: strip control chars (reuses the
+    ingestion sanitizer) and collapse all whitespace runs to single spaces."""
+    return " ".join(GraphStore._sanitize_string(str(value)).split())
+
+
+def _snippet(value: Any, limit: int = _SNIPPET_CHARS) -> str:
+    """A cleaned, length-capped one-line excerpt ending with an ellipsis."""
+    text = _clean(value)
+    return text if len(text) <= limit else text[: limit - 1] + _ELLIPSIS
+
+
+def _basename(path: str) -> str:
+    """The last part of a document path (``reports/q3.pdf`` -> ``q3.pdf``)."""
+    text = _clean(path)
+    return text.rstrip("/\\").rsplit("/", 1)[-1].rsplit("\\", 1)[-1] or text
+
+
+def _omitted(count: int) -> str:
+    return f"  {_ELLIPSIS}({count} more omitted)"
+
+
+def _fair_share(sizes: list[int], room: int, weights: list[int] | None = None) -> int:
+    """The first block's share of ``room``: every block gets a share in
+    proportion to its weight (even, by default), and what a smaller block
+    does not need goes to the bigger ones."""
+    weights = weights or [1] * len(sizes)
+    left, total = room, sum(weights)
+    for size, weight in sorted(zip(sizes, weights), key=lambda sw: sw[0] / sw[1]):
+        if size > left * weight // total:
+            return min(sizes[0], left * weights[0] // total)
+        left -= size
+        total -= weight
+    return sizes[0]
+
+
+def _render(
+    preamble: list[str],
+    sections: list[tuple[str, list[str]]],
+    *,
+    max_chars: int,
+    weights: dict[str, int] | None = None,
+) -> str:
+    """Assemble preamble lines + (header, items) sections into text ≤ max_chars.
+
+    When the sections do not all fit, each gets a fair share of the room
+    (what a short section leaves over goes to the others), so a long section
+    cannot push a later one out. ``weights`` gives a section, by header, a
+    bigger share (2 is twice the room of a section with the default 1).
+    Truncation happens only at item boundaries; a section's dropped tail is
+    marked ``…(N more omitted)``. Deterministic for equal inputs.
+    """
+    if max_chars < 1:
+        return ""
+    lines: list[str] = []
+    used = 0
+    limit = max_chars  # the end of the current section's share
+    cut = False  # whether the text already shows that something was dropped
+
+    def try_add(line: str) -> bool:
+        nonlocal used
+        cost = len(line) + (1 if lines else 0)
+        if used + cost > limit:
+            return False
+        lines.append(line)
+        used += cost
+        return True
+
+    for line in preamble:
+        if not try_add(line):
+            # Cut the line to the space left rather than dropping it, so a
+            # long summary still shows its start.
+            room = max_chars - used - (1 if lines else 0)
+            if not lines or room > 40:
+                lines.append(line[: max(room, 1) - 1] + _ELLIPSIS)
+            return "\n".join(lines)
+
+    sections = [(header, items) for header, items in sections if items]
+    # Every line is costed with its newline, so the shares never overrun.
+    sizes = [len(h) + 8 + sum(len(item) + 1 for item in items) for h, items in sections]
+    shares = [(weights or {}).get(h, 1) for h, _ in sections]
+    for i, (header, items) in enumerate(sections):
+        header_line = f"{header} ({len(items)}):"
+        full_marker = _omitted(len(items))
+        # Only start a section if the header plus at least a drop-marker fit —
+        # otherwise a bare header would dangle with nothing under it. Marker
+        # strings never grow as the remaining count shrinks, so this reserve
+        # guarantees every emitted header is followed by an item or a marker.
+        minimum = len(header_line) + 1 + len(full_marker) + 1
+        limit = used + max(_fair_share(sizes[i:], max_chars - used, shares[i:]), minimum)
+        limit = min(limit, max_chars)
+        if used + minimum > limit:
+            if try_add(f"{header}: {_ELLIPSIS}({len(items)} omitted)"):
+                cut = True
+            elif not cut:
+                # Not even the summary fits: a bare marker still tells the
+                # reader that something was cut.
+                cut = try_add(_ELLIPSIS)
+            continue
+        try_add(header_line)
+        # Room for a drop-marker is kept back only when the items will not
+        # all fit; otherwise it would cut short items that do.
+        fits = used + sum(len(item) + 1 for item in items) <= limit
+        for idx, item in enumerate(items):
+            marker = _omitted(len(items) - idx)
+            reserve = (len(marker) + 1) if idx < len(items) - 1 and not fits else 0
+            if used + len(item) + 1 + reserve <= limit:
+                try_add(item)
+            else:
+                cut = try_add(marker) or cut
+                break
+    return "\n".join(lines)
+
+
+class ToolResult(BaseModel):
+    """Base class for toolkit results: strict fields + LLM-text rendering."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    def to_llm_text(self, *, max_chars: int = 8000) -> str:
+        """Render a compact, deterministic plain-text form bounded by max_chars.
+
+        A summary for an LLM prompt, not the full result: long values are
+        cut to snippets, and when the sections do not all fit each keeps a
+        fair share of ``max_chars`` and notes how many items it left out.
+        ``check_citations`` checks an answer against the full evidence, so
+        an agent that needs every word should read the result's fields (or
+        its JSON) instead.
+        """
+        return _render(
+            self._preamble(), self._sections(), max_chars=max_chars, weights=self._weights()
+        )
+
+    def _preamble(self) -> list[str]:  # pragma: no cover - overridden
+        return []
+
+    def _weights(self) -> dict[str, int]:
+        """Sections, by header, that get a bigger share of ``max_chars``."""
+        return {}
+
+    def _sections(self) -> list[tuple[str, list[str]]]:  # pragma: no cover
+        return []
+
+
+def _n(n: int | None) -> str:
+    return f"[{n}] " if n is not None else ""
+
+
+class DocumentRef(BaseModel):
+    """A source document reference."""
+
+    model_config = ConfigDict(extra="forbid")
+    document_id: str
+    document_path: str = ""
+
+
+class EntityCard(BaseModel):
+    """A knowledge-graph entity with its user-facing properties."""
+
+    model_config = ConfigDict(extra="forbid")
+    n: int | None = None
+    id: str = ""
+    name: str
+    label: str = ""
+    description: str | None = None
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class RelationTriple(BaseModel):
+    """A relation ``source -[type]-> target`` with the fact it states."""
+
+    model_config = ConfigDict(extra="forbid")
+    n: int | None = None
+    source: str
+    type: str
+    target: str
+    fact: str | None = None
+
+
+class Fact(BaseModel):
+    """A fact statement found by retrieval."""
+
+    model_config = ConfigDict(extra="forbid")
+    n: int | None = None
+    text: str
+
+
+class ChunkRef(BaseModel):
+    """A retrieved source passage with provenance ids."""
+
+    model_config = ConfigDict(extra="forbid")
+    n: int | None = None
+    chunk_id: str
+    document_id: str = ""
+    #: Omitted when it equals ``document_id``.
+    document_path: str | None = None
+    text: str
+
+
+class EntityTypeInfo(BaseModel):
+    """An entity label with its description, declared properties and live count."""
+
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    description: str | None = None
+    count: int = 0
+    properties: list[str] = Field(default_factory=list)
+
+
+class RelationTypeInfo(BaseModel):
+    """A relation type with its description, patterns and live count."""
+
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    description: str | None = None
+    patterns: list[tuple[str, str]] = Field(default_factory=list)
+    count: int = 0
+
+
+def _value_text(value: Any) -> str:
+    # Table columns are stored as floats: show 40.0 as 40, as people write it.
+    if isinstance(value, float) and value.is_integer() and abs(value) < 1e15:
+        return str(int(value))
+    return str(value)
+
+
+def properties_text(properties: dict[str, Any]) -> str:
+    """An entity's properties as one line: ``age: 40; city: Paris``."""
+    parts = []
+    for key, value in properties.items():
+        if isinstance(value, list | tuple):
+            value = ", ".join(_value_text(v) for v in value)
+        text = _clean(_value_text(value))
+        if text:
+            parts.append(f"{_clean(key)}: {text}")
+    return "; ".join(parts)
+
+
+def _entity_line(e: EntityCard) -> str:
+    line = f"- {_n(e.n)}{_clean(e.name)}"
+    if e.label:
+        line += f" [{_clean(e.label)}]"
+    if e.description:
+        line += f": {_snippet(e.description, 160)}"
+    if props := properties_text(e.properties):
+        line += f" ({_snippet(props, 160)})"
+    return line
+
+
+def _relation_line(r: RelationTriple) -> str:
+    line = f"- {_n(r.n)}{_clean(r.source)} -[{_clean(r.type)}]-> {_clean(r.target)}"
+    if r.fact:
+        line += f": {_snippet(r.fact, 160)}"
+    return line
+
+
+class StatusResult(ToolResult):
+    """What the graph holds. ``n`` is its evidence number."""
+
+    n: int | None = None
+    entities: int = 0
+    relations: int = 0
+    documents: int = 0
+    chunks: int = 0
+    entity_types: list[EntityTypeInfo] = Field(default_factory=list)
+    relation_types: list[RelationTypeInfo] = Field(default_factory=list)
+    hint: str | None = None
+
+    def _preamble(self) -> list[str]:
+        lines = [
+            f"{_n(self.n)}Entities: {self.entities} | Relations: {self.relations} | "
+            f"Documents: {self.documents} | Chunks: {self.chunks}"
+        ]
+        if self.hint:
+            lines.append(f"Hint: {_clean(self.hint)}")
+        return lines
+
+    def _sections(self) -> list[tuple[str, list[str]]]:
+        return [
+            ("Entity types", [f"- {_clean(t.label)}: {t.count}" for t in self.entity_types]),
+            ("Relation types", [f"- {_clean(t.label)}: {t.count}" for t in self.relation_types]),
+        ]
+
+
+class OntologyResult(ToolResult):
+    """The declared ontology (with live counts). ``n`` is its evidence number."""
+
+    n: int | None = None
+    entity_types: list[EntityTypeInfo] = Field(default_factory=list)
+    relation_types: list[RelationTypeInfo] = Field(default_factory=list)
+
+    def _preamble(self) -> list[str]:
+        return [f"{_n(self.n)}Ontology with live counts:"] if self.n is not None else []
+
+    def _sections(self) -> list[tuple[str, list[str]]]:
+        ent_lines = []
+        for e in self.entity_types:
+            line = f"- {_clean(e.label)}: {e.count}"
+            if e.description:
+                line += f" — {_snippet(e.description, 100)}"
+            if e.properties:
+                line += f" (props: {', '.join(_clean(p) for p in e.properties)})"
+            ent_lines.append(line)
+        rel_lines = []
+        for r in self.relation_types:
+            line = f"- {_clean(r.label)}: {r.count}"
+            if r.patterns:
+                pats = ", ".join(f"{_clean(a)}->{_clean(b)}" for a, b in r.patterns)
+                line += f" [{pats}]"
+            if r.description:
+                line += f" — {_snippet(r.description, 100)}"
+            rel_lines.append(line)
+        return [("Entity types", ent_lines), ("Relation types", rel_lines)]
+
+
+class RetrieveResult(ToolResult):
+    """Ranked retrieval context for a question (no answer generated)."""
+
+    question: str
+    entities: list[EntityCard] = Field(default_factory=list)
+    relations: list[RelationTriple] = Field(default_factory=list)
+    facts: list[Fact] = Field(default_factory=list)
+    chunks: list[ChunkRef] = Field(default_factory=list)
+    documents: list[DocumentRef] = Field(default_factory=list)
+    hint: str | None = None
+
+    def _preamble(self) -> list[str]:
+        lines = [f"Question: {_clean(self.question)}"]
+        if self.hint:
+            lines.append(f"Hint: {_clean(self.hint)}")
+        return lines
+
+    def _sections(self) -> list[tuple[str, list[str]]]:
+        return [
+            ("Entities", [_entity_line(e) for e in self.entities]),
+            ("Relations", [_relation_line(r) for r in self.relations]),
+            ("Facts", [f"- {_n(f.n)}{_snippet(f.text)}" for f in self.facts]),
+            (
+                "Passages",
+                [
+                    f"- {_n(c.n)}[{_basename(c.document_path or c.document_id)}] "
+                    f"{_snippet(c.text, _PASSAGE_CHARS)}"
+                    for c in self.chunks
+                ],
+            ),
+        ]
+
+    def _weights(self) -> dict[str, int]:
+        # Passages carry the figures an answer needs: twice the room.
+        return {"Passages": 2}
+
+
+class EvidenceRef(BaseModel):
+    """A piece of evidence an answer cites."""
+
+    model_config = ConfigDict(extra="forbid")
+    n: int
+    tool: str
+    kind: str
+    content: str
+    source: str = ""
+
+
+class ClaimCheck(BaseModel):
+    """A cited sentence naming figures or names its cited evidence lacks."""
+
+    model_config = ConfigDict(extra="forbid")
+    sentence: str
+    missing: list[str] = Field(default_factory=list)
+
+
+class CitationCheckResult(ToolResult):
+    """An answer's citations checked against the session's evidence.
+
+    ``uncited`` and ``unsupported`` are warnings on a grounded answer: claims
+    with no ``[n]`` of their own, and cited claims whose figures or names the
+    cited evidence does not contain. They do not change ``grounded``.
+    """
+
+    grounded: bool
+    reason: str
+    cited: list[int] = Field(default_factory=list)
+    invalid: list[int] = Field(default_factory=list)
+    uncited: list[str] = Field(default_factory=list)
+    unsupported: list[ClaimCheck] = Field(default_factory=list)
+    answer: str = ""
+    sources: list[EvidenceRef] = Field(default_factory=list)
+    hint: str | None = None
+
+    def _preamble(self) -> list[str]:
+        lines = [f"Grounded: {self.grounded} ({self.reason})"]
+        if self.invalid:
+            lines.append(f"Invalid citations removed: {self.invalid}")
+        if self.hint:
+            lines.append(f"Hint: {_clean(self.hint)}")
+        return lines
+
+    def _sections(self) -> list[tuple[str, list[str]]]:
+        return [
+            ("No citation", [f"- {_snippet(c, 200)}" for c in self.uncited]),
+            (
+                "Not in the cited evidence",
+                [
+                    f"- {_snippet(c.sentence, 200)} (missing: {_clean(', '.join(c.missing))})"
+                    for c in self.unsupported
+                ],
+            ),
+            (
+                "Sources",
+                [f"- [{s.n}] ({_clean(s.tool)}) {_snippet(s.content, 200)}" for s in self.sources],
+            ),
+        ]
+
+
+class DocSample(BaseModel):
+    """One file under the files root, with a sample of its text."""
+
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    type: str
+    size_bytes: int = 0
+    chars: int = Field(
+        default=0, description="Text length; estimated from the part read when chars_estimated."
+    )
+    chars_estimated: bool = False
+    sample: str = ""
+    error: str | None = None
+
+
+class PreviewFilesResult(ToolResult):
+    """A page of the files under the files root, one sample each."""
+
+    pattern: str
+    total: int
+    offset: int = 0
+    next_offset: int | None = None
+    types: dict[str, int] = Field(default_factory=dict)
+    files: list[DocSample] = Field(default_factory=list)
+    hint: str | None = None
+
+    def _preamble(self) -> list[str]:
+        kinds = ", ".join(f"{k} {v}" for k, v in sorted(self.types.items())) or "none"
+        lines = [
+            f"{self.total} files match '{_clean(self.pattern)}' ({kinds}); "
+            f"showing {self.offset + 1 if self.files else 0}-{self.offset + len(self.files)}."
+        ]
+        if self.next_offset is not None:
+            lines.append(f"More: offset={self.next_offset}.")
+        if self.hint:
+            lines.append(f"Hint: {_clean(self.hint)}")
+        return lines
+
+    def _sections(self) -> list[tuple[str, list[str]]]:
+        items = []
+        for f in self.files:
+            body = f"error: {_clean(f.error)}" if f.error else _snippet(f.sample, 600)
+            chars = f"~{f.chars}" if f.chars_estimated else str(f.chars)
+            items.append(f"- {_clean(f.path)} ({chars} chars): {body}")
+        return [("Files", items)]
+
+
+class PrunedTypes(BaseModel):
+    """What extraction found but the ontology does not declare: dropped, or kept as Unknown."""
+
+    model_config = ConfigDict(extra="forbid")
+    entities: dict[str, int] = Field(
+        default_factory=dict, description="Undeclared entity type -> entities dropped."
+    )
+    relations: dict[str, int] = Field(
+        default_factory=dict, description="Undeclared relation type -> relations dropped."
+    )
+    pattern_mismatches: dict[str, dict[str, int]] = Field(
+        default_factory=dict,
+        description="Declared relation -> 'Source->Target' pair it is not declared for -> count.",
+    )
+    pattern_examples: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        description=(
+            "Declared relation -> 'Source->Target' pair -> one dropped relation "
+            "('source name -> target name: fact'), to judge whether the pair fits."
+        ),
+    )
+    dangling: int = Field(default=0, description="Relations whose endpoint was dropped.")
+    unknown: int = Field(
+        default=0,
+        description=(
+            "Entities kept with label Unknown: their type was not resolved (not in the "
+            "ontology, or a declared type predicted with low confidence)."
+        ),
+    )
+    unknown_endpoints: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Declared relation -> relations dropped because an endpoint is an Unknown "
+            "entity (declare that entity's type; a pattern cannot name Unknown)."
+        ),
+    )
+
+    @classmethod
+    def from_report(cls, report: Any) -> PrunedTypes | None:
+        """From a pipeline ``metadata["pruned"]`` dict; ``None`` when empty."""
+        if not isinstance(report, dict) or not report:
+            return None
+        return cls(
+            entities={str(k): int(v) for k, v in (report.get("entities") or {}).items()},
+            relations={str(k): int(v) for k, v in (report.get("relations") or {}).items()},
+            pattern_mismatches={
+                str(rel): {str(pair): int(n) for pair, n in pairs.items()}
+                for rel, pairs in (report.get("pattern_mismatches") or {}).items()
+            },
+            pattern_examples={
+                str(rel): {str(pair): str(text) for pair, text in pairs.items()}
+                for rel, pairs in (report.get("pattern_examples") or {}).items()
+            },
+            dangling=int(report.get("dangling") or 0),
+            unknown=int(report.get("unknown") or 0),
+            unknown_endpoints={
+                str(k): int(v) for k, v in (report.get("unknown_endpoints") or {}).items()
+            },
+        )
+
+    def add(self, other: PrunedTypes) -> None:
+        for key, n in other.entities.items():
+            self.entities[key] = self.entities.get(key, 0) + n
+        for key, n in other.relations.items():
+            self.relations[key] = self.relations.get(key, 0) + n
+        for rel, pairs in other.pattern_mismatches.items():
+            mine = self.pattern_mismatches.setdefault(rel, {})
+            for pair, n in pairs.items():
+                mine[pair] = mine.get(pair, 0) + n
+        for rel, examples in other.pattern_examples.items():
+            kept = self.pattern_examples.setdefault(rel, {})
+            for pair, text in examples.items():
+                kept.setdefault(pair, text)
+        self.dangling += other.dangling
+        self.unknown += other.unknown
+        for key, n in other.unknown_endpoints.items():
+            self.unknown_endpoints[key] = self.unknown_endpoints.get(key, 0) + n
+
+    @property
+    def missing_types(self) -> bool:
+        """Whether a type or pattern was undeclared, or an entity type unresolved (Unknown).
+
+        Unknown also holds declared types predicted with low confidence, so this
+        can be true with a complete ontology. Dangling edges alone do not count.
+        """
+        return bool(
+            self.entities
+            or self.relations
+            or self.pattern_mismatches
+            or self.unknown
+            or self.unknown_endpoints
+        )
+
+    def summary(self, limit: int = 8) -> str:
+        def top(counts: dict[str, int]) -> str:
+            ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            shown = ", ".join(f"{_clean(k)} ({n})" for k, n in ranked[:limit])
+            return shown + (f" (+{len(ranked) - limit} more)" if len(ranked) > limit else "")
+
+        parts = []
+        if self.entities:
+            parts.append(f"entity types {top(self.entities)}")
+        if self.relations:
+            parts.append(f"relation types {top(self.relations)}")
+        if self.pattern_mismatches:
+            flat = {
+                f"{rel} {pair}": n
+                for rel, pairs in self.pattern_mismatches.items()
+                for pair, n in pairs.items()
+            }
+            parts.append(f"undeclared relation patterns {top(flat)}")
+        if self.unknown:
+            parts.append(f"{self.unknown} entities with an unresolved type (stored as Unknown)")
+        if self.unknown_endpoints:
+            parts.append(f"relations to Unknown entities {top(self.unknown_endpoints)}")
+        if self.dangling:
+            parts.append(f"{self.dangling} relations to dropped entities")
+        return "; ".join(parts)
+
+
+class IngestedDocument(BaseModel):
+    """The outcome for one file of an ingest call."""
+
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    document_id: str | None = None
+    status: Literal["ingested", "unchanged", "reextracted", "updated", "failed"] = Field(
+        description="updated: the file changed since its last ingest and was replaced."
+    )
+    chunks_indexed: int = 0
+    nodes_created: int = 0
+    relationships_created: int = 0
+    plan: dict[str, Any] | None = Field(
+        default=None, description="Strategies used: chunker, extractor, resolver, params, reason."
+    )
+    pruned: PrunedTypes | None = None
+    error: str | None = None
+
+
+class IngestResult(ToolResult):
+    """Outcome of adding text or files to the graph.
+
+    For text, ``document_id`` names the stored document; for files,
+    ``documents`` has one entry per file. ``pruned`` totals what the
+    ontology did not declare and was dropped.
+    """
+
+    document_id: str | None = None
+    status: Literal["ingested", "unchanged", "reextracted"] | None = Field(
+        default=None, description="For text: whether it was extracted, or already stored as is."
+    )
+    chunks_indexed: int = 0
+    nodes_created: int = 0
+    relationships_created: int = 0
+    documents: list[IngestedDocument] = Field(default_factory=list)
+    failed: int = 0
+    pruned: PrunedTypes | None = None
+    finalized: bool = False
+    hint: str | None = None
+
+    @property
+    def unchanged(self) -> bool:
+        """True when nothing was written: every document was already stored as is."""
+        if self.document_id is not None:
+            return self.status == "unchanged"
+        return bool(self.documents) and all(d.status == "unchanged" for d in self.documents)
+
+    def _preamble(self) -> list[str]:
+        totals = (
+            f"{self.chunks_indexed} chunks, {self.nodes_created} nodes, "
+            f"{self.relationships_created} relations"
+        )
+        if self.document_id is not None:
+            doc = _clean(self.document_id)
+            if self.status == "unchanged":
+                lines = [f"Document '{doc}' is already stored unchanged; nothing was extracted."]
+            elif self.status == "reextracted":
+                lines = [f"Re-extracted document '{doc}' ({totals})."]
+            else:
+                lines = [f"Stored document '{doc}' ({totals})."]
+        else:
+            counts: dict[str, int] = {}
+            for doc in self.documents:
+                counts[doc.status] = counts.get(doc.status, 0) + 1
+            status = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "none"
+            lines = [f"Files: {status} ({totals})."]
+        if self.pruned is not None:
+            lines.append(f"Dropped (not in the ontology): {self.pruned.summary()}.")
+        if self.finalized:
+            lines.append("Finalized.")
+        elif not self.unchanged:
+            lines.append("Not finalized yet.")
+        if self.hint:
+            lines.append(f"Hint: {_clean(self.hint)}")
+        return lines
+
+    def _sections(self) -> list[tuple[str, list[str]]]:
+        items = []
+        for doc in self.documents:
+            line = f"- {_clean(doc.path)}: {doc.status}"
+            if doc.error:
+                line += f" — {_snippet(doc.error, 160)}"
+            else:
+                line += f" ({doc.chunks_indexed} chunks, {doc.nodes_created} nodes)"
+            if doc.plan:
+                p = doc.plan
+                line += f" [{p.get('chunker')}/{p.get('extractor')}/{p.get('resolver')}]"
+            items.append(line)
+        return [("Documents", items)]
+
+
+class FinalizeReport(ToolResult):
+    """Outcome of finalize."""
+
+    finalized: bool = True
+    entities_deduplicated: int = 0
+    entities_embedded: int = 0
+    relationships_embedded: int = 0
+    null_stubs_removed: int = 0
+    hint: str | None = None
+
+    def _preamble(self) -> list[str]:
+        lines = [
+            f"Finalized: {self.entities_deduplicated} duplicates merged, "
+            f"{self.entities_embedded} entities and {self.relationships_embedded} relations "
+            f"embedded, {self.null_stubs_removed} empty stubs removed."
+            if self.finalized
+            else "Not finalized."
+        ]
+        if self.hint:
+            lines.append(f"Hint: {_clean(self.hint)}")
+        return lines

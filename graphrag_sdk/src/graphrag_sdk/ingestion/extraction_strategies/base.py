@@ -44,3 +44,11 @@ class ExtractionStrategy(ABC):
             GraphData with extracted nodes and relationships.
         """
         ...
+
+    async def prepare(self) -> None:
+        """Get ready to extract, before the pipeline writes the document.
+
+        A strategy that loads a model loads it here, so a model that cannot
+        load fails the document before its chunks are written. The default
+        does nothing.
+        """

@@ -30,18 +30,23 @@ from graphrag_sdk.retrieval.strategies.cypher_generation import (
 from graphrag_sdk.retrieval.strategies.entity_discovery import (
     discover_entities,
     expand_sibling_entities,
+    fetch_entity_attributes,
     is_enumeration_query,
     search_relates_edges,
+)
+from graphrag_sdk.retrieval.strategies.path_router import (
+    RETRIEVAL_PATHS,
+    all_paths,
 )
 from graphrag_sdk.retrieval.strategies.relationship_expansion import (
     expand_relationships,
 )
 from graphrag_sdk.retrieval.strategies.result_assembly import (
+    _rerank_chunk_ids,
     assemble_raw_result,
     cosine_sim,
     detect_question_type,
     filter_facts_by_relevance,
-    rerank_chunks,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,7 +82,8 @@ class MultiPathRetrieval(RetrievalStrategy):
         vector_store: Vector data access object.
         embedder: Embedding provider.
         llm: LLM provider for keyword extraction.
-        chunk_top_k: Final chunks after reranking (default: 15).
+        chunk_top_k: Final chunks after reranking (default: 20, sized for
+            the default 384-token chunks).
         max_entities: Max entities to keep (default: 30).
         max_relationships: Max relationships to keep (default: 20).
         rel_top_k: RELATES edge vector search results (default: 15).
@@ -170,12 +176,16 @@ class MultiPathRetrieval(RetrievalStrategy):
         embedder: Embedder,
         llm: LLMInterface,
         *,
-        chunk_top_k: int = 15,  # Passage diversity without overwhelming LLM context
+        # 20 chunks of the default 384-token chunker carry the same text as the
+        # 15 chunks of 512 tokens this was tuned on; at 15 the move to 384
+        # silently cut a quarter of the passage text the answer sees.
+        chunk_top_k: int = 20,
         max_entities: int = 30,  # Upper bound before reranking; balances recall vs noise
         max_relationships: int = 20,  # Cap on RELATES edges per query
-        rel_top_k: int = 15,  # Matched to chunk_top_k for balanced fact/passage coverage
+        rel_top_k: int = 15,
         keyword_limit: int = 10,  # Fulltext search keyword budget from query decomposition
         enable_cypher: bool = False,  # Text-to-Cypher path (experimental, off by default)
+        router: Any | None = None,  # Optional path router (per-query path selection)
         ontology: Ontology | None = None,  # forwarded to Cypher generation when enable_cypher
         schema: Ontology | None = None,  # DEPRECATED: use ``ontology=`` instead
     ) -> None:
@@ -206,6 +216,12 @@ class MultiPathRetrieval(RetrievalStrategy):
         self._rel_top_k = rel_top_k
         self._keyword_limit = keyword_limit
         self._enable_cypher = enable_cypher
+        self._router = router
+        # The last question vector, for a caller that walks the graph after
+        # the search (the tools' relation walk ranks edges by it). Only
+        # meaningful on a strategy that is not shared: with concurrent
+        # retrieve() calls on one object, it may hold another request's vector.
+        self.last_query_vector: list[float] | None = None
         self._ontology = ontology
 
     def set_ontology(self, ontology: Ontology | None) -> None:
@@ -225,6 +241,42 @@ class MultiPathRetrieval(RetrievalStrategy):
         ctx: Context,
         **kwargs: Any,
     ) -> RawSearchResult:
+        # 0. Resolve per-call overrides. Defaults preserve normal-flow
+        # behavior; a caller (e.g. the retrieve tool) may pass kwargs to
+        # widen selection.
+        def _pos_int(key: str, default: int) -> int:
+            val = kwargs.get(key, default)
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                return default
+            return val if val > 0 else default
+
+        def _nonneg_int(key: str, default: int) -> int:
+            # Output caps allow 0 ("omit this section entirely" — see
+            # result_assembly.assemble_raw_result); only negatives/garbage
+            # fall back to the default.
+            val = kwargs.get(key, default)
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                return default
+            return val if val >= 0 else default
+
+        chunk_top_k = _pos_int("chunk_top_k", self._chunk_top_k)
+        max_entities = _pos_int("max_entities", self._max_entities)
+        max_relationships = _pos_int("max_relationships", self._max_relationships)
+        rel_top_k = _pos_int("rel_top_k", self._rel_top_k)
+
+        # Final-context display caps (agent-tunable; default to prior values).
+        max_cypher_out = _nonneg_int("max_cypher_out", 20)
+        max_entities_out = _nonneg_int("max_entities_out", 25)
+        max_relationships_out = _nonneg_int("max_relationships_out", 20)
+        max_facts_out = _nonneg_int("max_facts_out", 15)
+        # The reranker already keeps chunk_top_k passages; showing fewer by
+        # default would silently override that setting.
+        max_passages_out = _nonneg_int("max_passages_out", chunk_top_k)
+
         # 1. Extract keywords
         ctx.ensure_budget("MultiPath keyword extraction")
         simple_kw, llm_kw = await self._extract_keywords(query, ctx)
@@ -237,26 +289,66 @@ class MultiPathRetrieval(RetrievalStrategy):
             query,
             timeout=ctx.provider_timeout_seconds("MultiPath question embedding"),
         )
+        self.last_query_vector = query_vector
+
+        # 2b. Plan which retrieval paths to run. Without a router this is
+        # "all paths" (unchanged behavior). With a router, an LLM/heuristic
+        # prunes to the paths the question actually needs; on any failure or
+        # empty plan we fall back to all paths so recall is never lost.
+        plan: set[str] = all_paths()
+        if self._router is not None:
+            try:
+                planned = await self._router.plan(query, ctx)
+                plan = set(planned) & set(RETRIEVAL_PATHS) or all_paths()
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Path router failed (%s); running all paths", exc)
+                plan = all_paths()
+            # Expansion traverses from discovered entities, so a plan that
+            # selects it without any seed-producing path would always return
+            # zero relationships. Guarantee a seed source: Cypher matches only
+            # LLM-extracted names, fulltext also the plain keywords, so seeds
+            # survive a failed or empty name extraction.
+            if "expansion" in plan and not plan & {
+                "entity_cypher",
+                "entity_fulltext",
+                "relates",
+            }:
+                plan.update({"entity_cypher", "entity_fulltext"})
+            ctx.log(f"MultiPath plan: {sorted(plan)}")
 
         # 3. RELATES vector search + Text-to-Cypher (parallel when enabled)
+        run_relates = "relates" in plan
+        fact_strings_scored: list[tuple[str, float]] = []
+        rel_entities: dict[str, dict] = {}
+        cypher_facts: list = []
+        cypher_entities: dict[str, dict] = {}
         if self._enable_cypher:
-            results = await asyncio.gather(
-                search_relates_edges(self._vector, query_vector, self._rel_top_k, ctx=ctx),
+            coros = [
                 execute_cypher_retrieval(
                     self._graph, self._llm, query, ontology=self._ontology, ctx=ctx
-                ),
-                return_exceptions=True,
-            )
-            fact_strings_scored, rel_entities = _unpack_gather_result(results[0], ([], {}))
-            cypher_facts, cypher_entities = _unpack_gather_result(results[1], ([], {}))
-        else:
+                )
+            ]
+            if run_relates:
+                coros.insert(
+                    0, search_relates_edges(self._vector, query_vector, rel_top_k, ctx=ctx)
+                )
+            results = await asyncio.gather(*coros, return_exceptions=True)
+            if run_relates:
+                fact_strings_scored, rel_entities = _unpack_gather_result(results[0], ([], {}))
+                cypher_facts, cypher_entities = _unpack_gather_result(results[1], ([], {}))
+            else:
+                cypher_facts, cypher_entities = _unpack_gather_result(results[0], ([], {}))
+        elif run_relates:
             fact_strings_scored, rel_entities = await search_relates_edges(
-                self._vector, query_vector, self._rel_top_k, ctx=ctx
+                self._vector, query_vector, rel_top_k, ctx=ctx
             )
-            cypher_facts, cypher_entities = [], {}
 
-        # Filter RELATES vector facts by relevance score
-        fact_strings = filter_facts_by_relevance(fact_strings_scored)
+        # Filter RELATES vector facts by relevance score. The filter keeps 12
+        # by default; widen it only when the caller asks for more facts.
+        fact_cap = max(12, max_facts_out) if "max_facts_out" in kwargs else 12
+        fact_strings = filter_facts_by_relevance(fact_strings_scored, max_facts=fact_cap)
         # Cypher results stay separate — they bypass the reranker and go
         # directly to the final LLM context as their own section.
         ctx.log(
@@ -265,9 +357,20 @@ class MultiPathRetrieval(RetrievalStrategy):
             + (f", {len(cypher_facts)} cypher results" if cypher_facts else "")
         )
         # 4. Entity discovery (2 paths) + merge rel_entities + cypher_entities
-        found_entities, entity_sources = await discover_entities(
-            self._graph, self._vector, llm_kw, all_keywords, ctx=ctx
-        )
+        use_entity_cypher = "entity_cypher" in plan
+        use_entity_fulltext = "entity_fulltext" in plan
+        if use_entity_cypher or use_entity_fulltext:
+            found_entities, entity_sources = await discover_entities(
+                self._graph,
+                self._vector,
+                llm_kw,
+                all_keywords,
+                ctx=ctx,
+                use_cypher=use_entity_cypher,
+                use_fulltext=use_entity_fulltext,
+            )
+        else:
+            found_entities, entity_sources = {}, {}
         for eid, einfo in rel_entities.items():
             if eid not in found_entities:
                 found_entities[eid] = einfo
@@ -292,22 +395,45 @@ class MultiPathRetrieval(RetrievalStrategy):
                     f"({len(found_entities)} total)"
                 )
         # 5. Relationship expansion
-        entity_list = list(found_entities.items())[: self._max_entities]
-        relationship_strings = await expand_relationships(
-            self._graph, entity_list, self._max_relationships, ctx=ctx
+        entity_list = list(found_entities.items())[:max_entities]
+        # The entities' own values (a table's typed columns, declared
+        # attributes) go with them into the entity section.
+        attributes = await fetch_entity_attributes(
+            self._graph, [eid for eid, _ in entity_list], ctx=ctx
         )
+        for eid, einfo in entity_list:
+            if eid in attributes:
+                einfo["attributes"] = attributes[eid]
+        if "expansion" in plan:
+            # Facts and expansion often reach the same edge; a line the facts
+            # section shows would only spend a relationship slot, so the walk
+            # leaves those out before it splits the cap between links.
+            relationship_strings = await expand_relationships(
+                self._graph,
+                entity_list,
+                max_relationships,
+                ctx=ctx,
+                query_vector=query_vector,
+                exclude=set(fact_strings[:max_facts_out]),
+            )
+        else:
+            relationship_strings = []
         ctx.log(f"MultiPath [5/9]: {len(relationship_strings)} relationships")
         # 6. Chunk retrieval (4 paths)
-        candidate_chunks, chunk_sources, chunk_embeddings = await retrieve_chunks(
-            self._vector,
-            self._graph,
-            query,
-            query_vector,
-            llm_kw,
-            simple_kw,
-            entity_list,
-            ctx=ctx,
-        )
+        if "chunks" in plan:
+            candidate_chunks, _chunk_sources, chunk_embeddings = await retrieve_chunks(
+                self._vector,
+                self._graph,
+                query,
+                query_vector,
+                llm_kw,
+                simple_kw,
+                entity_list,
+                ctx=ctx,
+                vector_top_k=max(15, chunk_top_k),
+            )
+        else:
+            candidate_chunks, _chunk_sources, chunk_embeddings = {}, {}, {}
         ctx.log(
             f"MultiPath [6/9]: {len(candidate_chunks)} candidate chunks "
             f"({len(chunk_embeddings)} with stored embeddings)"
@@ -319,30 +445,52 @@ class MultiPathRetrieval(RetrievalStrategy):
             ctx=ctx,
         )
         # 8. Cosine rerank (uses stored embeddings when available)
-        source_passages = await rerank_chunks(
+        # Ranked by id, so chunks with identical text each keep their own id
+        # (and source document).
+        passage_cids = await _rerank_chunk_ids(
             self._embedder,
             query_vector,
             candidate_chunks,
-            self._chunk_top_k,
+            chunk_top_k,
             stored_embeddings=chunk_embeddings,
             ctx=ctx,
         )
+        source_passages = [candidate_chunks[cid] for cid in passage_cids]
+
+        # Structured provenance for graphrag_sdk.tools — additive only; does
+        # not alter section content.
+        provenance: dict[str, Any] = {
+            "entities": [
+                {
+                    "id": eid,
+                    "name": einfo.get("name", ""),
+                    "description": einfo.get("description", ""),
+                }
+                for eid, einfo in entity_list
+            ],
+            "chunks": [
+                {
+                    "id": cid,
+                    "text": candidate_chunks[cid],
+                    "document_path": chunk_doc_map.get(cid, ""),
+                }
+                for cid in passage_cids
+            ],
+            "facts": list(fact_strings),
+            "relationships": list(relationship_strings),
+        }
 
         # Tag with source docs
-        text_to_doc: dict[str, str] = {
-            candidate_chunks[cid]: doc_name
-            for cid, doc_name in chunk_doc_map.items()
-            if cid in candidate_chunks
-        }
         source_passages = [
-            f"[Source: {text_to_doc[p]}]\n{p}" if p in text_to_doc else p for p in source_passages
+            f"[Source: {chunk_doc_map[cid]}]\n{p}" if cid in chunk_doc_map else p
+            for p, cid in zip(source_passages, passage_cids)
         ]
         ctx.log(f"MultiPath [8/9]: {len(source_passages)} passages after rerank")
 
         # 9. Detect question type + assemble
         ctx.ensure_budget("MultiPath result assembly")
         q_type_hint = detect_question_type(query)
-        return assemble_raw_result(
+        raw = assemble_raw_result(
             entity_list,
             relationship_strings,
             fact_strings,
@@ -350,7 +498,14 @@ class MultiPathRetrieval(RetrievalStrategy):
             q_type_hint,
             cypher_results=cypher_facts if cypher_facts else None,
             cypher_question=query if cypher_facts else "",
+            max_cypher=max_cypher_out,
+            max_entities=max_entities_out,
+            max_relationships=max_relationships_out,
+            max_facts=max_facts_out,
+            max_passages=max_passages_out,
         )
+        raw.metadata["provenance"] = provenance
+        return raw
 
     def _format(self, raw: RawSearchResult) -> RetrieverResult:
         """Produce RetrieverResultItems as markdown sections."""
@@ -404,7 +559,7 @@ class MultiPathRetrieval(RetrievalStrategy):
 
     async def _search_relates_edges(
         self, query_vector: list[float]
-    ) -> tuple[list[tuple[str, float]], dict[str, dict]]:
+    ) -> tuple[list[tuple[str, float]], dict[str, dict[str, str]]]:
         """Backward-compat wrapper — delegates to module function."""
         return await search_relates_edges(
             self._vector,

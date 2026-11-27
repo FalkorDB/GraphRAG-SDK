@@ -106,7 +106,8 @@ class TestResultsDoNotDependOnEngineRowOrder:
 
 
 class TestOneKeyTwiceInOneCall:
-    async def test_an_entity_written_twice_keeps_both_chunks_and_the_last_values(self, store):
+    async def test_an_entity_written_twice_keeps_the_last_values_and_no_chunk_list(self, store):
+        # Which chunks mention an entity is on its MENTIONED_IN edges, not here.
         await store.upsert_nodes(
             [
                 GraphNode(
@@ -121,7 +122,7 @@ class TestOneKeyTwiceInOneCall:
         rows = (
             await store.query_raw("MATCH (n:Person {id: 'x'}) RETURN n.name, n.source_chunk_ids")
         ).result_set
-        assert rows == [["B", ["c1", "c2"]]]
+        assert rows == [["B", None]]
 
     async def test_a_fact_written_twice_keeps_both_chunks(self, store):
         await store.upsert_nodes(

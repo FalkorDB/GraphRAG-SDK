@@ -194,6 +194,7 @@ class TestRelationshipSearch:
 
         assert [r["fact"] for r in results] == ["Alice works at Acme", "Bob knows Alice"]
         assert results[0]["score"] == pytest.approx(1.0, abs=1e-6)
+        assert [(r["src_id"], r["tgt_id"]) for r in results] == [("a", "b"), ("c", "a")]
 
     async def test_edges_are_found_through_the_index(self, conn, monkeypatch):
         # Index first, then data: an index built over existing nodes fills in
@@ -214,6 +215,7 @@ class TestRelationshipSearch:
         results = await store.search_relationships([0.0, 1.0, 0.0], top_k=1)
 
         assert [r["fact"] for r in results] == ["Bob knows Alice"]
+        assert (results[0]["src_id"], results[0]["tgt_id"]) == ("c", "a")
         # The scan finds the same edge, so only this shows the index answered.
         assert not any("cosineDistance" in cypher for cypher in sent)
 
@@ -359,6 +361,19 @@ class TestVectorSearchTies:
         )
 
         assert [r["id"] for r in await store.search_chunks([1.0, 0.0, 0.0], top_k=1)] == ["c1"]
+
+    async def test_a_contextual_chunk_hit_carries_its_original_text(self, conn):
+        store = VectorStore(conn, embedding_dimension=3)
+        assert await store.create_chunk_vector_index()
+        await conn.query(
+            "CREATE (:Chunk {id: 'c1', text: 'Context. a', original_chunk: 'a', "
+            "embedding: vecf32([1.0, 0.0, 0.0])}), "
+            "(:Chunk {id: 'c2', text: 'b', embedding: vecf32([0.0, 1.0, 0.0])})"
+        )
+
+        hits = {h["id"]: h for h in await store.search_chunks([1.0, 0.0, 0.0], top_k=2)}
+        assert hits["c1"]["original_chunk"] == "a"
+        assert "original_chunk" not in hits["c2"]
 
 
 class TestIndexBuilds:

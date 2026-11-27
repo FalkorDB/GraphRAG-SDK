@@ -54,6 +54,9 @@ class SentenceTokenCapChunking(ChunkingStrategy):
             not a quality improvement.
         overlap_sentences: Sentences shared between consecutive chunks. Default 2.
         encoding_name: tiktoken encoding to use. Default ``cl100k_base`` (GPT-4/3.5).
+        max_overlap_fraction: Most of a chunk's tokens the next chunk may
+            repeat (``0.5``: each chunk advances by at least half its tokens).
+            Default ``None``: only ``overlap_sentences`` limits the overlap.
 
     Example::
 
@@ -66,11 +69,13 @@ class SentenceTokenCapChunking(ChunkingStrategy):
         max_tokens: int = 384,
         overlap_sentences: int = 2,
         encoding_name: str = "cl100k_base",
+        max_overlap_fraction: float | None = None,
     ) -> None:
         super().__init__()
         self.max_tokens = max_tokens
         self.overlap_sentences = overlap_sentences
         self.encoding_name = encoding_name
+        self.max_overlap_fraction = max_overlap_fraction
 
     async def chunk(self, text: str, ctx: Context) -> TextChunks:
         ctx.log(
@@ -116,7 +121,8 @@ class SentenceTokenCapChunking(ChunkingStrategy):
                     metadata={
                         "strategy": "sentence_token_cap",
                         "max_tokens": self.max_tokens,
-                        "overlap_sentences": self.overlap_sentences,
+                        # Sentences the next chunk repeats; set below.
+                        "overlap_sentences": 0,
                         "token_count": buf_tokens,
                         "sentence_count": len(buf),
                         "char_count": len(chunk_text),
@@ -129,7 +135,18 @@ class SentenceTokenCapChunking(ChunkingStrategy):
                 break
 
             # Roll back by overlap_sentences for next window
-            start = max(j - self.overlap_sentences, start + 1)
+            overlap = self.overlap_sentences
+            if self.max_overlap_fraction is not None:
+                budget = buf_tokens * self.max_overlap_fraction
+                kept = repeated = 0
+                while kept < overlap and j - kept - 1 > start:
+                    repeated += token_counts[j - kept - 1]
+                    if repeated > budget:
+                        break
+                    kept += 1
+                overlap = kept
+            start = max(j - overlap, start + 1)
+            chunks[-1].metadata["overlap_sentences"] = j - start
 
         ctx.log(f"SentenceTokenCapChunking produced {len(chunks)} chunks")
         return TextChunks(chunks=chunks)

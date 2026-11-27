@@ -246,3 +246,20 @@ class TestPromptTemplate:
         # The example output ontology must mention attributes so the LLM
         # knows to include the field.
         assert '"attributes"' in prompt
+
+    def test_json_examples_are_valid_json_in_rendered_prompt(self):
+        import json
+
+        for example in (_DEFAULT_JSON_EXAMPLE, _JSON_EXAMPLE_WITH_ATTRS):
+            prompt = VERIFY_EXTRACT_RELS_PROMPT.format(
+                entity_types="Person",
+                relation_patterns="",
+                attribute_block="",
+                relationship_type_instruction="- type: ...\n",
+                entities_json="[]",
+                text="...",
+                json_example=example,
+            )
+            assert "{{" not in prompt
+            assert example in prompt
+            json.loads(example)

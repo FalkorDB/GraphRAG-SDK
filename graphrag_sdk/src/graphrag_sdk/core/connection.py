@@ -20,6 +20,21 @@ from graphrag_sdk.core.exceptions import (
 
 logger = logging.getLogger(__name__)
 
+
+def is_missing_graph_error(exc: BaseException) -> bool:
+    """Whether ``exc`` is FalkorDB saying the graph was never written.
+
+    Any query on a graph key nothing has written to yet is answered with
+    "Invalid graph operation on empty key", raw from the driver or wrapped
+    in a ``DatabaseError``. For a read that means "no rows", not a failure.
+    Every caller that tells the two apart goes through here, so a change in
+    the server's wording is fixed here. (Queries that pass
+    ``expected_errors=("empty key",)`` to the connection only quiet that
+    reply in its log; they do not tell it apart from other failures.)
+    """
+    return "empty key" in str(exc).lower()
+
+
 #: The oldest FalkorDB server the SDK works with. Before 4.20 a write to a node
 #: holding a vector dropped vector-index entries (fixed by FalkorDB PR #2197):
 #: measured on 4.18, ``queryNodes`` returned 2-3 of 6 neighbours after one such
@@ -78,15 +93,32 @@ class ConnectionConfig:
                 f"Unsupported URL scheme: {parsed.scheme!r} "
                 "(use 'redis://' for plaintext or 'rediss://' for TLS)"
             )
+        values: dict[str, Any] = {
+            "host": parsed.hostname or "localhost",
+            "port": parsed.port or 6379,
+            "username": parsed.username or None,
+            "password": parsed.password or None,
+        }
         if parsed.scheme == "rediss":
-            kwargs.setdefault("ssl", True)
-        return cls(
-            host=parsed.hostname or "localhost",
-            port=parsed.port or 6379,
-            username=parsed.username or None,
-            password=parsed.password or None,
-            **kwargs,
-        )
+            values["ssl"] = True
+        values.update(kwargs)
+        return cls(**values)
+
+
+def _changes_topology(result: Any) -> bool:
+    """Whether a query result reports nodes or relationships created or deleted."""
+    for stat in (
+        "nodes_created",
+        "nodes_deleted",
+        "relationships_created",
+        "relationships_deleted",
+    ):
+        try:
+            if int(getattr(result, stat, 0) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 class FalkorDBConnection:
@@ -117,6 +149,10 @@ class FalkorDBConnection:
         self._driver: Any | None = None
         self._graph: Any | None = None
         self._breaker = CircuitBreaker()
+        #: Bumped by every query through this connection that creates or
+        #: deletes nodes or relationships (and by ``delete_graph``), so a
+        #: caller can tell whether the graph's shape changed since it last looked.
+        self.topology_version = 0
         # Set once the server's version passed, or was not reported (see
         # _check_server_version); cleared by close(), so a reconnect asks again.
         self._version_checked = False
@@ -215,6 +251,7 @@ class FalkorDBConnection:
         *,
         timeout: int | None = None,
         expected_errors: tuple[str, ...] = (),
+        read_only: bool = False,
     ) -> Any:
         """Execute a Cypher query with retry logic.
 
@@ -226,6 +263,9 @@ class FalkorDBConnection:
                 this says; a reply later than that is a socket timeout, which
                 is retried (re-sending the query while the earlier attempt may
                 still run) and ends in ``DatabaseUnavailableError``.
+            read_only: Run the query with ``GRAPH.RO_QUERY``, which FalkorDB
+                rejects if the query would write. Use it for any query whose
+                text came from a model or a user.
             expected_errors: Lower-case substrings identifying non-transient
                 failures the caller anticipates and handles itself (e.g.
                 ``"already indexed"`` for an idempotent ``CREATE INDEX``). Such
@@ -261,10 +301,12 @@ class FalkorDBConnection:
 
         effective_timeout = timeout if timeout is not None else self.config.query_timeout_ms
         graph = self._graph
+        run = graph.ro_query if read_only else graph.query
         return await self._with_retries(
-            lambda: graph.query(cypher, params=params, timeout=effective_timeout),
+            lambda: run(cypher, params=params, timeout=effective_timeout),
             "query",
             expected_errors=expected_errors,
+            read_only=read_only,
         )
 
     async def _with_retries(
@@ -273,6 +315,7 @@ class FalkorDBConnection:
         action: str,
         *,
         expected_errors: tuple[str, ...] = (),
+        read_only: bool = False,
     ) -> Any:
         """Await ``call()``, retrying transient failures with exponential
         backoff and jitter, and feeding the circuit breaker. A non-transient
@@ -284,9 +327,25 @@ class FalkorDBConnection:
             try:
                 result = await call()
                 await self._breaker.record_success()
+                if not read_only and _changes_topology(result):
+                    self.topology_version = getattr(self, "topology_version", 0) + 1
                 return result
             except Exception as exc:
                 last_exc = exc
+                # A read-only query's text came from a model or a user. When the
+                # server answers it with an error (unknown variable, bad type,
+                # a write under RO_QUERY, its own timeout), the query is wrong,
+                # not the database: fail once, without retrying and without
+                # counting it against the circuit breaker, so bad generated
+                # Cypher can never take the connection down for everyone.
+                if read_only and self._is_server_rejection(exc):
+                    logger.debug("Read-only query rejected by FalkorDB: %s", exc)
+                    # The server answered, so it is reachable: close the
+                    # breaker. Without this a rejected query that happens to
+                    # be the half-open probe leaves the breaker HALF_OPEN for
+                    # good and every later query is refused.
+                    await self._breaker.record_success()
+                    raise DatabaseError(f"FalkorDB query failed: {exc}") from exc
                 # Don't retry non-transient errors (e.g. schema/index conflicts)
                 if self._is_non_transient(exc):
                     msg = str(exc).lower()
@@ -371,6 +430,39 @@ class FalkorDBConnection:
         "noreplicas ",
         "misconf ",
     )
+
+    @classmethod
+    def _is_server_rejection(cls, exc: Exception) -> bool:
+        """True when FalkorDB rejected the query itself (not a network or cluster fault).
+
+        Cluster / failover replies (``TRYAGAIN``, ``MOVED``, ``CLUSTERDOWN``,
+        a read-only replica, ...) are also ``ResponseError`` subclasses but
+        are transient, so they are not counted as a rejection.
+        """
+        try:
+            from redis import exceptions as rx
+        except ImportError:  # pragma: no cover - redis ships with falkordb
+            return False
+        transient = tuple(
+            getattr(rx, name)
+            for name in (
+                "AskError",
+                "ClusterDownError",
+                "MasterDownError",
+                "MovedError",
+                "TryAgainError",
+                "ReadOnlyError",
+                "OutOfMemoryError",
+            )
+            if hasattr(rx, name)
+        )
+        return (
+            isinstance(exc, rx.ResponseError)
+            and not isinstance(exc, transient)
+            # An overloaded server ("max pending queries", BUSY, ...) did not
+            # reject the query; it is retried and counted against the breaker.
+            and not str(exc).strip().lower().startswith(cls._TRANSIENT_REPLY_PREFIXES)
+        )
 
     @classmethod
     def _is_non_transient(cls, exc: Exception) -> bool:
@@ -520,6 +612,7 @@ class FalkorDBConnection:
         from redis.asyncio import Redis
 
         redis: Redis = Redis(connection_pool=self._pool)
+        self.topology_version = getattr(self, "topology_version", 0) + 1
         try:
             await redis.execute_command("GRAPH.DELETE", self.config.graph_name)
             logger.info("Deleted graph '%s' via GRAPH.DELETE", self.config.graph_name)

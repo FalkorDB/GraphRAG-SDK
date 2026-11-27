@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import Callable
 from typing import Any
 
 from graphrag_sdk.core.exceptions import EmbeddingTimeoutError, LLMTimeoutError
@@ -15,8 +16,10 @@ from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import (
     binary_split_retry_async,
     binary_split_retry_sync,
+    final_failure_log_level,
     summarize_exception,
 )
+from graphrag_sdk.core.providers._sampling import SamplingParams, name_says_reasoning
 from graphrag_sdk.core.providers._timeout import validate_timeout, wait_for_provider_call
 from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 
@@ -32,6 +35,12 @@ class OpenRouterLLM(LLMInterface):
 
         llm = OpenRouterLLM(model="anthropic/claude-sonnet-4-20250514", api_key="...")
         response = llm.invoke("Hello!")
+
+    Reasoning models need no setting: when a model rejects ``temperature``
+    or ``max_tokens``, the request goes again without the temperature, or
+    with ``max_completion_tokens``, and so do the instance's later requests
+    (for the temperature, those at the same ``reasoning_effort``, which a
+    call can pass; with ``"none"`` it is sent).
     """
 
     def __init__(
@@ -50,52 +59,72 @@ class OpenRouterLLM(LLMInterface):
         self._extra_headers = extra_headers or {}
         self._client = None
         self._async_client = None
+        self._sampling = SamplingParams(model)
 
     @staticmethod
     def _is_reasoning_model(model: str) -> bool:
-        """Return True for OpenAI reasoning models (o1 / o3 / gpt-5 family).
+        """Whether the name marks a reasoning model (o-series, gpt-5, gpt-6).
 
-        These models reject explicit ``temperature`` settings (default 1.0
-        only) and use ``max_completion_tokens`` instead of ``max_tokens``.
-        OpenRouter passes the param names straight through to upstream so
-        the same translation rules apply.
+        Only the first guess of how to send ``temperature`` and the token
+        cap; a rejected request corrects it (see ``SamplingParams``).
         """
-        # Strip provider prefix (``openai/``…) before matching.
-        name = model.split("/")[-1].lower()
-        return name.startswith(("o1", "o3", "gpt-5"))
+        return name_says_reasoning(model)
 
     def _build_create_kwargs(
         self,
         messages: list[dict[str, str]],
         extra: dict[str, Any],
     ) -> dict[str, Any]:
-        """Assemble ``client.chat.completions.create`` kwargs once,
-        applying the reasoning-model param translations centrally.
+        """Assemble ``client.chat.completions.create`` kwargs.
 
-        Caller-supplied ``temperature`` / ``max_tokens`` (via ``extra``)
-        are stripped for reasoning models because the API rejects both
-        names. For non-reasoning models, caller values win and instance
-        defaults only fill in when the caller didn't specify.
+        Caller values (via ``extra``) win over the instance defaults; a
+        temperature the model rejects is dropped whoever set it, and
+        ``max_tokens`` is renamed for a model that wants
+        ``max_completion_tokens`` (see ``SamplingParams``).
         """
         kw: dict[str, Any] = {
             "model": self.model_name,
             "messages": messages,
             **extra,
         }
-        is_reasoning = self._is_reasoning_model(self.model_name)
-        if is_reasoning:
-            kw.pop("temperature", None)
-            caller_max_tokens = kw.pop("max_tokens", None)
-            effective_max_tokens = (
-                caller_max_tokens if caller_max_tokens is not None else self._max_tokens
-            )
-            if effective_max_tokens is not None:
-                kw["max_completion_tokens"] = effective_max_tokens
-        else:
-            kw.setdefault("temperature", self._temperature)
-            if self._max_tokens is not None:
-                kw.setdefault("max_tokens", self._max_tokens)
+        self._sampling.apply(kw, self._temperature, self._max_tokens)
         return kw
+
+    def _create(self, client: Any, build: Callable[[], dict[str, Any]]) -> Any:
+        """``chat.completions.create`` on ``build()``, sent again when a parameter is rejected."""
+        while True:
+            kw = build()
+            try:
+                return client.chat.completions.create(**kw)
+            except Exception as exc:
+                if not self._sampling.adapt(exc, kw):
+                    raise
+
+    async def _acreate(
+        self,
+        client: Any,
+        build: Callable[[], dict[str, Any]],
+        *,
+        timeout: float | None,
+        operation: str,
+    ) -> Any:
+        """Async ``chat.completions.create`` on ``build()``, sent again on a rejected parameter.
+
+        The request sent again is a new request, with a fresh *timeout*; it
+        is not one of the caller's ``max_retries``.
+        """
+        while True:
+            kw = build()
+            try:
+                return await wait_for_provider_call(
+                    client.chat.completions.create(**kw),
+                    timeout=timeout,
+                    timeout_error=LLMTimeoutError,
+                    operation=operation,
+                )
+            except Exception as exc:
+                if not self._sampling.adapt(exc, kw):
+                    raise
 
     def _get_client(self):
         if self._client is None:
@@ -131,11 +160,8 @@ class OpenRouterLLM(LLMInterface):
 
     def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
         client = self._get_client()
-        create_kwargs = self._build_create_kwargs(
-            [{"role": "user", "content": prompt}],
-            kwargs,
-        )
-        response = client.chat.completions.create(**create_kwargs)
+        messages = [{"role": "user", "content": prompt}]
+        response = self._create(client, lambda: self._build_create_kwargs(messages, kwargs))
         content = response.choices[0].message.content or ""
         return LLMResponse(content=content)
 
@@ -151,17 +177,14 @@ class OpenRouterLLM(LLMInterface):
             raise ValueError("max_retries must be >= 1")
         validate_timeout(timeout)
         client = self._get_async_client()
-        create_kwargs = self._build_create_kwargs(
-            [{"role": "user", "content": prompt}],
-            kwargs,
-        )
+        prompt_messages = [{"role": "user", "content": prompt}]
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
-                response = await wait_for_provider_call(
-                    client.chat.completions.create(**create_kwargs),
+                response = await self._acreate(
+                    client,
+                    lambda: self._build_create_kwargs(prompt_messages, kwargs),
                     timeout=timeout,
-                    timeout_error=LLMTimeoutError,
                     operation=f"OpenRouter call to {self.model_name}",
                 )
                 content = response.choices[0].message.content or ""
@@ -181,7 +204,10 @@ class OpenRouterLLM(LLMInterface):
                     )
                     logger.debug("OpenRouter call failure details", exc_info=True)
                     await asyncio.sleep(delay)
-        logger.error(
+        # ERROR, unless the caller retries this temporary failure itself
+        # (ontology discovery): see final_failure_log_level.
+        logger.log(
+            final_failure_log_level(last_exc),
             "OpenRouter call failed after %d attempts: %s",
             max_retries,
             summarize_exception(last_exc) if last_exc is not None else "UnknownError",
@@ -206,17 +232,14 @@ class OpenRouterLLM(LLMInterface):
             raise ValueError("max_retries must be >= 1")
         validate_timeout(timeout)
         client = self._get_async_client()
-        create_kwargs = self._build_create_kwargs(
-            [m.to_dict() for m in messages],
-            kwargs,
-        )
+        message_dicts = [m.to_dict() for m in messages]
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
-                response = await wait_for_provider_call(
-                    client.chat.completions.create(**create_kwargs),
+                response = await self._acreate(
+                    client,
+                    lambda: self._build_create_kwargs(message_dicts, kwargs),
                     timeout=timeout,
-                    timeout_error=LLMTimeoutError,
                     operation=f"OpenRouter messages call to {self.model_name}",
                 )
                 content = response.choices[0].message.content or ""
@@ -236,7 +259,10 @@ class OpenRouterLLM(LLMInterface):
                     )
                     logger.debug("OpenRouter call failure details", exc_info=True)
                     await asyncio.sleep(delay)
-        logger.error(
+        # ERROR, unless the caller retries this temporary failure itself
+        # (ontology discovery): see final_failure_log_level.
+        logger.log(
+            final_failure_log_level(last_exc),
             "OpenRouter messages call failed after %d attempts: %s",
             max_retries,
             summarize_exception(last_exc) if last_exc is not None else "UnknownError",

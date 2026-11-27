@@ -33,6 +33,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from graphrag_sdk.core.descriptions import (
+    DESCRIPTION_COUNT_KEY,
+    DESCRIPTION_SEPARATOR,
+    PIECE_BREAK,
+    PIPE_STAND_IN,
+)
 from graphrag_sdk.core.exceptions import GraphRAGError
 from graphrag_sdk.storage.system_store import PLAN, PROCESSING_LABEL, deleted_record_clause
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
@@ -113,10 +119,19 @@ def handled(kinds: list[tuple[str, str]]) -> list[str]:
 
 #: Properties the freshness check leaves out of its property-by-property
 #: comparison: the name and the description, descriptions, aliases and merged
-#: labels have clauses of their own, and the name vector does not survive the
-#: client round trip and is replaced only with the name, which is checked.
+#: labels and the description's piece count have clauses of their own, and the
+#: name vector does not survive the client round trip and is replaced only with
+#: the name, which is checked.
 _OWN_CLAUSES = frozenset(
-    {"name", "description", "descriptions", "aliases", "merged_labels", "embedding"}
+    {
+        "name",
+        "description",
+        "descriptions",
+        DESCRIPTION_COUNT_KEY,
+        "aliases",
+        "merged_labels",
+        "embedding",
+    }
 )
 
 
@@ -152,6 +167,9 @@ def snapshot_params(
         for param, key, empty in (
             ("desc", "description", ""),
             ("descs", "descriptions", []),
+            # A description reads differently with a count and without one,
+            # so a write of the count alone is a change too.
+            ("dcount", DESCRIPTION_COUNT_KEY, -1),
             ("aliases", "aliases", []),
             ("merged", "merged_labels", ""),
         ):
@@ -304,8 +322,10 @@ def _unchanged_decimals(node: str) -> str:
 # with the duplicate.
 _UNCHANGED = (
     "coalesce(s.description, '') = $s_desc AND coalesce(s.descriptions, []) = $s_descs "
+    f"AND coalesce(s.{DESCRIPTION_COUNT_KEY}, -1) = $s_dcount "
     "AND coalesce(s.aliases, []) = $s_aliases AND coalesce(s.merged_labels, '') = $s_merged "
     "AND coalesce(d.description, '') = $d_desc AND coalesce(d.descriptions, []) = $d_descs "
+    f"AND coalesce(d.{DESCRIPTION_COUNT_KEY}, -1) = $d_dcount "
     "AND coalesce(d.aliases, []) = $d_aliases AND coalesce(d.merged_labels, '') = $d_merged "
     "AND all(k IN keys($s_seen) WHERE s[k] = $s_seen[k]) "
     "AND all(k IN keys($d_seen) WHERE d[k] = $d_seen[k]) "
@@ -358,6 +378,130 @@ _ABSORB_HEAD = (
 _CARRIED = f"{_TICKED}, d, s, present, fresh, unhandled, ok"
 
 
+#: Most descriptions a write may leave on a node or a mention edge. Past it, a
+#: new mention's description is kept on its MENTIONED_IN edge only, so a node
+#: stays bounded however much is ingested before the next finalize(); an edge
+#: (one chunk, ingested again after an incomplete run) stops taking new
+#: wordings. A write never cuts what either already holds (a merge can leave
+#: more); finalize() summarises a node.
+MAX_DESCRIPTION_MEMBERS = 20
+
+#: On a MENTIONED_IN edge: this version wrote it when it was created, so it
+#: records everything its chunk put on the entity's description. An edge an
+#: earlier version wrote has none, even after a later write adds a
+#: description to it: the text its chunk put on the node then was never
+#: recorded, so the node cannot be rebuilt from its edges.
+SAID_VERSION_KEY = "said_version"
+SAID_VERSION = 1
+
+
+def _tidy(text: str) -> str:
+    """Cypher for ``core.descriptions._tidy``: carriage returns, newlines and
+    tabs made spaces, then trimmed (``trim`` alone differs from Python's
+    ``strip()``)."""
+    return "trim(replace(replace(replace(" + text + ", '\\r', ' '), '\\n', ' '), '\\t', ' '))"
+
+
+def _piece(text: str) -> str:
+    """Cypher for ``core.descriptions.description_piece``: carriage returns,
+    newlines and tabs made spaces; ``" | "``, then any other ``|``, made
+    ``" ¦ "``; trimmed."""
+    stand_in = f" {PIPE_STAND_IN} "
+    spaced = f"replace(replace(replace({text}, '\\r', ' '), '\\n', ' '), '\\t', ' ')"
+    return (
+        f"trim(replace(replace({spaced}, '{DESCRIPTION_SEPARATOR}', '{stand_in}'), "
+        f"'{PIECE_BREAK}', '{stand_in}'))"
+    )
+
+
+def description_members(holder: str) -> str:
+    """Cypher: the description pieces ``holder`` (a node, an edge or a map)
+    holds, as a list, each kept once in order, blanks left out. With a
+    ``description_piece_count``: ``description`` split at ``|``. Without one, the
+    text read whole, as an earlier version or a single piece left it: an
+    earlier version's ``descriptions`` items (where the list has text) and
+    what the string holds beyond them, or else the whole string, each made
+    one piece. The Python rule is ``core.descriptions.description_pieces``."""
+    # Every part null-safe: the C engine (4.x) evaluates CASE branches it
+    # does not take, and a null where substring() wants a number fails.
+    h = holder
+    text = f"coalesce({h}.description, '')"
+    items = f"coalesce({h}.descriptions, [])"
+    split_new = f"[dt IN split({text}, '{PIECE_BREAK}') | {_tidy('dt')}]"
+    joined = f"reduce(dj = coalesce(head({items}), ''), dw IN tail({items}) | dj + ' | ' + dw)"
+    prefix = f"({joined} + '{DESCRIPTION_SEPARATOR}')"
+    beyond = (
+        f"CASE WHEN {h}.description IS NULL OR {text} = {joined} THEN [] "
+        f"WHEN {text} STARTS WITH {prefix} "
+        f"THEN [substring({text}, size({prefix}), size({text}))] "
+        f"ELSE [{text}] END"
+    )
+    has_list = f"any(dz IN {items} WHERE {_tidy('dz')} <> '')"
+    earlier = (
+        f"CASE WHEN {has_list} THEN {items} + {beyond} "
+        f"WHEN {h}.description IS NULL THEN [] ELSE [{text}] END"
+    )
+    pieces = (
+        f"CASE WHEN {h}.{DESCRIPTION_COUNT_KEY} IS NOT NULL THEN {split_new} "
+        f"ELSE [dt IN {earlier} | {_piece('dt')}] END"
+    )
+    once = "CASE WHEN du IN dseen THEN dseen ELSE dseen + [du] END"
+    return f"reduce(dseen = [], du IN [dx IN {pieces} WHERE dx <> ''] | {once})"
+
+
+def description_count_of(pieces: str) -> str:
+    """Cypher: the ``description_piece_count`` stored with list ``pieces``: their
+    number when two or more, else null."""
+    return f"CASE WHEN size({pieces}) > 1 THEN size({pieces}) ELSE null END"
+
+
+def joined_description(pieces: str) -> str:
+    """Cypher: list ``pieces`` as one stored description, joined with
+    ``" | "``; null when there are none."""
+    return (
+        f"CASE WHEN size({pieces}) = 0 THEN null "
+        f"ELSE reduce(acc = head({pieces}), x IN tail({pieces}) "
+        f"| acc + '{DESCRIPTION_SEPARATOR}' + x) END"
+    )
+
+
+def combined_descriptions(old: str, new: str, *, cap: bool = True) -> str:
+    """``old`` (a list in scope) plus ``new``'s description members it lacks:
+    up to ``MAX_DESCRIPTION_MEMBERS`` and never fewer than ``old`` holds, or,
+    without ``cap`` (a merge, which must keep what both edges recorded), all
+    of them."""
+    added = f"({old} + [x IN {description_members(new)} WHERE NOT x IN {old}])"
+    if not cap:
+        return added
+    return (
+        f"CASE WHEN size({old}) >= {MAX_DESCRIPTION_MEMBERS} THEN {old} "
+        f"ELSE {added}[..{MAX_DESCRIPTION_MEMBERS}] END"
+    )
+
+
+def mention_update(edge: str, new: str) -> str:
+    """The SET items that combine what mention edge ``edge`` holds with what
+    ``new`` (an edge or a map) brings: the spans, each pair once, and the
+    description pieces, each once and each whole, stored as on a node (one
+    string; an earlier version's ``descriptions`` list is dropped). Needs
+    ``old_spans`` (``edge``'s spans) and ``all_ds``
+    (:func:`combined_descriptions`) in scope."""
+    spans = f"coalesce({new}.spans, [])"
+    return (
+        f"{edge}.spans = CASE WHEN size(old_spans) + size({spans}) = 0 "
+        "THEN null ELSE old_spans + reduce(acc = [], "
+        f"i IN range(0, size({spans}) - 2, 2) | "
+        "CASE WHEN any(j IN range(0, size(old_spans) - 2, 2) "
+        f"WHERE old_spans[j] = {new}.spans[i] AND old_spans[j + 1] = {new}.spans[i + 1]) "
+        "OR any(k IN range(0, size(acc) - 2, 2) "
+        f"WHERE acc[k] = {new}.spans[i] AND acc[k + 1] = {new}.spans[i + 1]) "
+        f"THEN acc ELSE acc + [{new}.spans[i], {new}.spans[i + 1]] END) END, "
+        f"{edge}.description = {joined_description('all_ds')}, "
+        f"{edge}.{DESCRIPTION_COUNT_KEY} = {description_count_of('all_ds')}, "
+        f"{edge}.descriptions = null"
+    )
+
+
 def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
     """Move the duplicate's ``rel_type`` edges of one direction to the survivor.
     ``carried`` are the variables in scope, ``d``, ``s`` and ``ok`` among them."""
@@ -396,6 +540,28 @@ def _move_block(rel_type: str, direction: str, carried: str = _CARRIED) -> str:
             "AND size(coalesce(e.structured_sources, [])) = 0 THEN null "
             "ELSE old_sources + [x IN coalesce(e.structured_sources, []) "
             "WHERE NOT x IN old_sources] END"
+        )
+    elif safe == "MENTIONED_IN":
+        # Both entities mention the chunk: the survivor's edge keeps what each
+        # said there — both spans, each pair once, and both edges' description
+        # members, each once and each whole, stored as on a node. Left to
+        # ``+=`` the duplicate's edge replaced the survivor's, and its
+        # description, the only record of what that chunk said about the
+        # survivor, was gone.
+        # The combined edge records everything only if both did: one an
+        # earlier version wrote keeps the merged edge an earlier version's.
+        read_old = (
+            f"OPTIONAL MATCH {existing} "
+            f"WITH {carried}, e, b, coalesce(ex.spans, []) AS old_spans, "
+            f"{description_members('ex')} AS old_ds, ex IS NULL AS no_ex, "
+            f"ex.{SAID_VERSION_KEY} AS old_v "
+            f"WITH {carried}, e, b, old_spans, no_ex, old_v, "
+            f"{combined_descriptions('old_ds', 'e', cap=False)} AS all_ds "
+        )
+        update = (
+            f"SET nr += properties(e) SET {mention_update('nr', 'e')}, "
+            f"nr.{SAID_VERSION_KEY} = CASE WHEN no_ex THEN e.{SAID_VERSION_KEY} "
+            f"WHEN old_v IS NULL OR e.{SAID_VERSION_KEY} IS NULL THEN null ELSE old_v END"
         )
     else:
         read_old, update = "", "SET nr += properties(e)"

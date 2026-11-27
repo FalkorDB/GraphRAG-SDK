@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import numpy as np
@@ -12,8 +13,116 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import RawSearchResult
 from graphrag_sdk.core.providers import Embedder
+from graphrag_sdk.core.tables import RESERVED_PROPERTY_NAMES
 
 logger = logging.getLogger(__name__)
+
+
+# Merged entities carry every member's description joined with " | "; a few
+# hundred characters say who the entity is without crowding out the passages.
+_MAX_ENTITY_DESCRIPTION_CHARS = 400
+
+# Ingestion stores ``fact`` as "(src, TYPE, tgt): description". The line
+# below already names both ends and the type, so only the text after the
+# triple is kept.
+# One level of nested parentheses is allowed: "Python (language)".
+_FACT_TRIPLE_PREFIX_RE = re.compile(r"^\((?:[^()]|\([^()]*\))*\)(?::\s*)?")
+
+
+# Properties the SDK writes for itself on an entity: the reserved keys, plus
+# dedup and description bookkeeping. Everything else is the application's
+# data (a table's ``employees__salary``, an extracted ``born``) and is shown.
+INTERNAL_ENTITY_PROPS = RESERVED_PROPERTY_NAMES | {
+    "descriptions",
+    "aliases",
+    "merged_labels",
+    "mention_edge_count",
+    "description_summarised",
+}
+DROPPED_SUFFIX = "__dropped"
+
+# Longest attribute list shown for one entity or relation line.
+_MAX_ATTRIBUTES_CHARS = 200
+
+
+def alias_list(var: str) -> str:
+    """Cypher: entity ``var``'s aliases as a list of strings.
+
+    Dedup writes ``aliases`` as a list, but it is not a reserved name: an
+    ontology can declare a STRING attribute called ``aliases``, and one such
+    node would make ``coalesce(e.aliases, [])`` fail the whole query with a
+    type mismatch. A string counts as one alias; any other value as none.
+    """
+    return (
+        f"[a IN CASE typeOf({var}.aliases) WHEN 'List' THEN {var}.aliases "
+        f"WHEN 'String' THEN [{var}.aliases] ELSE [] END | toString(a)]"
+    )
+
+
+def shown_attributes(props: dict[str, Any], hidden: frozenset[str] | set[str] = frozenset()):
+    """``(key, value)`` pairs of an entity's or edge's own data, by key.
+
+    Scalars only, leaving out the SDK's bookkeeping (``hidden`` adds keys)
+    and the values a merge set aside (``<key>__dropped``).
+    """
+    return [
+        (key, value)
+        for key, value in sorted(props.items())
+        if key not in INTERNAL_ENTITY_PROPS
+        and key not in hidden
+        and not key.endswith(DROPPED_SUFFIX)
+        and isinstance(value, (str, int, float, bool))
+        and value != ""
+    ]
+
+
+def attributes_text(pairs: list[tuple[str, Any]]) -> str:
+    """``key: value; key: value``, cut at a pair boundary near 200 characters.
+
+    A single pair longer than the budget (a free-text column) is cut to it, so
+    the first pair is bounded too.
+    """
+    out: list[str] = []
+    size = 0
+    for key, value in pairs:
+        part = f"{key}: {value}"
+        if len(part) > _MAX_ATTRIBUTES_CHARS:
+            part = part[: _MAX_ATTRIBUTES_CHARS - 1].rstrip() + "…"
+        if out and size + len(part) + 2 > _MAX_ATTRIBUTES_CHARS:
+            out.append("…")
+            break
+        out.append(part)
+        size += len(part) + 2
+    return "; ".join(out)
+
+
+def format_relation_line(
+    src: str,
+    rel_type: str,
+    tgt: str,
+    description: str = "",
+    fact: str = "",
+    attributes: list[tuple[str, Any]] | None = None,
+) -> str:
+    """``src —[TYPE]→ tgt: text [key: value]``, the one format for every relation line.
+
+    ``description`` is the edge's evidence text; ``fact`` is used when an
+    edge has none (older graphs), with its leading "(src, TYPE, tgt)" removed.
+    ``attributes`` are the edge's own values, such as the signed columns a
+    relationship table writes (whose ``fact`` is only a template).
+    """
+    text = (description or "").strip()
+    if not text:
+        text = (fact or "").strip()
+        # Only an ingestion triple is removed; "(2024 estimate) ..." is text.
+        prefix = _FACT_TRIPLE_PREFIX_RE.match(text)
+        if prefix and f", {rel_type}, " in prefix.group(0):
+            text = text[prefix.end() :]
+    line = f"{src} —[{rel_type}]→ {tgt}"
+    line = f"{line}: {text}" if text else line
+    if attributes:
+        line += f" [{attributes_text(attributes)}]"
+    return line
 
 
 def cosine_sim(a: list[float], b: list[float]) -> float:
@@ -35,33 +144,69 @@ async def rerank_chunks(
 ) -> list[str]:
     """Rank candidates by cosine similarity, take top_k.
 
-    When ``stored_embeddings`` covers >=90% of candidates, uses
-    pre-computed vectors from the graph (zero API calls).  Falls back
-    to re-embedding via the embedder when coverage is insufficient.
+    When ``stored_embeddings`` holds any vectors, uses them and embeds only
+    the candidates without one (one call, or none when every candidate has a
+    vector). Re-embeds every candidate only when there are no stored vectors.
 
     Returns:
         Top-k chunk texts ranked by cosine similarity to query.
     """
+    ranked = await _rerank_chunk_ids(
+        embedder, query_vector, candidate_chunks, chunk_top_k, stored_embeddings, ctx
+    )
+    return [candidate_chunks[cid] for cid in ranked]
+
+
+async def _rerank_chunk_ids(
+    embedder: Embedder,
+    query_vector: list[float],
+    candidate_chunks: dict[str, str],
+    chunk_top_k: int = 15,
+    stored_embeddings: dict[str, list[float]] | None = None,
+    ctx: Context | None = None,
+) -> list[str]:
+    """:func:`rerank_chunks`, returning the ids of the top-k chunks."""
     if not candidate_chunks:
         return []
 
     chunk_ids = list(candidate_chunks.keys())
     chunk_texts = list(candidate_chunks.values())
 
-    # Fast path: use stored embeddings only when coverage is near-complete
-    if stored_embeddings and len(stored_embeddings) >= len(chunk_ids) * 0.9:
+    # Fast path: use the stored embeddings and embed only the candidates
+    # without one. Those are mostly structured-record chunks, which ingestion
+    # never embeds; ranking them last regardless of the question would drop a
+    # table row even when it is the answer. No coverage threshold: on a graph
+    # with tables the unembedded share can be large, and re-embedding every
+    # candidate for it would cost far more than embedding the missing ones.
+    if stored_embeddings:
+        missing = [i for i, cid in enumerate(chunk_ids) if not stored_embeddings.get(cid)]
+        fresh: dict[int, list[float]] = {}
+        if missing:
+            try:
+                if ctx is not None:
+                    ctx.ensure_budget("chunk reranking embedding")
+                vectors = await embedder.aembed_documents(
+                    [chunk_texts[i] for i in missing],
+                    timeout=(
+                        ctx.provider_timeout_seconds("chunk reranking embedding")
+                        if ctx is not None
+                        else None
+                    ),
+                )
+                fresh = dict(zip(missing, vectors))
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:
+                logger.debug("Embedding chunks without a stored vector failed: %s", exc)
         scored = []
         for i, cid in enumerate(chunk_ids):
-            vec = stored_embeddings.get(cid)
-            if vec:
-                scored.append((i, cosine_sim(query_vector, vec)))
-            else:
-                # No stored vector — place at end rather than penalizing
-                scored.append((i, -1.0))
+            vec = stored_embeddings.get(cid) or fresh.get(i)
+            # Still no vector (embedding failed): place at end.
+            scored.append((i, cosine_sim(query_vector, vec) if vec else -1.0))
         scored.sort(key=lambda x: x[1], reverse=True)
-        return [chunk_texts[i] for i, _ in scored[:chunk_top_k]]
+        return [chunk_ids[i] for i, _ in scored[:chunk_top_k]]
 
-    # Fallback: re-embed all candidates (coverage too low for fast path)
+    # Fallback: no stored vectors at all, so embed every candidate.
     try:
         if ctx is not None:
             ctx.ensure_budget("chunk reranking embedding")
@@ -75,12 +220,12 @@ async def rerank_chunks(
         )
         scored = [(i, cosine_sim(query_vector, cvec)) for i, cvec in enumerate(chunk_vectors)]
         scored.sort(key=lambda x: x[1], reverse=True)
-        return [chunk_texts[i] for i, _ in scored[:chunk_top_k]]
+        return [chunk_ids[i] for i, _ in scored[:chunk_top_k]]
     except LatencyBudgetExceededError:
         raise
     except Exception as exc:
         logger.debug("Chunk reranking failed, returning unranked: %s", exc)
-        return chunk_texts[:chunk_top_k]
+        return chunk_ids[:chunk_top_k]
 
 
 def filter_facts_by_relevance(
@@ -160,6 +305,12 @@ def assemble_raw_result(
     q_type_hint: str = "",
     cypher_results: list[str] | None = None,
     cypher_question: str = "",
+    *,
+    max_cypher: int = 20,
+    max_entities: int = 25,
+    max_relationships: int = 20,
+    max_facts: int = 15,
+    max_passages: int = 15,
 ) -> RawSearchResult:
     """Build structured RawSearchResult with section records.
 
@@ -170,8 +321,19 @@ def assemble_raw_result(
     aggregate row carries no scope of its own, so a bare ``average_age: 39.5``
     is unattributable and gets reported as missing context; saying which
     question the rows answer is what makes it usable.
+
+    The ``max_*`` caps bound how much of each section reaches the LLM;
+    callers may raise them per query.
     """
     records: list[dict[str, Any]] = []
+
+    # Negative caps would slice from the end; clamp so callers can only ever
+    # narrow a section (0 = omit it entirely), never reorder/truncate-from-tail.
+    max_cypher = max(0, max_cypher)
+    max_entities = max(0, max_entities)
+    max_relationships = max(0, max_relationships)
+    max_facts = max(0, max_facts)
+    max_passages = max(0, max_passages)
 
     # Question-type hint (prepended so LLM sees it first)
     if q_type_hint:
@@ -183,7 +345,8 @@ def assemble_raw_result(
         )
 
     # Cypher Query Results (direct to LLM — not reranked)
-    if cypher_results:
+    capped_cypher = (cypher_results or [])[:max_cypher]
+    if capped_cypher:
         heading = "## Graph Query Results"
         if cypher_question:
             heading += (
@@ -193,53 +356,81 @@ def assemble_raw_result(
         records.append(
             {
                 "section": "cypher_results",
-                "content": heading + "\n" + "\n".join(f"- {r}" for r in cypher_results[:20]),
+                "content": heading + "\n" + "\n".join(f"- {r}" for r in capped_cypher),
             }
         )
 
-    # Entity section
+    # Entity section. Two entities sharing a name (Paris the city, Paris the
+    # person, two employees called John Smith) are two lines when they say
+    # different things, in their description or their table values; a bare
+    # name adds nothing once that name is listed.
+    seen: set[tuple[str, str, str]] = set()
     seen_names: set[str] = set()
+    # Where a bare name's line sits, so a described entity of the same name
+    # that arrives later takes its slot instead of adding a second line.
+    bare_slots: dict[str, int] = {}
     entity_lines: list[str] = []
     for _, einfo in entity_list:
-        name = einfo.get("name", "")
-        if name and name.lower() not in seen_names:
-            seen_names.add(name.lower())
-            desc = einfo.get("description", "")
-            entity_lines.append(f"- {name}: {desc}" if desc else f"- {name}")
-    if entity_lines:
+        name = einfo.get("name") or ""
+        desc = (einfo.get("description", "") or "").strip()
+        if len(desc) > _MAX_ENTITY_DESCRIPTION_CHARS:
+            cut = desc[:_MAX_ENTITY_DESCRIPTION_CHARS].rsplit(" ", 1)[0]
+            desc = (cut or desc[:_MAX_ENTITY_DESCRIPTION_CHARS]) + " …"
+        attrs = einfo.get("attributes")
+        attrs_line = attributes_text(attrs) if attrs else ""
+        key = (name.lower(), desc.lower(), attrs_line)
+        bare = not desc and not attrs_line
+        if not name or key in seen or (bare and name.lower() in seen_names):
+            continue
+        seen.add(key)
+        seen_names.add(name.lower())
+        line = f"- {name}: {desc}" if desc else f"- {name}"
+        if attrs_line:
+            line += f" ({attrs_line})"
+        slot = bare_slots.pop(name.lower(), None)
+        if slot is not None:
+            entity_lines[slot] = line
+            continue
+        if bare:
+            bare_slots[name.lower()] = len(entity_lines)
+        entity_lines.append(line)
+    capped_entities = entity_lines[:max_entities]
+    if capped_entities:
         records.append(
             {
                 "section": "entities",
-                "content": "## Key Entities\n" + "\n".join(entity_lines[:25]),
+                "content": "## Key Entities\n" + "\n".join(capped_entities),
             }
         )
 
     # Relationship section
-    if relationship_strings:
+    capped_relationships = relationship_strings[:max_relationships]
+    if capped_relationships:
         records.append(
             {
                 "section": "relationships",
                 "content": "## Entity Relationships\n"
-                + "\n".join(f"- {r}" for r in relationship_strings[:20]),
+                + "\n".join(f"- {r}" for r in capped_relationships),
             }
         )
 
     # Knowledge Graph Facts section (from RELATES edge vector search)
-    if fact_strings:
+    capped_facts = fact_strings[:max_facts]
+    if capped_facts:
         records.append(
             {
                 "section": "facts",
-                "content": "## Knowledge Graph Facts\n"
-                + "\n".join(f"- {f}" for f in fact_strings[:15]),
+                "content": "## Knowledge Graph Facts\n" + "\n".join(f"- {f}" for f in capped_facts),
             }
         )
 
     # Passages section
-    if source_passages:
+    capped_passages = source_passages[:max_passages]
+    if capped_passages:
         records.append(
             {
                 "section": "passages",
-                "content": "## Source Document Passages\n" + "\n---\n".join(source_passages[:15]),
+                "content": "## Source Document Passages\n" + "\n---\n".join(capped_passages),
             }
         )
 

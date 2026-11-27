@@ -28,11 +28,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import ModelLoadError
 from graphrag_sdk.core.models import (
     _PROPERTY_TYPES,
     _RESERVED_ATTRIBUTE_NAMES,
@@ -46,6 +48,7 @@ from graphrag_sdk.core.models import (
     TextChunk,
     TextChunks,
 )
+from graphrag_sdk.core.providers._retry import describe_llm_error, is_transient_llm_error
 from graphrag_sdk.discovery.catalog import Catalog
 from graphrag_sdk.discovery.instructor import extract_with_retry
 from graphrag_sdk.discovery.prompts import (
@@ -80,6 +83,27 @@ if TYPE_CHECKING:
     from graphrag_sdk.core.providers.base import LLMInterface
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+async def _gather_or_cancel(*aws: Awaitable[_T]) -> list[_T]:
+    """``asyncio.gather`` that cancels the other calls when one fails.
+
+    A failing call ends the run, but plain ``gather`` leaves its siblings
+    running, still sleeping and retrying model calls, for results nobody
+    reads. In a long-lived event loop (a server) that traffic would go on
+    after the caller has already been told the run failed.
+    """
+    tasks = [asyncio.ensure_future(aw) for aw in aws]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
 
 # Max characters of a document fed to the summary step. The summary is
 # anchoring context, not exhaustive — feeding the whole doc burns
@@ -302,6 +326,20 @@ async def _run_doc_summary(
             exc.last_error,
         )
         return DocSummary()
+    except Exception as exc:
+        # A temporary model failure that outlasted the wrapper's retries:
+        # the anchor is optional, so carry on without it. If the provider is
+        # really down, the chunk calls that follow fail and end the run.
+        if not is_transient_llm_error(exc):
+            raise
+        # The document id is usually a file path, and a WARNING may reach
+        # shared log streams: it goes to DEBUG only, as in the retry warning.
+        logger.warning(
+            "Doc summary kept failing with a temporary model error; continuing without anchor: %s",
+            describe_llm_error(exc),
+        )
+        logger.debug("Doc summary without anchor for %s", doc_id)
+        return DocSummary()
 
 
 async def _run_chunk_proposal(
@@ -317,7 +355,10 @@ async def _run_chunk_proposal(
 
     Returns ``None`` on exhausted retries so the doc-level merge can
     simply skip this chunk — soft-fail at the pipeline level, strict at
-    the wrapper level.
+    the wrapper level. A temporary model failure that outlasts the
+    wrapper's retries is raised, not skipped: when the provider is down,
+    every chunk would be skipped and the run would return an empty draft
+    as if the documents held nothing.
     """
     schema = ChunkProposal.model_json_schema()
     try:
@@ -378,6 +419,17 @@ async def _run_normalization(
             "draft un-normalized. Last error: %s",
             exc.attempts,
             exc.last_error,
+        )
+        return merged
+    except Exception as exc:
+        # Every summary and chunk call has already been paid for: a temporary
+        # failure on this last call must not throw their results away.
+        if not is_transient_llm_error(exc):
+            raise
+        logger.warning(
+            "Normalization kept failing with a temporary model error; returning "
+            "the merged draft un-normalized: %s",
+            describe_llm_error(exc),
         )
         return merged
     return _proposal_to_ontology(normalized.entities, normalized.relations)
@@ -446,7 +498,7 @@ async def _process_document(
                 max_retries=max_retries,
             )
 
-    chunk_results = await asyncio.gather(*[_bounded(c) for c in sampled])
+    chunk_results = await _gather_or_cancel(*[_bounded(c) for c in sampled])
 
     # Per-doc merge: turn each proposal into an Ontology fragment and union them.
     doc_ontology = Ontology()
@@ -534,7 +586,7 @@ async def discover_ontology(
             return random.Random()
         return random.Random(f"{seed}:{src}")
 
-    per_doc = await asyncio.gather(
+    per_doc = await _gather_or_cancel(
         *[
             _process_document(
                 llm,
@@ -601,6 +653,10 @@ async def _extract_mentions_from_chunk(
     """
     try:
         entities = await extractor.extract_entities(chunk.text, _NER_ANCHOR_LABELS, chunk.uid)
+    except ModelLoadError:
+        # The same on every chunk: an empty ontology with a warning per chunk
+        # would hide it.
+        raise
     except Exception as exc:
         logger.warning(
             "grounded discovery: NER failed on chunk %s (skipping): %s",
@@ -706,6 +762,17 @@ async def _trim_type_properties(
             exc.attempts,
             len(properties),
             exc.last_error,
+        )
+        return properties
+    except Exception as exc:
+        if not is_transient_llm_error(exc):
+            raise
+        logger.warning(
+            "grounded trim: %s kept failing with a temporary model error; keeping "
+            "all %d catalog properties: %s",
+            type_name,
+            len(properties),
+            describe_llm_error(exc),
         )
         return properties
 
@@ -818,14 +885,14 @@ async def discover_grounded(
                 names = await _extract_mentions_from_chunk(entity_extractor, chunk)
                 return chunk, names
 
-        per_chunk = await asyncio.gather(*[_bounded(c) for c in sampled])
+        per_chunk = await _gather_or_cancel(*[_bounded(c) for c in sampled])
         chunks_per_mention: dict[str, list[TextChunk]] = {}
         for chunk, names in per_chunk:
             for name in names:
                 chunks_per_mention.setdefault(name, []).append(chunk)
         return chunks_per_mention
 
-    per_source = await asyncio.gather(*[_process(s) for s in sources_list])
+    per_source = await _gather_or_cancel(*[_process(s) for s in sources_list])
 
     # Merge per-source maps into one ``mention_name → [chunks across corpus]``.
     chunks_by_mention: dict[str, list[TextChunk]] = {}

@@ -115,20 +115,20 @@ async def main():
 asyncio.run(main())
 ```
 
-### 3. Define a schema (optional)
+### 3. Define an ontology (optional)
 
 ```python
-from graphrag_sdk import GraphSchema, EntityType, RelationType
+from graphrag_sdk import Ontology, Entity, Relation
 
-schema = GraphSchema(
+ontology = Ontology(
     entities=[
-        EntityType(label="Person", description="A human being"),
-        EntityType(label="Organization", description="A company or institution"),
-        EntityType(label="Location", description="A geographic location"),
+        Entity(label="Person", description="A human being"),
+        Entity(label="Organization", description="A company or institution"),
+        Entity(label="Location", description="A geographic location"),
     ],
     relations=[
-        RelationType(label="WORKS_AT", description="Is employed by", patterns=[("Person", "Organization")]),
-        RelationType(label="LOCATED_IN", description="Is situated in", patterns=[("Organization", "Location")]),
+        Relation(label="WORKS_AT", description="Is employed by", patterns=[("Person", "Organization")]),
+        Relation(label="LOCATED_IN", description="Is situated in", patterns=[("Organization", "Location")]),
     ],
 )
 
@@ -136,7 +136,7 @@ async with GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
     llm=LiteLLM(model="openai/gpt-5.5"),
     embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
-    schema=schema,
+    ontology=ontology,
 ) as rag:
     ...  # ingest / completion as above
 ```
@@ -185,7 +185,7 @@ In file mode, `document_id` defaults to `os.path.normpath(source)` so
 no extra plumbing. See [`examples/07_incremental_updates.py`](graphrag_sdk/examples/07_incremental_updates.py).
 
 **Cost model.** `finalize()` deduplicates only the entities ingested
-since the last `finalize()` (they have no name vector yet) and any an
+since the last `finalize()` (they have no name vector yet) and any entities an
 earlier run left pending, reaching
 the rest of the graph through the vector index — its LLM calls,
 embeddings and merges follow the **change size**, not the graph size.
@@ -222,7 +222,7 @@ guards the default.
 | Ingestion | Extract entities & relations | LLM |
 | Ingestion | Resolve entities within a document (exact match) | — |
 | Finalize | Deduplicate new entities across documents (LLM judge) | LLM |
-| Ingestion | Embed & index | LLM |
+| Ingestion | Embed & index | Embedding model |
 | Retrieval | Vector search | DB |
 | Retrieval | Full-text search | DB |
 | Retrieval | Text-to-Cypher *(experimental)* | LLM |
@@ -251,6 +251,7 @@ guards the default.
 | 9 | [Ontology Evolution](graphrag_sdk/examples/09_ontology_evolution.py) | Mutating schema evolution — rename types and atomically add attributes with LLM backfill |
 | 10 | [Ontology Discovery](graphrag_sdk/examples/10_ontology_discovery.py) | Discover an ontology from raw sources and propose extensions as new docs arrive |
 | 11 | [Structured Ingestion](graphrag_sdk/examples/11_structured_ingestion.py) | Declared mappings end to end, with a re-ingest that corrects a row, adds one and drops one |
+| 12 | [Agent Toolkit](graphrag_sdk/examples/12_agent_toolkit.py) | Read-only graph tools for your own agent — hybrid search over entities, relations and passages — with numbered evidence and a citation check |
 | ★ | [Grounded Answers with Abstention](graphrag_sdk/examples/grounded_answers_with_abstention.py) | Cite the retrieved context behind an answer, and abstain when the graph has no supporting evidence |
 
 ---
@@ -270,6 +271,7 @@ Full documentation: **<https://docs.falkordb.com/graphrag>**
 | [Reliability and Grounding](https://docs.falkordb.com/graphrag/reliability-and-grounding) | Grounding, provenance and abstention mapped to the APIs that implement them |
 | [Benchmark](https://docs.falkordb.com/graphrag/benchmark) | Methodology, results, and reproduction instructions |
 | [Accuracy Benchmark: FalkorDB vs Vector RAG](https://docs.falkordb.com/graphrag/graphrag-accuracy-benchmark) | 71.48 vs 55.39 comparison, evaluation definition, limitations, how to cite |
+| [Agentic Retrieval](https://docs.falkordb.com/graphrag/agentic-retrieval) | Graph tools and the `graphrag-mcp` server for Claude Code, Cursor and other agents |
 | [API Reference](https://docs.falkordb.com/graphrag/api-reference) | Full API documentation |
 
 ---
